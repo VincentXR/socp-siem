@@ -169,6 +169,16 @@ public class SocpHttpClient {
     /** POST to an approved external endpoint using a connection-level host allowlist. */
     public ServiceCall postExternal(String absoluteUrl, String body, String contentType, int timeoutMs,
                                     Map<String, String> headers, List<String> allowedHosts) {
+        return postExternal(absoluteUrl, body, contentType, timeoutMs, headers, allowedHosts, props.getMaxAttempts());
+    }
+
+    /** Irreversible connectors own retry admission; global client settings cannot replay this call. */
+    public ServiceCall postExternalOnce(String absoluteUrl, String body, String contentType, int timeoutMs) {
+        return postExternal(absoluteUrl, body, contentType, timeoutMs, Map.of(), props.getExternalAllowedHosts(), 1);
+    }
+
+    private ServiceCall postExternal(String absoluteUrl, String body, String contentType, int timeoutMs,
+                                     Map<String, String> headers, List<String> allowedHosts, int maxAttempts) {
         // 校验通过后把解析结果钉住到当前线程：execute() 建连时的隐式 DNS 解析只会拿到
         // 已校验地址，消除 validate-then-connect 的重绑定窗口；URL 主机名不变，
         // SNI / 证书域名校验保持原样
@@ -181,7 +191,7 @@ public class SocpHttpClient {
                 return denied;
             }
             return execute("POST", null, absoluteUrl, body, contentType == null ? JSON : contentType, timeoutMs,
-                    headers == null ? Map.of() : headers);
+                    headers == null ? Map.of() : headers, maxAttempts);
         }
     }
 
@@ -195,13 +205,19 @@ public class SocpHttpClient {
     private ServiceCall execute(String method, SocpService target, String url,
                                 String body, String contentType, int timeoutMs,
                                 Map<String, String> headers) {
+        return execute(method, target, url, body, contentType, timeoutMs, headers, props.getMaxAttempts());
+    }
+
+    private ServiceCall execute(String method, SocpService target, String url,
+                                String body, String contentType, int timeoutMs,
+                                Map<String, String> headers, int maxAttempts) {
         long start = System.nanoTime();
         int attempts = 0;
         int status = -1;
         String respBody = "";
         String error = null;
         boolean retryable = false;
-        int max = Math.max(1, props.getMaxAttempts());
+        int max = Math.max(1, maxAttempts);
 
         while (attempts < max) {
             attempts++;

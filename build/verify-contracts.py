@@ -189,6 +189,21 @@ def envelope_findings() -> set[str]:
     return findings
 
 
+def entity_risk_read_findings(controller: str, store: str, repository: str) -> list[str]:
+    """Static wiring checks; real H2/PostgreSQL tests prove decay/order semantics."""
+    errors = []
+    if ("MAX_ENTITY_LIMIT" not in controller or "MAX_TOP_RESULTS" not in store
+            or "profiles.topAt(" not in store or "limit :limit" not in repository
+            or 'RISK + " desc, entity_key asc limit :limit"' not in repository):
+        errors.append("UEBA ranking must limit database results after decay-aware ordering")
+    if ("profiles.summarizeAt(" not in store or "count(*) as entities" not in repository
+            or re.search(r"profiles\.findByTenantId\s*\(", store)):
+        errors.append("UEBA summary must aggregate without materializing all tenant profiles")
+    if repository.count("where tenant_id=:tenantId") < 2:
+        errors.append("UEBA ranking and summary SQL must both constrain the authenticated tenant")
+    return errors
+
+
 def main() -> int:
     errors: list[str] = []
     ports_text = (ROOT / "build/ports.env").read_text(encoding="utf-8")
@@ -352,8 +367,10 @@ def main() -> int:
     risk_store = (
         ROOT / "services/detect-web/src/main/java/com/socp/detect/web/service/EntityRiskStore.java"
     ).read_text(encoding="utf-8")
-    if "MAX_ENTITY_LIMIT" not in ueba_controller or "MAX_TOP_CANDIDATES" not in risk_store:
-        errors.append("UEBA risk ranking must enforce a bounded tenant candidate set")
+    risk_repository = (
+        ROOT / "services/detect-web/src/main/java/com/socp/detect/web/persistence/repository/EntityRiskProfileRepository.java"
+    ).read_text(encoding="utf-8")
+    errors.extend(entity_risk_read_findings(ueba_controller, risk_store, risk_repository))
 
     rule_controller = (
         ROOT / "services/detect-web/src/main/java/com/socp/detect/web/api/controller/RuleController.java"
@@ -399,7 +416,10 @@ def main() -> int:
     if ("PageResponse.of" not in source_controller
             or "Page<LogSource> page" not in source_store
             or "Page<LogSourceEntity> findByTenantId" not in source_repository
-            or "page: 1, size: 500" not in source_frontend):
+            or "listSourcesPage = (page: number, size: number" not in source_frontend
+            or "get<Paged<LogSource>>" not in source_frontend
+            or "Page<LogSource> pageByName" not in source_store
+            or "findByTenantIdAndNameContainingIgnoreCase" not in source_repository):
         errors.append("log source catalogue must use a bounded database page end-to-end")
 
     # Asset and endpoint inventories are tenant-controlled cardinalities. Keep

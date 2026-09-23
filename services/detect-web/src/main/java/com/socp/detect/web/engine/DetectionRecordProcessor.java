@@ -373,8 +373,8 @@ final class DetectionRecordProcessor {
      * after parsing, an unknown execution exception remains retryable.
      */
     static FailureCategory classifyFailure(Throwable failure) {
-        for (Throwable current = failure; current != null;
-             current = current.getCause() == current ? null : current.getCause()) {
+        var seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Throwable, Boolean>());
+        for (Throwable current = failure; current != null && seen.add(current); current = current.getCause()) {
             if (current instanceof DetectionStateOwnership.StaleStateOwnerException) {
                 return FailureCategory.OWNERSHIP_LOST;
             }
@@ -394,7 +394,8 @@ final class DetectionRecordProcessor {
                     || current instanceof java.util.concurrent.CancellationException) {
                 return FailureCategory.INTERRUPTED;
             }
-            if (current instanceof org.springframework.dao.DataAccessException
+            if (current instanceof com.socp.rule.engine.RuleDependencyException
+                    || current instanceof org.springframework.dao.DataAccessException
                     || current instanceof org.springframework.transaction.TransactionException
                     || current instanceof jakarta.persistence.PersistenceException
                     || current instanceof java.sql.SQLException

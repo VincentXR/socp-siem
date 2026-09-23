@@ -4,8 +4,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.notify.web.domain.Channel;
 import com.socp.notify.web.persistence.store.ChannelStore;
-import com.socp.notify.web.persistence.entity.NotificationDeliveryEntity;
-import com.socp.notify.web.persistence.repository.NotificationDeliveryRepository;
 import com.socp.notify.web.persistence.entity.NotificationDispatchLogEntity;
 import com.socp.notify.web.persistence.repository.NotificationDispatchLogRepository;
 import com.socp.platform.client.http.ServiceCall;
@@ -15,13 +13,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /** Dispatches an alarm to enabled channels with per-alarm/channel idempotency. */
 @Service
@@ -34,55 +33,49 @@ public class NotificationDispatcher {
 
     private final ChannelStore channels;
     private final SocpHttpClient http;
-    private final NotificationDeliveryRepository deliveries;
+    private final NotificationDeliveryState deliveries;
+    private final NotificationExecutor executor;
     private final NotificationDispatchLogRepository dispatchLogs;
     private final SmtpNotificationSender smtpSender;
     public NotificationDispatcher(ChannelStore channels, SocpHttpClient http,
-                                  NotificationDeliveryRepository deliveries,
+                                  NotificationDeliveryState deliveries,
                                   NotificationDispatchLogRepository dispatchLogs,
-                                  SmtpNotificationSender smtpSender) {
+                                  SmtpNotificationSender smtpSender, NotificationExecutor executor) {
         this.channels = channels;
         this.http = http;
         this.deliveries = deliveries;
         this.dispatchLogs = dispatchLogs;
         this.smtpSender = smtpSender;
+        this.executor = executor;
     }
 
     public Map<String, Object> dispatch(Map<String, Object> alarm) {
         String alarmId = text(alarm.get("id"));
-        if (alarmId == null) throw new IllegalArgumentException("alarm id is required");
+        if (alarmId == null || alarmId.length() > 255) throw new IllegalArgumentException("valid alarm id is required");
+        try {
+            if (MAPPER.writeValueAsBytes(alarm).length > 256 * 1024) {
+                throw com.socp.platform.error.exception.ApiException.of(413, "notification payload exceeds 256 KiB");
+            }
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            throw com.socp.platform.error.exception.ApiException.badRequest("notification payload cannot be serialized");
+        }
         String tenant = tenant();
         List<Channel> enabledChannels = channels.enabled();
-
-        // 并发扇出各渠道通知，避免慢 Webhook 阻塞整体通知链路
-        List<java.util.concurrent.CompletableFuture<Map<String, Object>>> futures = enabledChannels.stream()
-                .map(channel -> java.util.concurrent.CompletableFuture.supplyAsync(
-                        TenantContext.wrap(tenant, () -> {
-                    Map<String, Object> result = deliveredResult(tenant, alarmId, channel);
-                    if (result == null) {
-                        result = send(channel, alarm);
-                        log(channel, result, alarm);
-                        if (!"failed".equals(result.get("status"))) {
-                            remember(tenant, alarmId, channel, result);
-                        }
-                    }
-                    return result;
-                })))
-                .toList();
-
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        List<CompletableFuture<Map<String, Object>>> futures = new ArrayList<>();
+        for (Channel channel : enabledChannels) {
+            try {
+                futures.add(executor.submit(TenantContext.wrap(tenant, () -> deliver(alarmId, channel, alarm))));
+            } catch (java.util.concurrent.RejectedExecutionException saturated) {
+                futures.add(CompletableFuture.completedFuture(failed(channel, "NOTIFY_BUSY", "Notification capacity is busy; retry later")));
+            }
+        }
         List<Map<String, Object>> results = new ArrayList<>();
         int failed = 0;
-        for (var future : futures) {
-            try {
-                Map<String, Object> result = future.join();
-                if ("failed".equals(result.get("status"))) {
-                    failed++;
-                }
-                results.add(result);
-            } catch (Exception ex) {
-                failed++;
-                results.add(Map.of("status", "failed", "error", ex.getMessage()));
-            }
+        for (int index = 0; index < futures.size(); index++) {
+            var result = await(futures.get(index), enabledChannels.get(index), deadline);
+            if ("failed".equals(result.get("status"))) failed++;
+            results.add(result);
         }
 
         Map<String, Object> response = new LinkedHashMap<>();
@@ -98,38 +91,69 @@ public class NotificationDispatcher {
     public Map<String, Object> test(Channel channel) {
         Map<String, Object> sample = Map.of("id", "test-" + UUID.randomUUID(), "ruleId", "notification-test",
                 "severity", "INFO", "message", "SOCP notification test", "test", true);
-        Map<String, Object> result = send(channel, sample);
-        log(channel, result, sample);
+        String tenant = tenant();
+        try {
+            var result = await(executor.submit(TenantContext.wrap(tenant, () -> {
+                var testResult = send(channel, sample);
+                log(channel, testResult, sample);
+                return testResult;
+            })), channel, System.nanoTime() + TimeUnit.SECONDS.toNanos(5));
+            if ("NOTIFY_PENDING".equals(result.get("errorCode"))) {
+                return failed(channel, "NOTIFY_TEST_UNCONFIRMED", "Test may still complete; inspect dispatch history or the destination before another test");
+            }
+            return result;
+        } catch (java.util.concurrent.RejectedExecutionException saturated) {
+            return failed(channel, "NOTIFY_BUSY", "Notification capacity is busy; retry later");
+        }
+    }
+
+    private Map<String, Object> deliver(String alarmId, Channel channel, Map<String, Object> alarm) {
+        var claim = deliveries.claim(alarmId, channel.id());
+        if (claim.receiptJson() != null) {
+            try {
+                var result = new LinkedHashMap<>(MAPPER.readValue(claim.receiptJson(), MAP_TYPE));
+                if (!List.of("sent", "logged").contains(result.get("status"))) throw new IllegalStateException();
+                result.put("duplicate", true);
+                return result;
+            } catch (Exception corrupt) {
+                return failed(channel, "NOTIFY_RECEIPT_INVALID", "Invalid notification delivery receipt; inspect durable state");
+            }
+        }
+        if (claim.token() == null) return failed(channel, "NOTIFY_PENDING", "Delivery is in progress or awaiting retry");
+        Map<String, Object> result;
+        try {
+            result = send(channel, alarm);
+        } catch (RuntimeException connectorFailure) {
+            result = failed(channel, "NOTIFY_CONNECTOR_FAILED", "Notification connector failed; remote acceptance may be unknown");
+        }
+        try {
+            if (!deliveries.finish(alarmId, channel.id(), claim.token(), MAPPER.writeValueAsString(result),
+                    !"failed".equals(result.get("status")))) {
+                return failed(channel, "NOTIFY_CLAIM_LOST", "Delivery ownership changed; retry to read the durable result");
+            }
+        } catch (Exception persistenceFailure) {
+            return failed(channel, "NOTIFY_RECEIPT_UNCONFIRMED", "Notification receipt could not be confirmed; remote acceptance may be unknown");
+        }
+        log(channel, result, alarm);
         return result;
     }
 
-    private Map<String, Object> deliveredResult(String tenant, String alarmId, Channel channel) {
-        return deliveries.findByIdAndTenantId(deliveryId(tenant, alarmId, channel.id()), tenant)
-                .map(row -> {
-                    try {
-                        Map<String, Object> result = new LinkedHashMap<>(MAPPER.readValue(row.getResultJson(), MAP_TYPE));
-                        result.put("duplicate", true);
-                        return result;
-                    } catch (Exception corruptReceipt) {
-                        throw new IllegalStateException("invalid notification delivery receipt", corruptReceipt);
-                    }
-                })
-                .orElse(null);
+    private static Map<String, Object> await(CompletableFuture<Map<String, Object>> future, Channel channel, long deadline) {
+        try {
+            return future.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return failed(channel, "NOTIFY_PENDING", "Delivery continues; retry to read the durable result");
+        } catch (java.util.concurrent.TimeoutException timeout) {
+            return failed(channel, "NOTIFY_PENDING", "Delivery continues; retry to read the durable result");
+        } catch (java.util.concurrent.ExecutionException failure) {
+            return failed(channel, "NOTIFY_UNAVAILABLE", "Notification state is unavailable; retry later");
+        }
     }
 
-    private void remember(String tenant, String alarmId, Channel channel, Map<String, Object> result) {
-        try {
-            NotificationDeliveryEntity row = new NotificationDeliveryEntity();
-            row.setId(deliveryId(tenant, alarmId, channel.id()));
-            row.setTenantId(tenant);
-            row.setAlarmId(alarmId);
-            row.setChannelId(channel.id());
-            row.setResultJson(MAPPER.writeValueAsString(result));
-            row.setDeliveredAt(Instant.now());
-            deliveries.save(row);
-        } catch (Exception persistenceFailure) {
-            throw new IllegalStateException("notification receipt persistence failed", persistenceFailure);
-        }
+    private static Map<String, Object> failed(Channel channel, String code, String detail) {
+        return Map.of("channel", channel.name(), "channelId", channel.id(), "type", channel.type(),
+                "status", "failed", "errorCode", code, "detail", detail);
     }
 
     private Map<String, Object> send(Channel channel, Map<String, Object> alarm) {
@@ -156,7 +180,7 @@ public class NotificationDispatcher {
             if (!delivery.sent()) result.put("errorCode", delivery.errorCode());
             return result;
         }
-        ServiceCall call = http.postExternal(channel.target(), buildPayload(channel, alarm),
+        ServiceCall call = http.postExternalOnce(channel.target(), buildPayload(channel, alarm),
                 SocpHttpClient.JSON, TIMEOUT);
         if (call == null) {
             result.put("status", "failed");
@@ -170,8 +194,8 @@ public class NotificationDispatcher {
                 ? truncate(call.body(), 300)
                 : truncate(call.failureReason() + " | " + call.body(), 300));
         if (!call.ok()) {
-            log.warn("Notification channel failed channel={} type={} target={} alarmId={} reason={}",
-                    channel.name(), channel.type(), channel.target(), alarm.get("id"), call.failureReason());
+            log.warn("Notification channel failed channelId={} type={} alarmId={} httpStatus={}",
+                    channel.id(), channel.type(), alarm.get("id"), call.status());
         }
         return result;
     }
@@ -251,11 +275,6 @@ public class NotificationDispatcher {
             return Map.of("alarmId", row.getAlarmId(), "status", row.getStatus(),
                     "error", "invalid persisted dispatch log");
         }
-    }
-
-    private static String deliveryId(String tenant, String alarmId, String channelId) {
-        String key = tenant + "\u0000" + alarmId + "\u0000" + channelId;
-        return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private static String tenant() {

@@ -39,13 +39,13 @@ class DetectionRouteOutboxPublisherTest {
         var publisher = publisher(0);
         publisher.recoverStale();
         assertEquals("PENDING", find(retry).getStatus());
-        assertEquals(1, repository.claim(retry.getDeliveryId(), Instant.now(), Integer.MAX_VALUE, 1));
+        assertEquals(1, repository.claim(retry.getDeliveryId(), find(retry).getNextAttemptAt(), 1, Integer.MAX_VALUE));
         publisher.markPublished(retry, 0, 42);
         publisher.markFailed(retry, new IllegalStateException("stale"));
         var current = find(retry);
         assertEquals("PROCESSING", current.getStatus());
         assertEquals(2, current.getAttempts());
-        assertEquals(0, repository.recoverAttempt(current.getDeliveryId(), 1, "DEAD", Instant.now(), Instant.now()));
+        assertEquals(0, repository.markFailed(current.getDeliveryId(), 1, "DEAD", Instant.now(), "stale", Instant.now()));
         publisher.markPublished(current, 0, 43);
         assertEquals("PUBLISHED", find(current).getStatus());
     }

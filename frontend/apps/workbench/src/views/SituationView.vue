@@ -15,7 +15,7 @@ import ElProgress from 'element-plus/es/components/progress/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
-import { useQuery } from '@tanstack/vue-query'
+import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { ECharts } from 'echarts/core'
 import { loadEcharts } from '../lib/echarts'
@@ -23,7 +23,7 @@ import TrendChart from '../components/TrendChart.vue'
 import SevBadge from '../components/SevBadge.vue'
 import PageHeader from '../components/PageHeader.vue'
 import {
-  alarmStats, currentSession, gasEngineStats, gasRecentAlerts, ingestSummary, isAbortError, SEVERITIES,
+  alarmStats, ApiError, currentSession, gasEngineStats, gasRecentAlerts, ingestSummary, SEVERITIES,
   type ApiRequestOptions,
   type AlarmStats, type GasAlert, type GasStats, type IngestSummary,
 } from '../api'
@@ -53,37 +53,58 @@ const chartDonut = shallowRef<ECharts>()
 const chartEps = shallowRef<ECharts>()
 let renderToken = 0
 
+interface SituationSnapshot {
+  stats: AlarmStats | null
+  engine: GasStats | null
+  recent: GasAlert[]
+  ingest: IngestSummary | null
+  recentAvailable: boolean
+  ingestFresh: boolean
+  stale: boolean
+  errors: string[]
+}
+const queryClient = useQueryClient()
+const situationKey = ['situation', 'snapshot'] as const
+
 const situationQuery = useQuery({
-  queryKey: ['situation', 'snapshot'],
+  queryKey: situationKey,
   queryFn: async ({ signal }) => {
     const options: ApiRequestOptions = { signal }
     const [stats, engine, recent, ingest] = await Promise.allSettled([
       alarmStats(options), gasEngineStats(options), gasRecentAlerts(options), ingestSummary(options),
     ])
-    for (const result of [stats, engine, recent, ingest]) {
-      if (result.status === 'rejected' && isAbortError(result.reason)) throw result.reason
-    }
+    if (signal.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+    const previous = queryClient.getQueryData<SituationSnapshot>(situationKey)
     const errors = [stats, engine, recent, ingest]
       .filter(result => result.status === 'rejected')
       .map(result => result.status === 'rejected'
         ? (result.reason instanceof Error ? result.reason.message : String(result.reason))
         : '')
       .filter(Boolean)
-    return {
-      stats: stats.status === 'fulfilled' ? stats.value : null,
-      engine: engine.status === 'fulfilled' ? engine.value : null,
-      recent: recent.status === 'fulfilled' ? recent.value : [],
-      ingest: ingest.status === 'fulfilled' ? ingest.value : null,
+    const snapshot: SituationSnapshot = {
+      stats: stats.status === 'fulfilled' ? stats.value : previous?.stats ?? null,
+      engine: engine.status === 'fulfilled' ? engine.value : previous?.engine ?? null,
+      recent: recent.status === 'fulfilled' ? recent.value : previous?.recent ?? [],
+      ingest: ingest.status === 'fulfilled' ? ingest.value : previous?.ingest ?? null,
+      recentAvailable: recent.status === 'fulfilled' || (previous?.recentAvailable ?? false),
+      ingestFresh: ingest.status === 'fulfilled',
+      stale: (stats.status === 'rejected' && !!previous?.stats)
+        || (engine.status === 'rejected' && !!previous?.engine)
+        || (recent.status === 'rejected' && !!previous?.recentAvailable)
+        || (ingest.status === 'rejected' && !!previous?.ingest),
       errors,
     }
+    return snapshot
   },
-  refetchInterval: () => liveOn.value ? 4_000 : false,
+  refetchInterval: 15_000,
   refetchIntervalInBackground: false,
 })
 const sitStats = computed<AlarmStats | null>(() => situationQuery.data.value?.stats ?? null)
 const sitEngine = computed<GasStats | null>(() => situationQuery.data.value?.engine ?? null)
 const sitIngest = computed<IngestSummary | null>(() => situationQuery.data.value?.ingest ?? null)
 const situationErrors = computed(() => situationQuery.data.value?.errors ?? [])
+const situationStale = computed(() => situationQuery.data.value?.stale ?? false)
+const recentAvailable = computed(() => situationQuery.data.value?.recentAvailable ?? false)
 const situationFetching = computed(() => situationQuery.isFetching.value)
 
 function cssToken(variable: string, fallback: string) {
@@ -168,7 +189,9 @@ function openAlertStream(): void {
       if (generation !== streamGeneration) return
       source.close()
       alertStream = null
-      void currentSession().catch(() => emit('session-expired'))
+      void currentSession().catch(error => {
+        if (generation === streamGeneration && error instanceof ApiError && error.status === 401) emit('session-expired')
+      })
       scheduleAlertReconnect()
     }
   } catch {
@@ -239,7 +262,7 @@ watch(locale, renderSitCharts)
 watch(() => situationQuery.data.value, snapshot => {
   if (!snapshot) return
   mergeFeed(snapshot.recent)
-  if (snapshot.ingest) epsHistory.value = [...epsHistory.value, snapshot.ingest.eps1m ?? 0].slice(-40)
+  if (snapshot.ingestFresh && snapshot.ingest) epsHistory.value = [...epsHistory.value, snapshot.ingest.eps1m ?? 0].slice(-40)
   renderSitCharts()
 })
 onMounted(() => {
@@ -264,7 +287,7 @@ onUnmounted(() => {
     </PageHeader>
     <el-alert
       v-if="situationErrors.length"
-      :title="situationErrors.length === 4 ? t('situation.dataUnavailable') : t('situation.partialData')"
+      :title="situationStale ? t('situation.staleData') : situationErrors.length === 4 ? t('situation.dataUnavailable') : t('situation.partialData')"
       :description="situationErrors.join(' · ')"
       type="warning"
       :closable="false"
@@ -274,25 +297,25 @@ onUnmounted(() => {
 
     <div class="sit-kpis">
             <div class="sit-kpi">
-              <div class="k-num">{{ sitEngine?.eventCount ?? 0 }}</div><div class="k-label">{{ t('situation.engineEvents') }}</div>
+              <div class="k-num">{{ sitEngine?.eventCount ?? t('time.notAvailable') }}</div><div class="k-label">{{ t('situation.engineEvents') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" style="color:var(--ns-danger)">{{ sitEngine?.alertCount ?? 0 }}</div><div class="k-label">{{ t('situation.ruleAlerts') }}</div>
+              <div class="k-num" style="color:var(--ns-danger)">{{ sitEngine?.alertCount ?? t('time.notAvailable') }}</div><div class="k-label">{{ t('situation.ruleAlerts') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" style="color:var(--ns-warning)">{{ sitEngine?.suppressedCount ?? 0 }}</div><div class="k-label">{{ t('situation.suppressedDedup') }}</div>
+              <div class="k-num" style="color:var(--ns-warning)">{{ sitEngine?.suppressedCount ?? t('time.notAvailable') }}</div><div class="k-label">{{ t('situation.suppressedDedup') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" :style="{ color: (sitEngine?.dropCount ?? 0) > 0 ? 'var(--ns-danger)' : 'var(--ns-success)' }">{{ sitEngine?.dropCount ?? 0 }}</div>
+              <div class="k-num" :style="{ color: (sitEngine?.dropCount ?? 0) > 0 ? 'var(--ns-danger)' : 'var(--ns-success)' }">{{ sitEngine?.dropCount ?? t('time.notAvailable') }}</div>
               <div class="k-label">{{ t('situation.backpressureDrops') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num" style="color:var(--ns-accent-fg)">{{ sitIngest?.eps1m ?? 0 }}</div><div class="k-label">{{ t('situation.ingestEps') }}</div>
+              <div class="k-num" style="color:var(--ns-accent-fg)">{{ sitIngest?.eps1m ?? t('time.notAvailable') }}</div><div class="k-label">{{ t('situation.ingestEps') }}</div>
             </div>
             <div class="sit-kpi">
-              <div class="k-num">{{ queuePct }}%</div>
+              <div class="k-num">{{ sitEngine ? `${queuePct}%` : t('time.notAvailable') }}</div>
               <div class="k-label">{{ t('situation.queueLevel') }}</div>
-              <el-progress :percentage="Math.min(100, queuePct)" :show-text="false" :stroke-width="4"
+              <el-progress v-if="sitEngine" :percentage="Math.min(100, queuePct)" :show-text="false" :stroke-width="4"
                 :color="queueColor" style="margin-top:4px" />
             </div>
           </div>
@@ -301,35 +324,39 @@ onUnmounted(() => {
             <el-col :xs="24" :md="12">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.threatScore') }}（0–100）</template>
-                <div ref="gaugeEl" style="height:180px"></div>
+                <div v-if="sitStats" ref="gaugeEl" style="height:180px"></div>
+                <div v-else class="feed-empty" style="height:180px">{{ t('situation.dataUnavailable') }}</div>
                 <div style="text-align:center;font-size:12px;color:var(--ns-text-3)">
-                  {{ t('situation.sevenDayAlarms') }} <b style="color:var(--ns-text)">{{ sitStats?.total ?? 0 }}</b>
-                  · {{ t('situation.highRisk') }} <b style="color:var(--ns-danger)">{{ (sitStats?.byRiskLevel?.CRITICAL ?? 0) + (sitStats?.byRiskLevel?.HIGH ?? 0) }}</b>
+                  {{ t('situation.sevenDayAlarms') }} <b style="color:var(--ns-text)">{{ sitStats?.total ?? t('time.notAvailable') }}</b>
+                  · {{ t('situation.highRisk') }} <b style="color:var(--ns-danger)">{{ sitStats ? (sitStats.byRiskLevel?.CRITICAL ?? 0) + (sitStats.byRiskLevel?.HIGH ?? 0) : t('time.notAvailable') }}</b>
                 </div>
               </el-card>
             </el-col>
             <el-col :xs="24" :md="12">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.sevenDayRiskDistribution') }}</template>
-                <div ref="donutEl" style="height:210px"></div>
+                <div v-if="sitStats" ref="donutEl" style="height:210px"></div>
+                <div v-else class="feed-empty" style="height:210px">{{ t('situation.dataUnavailable') }}</div>
               </el-card>
             </el-col>
             <el-col :xs="24" :md="12">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.sevenDayTrend') }}</template>
-                <TrendChart :data="sitStats?.trend7d" variant="situation" style="height:210px" />
+                <TrendChart v-if="sitStats" :data="sitStats.trend7d" variant="situation" style="height:210px" />
+                <div v-else class="feed-empty" style="height:210px">{{ t('situation.dataUnavailable') }}</div>
               </el-card>
             </el-col>
             <el-col :xs="24" :md="12">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.ingestThroughput') }}（EPS）</template>
-                <div ref="epsEl" style="height:210px"></div>
+                <div v-if="sitIngest" ref="epsEl" style="height:210px"></div>
+                <div v-else class="feed-empty" style="height:210px">{{ t('situation.dataUnavailable') }}</div>
               </el-card>
             </el-col>
           </el-row>
 
           <el-row :gutter="12">
-            <el-col :span="13">
+            <el-col :xs="24" :lg="13">
               <el-card shadow="never" class="sit-card">
                 <template #header>
                   <div style="display:flex;align-items:center;gap:10px">
@@ -344,7 +371,7 @@ onUnmounted(() => {
                   </div>
                 </template>
                 <div class="feed">
-                  <div v-if="!feedView.length" class="feed-empty">{{ t('situation.noLiveAlarmsHint') }}</div>
+                  <div v-if="!feedView.length" class="feed-empty">{{ recentAvailable ? t('situation.noLiveAlarmsHint') : t('situation.dataUnavailable') }}</div>
                   <div v-for="a in feedView" :key="a.id" class="feed-item situation-clickable" :class="{ fresh: a._new }" role="button" tabindex="0" @click="openAlarm(a.id)" @keydown.enter.space.prevent="openAlarm(a.id)">
                     <span class="feed-dot" :style="{ background: sevColor(a.severity) }" />
                     <div class="feed-body">
@@ -360,10 +387,10 @@ onUnmounted(() => {
                 </div>
               </el-card>
             </el-col>
-            <el-col :span="11">
+            <el-col :xs="24" :lg="11">
               <el-card shadow="never" class="sit-card">
                 <template #header>{{ t('situation.topRiskAlarms') }}</template>
-                <el-table :data="sitStats?.topRisk ?? []" size="small" height="368" :empty-text="t('common.empty')" @row-click="openRiskRow">
+                <el-table :data="sitStats?.topRisk ?? []" size="small" height="368" :empty-text="sitStats ? t('common.empty') : t('situation.dataUnavailable')" @row-click="openRiskRow">
                   <el-table-column :label="t('situation.score')" width="86">
                     <template #default="{ row }">
                       <span class="risk-pill" :class="`risk-${String(row.riskLevel || 'INFO').toLowerCase()}`">{{ row.riskScore }}</span>

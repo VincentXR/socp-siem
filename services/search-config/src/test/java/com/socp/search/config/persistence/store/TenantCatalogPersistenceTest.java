@@ -43,9 +43,14 @@ class TenantCatalogPersistenceTest {
         assertEquals(owned, second.get(owned.id()));
         assertTrue(second.list().stream().anyMatch(item -> item.id().equals(template.id())));
 
+        first.delete(owned.id());
+        assertNull(persistence.find("sink_target", "tenant-a", owned.id()));
+        assertNull(second.get(owned.id()));
+
         first.delete(template.id());
 
         assertNull(second.get(template.id()));
+        assertTrue(persistence.find("sink_target", "tenant-a", template.id()).deleted());
         assertFalse(second.list().stream().anyMatch(item -> item.id().equals(template.id())));
 
         TenantContext.set("tenant-b");

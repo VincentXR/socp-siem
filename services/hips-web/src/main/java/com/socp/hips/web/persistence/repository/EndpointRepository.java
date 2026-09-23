@@ -32,6 +32,17 @@ public interface EndpointRepository extends TenantScopedRepository<EndpointEntit
                                           @Param("query") String query,
                                           Pageable pageable);
 
+    @Query("""
+            select e from EndpointEntity e
+             where e.tenantId = :tenantId
+               and ((:ip <> '' and lower(trim(e.ip)) = lower(:ip))
+                    or (:hostname <> '' and lower(trim(e.hostname)) = lower(:hostname)))
+            """)
+    Page<EndpointEntity> findRelatedByTenantId(@Param("tenantId") String tenantId,
+                                              @Param("ip") String ip,
+                                              @Param("hostname") String hostname,
+                                              Pageable pageable);
+
     Optional<EndpointEntity> findByStorageIdAndTenantId(String storageId, String tenantId);
     Optional<EndpointEntity> findByTenantIdAndEndpointId(String tenantId, String endpointId);
     Optional<EndpointEntity> findFirstByTenantIdAndHostname(String tenantId, String hostname);

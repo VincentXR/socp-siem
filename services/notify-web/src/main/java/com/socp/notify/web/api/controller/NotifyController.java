@@ -49,10 +49,9 @@ public class NotifyController {
     public ApiResult<PageResponse<Channel>> channels(@RequestParam(defaultValue = "1") int page,
                                                      @RequestParam(defaultValue = "500") int size) {
         requireValidRange(page, size);
-        List<Channel> all = channels.list();
-        int from = Math.min((page - 1) * size, all.size());
-        int to = Math.min(from + size, all.size());
-        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
+        if (size == 0) return ApiResult.ok(PageResponse.of(List.of(), channels.count(), page, size));
+        var result = channels.list(page, size);
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(), page, size));
     }
 
     @RequireRole({"admin", "analyst"})
@@ -67,9 +66,7 @@ public class NotifyController {
     @RequireRole({"admin", "analyst"})
     @PostMapping("/channels/{id}/toggle")
     public ApiResult<Map<String, Object>> toggle(@PathVariable String id) {
-        Channel ch = requireChannel(id);
-        Channel updated = new Channel(ch.id(), ch.name(), ch.type(), ch.target(), !ch.enabled(), ch.description());
-        channels.add(updated);
+        Channel updated = channels.toggle(id);
         return ApiResult.ok(Map.of("channel", updated));
     }
 
@@ -82,8 +79,7 @@ public class NotifyController {
     @RequireRole({"admin", "analyst"})
     @org.springframework.web.bind.annotation.PutMapping("/channels/{id}")
     public ApiResult<Channel> update(@PathVariable String id, @Valid @RequestBody ChannelCreateRequest body) {
-        requireChannel(id);
-        return ApiResult.ok(channels.add(new Channel(id, body.name().trim(), body.type(), body.target().trim(),
+        return ApiResult.ok(channels.update(new Channel(id, body.name().trim(), body.type(), body.target().trim(),
                 body.enabledOrDefault(), body.description())));
     }
 
@@ -125,13 +121,13 @@ public class NotifyController {
                                                             @RequestParam(defaultValue = "500") int size) {
         requireValidRange(page, size);
         List<Map<String, Object>> all = dispatcher.log();
-        int from = Math.min((page - 1) * size, all.size());
+        int from = (int) Math.min((long) (page - 1) * size, all.size());
         int to = Math.min(from + size, all.size());
         return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
     }
 
     private void requireValidRange(int page, int size) {
-        if (page < 1 || size < 0 || size > maxListSize) {
+        if (page < 1 || size < 0 || size > maxListSize || (long) (page - 1) * size > Integer.MAX_VALUE) {
             throw ApiException.badRequest("分页参数非法：page 从 1 起，size 上限 " + maxListSize);
         }
     }

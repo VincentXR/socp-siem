@@ -56,8 +56,10 @@ DATASET_SPEC = {}
 RUN_NAMESPACE = ""
 
 def request(url, method="GET", body=None, headers=None, timeout=20):
-    data = None if body is None else (body if isinstance(body, bytes) else body.encode())
+    data = None if body is None else body if isinstance(body, bytes) else (body if isinstance(body, str) else json.dumps(body)).encode("utf-8")
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
+    if body is not None and not isinstance(body, (str, bytes)) and not req.has_header("Content-type"):
+        req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             raw = response.read().decode("utf-8", errors="replace")
@@ -907,8 +909,8 @@ def detection_urls():
 def scenario_multi_instance(token, count, rebalance_cycles=1):
     """Validate routed state correctness with an independent alert oracle.
 
-    The evidence topology is exactly three Detection instances consuming at
-    least six routed partitions. The router consumer group is drained before
+    The evidence topology is exactly three Detection instances consuming
+    exactly six routed partitions. The router consumer group is drained before
     the oracle starts so migration prewarm cannot move the baseline underneath
     the test.
     """
@@ -1447,6 +1449,7 @@ def scenario_routed_migration(token, count):
                            timeout=20)
     if status != 200:
         raise RuntimeError(f"could not create incompatible rule: {status} {body}")
+    created_rule = unwrap(body)
     quoted_rule_id = "'" + bad_rule["id"].replace("'", "''") + "'"
     rule_where = f"tenant_id='default' and rule_id={quoted_rule_id}"
     stored_spec = psql_scalar("detect", f"select spec from t_rule where {rule_where}")
@@ -1457,7 +1460,8 @@ def scenario_routed_migration(token, count):
     activation_token = login_token(GATEWAY_URL, os.environ.get("RULE_VERIFY_USERNAME", "admin"),
                                    os.environ.get("RULE_VERIFY_PASSWORD", "admin123"))
     status, body = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}/activate",
-                           method="POST", headers=auth_headers(activation_token), timeout=20)
+                           method="POST", headers={**auth_headers(activation_token),
+                           "If-Match": '"' + created_rule["revisionToken"] + '"'}, timeout=20)
     if status != 409:
         raise RuntimeError(f"incompatible activation was not rejected: {status} {body}")
     if psql_scalar("detect", f"select spec from t_rule where {rule_where}") != stored_spec:
@@ -1502,8 +1506,19 @@ def scenario_routed_migration(token, count):
             raise RuntimeError("router committed canonical offsets despite failing closed")
 
     finally:
-        status, _ = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}",
-                            method="DELETE", headers=auth_headers(token), timeout=20)
+        # Restore the deliberately corrupted fixture before conditional deletion.
+        restored = psql_scalar(
+            "detect", f"with restored as (update t_rule set spec={quoted_spec} "
+            f"where {rule_where} returning rule_id) select rule_id from restored")
+        if restored != bad_rule["id"]:
+            raise RuntimeError("could not restore the isolated persisted-rule fault")
+        status, body = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}",
+                               headers=auth_headers(token), timeout=20)
+        if status != 200:
+            raise RuntimeError(f"could not read restored rule: {status}")
+        status, _ = request(f"{instance}/detect-web/api/v1/rules/{bad_rule['id']}", method="DELETE",
+                            headers={**auth_headers(token), "If-Match": '"' + unwrap(body)["revisionToken"] + '"'},
+                            timeout=20)
         if status != 200:
             raise RuntimeError(f"could not delete incompatible rule: {status}")
     def plan_supported():

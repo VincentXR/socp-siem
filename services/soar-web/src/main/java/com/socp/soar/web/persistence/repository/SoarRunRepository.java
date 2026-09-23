@@ -21,6 +21,11 @@ public interface SoarRunRepository extends TenantScopedRepository<SoarRunEntity,
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select r from SoarRunEntity r where r.tenantId = :tenantId and r.id = :id")
     Optional<SoarRunEntity> findByTenantIdAndIdForUpdate(String tenantId, String id);
+    /** Short outbox transactions skip busy runs instead of blocking other tenants. */
+    @Query(value = "select * from t_soar_run where tenant_id = :tenantId and id = :id for update skip locked",
+            nativeQuery = true)
+    Optional<SoarRunEntity> findByTenantIdAndIdForUpdateSkipLocked(
+            @Param("tenantId") String tenantId, @Param("id") String id);
     Optional<SoarRunEntity> findByTenantIdAndRequestId(String tenantId, String requestId);
     Page<SoarRunEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId, Pageable pageable);
     @Query("select r from SoarRunEntity r "
@@ -47,6 +52,43 @@ public interface SoarRunRepository extends TenantScopedRepository<SoarRunEntity,
                                        @Param("createdTo") Instant createdTo,
                                        Pageable pageable);
     List<SoarRunEntity> findTop100ByStatusOrderByUpdatedAtAsc(String status);
+    @Query("select r from SoarRunEntity r where r.status = 'CANCELLING' "
+            + "and r.temporalWorkflowId is not null and trim(r.temporalWorkflowId) <> '' "
+            + "and (r.cancelNextAttemptAt is null or r.cancelNextAttemptAt <= :now) "
+            + "order by r.cancelNextAttemptAt asc nulls first, r.id")
+    List<SoarRunEntity> findCancellationCandidates(@Param("now") Instant now, Pageable page);
+
+    @Query("select r from SoarRunEntity r where r.status in :statuses and r.updatedAt < :cutoff "
+            + "and (r.status in ('DISPATCHING', 'RUNNING', 'CANCELLING') "
+            + "or (r.temporalWorkflowId is not null and trim(r.temporalWorkflowId) <> '')) "
+            + "and (r.recoveryNextCheckAt is null or r.recoveryNextCheckAt <= :now) "
+            + "order by r.recoveryNextCheckAt asc nulls first, r.updatedAt, r.id")
+    List<SoarRunEntity> findRecoveryCandidates(@Param("statuses") Collection<String> statuses,
+            @Param("cutoff") Instant cutoff, @Param("now") Instant now, Pageable page);
+
+    /** Scheduling only: do not increment the business version or updated_at. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "update t_soar_run set cancel_next_attempt_at = :nextAttempt where id in ( "
+            + "with candidate as (select id from t_soar_run where tenant_id = :tenant and id = :id "
+            + "and row_version = :version and status = 'CANCELLING' and temporal_workflow_id = :workflowId "
+            + "and (cancel_next_attempt_at is null or cancel_next_attempt_at <= :now) "
+            + "for update skip locked) select id from candidate)", nativeQuery = true)
+    int claimCancellation(@Param("tenant") String tenant, @Param("id") String id,
+            @Param("version") long version, @Param("workflowId") String workflowId,
+            @Param("now") Instant now, @Param("nextAttempt") Instant nextAttempt);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @org.springframework.transaction.annotation.Transactional
+    @Query(value = "update t_soar_run set recovery_next_check_at = :nextCheck where id in ( "
+            + "with candidate as (select id from t_soar_run where tenant_id = :tenant and id = :id "
+            + "and row_version = :version and updated_at < :cutoff "
+            + "and status in ('DISPATCHING', 'RUNNING', 'WAITING_APPROVAL', 'WAITING_INPUT', 'CANCELLING') "
+            + "and (recovery_next_check_at is null or recovery_next_check_at <= :now) "
+            + "for update skip locked) select id from candidate)", nativeQuery = true)
+    int claimRecoveryCheck(@Param("tenant") String tenant, @Param("id") String id,
+            @Param("version") long version, @Param("cutoff") Instant cutoff,
+            @Param("now") Instant now, @Param("nextCheck") Instant nextCheck);
     List<SoarRunEntity> findTop100ByStatusInAndUpdatedAtBeforeOrderByUpdatedAtAsc(
             Collection<String> statuses, Instant updatedBefore);
 

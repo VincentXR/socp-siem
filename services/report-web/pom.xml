@@ -13,6 +13,20 @@
     <name>SfmWeb</name>
     <description>REPORT Web（报表/合规/工单，SFMP13）</description>
 
+    <!-- OTel brings okhttp-jvm 5.4; MinIO's okhttp 4.x otherwise introduces
+         duplicate classes and Okio 3.6, causing socket NoSuchMethodError. -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.squareup.okhttp3</groupId>
+                <artifactId>okhttp-bom</artifactId>
+                <version>5.4.0</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <!-- 服务间调用统一客户端（超时/状态码检查/失败可见/指标/trace 透传） -->
         <dependency>
@@ -25,6 +39,17 @@
             <groupId>io.minio</groupId>
             <artifactId>minio</artifactId>
             <version>8.5.17</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>com.squareup.okhttp3</groupId>
+                    <artifactId>okhttp</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+        <!-- Maven needs the JVM artifact; okhttp 5.x is multiplatform metadata. -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp-jvm</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

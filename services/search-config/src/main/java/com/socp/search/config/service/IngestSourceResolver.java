@@ -69,8 +69,11 @@ public class IngestSourceResolver {
         long revision = sources.revision(tenant);
         if (guard.isStale(tenant, revision)) {
             synchronized (cache) {
-                cache.keySet().removeIf(key -> key.startsWith(tenant + "|"));
-                guard.markFresh(tenant, revision);
+                long current = sources.revision(tenant);
+                if (guard.isStale(tenant, current)) {
+                    cache.keySet().removeIf(key -> key.startsWith(tenant + "|"));
+                    guard.markFresh(tenant, current);
+                }
             }
         }
         String key = tenant + "|" + candidate.trim();
@@ -78,9 +81,23 @@ public class IngestSourceResolver {
         if (cached != null) return cached;
         Optional<LogSource> resolved = sources.get(candidate.trim());
         if (resolved.isEmpty()) resolved = sources.findByCollectorTag(candidate.trim());
-        if (cache.size() >= MAX_CACHE_ENTRIES) cache.clear();
-        cache.put(key, resolved);
-        return resolved;
+        synchronized (cache) {
+            cached = cache.get(key);
+            if (cached != null) return cached;
+            // A mutation during the database read must not repopulate an invalidated entry.
+            if (sources.revision(tenant) != revision) return resolved;
+            while (cache.size() >= MAX_CACHE_ENTRIES) {
+                var entries = cache.keySet().iterator();
+                if (!entries.hasNext()) break;
+                cache.remove(entries.next());
+            }
+            cache.put(key, resolved);
+            return resolved;
+        }
+    }
+
+    int cachedSources() {
+        return cache.size();
     }
 
     private static EnvelopeMetadata metadata(String raw) {

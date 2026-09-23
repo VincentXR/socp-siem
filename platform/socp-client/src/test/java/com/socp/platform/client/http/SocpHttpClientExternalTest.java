@@ -23,6 +23,37 @@ import static org.mockito.Mockito.when;
 
 class SocpHttpClientExternalTest {
 
+    @Test
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    void irreversibleConnectorDoesNotUseConfiguredRetries() throws Exception {
+        AtomicInteger hits = new AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.createContext("/hook", exchange -> {
+            hits.incrementAndGet();
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            SocpClientProperties properties = new SocpClientProperties();
+            properties.setExternalAllowedHosts(List.of("localhost"));
+            properties.setExternalHttpsOnly(false);
+            properties.setExternalAllowPrivateNetworks(true);
+            properties.setMaxAttempts(3);
+            properties.setRetryBackoffMs(0);
+            ObjectProvider registry = mock(ObjectProvider.class);
+            SocpHttpClient client = new SocpHttpClient(new ServiceEndpoints(new StandardEnvironment()),
+                    mock(ServiceTokenProvider.class), properties, registry, mock(ServiceRequestSigner.class), new ExternalEndpointPolicy(properties));
+            var result = client.postExternalOnce("http://localhost:" + server.getAddress().getPort() + "/hook", "{}", SocpHttpClient.JSON, 2000);
+            assertThat(result.ok()).isFalse();
+            assertThat(result.attempts()).isEqualTo(1);
+            assertThat(hits.get()).isEqualTo(1);
+            // Existing callers keep their explicitly configured transport policy.
+            client.postExternal("http://localhost:" + server.getAddress().getPort() + "/hook", "{}", SocpHttpClient.JSON, 2000);
+            assertThat(hits.get()).isEqualTo(4);
+        } finally { server.stop(0); }
+    }
+
     @AfterEach
     void clearTenant() {
         TenantContext.clear();

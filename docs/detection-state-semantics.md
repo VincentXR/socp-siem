@@ -1,7 +1,7 @@
 # Detection State Semantics
 
-This document is the implementation contract for the `socp-events` consumer
-and the Detection-to-Alert Web hand-off. It deliberately describes
+This document is the implementation contract for canonical source routing,
+routed worker state, and the Detection-to-Alert Web hand-off. It describes
 at-least-once transport with logically idempotent business effects; it does
 not claim distributed exactly-once processing.
 
@@ -102,6 +102,27 @@ Source receipts default to 30-day retention, published route outbox rows to
 seven days, and failed routing evidence to 90 days. These are bounded
 idempotency/evidence horizons rather than unbounded in-memory caches.
 
+Route publication claims and final state updates compare the persisted attempt
+number. A stale scan cannot claim an intervening retry, and a late producer
+cannot overwrite a newer claim or acknowledgement. Attempt numbers remain
+monotonic for each route delivery; resetting them in place would break this
+fence. Publication remains at-least-once: a broker acknowledgement followed by
+a failed database update can still cause the same `deliveryId` to be resent.
+The fence requires all route publishers to run this implementation; an older
+worker can still perform an unconditional entity save during a mixed-version
+rollout. Drain or stop old publishers before relying on the new guarantee.
+
+Each publisher scan recovers at most 100 expired two-minute claims using
+row locks with `SKIP LOCKED`, and retires at most 100 already-exhausted pending
+rows. With a positive `outbox-max-attempts`, a crashed final attempt becomes
+`DEAD`; the default `0` keeps retrying. A publish scan reads at most 100 rows
+and stops starting new sends after ten seconds. A send already in progress
+can exceed that drain budget: metadata/buffer admission and acknowledgement
+each wait at most ten seconds. Claims use the actual per-delivery start time.
+The canonical source consumer resets its restart backoff only after a durable
+route write and Kafka offset acknowledgement, so repeated storage or routing
+plan failures back off across new Kafka sessions (250 ms up to 30 s).
+
 The routing topology fingerprint covers dimensions, source coverage, aliases,
 schema and routing version, but not ordinary matcher/threshold/message tuning.
 It is pinned durably per `(tenant, routing_version)`. A topology change under
@@ -185,6 +206,33 @@ The consumer does not commit 104 until offset 101 also completes. A
 `PartitionCompletionTracker` keeps this per-partition high-water mark. Kafka
 polling remains non-blocking; each assigned partition has a serial processing
 lane, while different partitions may be processed independently.
+
+## Entity-risk read semantics
+
+UEBA ranking and summary read the durable tenant-owned alert projection. The
+stored score decays with a six-hour half-life; this projection is a weighted
+alert accumulator, not a separately trained behavioral baseline. Rule-engine
+baseline detection is a separate capability.
+
+Ranking computes the displayed one-decimal decayed score across the tenant
+before applying the requested limit (1-500). Ties use entity key order. Taking
+an initial prefix by stored score is incorrect: an older high score can decay
+below a newer profile that would otherwise be excluded. A future score
+instant has zero elapsed decay. Valid stored scores are 0-100; values after
+16 half-lives round to zero, so the SQL handles them without floating underflow.
+
+Summary returns one aggregate row and does not hydrate profile JSON into the
+application. Its level counts use the same displayed risk and integer-level
+rounding as entity detail. This aligns near-threshold counts with visible
+profiles; earlier summary code classified unrounded risk instead. Counts use
+64-bit values without changing the JSON number envelope. Empty tenants return
+zero counts and maximum risk. Each query uses one server epoch; separate
+requests are not a common transactional snapshot.
+
+Ranking, detail and summary request a five-second transaction timeout. Database work
+still grows with tenant population; bounded response/hydration is not a fixed
+query-cost, latency or deployment-capacity guarantee. The endpoint shape is
+unchanged; counter storage uses V31 as described below.
 
 ## Backpressure
 
@@ -375,8 +423,12 @@ and the swap then happens under the lifecycle write lock. A reload that fails at
 any of those steps keeps the previous engines serving and leaves the affected
 keys for the recovery schedule to retry, so one tenant's rule edit neither stops
 the tenant's detection nor opens a rejection window for the other tenants in the
-process. Process-wide recovery remains reserved for startup and a full Kafka
-assignment rebuild.
+process. On a worker that accepts a rule write, the post-commit reload opens a
+fresh database transaction before taking the catalogue lock and is attempted
+before the local write response. A failed rebuild still follows the recovery
+path; other workers reload asynchronously from the durable rule-change outbox.
+Process-wide recovery remains reserved for startup and a full Kafka assignment
+rebuild.
 
 On owner loss, the old worker fails the fence before the durable sink or
 transactional checkpoint. Any result that completed before the takeover is
@@ -403,9 +455,32 @@ exponential backoff.
 
 A crash after Alert Web acknowledges but before `PUBLISHED` is saved leaves a
 stale `PROCESSING` row without a durable delivery timestamp. It is therefore
-returned to `PENDING` and may repeat the HTTP request; Alert Web enforces
+returned to `PENDING` while attempts remain and may repeat the HTTP request; Alert Web enforces
 `(tenant_id, source_alert_id)` idempotency and absorbs that replay. This is the
 intentional at-least-once trade-off that permits the shorter happy path.
+
+Each claim receives a fresh UUID in `claim_token`. Successful publication and
+failure updates require both `PROCESSING` and that token; an expired worker
+cannot complete or reset a newer worker's row. Attempts alone are insufficient
+here because operator requeue resets the counter. Expiry, completion, retry,
+discard, and requeue clear the token. The claim also compares the scanned attempt
+count so its retry decision uses the actual persisted count.
+
+Each scan recovers at most 100 expired two-minute claims and retires at most
+100 exhausted `PENDING`/`DELIVERED` rows. Both updates lock a fixed candidate
+batch with `FOR UPDATE SKIP LOCKED`. Expiry at the last attempt becomes `DEAD`;
+other expiry resumes the persisted HTTP delivery stage. Delivery capacity is
+acquired before the database claim, and a local drain admits no further sends
+after its stage deadline. The current external calls may finish after the drain
+budget; the budget is an admission bound, not an end-to-end request timeout.
+No other drain starts locally while those calls finish.
+
+Flyway V24 adds the nullable claim token without rewriting existing rows.
+Apply the migration before running the new publisher. Existing `PROCESSING`
+rows without tokens recover through lease expiry. Drain or stop all old
+publisher binaries before relying on ownership fencing: they still save
+detached entities without comparing a token. This database fence cannot cancel
+an already-sent HTTP/Kafka request; downstream idempotency remains necessary.
 
 ## Crash matrix
 
@@ -447,6 +522,38 @@ PostgreSQL/H2 projection. `t_entity_risk_alert` uses the deterministic alert ID
 as its idempotency boundary; `t_entity_risk_profile` is updated under a row
 lock. Consequently, any Detection instance can serve the same accumulated
 risk after rebalance without relying on instance-local memory.
+
+V31 introduces `t_entity_risk_counter` with exact nonnegative `BIGINT` counts
+per tenant, profile and rule/MITRE key. This removes the historical 8,192-character JSON
+capacity limit that could roll back alert projection as distinct rules grew.
+New and legacy profiles convert on their first write: seed counters, clear
+legacy JSON, advance the profile and insert the alert receipt in one transaction.
+A failure rolls everything back, leaving the same alert retryable. After acquiring
+the profile lock, the writer checks the receipt again, because another instance
+may have applied the alert while this writer waited.
+
+Unconverted profiles remain readable from their original JSON. Invalid,
+negative or out-of-range legacy counts fail closed and need operator repair
+from authoritative history. Counter keys retain the previous JSON field's
+8,192-character ceiling and are stored as ASCII JSON strings to preserve
+controls and Unicode on PostgreSQL. Hashes index exact encoded keys; updates
+also compare the encoded value so a collision cannot silently combine keys.
+
+Ranking/detail read profiles and counters in one repeatable-read transaction.
+A single bulk counter query returns at most eight techniques and five rules
+per selected profile (at most 500 profiles). Counter ties use the database's
+ordering of encoded keys. Legacy ties use Java key ordering; a tied subset can
+therefore change on conversion. Returned rows and key lengths are bounded;
+database ranking work and persistent cardinality still grow with history.
+There is no automatic counter or idempotency-receipt retention policy.
+
+For an existing deployment, stop old Detection writers, apply V31, reapply
+`infra/postgres/tenant-rls.sql` for the new tenant-owned table, and upgrade all
+Detection API/worker instances before resuming writes. Mixed old/new writers
+are unsupported. A format constraint rejects old JSON writes to converted
+profiles; old readers cannot interpret converted counters. V31 leaves existing
+JSON and row versions untouched until conversion. Rollback to pre-V31 binaries
+requires an explicit data conversion plan, not just switching images.
 
 ## Secondary analysis scope
 

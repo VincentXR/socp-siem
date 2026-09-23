@@ -31,6 +31,9 @@ public class WatchlistEntity {
     @Column(name = "values_json", nullable = false, length = 16_384)
     private String valuesJson;
 
+    @Column(name = "value_count", nullable = false)
+    private int valueCount;
+
     @Column(nullable = false)
     private boolean deleted;
 
@@ -51,14 +54,16 @@ public class WatchlistEntity {
         this.updatedAt = Instant.now();
     }
 
-    public void saveValues(String valuesJson) {
+    public void saveValues(String valuesJson, int valueCount) {
         this.valuesJson = valuesJson;
+        this.valueCount = valueCount;
         this.deleted = false;
         this.updatedAt = Instant.now();
     }
 
     public void markDeleted() {
         this.valuesJson = "[]";
+        this.valueCount = 0;
         this.deleted = true;
         this.updatedAt = Instant.now();
     }

@@ -16,8 +16,6 @@ public interface DetectionRouteOutboxRepository
     List<DetectionRouteOutboxEntity>
     findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(String status, Instant now);
 
-    List<DetectionRouteOutboxEntity> findTop100ByStatusAndUpdatedAtBeforeOrderByUpdatedAtAsc(String status, Instant cutoff);
-
     long countByStatus(String status);
 
     long countByTenantIdAndSourceEventId(String tenantId, String sourceEventId);
@@ -49,41 +47,60 @@ public interface DetectionRouteOutboxRepository
     int deleteDeadBatchBefore(@Param("cutoff") Instant cutoff,
                               @Param("batchSize") int batchSize);
 
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update DetectionRouteOutboxEntity e set e.status = 'PROCESSING', "
             + "e.attempts = e.attempts + 1, e.updatedAt = :now "
             + "where e.deliveryId = :id and e.status = 'PENDING' "
-            + "and e.nextAttemptAt <= :now and e.attempts < :maxAttempts and e.attempts = :expectedAttempt")
+            + "and e.nextAttemptAt <= :now and e.attempts = :expectedAttempts and e.attempts < :maxAttempts")
     int claim(@Param("id") String deliveryId, @Param("now") Instant now,
-              @Param("maxAttempts") int maxAttempts, @Param("expectedAttempt") int expectedAttempt);
+              @Param("expectedAttempts") int expectedAttempts, @Param("maxAttempts") int maxAttempts);
 
-    @Modifying
+    // Attempts are monotonic for this delivery's lifetime and fence late owners.
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update DetectionRouteOutboxEntity e set e.status = 'PUBLISHED', "
             + "e.deliveryPartition = :partition, e.deliveryOffset = :offset, "
             + "e.publishedAt = :now, e.updatedAt = :now, e.lastError = null "
             + "where e.deliveryId = :id and e.status = 'PROCESSING' and e.attempts = :attempt")
-    int completeAttempt(@Param("id") String id, @Param("attempt") int attempt,
-                        @Param("partition") int partition, @Param("offset") long offset,
-                        @Param("now") Instant now);
+    int markPublished(@Param("id") String deliveryId, @Param("attempt") int attempt,
+                      @Param("partition") int partition, @Param("offset") long offset,
+                      @Param("now") Instant now);
 
-    @Modifying
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
-    @Query("update DetectionRouteOutboxEntity e set e.status = :status, e.nextAttemptAt = :next, "
-            + "e.updatedAt = :now, e.lastError = :error "
+    @Query("update DetectionRouteOutboxEntity e set e.status = :status, "
+            + "e.nextAttemptAt = :nextAttemptAt, e.updatedAt = :now, e.lastError = :error "
             + "where e.deliveryId = :id and e.status = 'PROCESSING' and e.attempts = :attempt")
-    int failAttempt(@Param("id") String id, @Param("attempt") int attempt,
-                    @Param("status") String status, @Param("next") Instant next,
-                    @Param("now") Instant now, @Param("error") String error);
+    int markFailed(@Param("id") String deliveryId, @Param("attempt") int attempt,
+                   @Param("status") String status, @Param("nextAttemptAt") Instant nextAttemptAt,
+                   @Param("error") String error, @Param("now") Instant now);
 
-    @Modifying
+    // The locking CTE fixes the candidate set for the whole update. A direct
+    // IN (SELECT ... LIMIT ... FOR UPDATE) can be re-evaluated by PostgreSQL
+    // while updating and exceed the batch bound (covered by the container test).
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
-    @Query("update DetectionRouteOutboxEntity e set e.status = :status, e.nextAttemptAt = :now, "
-            + "e.updatedAt = :now, e.lastError = 'publication lease expired' "
-            + "where e.deliveryId = :id and e.status = 'PROCESSING' and e.attempts = :attempt "
-            + "and e.updatedAt < :cutoff")
-    int recoverAttempt(@Param("id") String id, @Param("attempt") int attempt,
-                       @Param("status") String status, @Param("now") Instant now,
-                       @Param("cutoff") Instant cutoff);
+    @Query(value = "update t_detection_route_outbox set "
+            + "status = case when attempts >= :maxAttempts then 'DEAD' else 'PENDING' end, "
+            + "next_attempt_at = :now, updated_at = :now, last_error = 'route publish lease expired' "
+            + "where delivery_id in (with candidates as (select delivery_id from t_detection_route_outbox "
+            + "where status = 'PROCESSING' and updated_at < :cutoff "
+            + "order by updated_at, delivery_id limit :batchSize for update skip locked) "
+            + "select delivery_id from candidates) "
+            + "and status = 'PROCESSING' and updated_at < :cutoff", nativeQuery = true)
+    int recoverStaleBatch(@Param("cutoff") Instant cutoff, @Param("now") Instant now,
+                          @Param("maxAttempts") int maxAttempts, @Param("batchSize") int batchSize);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query(value = "update t_detection_route_outbox set status = 'DEAD', "
+            + "updated_at = :now, last_error = 'route publish retry limit reached' "
+            + "where delivery_id in (with candidates as (select delivery_id from t_detection_route_outbox "
+            + "where status = 'PENDING' and attempts >= :maxAttempts "
+            + "order by updated_at, delivery_id limit :batchSize for update skip locked) "
+            + "select delivery_id from candidates) "
+            + "and status = 'PENDING' and attempts >= :maxAttempts", nativeQuery = true)
+    int markExhaustedBatch(@Param("maxAttempts") int maxAttempts, @Param("now") Instant now,
+                           @Param("batchSize") int batchSize);
 }

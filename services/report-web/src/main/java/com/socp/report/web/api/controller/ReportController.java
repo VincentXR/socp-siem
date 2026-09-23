@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * REPORT 报表 API：日报 + 7 日趋势 + MinIO 归档。
@@ -62,16 +63,20 @@ public class ReportController {
     public ApiResult<Map<String, Object>> archive() {
         String day = ReportObjectStore.today();
         try {
-            String dailyJson = mapper.writeValueAsString(service.dailyReport());
-            String trendJson = mapper.writeValueAsString(service.trend7d());
-            String base = tenantPrefix();
-            String dailyKey = objectStore.put(base + day + "/daily.json", dailyJson, "application/json");
-            String trendKey = objectStore.put(base + day + "/trend7d.json", trendJson, "application/json");
+            // Serialize both sources before one object PUT. Unique keys preserve earlier
+            // successful snapshots across concurrent requests and ambiguous write failures.
+            Map<String, Object> snapshot = new LinkedHashMap<>();
+            snapshot.put("schemaVersion", 1);
+            snapshot.put("day", day);
+            snapshot.put("daily", service.dailyReport());
+            snapshot.put("trend7d", service.trend7d());
+            String key = tenantPrefix() + day + "/snapshot-" + UUID.randomUUID() + ".json";
+            String archiveKey = objectStore.put(key, mapper.writeValueAsString(snapshot), "application/json");
             Map<String, Object> out = new LinkedHashMap<>();
             out.put("archived", true);
             out.put("day", day);
-            out.put("dailyKey", dailyKey);
-            out.put("trendKey", trendKey);
+            out.put("archiveKey", archiveKey);
+            out.put("schemaVersion", 1);
             return ApiResult.ok(out);
         } catch (Exception failure) {
             log.error("报表归档失败 day={}", day, failure);
@@ -114,6 +119,7 @@ public class ReportController {
 
     /** 生成对象下载链接（7 天有效）。key 通过查询参数传（含斜杠，如 reports/20260809/daily.json）。 */
     @GetMapping("/archive/download")
+    @RequireRole({"admin", "analyst", "viewer"})
     public ApiResult<Map<String, Object>> download(@RequestParam String key) {
         if (key == null || !key.startsWith(tenantPrefix()) || key.contains("..")) {
             throw new org.springframework.web.server.ResponseStatusException(

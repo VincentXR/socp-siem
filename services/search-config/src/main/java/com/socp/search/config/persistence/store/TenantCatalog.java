@@ -12,7 +12,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
-/** In-memory tenant overlay on top of immutable built-in catalog entries. */
+/** Durable tenant overlays on immutable templates; explicit in-memory construction supports tests. */
 final class TenantCatalog<T> {
 
     private final Function<T, String> id;
@@ -65,6 +65,31 @@ final class TenantCatalog<T> {
         return override == null ? templates.get(key) : override;
     }
 
+    List<T> getMany(List<String> keys) {
+        String tenant = tenant();
+        if (keys.isEmpty()) return List.of();
+        Map<String, TenantCatalogPersistence.StoredEntry> stored = new LinkedHashMap<>();
+        if (persistence != null) {
+            for (TenantCatalogPersistence.StoredEntry entry : persistence.findMany(catalogType, tenant, keys)) {
+                stored.put(entry.itemId(), entry);
+            }
+        }
+        List<T> result = new ArrayList<>();
+        for (String key : keys) {
+            T value;
+            if (persistence != null) {
+                TenantCatalogPersistence.StoredEntry entry = stored.get(key);
+                value = entry == null ? templates.get(key)
+                        : entry.deleted() ? null : deserialize(entry.payload());
+            } else {
+                value = deleted.getOrDefault(tenant, Set.of()).contains(key) ? null
+                        : overlays.getOrDefault(tenant, Map.of()).getOrDefault(key, templates.get(key));
+            }
+            if (value != null) result.add(value);
+        }
+        return List.copyOf(result);
+    }
+
     List<T> list() {
         String tenant = tenant();
         Map<String, T> effective = new LinkedHashMap<>(templates);
@@ -86,13 +111,14 @@ final class TenantCatalog<T> {
         // A tombstone for an entry this tenant never had would only accumulate
         // rows that no restart can reconcile, so unknown ids are rejected here.
         if (!existed) return false;
+        boolean template = templates.containsKey(key);
         if (persistence != null) {
-            persistence.delete(catalogType, tenant, key);
+            persistence.delete(catalogType, tenant, key, template);
             return true;
         }
         Map<String, T> tenantOverlay = overlays.get(tenant);
         if (tenantOverlay != null) tenantOverlay.remove(key);
-        deleted.computeIfAbsent(tenant, ignored -> ConcurrentHashMap.newKeySet()).add(key);
+        if (template) deleted.computeIfAbsent(tenant, ignored -> ConcurrentHashMap.newKeySet()).add(key);
         return true;
     }
 

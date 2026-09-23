@@ -35,7 +35,7 @@ class RuleSpecStoreTest {
         RuleRepository repository = mock(RuleRepository.class);
         when(repository.countByTenantId("default")).thenReturn(0L);
 
-        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
+        RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
 
         verify(repository, org.mockito.Mockito.atLeastOnce()).save(any(RuleEntity.class));
     }
@@ -51,7 +51,7 @@ class RuleSpecStoreTest {
         when(repository.findByRuleIdAndTenantId(any(), any())).thenAnswer(invocation ->
                 "AUTH-BRUTE".equals(invocation.getArgument(0)) ? Optional.of(old) : Optional.empty());
 
-        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
+        RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
 
         ArgumentCaptor<RuleEntity> saved = ArgumentCaptor.forClass(RuleEntity.class);
         verify(repository, org.mockito.Mockito.atLeastOnce()).save(saved.capture());
@@ -68,7 +68,7 @@ class RuleSpecStoreTest {
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(userRule));
 
-        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
+        RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
 
         verify(repository, never()).save(any(RuleEntity.class));
     }
@@ -84,7 +84,7 @@ class RuleSpecStoreTest {
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(customized));
 
-        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
+        RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
 
         verify(repository, never()).save(any(RuleEntity.class));
     }
@@ -100,7 +100,7 @@ class RuleSpecStoreTest {
                     + "\",\"contentPack\":\"socp-core-detections\","
                     + "\"contentVersion\":\"" + currentPackVersion + "\"}"));
         });
-        RuleSpecStore store = new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
+        RuleSpecStore store = RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
         clearInvocations(repository);
 
         @SuppressWarnings("unchecked")
@@ -140,7 +140,7 @@ class RuleSpecStoreTest {
                     + "\",\"contentPack\":\"socp-core-detections\","
                     + "\"contentVersion\":\"" + currentPackVersion + "\"}"));
         });
-        RuleSpecStore store = new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
+        RuleSpecStore store = RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
         clearInvocations(repository);
 
         Map<String, Object> user = new LinkedHashMap<>();
@@ -169,7 +169,7 @@ class RuleSpecStoreTest {
     }
 
     @Test
-    void concurrentPackagedRuleInstallIsIdempotent() {
+    void failedPackagedWriteIsNotMistakenForAnotherSuccessfulInstaller() {
         String currentPackVersion = String.valueOf(DetectionContentCatalog.manifest().get("version"));
         RuleRepository repository = mock(RuleRepository.class);
         RuleEntity installed = entity("AUTH-BRUTE", "{\"id\":\"AUTH-BRUTE\",\"contentPack\":\"socp-core-detections\",\"contentVersion\":\""
@@ -181,7 +181,8 @@ class RuleSpecStoreTest {
         when(repository.save(any(RuleEntity.class)))
                 .thenThrow(new DataIntegrityViolationException("concurrent insert"));
 
-        assertDoesNotThrow(() -> new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class)));
+        org.junit.jupiter.api.Assertions.assertThrows(DataIntegrityViolationException.class,
+                () -> RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class)));
     }
 
     @Test
@@ -189,7 +190,7 @@ class RuleSpecStoreTest {
         RuleRepository repository = mock(RuleRepository.class);
         RuleEntity userRule = entity("user-owned", "{\"id\":\"user-owned\",\"owner\":\"local-user\"}");
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(userRule));
-        RuleSpecStore store = new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
+        RuleSpecStore store = RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
 
         Map<String, Object> invalid = new LinkedHashMap<>();
         invalid.put("id", "cross-entity");
@@ -218,7 +219,7 @@ class RuleSpecStoreTest {
         RuleRepository repository = mock(RuleRepository.class);
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.empty());
-        RuleSpecStore store = new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
+        RuleSpecStore store = RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
         Map<String, Object> spec = windowRule("1w");
 
         TenantContext.set("default");
@@ -244,7 +245,7 @@ class RuleSpecStoreTest {
         RuleRepository repository = mock(RuleRepository.class);
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.empty());
-        RuleSpecStore store = new RuleSpecStore(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
+        RuleSpecStore store = RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), mock(RuleContentConflictRepository.class));
         Map<String, Object> spec = windowRule("60s");
         // groupBy/keyField/routingField agree inside the document, so persistence
         // cannot see the cross-dimension risk; it advises instead of rejecting,
@@ -272,7 +273,7 @@ class RuleSpecStoreTest {
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.empty());
         when(revisionRepository.maxRevision(any(), any())).thenReturn(0L, 1L);
-        RuleSpecStore store = new RuleSpecStore(repository, revisionRepository,
+        RuleSpecStore store = RuleSpecStoreFixture.create(repository, revisionRepository,
                 mock(RuleContentConflictRepository.class));
 
         Map<String, Object> rule = new LinkedHashMap<>();
@@ -317,7 +318,7 @@ class RuleSpecStoreTest {
         when(conflictRepository.findByTenantIdAndRuleIdAndContentPackAndPackVersion(
                 any(), any(), any(), any())).thenReturn(Optional.empty());
 
-        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), conflictRepository);
+        RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), conflictRepository);
 
         // Local tuning stays authoritative: the pack never rewrites the row, and
         // a pending upgrade conflict is recorded so the divergence is visible.
@@ -341,7 +342,7 @@ class RuleSpecStoreTest {
         when(repository.countByTenantId("default")).thenReturn(1L);
         when(repository.findByRuleIdAndTenantId(any(), any())).thenReturn(Optional.of(customized));
 
-        new RuleSpecStore(repository, mock(RuleRevisionRepository.class), conflictRepository);
+        RuleSpecStoreFixture.create(repository, mock(RuleRevisionRepository.class), conflictRepository);
 
         verify(repository, never()).save(any(RuleEntity.class));
         verify(conflictRepository, never()).save(any());

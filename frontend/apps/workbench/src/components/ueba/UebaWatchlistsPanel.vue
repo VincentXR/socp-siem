@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
@@ -20,12 +20,13 @@ import DataTableCard from '../DataTableCard.vue'
 import FormField from '../FormField.vue'
 import FormGrid from '../FormGrid.vue'
 import FormSection from '../FormSection.vue'
-import type { Watchlist } from '../../api'
+import type { Watchlist, WatchlistSummary } from '../../api'
 
 const props = withDefaults(defineProps<{
-  watchlists: Watchlist[]
-  create: (name: string, values: string[]) => Promise<void>
-  append: (name: string, values: string[]) => Promise<void>
+  watchlists: WatchlistSummary[]
+  load: (name: string) => Promise<Watchlist>
+  create: (name: string, values: string[]) => Promise<Watchlist>
+  append: (name: string, values: string[]) => Promise<Watchlist>
   canWrite?: boolean
 }>(), { canWrite: true })
 const emit = defineEmits<{ remove: [name: string] }>()
@@ -41,30 +42,56 @@ const appendText = ref('')
 const entrySearch = ref('')
 const page = ref(1)
 const size = ref(20)
+const cataloguePage = ref(1)
+const catalogueSize = ref(20)
+const details = ref<Watchlist>()
+const detailsLoading = ref(false)
+const detailsError = ref('')
+let requestId = 0
 const filtered = computed(() => props.watchlists.filter(item => item.name.toLowerCase().includes(keyword.value.toLowerCase())))
-const selected = computed(() => props.watchlists.find(item => item.name === selectedName.value))
+const selected = computed(() => details.value?.name === selectedName.value ? details.value : undefined)
 const entries = computed(() => (selected.value?.values || []).filter(value => value.toLowerCase().includes(entrySearch.value.toLowerCase())))
 const dialogGuard = useFormDialog(dialogVisible, () => newWatchlist.value, () => busy.value)
 const drawerGuard = useFormDialog(drawerVisible, () => appendText.value, () => busy.value)
 function splitValues(value: string) { return value.split(/[\n,\s，]+/).map(item => item.trim()).filter(Boolean) }
-function openList(name: string) {
+async function openList(name: string) {
+  if (busy.value) return
+  const currentRequest = ++requestId
   selectedName.value = name; entrySearch.value = ''; appendText.value = ''; page.value = 1; error.value = ''; drawerVisible.value = true
+  details.value = undefined; detailsError.value = ''; detailsLoading.value = true
+  try {
+    const result = await props.load(name)
+    if (currentRequest === requestId && drawerVisible.value) details.value = result
+  } catch (failure) {
+    if (currentRequest === requestId && drawerVisible.value) detailsError.value = failure instanceof Error ? failure.message : String(failure)
+  } finally {
+    if (currentRequest === requestId) detailsLoading.value = false
+  }
 }
+watch(keyword, () => { cataloguePage.value = 1 })
+watch(drawerVisible, visible => { if (!visible) { requestId++; detailsLoading.value = false } })
+watch(() => props.watchlists, lists => {
+  cataloguePage.value = Math.min(cataloguePage.value, Math.max(1, Math.ceil(filtered.value.length / catalogueSize.value)))
+  if (selectedName.value && !lists.some(item => item.name === selectedName.value) && !busy.value) drawerVisible.value = false
+})
+onBeforeUnmount(() => { requestId++ })
 function openDialog() { if (!props.canWrite) return; newWatchlist.value = { name: '', values: '' }; error.value = ''; dialogVisible.value = true }
 async function submitCreate() {
   if (!props.canWrite) return
   const name = newWatchlist.value.name.trim()
   if (!name) { error.value = t('forms.fieldRequired', { field: t('ueba.watchlistName') }); return }
   if (props.watchlists.some(item => item.name.toLowerCase() === name.toLowerCase())) { error.value = t('forms.duplicateName'); return }
-  if (!await mutation.run(() => props.create(name, splitValues(newWatchlist.value.values)))) return
-  dialogVisible.value = false
-  openList(name)
+  await mutation.run(async () => {
+    const saved = await props.create(name, splitValues(newWatchlist.value.values))
+    requestId++; details.value = saved; selectedName.value = saved.name; entrySearch.value = ''; appendText.value = ''; page.value = 1
+    detailsLoading.value = false; detailsError.value = ''; dialogVisible.value = false; drawerVisible.value = true
+  })
 }
 async function submitAppend(name: string) {
   if (!props.canWrite) return
   const values = splitValues(appendText.value)
   if (!values.length) return
-  if (!await mutation.run(() => props.append(name, values))) return
+  if (!await mutation.run(async () => { details.value = await props.append(name, values) })) return
   appendText.value = ''
   drawerGuard.markSaved()
 }
@@ -75,14 +102,16 @@ async function submitAppend(name: string) {
     <ActionFeedback :error="error" />
     <div v-if="props.canWrite" class="add-bar"><el-button type="primary" @click="openDialog">{{ t('ueba.watchlistCreate') }}</el-button></div>
     <el-input v-model="keyword" :placeholder="t('forms.search')" clearable />
-    <el-table :data="filtered" style="margin-top:16px">
+    <DataTableCard v-model:current-page="cataloguePage" v-model:page-size="catalogueSize" :total="filtered.length" :empty-title="t('ueba.emptyWatchlist')" style="margin-top:16px">
+    <el-table :data="filtered.slice((cataloguePage - 1) * catalogueSize, cataloguePage * catalogueSize)">
       <el-table-column prop="name" :label="t('ueba.watchlistName')" min-width="200" />
       <el-table-column prop="size" :label="t('forms.entries')" width="120" />
       <el-table-column :label="t('common.actions')" width="200"><template #default="{ row }">
-        <el-button link @click="openList(row.name)">{{ t('forms.entries') }}</el-button>
+        <el-button link :disabled="busy" @click="openList(row.name)">{{ t('forms.entries') }}</el-button>
         <el-button v-if="props.canWrite" link type="danger" :disabled="busy" @click="emit('remove', row.name)">{{ t('common.delete') }}</el-button>
       </template></el-table-column>
     </el-table>
+    </DataTableCard>
     <el-dialog v-model="dialogVisible" :before-close="dialogGuard.beforeClose" :title="t('ueba.watchlistCreate')" width="440px">
       <ActionFeedback :error="error" />
         <el-form label-position="top" :disabled="busy || !props.canWrite">
@@ -98,8 +127,12 @@ async function submitAppend(name: string) {
       <template #footer><el-button @click="dialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="props.canWrite" type="primary" :loading="busy" @click="submitCreate">{{ t('common.create') }}</el-button></template>
     </el-dialog>
     <el-drawer v-model="drawerVisible" :before-close="drawerGuard.beforeClose" :title="selectedName" size="min(720px, 96vw)">
+      <p v-if="detailsLoading" role="status">{{ t('common.loading') }}</p>
+      <ActionFeedback :error="detailsError" />
+      <el-button v-if="detailsError" @click="openList(selectedName)">{{ t('common.retry') }}</el-button>
       <template v-if="selected">
         <ActionFeedback :error="error" />
+        <el-button tag="a" link :href="`/detect?reference=${encodeURIComponent(selected.name)}`">{{ t('forms.references') }}</el-button>
         <el-input v-model="entrySearch" :placeholder="t('forms.search')" clearable @input="page = 1" />
         <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="entries.length" :empty-title="t('ueba.emptyWatchlist')">
           <el-table :data="entries.slice((page - 1) * size, page * size).map(value => ({ value }))"><el-table-column prop="value" :label="t('ueba.watchlistValues')" /></el-table>

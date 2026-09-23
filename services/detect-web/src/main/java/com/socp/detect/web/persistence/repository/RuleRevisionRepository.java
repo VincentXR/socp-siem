@@ -4,14 +4,36 @@ import com.socp.detect.web.persistence.entity.RuleRevisionEntity;
 import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 
-import java.util.List;
+import java.time.Instant;
 import java.util.Optional;
 
 /** Tenant-scoped access to a rule's immutable spec version chain. */
 public interface RuleRevisionRepository extends TenantScopedRepository<RuleRevisionEntity, String> {
 
-    List<RuleRevisionEntity> findByTenantIdAndRuleIdOrderByRevisionAsc(String tenantId, String ruleId);
+    interface Head {
+        long getRevision();
+        String getSource();
+    }
+
+    Optional<Head> findFirstByTenantIdAndRuleIdOrderByRevisionDesc(String tenantId, String ruleId);
+
+    interface Summary {
+        long getRevision();
+        String getRuleId();
+        String getStatus();
+        String getSource();
+        String getChangedBy();
+        Instant getChangedAt();
+    }
+
+    Page<Summary> findAllByTenantIdAndRuleId(String tenantId, String ruleId, Pageable pageable);
+
+    Slice<RuleRevisionEntity> findByTenantIdAndRuleIdOrderByRevisionAsc(
+            String tenantId, String ruleId, Pageable pageable);
 
     Optional<RuleRevisionEntity> findByTenantIdAndRuleIdAndRevision(
             String tenantId, String ruleId, long revision);

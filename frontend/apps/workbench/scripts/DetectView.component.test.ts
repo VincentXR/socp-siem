@@ -4,17 +4,96 @@ import { createRouter, createMemoryHistory, RouterView } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
 import DetectView from '../src/views/DetectView.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
+import { ApiError } from '../src/api/core'
 
-const mocks = vi.hoisted(() => ({
-  listRules: vi.fn().mockResolvedValue([{ id: 'original', name: 'Existing rule', type: 'pattern', severity: 'HIGH', status: 'DISABLED', enabled: false, match: [{ field: 'msg', op: 'eq', value: 'alert' }] }]),
-  gasStats: vi.fn().mockResolvedValue({ rules: 1, queueLoad: 0 }),
-  listFields: vi.fn().mockResolvedValue([]), listRefSets: vi.fn().mockResolvedValue([]), listTechniques: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, size: 0, totalPages: 0 }),
-  createGasRule: vi.fn().mockResolvedValue(null), updateGasRule: vi.fn(),
-  testGasRules: vi.fn().mockResolvedValue([]),
-}))
+const mocks = vi.hoisted(() => {
+  const rules = vi.fn().mockResolvedValue([{ id: 'original', name: 'Existing rule', type: 'pattern', severity: 'HIGH', status: 'DISABLED', enabled: false, match: [{ field: 'msg', op: 'eq', value: 'alert' }] }])
+  return {
+    fixtureRules: rules,
+    getRule: vi.fn(async (id: string) => { const rule = (await rules()).find((row: { id: string }) => row.id === id); return rule ? { ...rule, revisionToken: 'a'.repeat(64) } : rule }),
+    listRulePage: vi.fn(async () => { const items = await rules(); return { items, total: items.length, page: 1, size: 20, totalPages: 1 } }),
+    gasStats: vi.fn().mockResolvedValue({ rules: 1, queueLoad: 0 }),
+    listFields: vi.fn().mockResolvedValue([]), listWatchlists: vi.fn().mockResolvedValue([]), listTechniques: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, size: 0, totalPages: 0 }),
+    createGasRule: vi.fn().mockResolvedValue(null), updateGasRule: vi.fn(),
+    testGasRules: vi.fn().mockResolvedValue([]),
+  }
+})
 vi.mock('../src/api', async importOriginal => ({ ...await importOriginal<object>(), ...mocks }))
 
 describe('rule editor identity', () => {
+  it('retains a rejected draft and never takes its precondition from editable JSON', async () => {
+    const rule = { id: 'conflict', name: 'Server version', type: 'pattern', severity: 'HIGH', status: 'DRAFT', enabled: false,
+      match: [{ field: 'msg', op: 'eq', value: 'alert' }] }
+    mocks.fixtureRules.mockResolvedValueOnce([rule])
+    mocks.updateGasRule.mockRejectedValueOnce(new ApiError(412, 'changed'))
+    const router = createRouter({ history: createMemoryHistory(), routes: [
+      { path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: DetectView, meta: { editor: true } },
+    ] })
+    await router.push('/detect/rules/conflict/edit')
+    await router.isReady()
+    const wrapper = mount({ render: () => h(RouterView) }, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } } })
+    await flushPromises()
+    await wrapper.find('.advanced-json textarea').setValue(JSON.stringify({ ...rule, name: 'My draft', revisionToken: 'b'.repeat(64) }))
+    await wrapper.find('.advanced-json button').trigger('click')
+    await wrapper.findAll('button').find(item => item.text() === '保存')!.trigger('click')
+    await flushPromises()
+    expect(mocks.updateGasRule).toHaveBeenCalledWith('conflict', expect.objectContaining({ name: 'My draft' }), 'a'.repeat(64))
+    expect(mocks.updateGasRule.mock.calls[0][1]).not.toHaveProperty('revisionToken')
+    expect(wrapper.find('.detect-editor-form input').element).toHaveProperty('value', 'My draft')
+    expect(wrapper.find('.detect-save-feedback').text()).toContain('草稿已保留')
+    expect(wrapper.find('.detect-conflict-actions').text()).toContain('下载我的草稿')
+    expect(mocks.getRule).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it.each(['success', 'failure'])('keeps the pending save on its editor until %s settles', async outcome => {
+    const rule = { id: 'pending', name: 'Pending rule', type: 'pattern', severity: 'HIGH', status: 'ACTIVE', enabled: true,
+      match: [{ field: 'msg', op: 'eq', value: 'alert' }] }
+    mocks.fixtureRules.mockResolvedValue([rule])
+    let resolve!: (value: unknown) => void
+    let reject!: (error: Error) => void
+    mocks.updateGasRule.mockImplementationOnce(() => new Promise((yes, no) => { resolve = yes; reject = no }))
+    const router = createRouter({ history: createMemoryHistory(), routes: [
+      { path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: DetectView, meta: { editor: true } },
+      { path: '/elsewhere', component: { template: '<p>Elsewhere</p>' } },
+    ] })
+    await router.push('/detect/rules/pending/edit')
+    await router.isReady()
+    const wrapper = mount({ render: () => h(RouterView) }, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } } })
+    await flushPromises()
+    // Even an unchanged form can have an in-flight write. It cannot be safely
+    // discarded as though only an unsaved local draft existed.
+    const save = wrapper.findAll('button').find(item => item.text() === '保存')!
+    await save.trigger('click')
+    await save.trigger('click')
+    await flushPromises()
+    expect(mocks.updateGasRule).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('.detect-editor-form input').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.field-condition-row .el-input__inner').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.lifecycle-toggle .el-switch').classes()).toContain('is-disabled')
+    expect(wrapper.find('.advanced-json textarea').attributes('readonly')).toBeDefined()
+    expect(wrapper.find('[role="status"]').text()).toContain('正在保存')
+    const unloading = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(unloading)
+    expect(unloading.defaultPrevented).toBe(true)
+    await router.push('/elsewhere')
+    expect(router.currentRoute.value.path).toBe('/detect/rules/pending/edit')
+    await router.push('/detect/rules/another/edit')
+    expect(router.currentRoute.value.path).toBe('/detect/rules/pending/edit')
+    await router.push({ query: { copy: 'another' } })
+    expect(router.currentRoute.value.query.copy).toBeUndefined()
+    if (outcome === 'success') resolve(rule)
+    else reject(new Error('Write rejected'))
+    await flushPromises()
+    expect(wrapper.find('.detect-editor-form input').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('.advanced-json textarea').attributes('readonly')).toBeUndefined()
+    if (outcome === 'failure') expect(wrapper.text()).toContain('Write rejected')
+    await router.push('/elsewhere')
+    expect(router.currentRoute.value.path).toBe('/elsewhere')
+    wrapper.unmount()
+    mocks.fixtureRules.mockResolvedValue([{ id: 'original', name: 'Existing rule', type: 'pattern', severity: 'HIGH', status: 'DISABLED', enabled: false, match: [{ field: 'msg', op: 'eq', value: 'alert' }] }])
+  })
+
   it('preserves extension fields and legacy exclusions through a visual save', async () => {
     const rule = { id: 'roundtrip', name: 'Roundtrip', type: 'correlation', severity: 'HIGH', enabled: false, status: 'DRAFT',
       window: '60s', keyField: 'host', groupBy: 'host', routingField: 'host',
@@ -24,7 +103,7 @@ describe('rule editor identity', () => {
       alert: { title: 'Title', description: 'Description', grouping: { strategy: 'source' } },
       allowlist: [{ field: 'host', op: 'eq', value: 'trusted', source: 'import' }],
     }
-    mocks.listRules.mockResolvedValueOnce([rule])
+    mocks.fixtureRules.mockResolvedValueOnce([rule])
     mocks.updateGasRule.mockResolvedValueOnce(rule)
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: DetectView, meta: { editor: true } }] })
     await router.push('/detect/rules/roundtrip/edit')
@@ -36,15 +115,15 @@ describe('rule editor identity', () => {
     expect(mocks.updateGasRule).toHaveBeenCalledWith('roundtrip', expect.objectContaining({
       evidence: rule.evidence, alert: rule.alert, steps: rule.steps, whitelist: rule.allowlist, match: [],
       groupBy: 'host', lateEventPolicy: rule.lateEventPolicy,
-    }))
+    }), 'a'.repeat(64))
     expect(mocks.updateGasRule.mock.calls[0][1]).not.toHaveProperty('allowlist')
     wrapper.unmount()
   })
 
   it('reports reference catalog errors and refuses to silently remove incomplete conditions', async () => {
-    mocks.listRules.mockResolvedValueOnce([{ id: 'incomplete', name: 'Incomplete', type: 'pattern', severity: 'HIGH', enabled: false,
+    mocks.fixtureRules.mockResolvedValueOnce([{ id: 'incomplete', name: 'Incomplete', type: 'pattern', severity: 'HIGH', enabled: false,
       match: [{ field: 'msg', op: 'contains', value: '' }] }])
-    mocks.listRefSets.mockRejectedValueOnce(new Error('Reference catalog unavailable'))
+    mocks.listWatchlists.mockRejectedValueOnce(new Error('Reference catalog unavailable'))
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: DetectView, meta: { editor: true } }] })
     await router.push('/detect/rules/incomplete/edit')
     await router.isReady()
@@ -62,7 +141,7 @@ describe('rule editor identity', () => {
   })
 
   it('prunes blank condition rows, saves, and states how many were dropped', async () => {
-    mocks.listRules.mockResolvedValueOnce([{ id: 'blank', name: 'Blank rows', type: 'pattern', severity: 'HIGH', enabled: false, status: 'DRAFT',
+    mocks.fixtureRules.mockResolvedValueOnce([{ id: 'blank', name: 'Blank rows', type: 'pattern', severity: 'HIGH', enabled: false, status: 'DRAFT',
       match: [{ field: '', op: 'eq', value: '' }, { field: 'msg', op: 'eq', value: 'alert' }] }])
     mocks.updateGasRule.mockResolvedValueOnce(null)
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: DetectView, meta: { editor: true } }] })
@@ -85,7 +164,7 @@ describe('rule editor identity', () => {
   })
 
   it('validates only the correlation steps a correlation editor actually shows', async () => {
-    mocks.listRules.mockResolvedValueOnce([{ id: 'corr', name: 'Correlation', type: 'correlation', severity: 'HIGH', enabled: false, status: 'DRAFT',
+    mocks.fixtureRules.mockResolvedValueOnce([{ id: 'corr', name: 'Correlation', type: 'correlation', severity: 'HIGH', enabled: false, status: 'DRAFT',
       window: '60s', groupBy: 'host',
       steps: [[{ field: 'msg', op: 'eq', value: 'start' }], [{ field: 'msg', op: 'eq', value: '' }]],
       match: [{ field: 'msg', op: 'eq', value: '' }] }])
@@ -127,7 +206,7 @@ describe('rule editor identity', () => {
   })
 
   it('keeps a directly opened rule editor read-only for viewers', async () => {
-    mocks.listRules.mockResolvedValueOnce([{ id: 'viewer-rule', name: 'Viewer rule', type: 'pattern', severity: 'HIGH', status: 'DISABLED', enabled: false, match: [{ field: 'msg', op: 'eq', value: 'alert' }] }])
+    mocks.fixtureRules.mockResolvedValueOnce([{ id: 'viewer-rule', name: 'Viewer rule', type: 'pattern', severity: 'HIGH', status: 'DISABLED', enabled: false, match: [{ field: 'msg', op: 'eq', value: 'alert' }] }])
     mocks.updateGasRule.mockClear()
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: DetectView, meta: { editor: true } }] })
     await router.push('/detect/rules/viewer-rule/edit')

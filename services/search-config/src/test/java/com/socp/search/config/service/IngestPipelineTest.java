@@ -29,6 +29,54 @@ import static org.mockito.ArgumentMatchers.any;
 class IngestPipelineTest {
 
     @Test
+    void hipsTransportKeyKeepsFalcoIdentityStableWhenVendorParserDropsEnvelopeId() throws Exception {
+        var normalizer = new IngestEventNormalizer(null, null, null,
+                new com.socp.search.config.parser.ParserRegistry());
+        IngestionCommitService commit = mock(IngestionCommitService.class);
+        IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
+        when(monitor.runtime("service:hips-web", true)).thenReturn(Map.of("eps1m", 0.0));
+        var committed = new java.util.ArrayList<SearchEvent>();
+        when(commit.commit(anyList())).thenAnswer(invocation -> {
+            List<SearchEvent> batch = invocation.getArgument(0);
+            committed.addAll(batch);
+            return new IngestionCommitService.CommitResult(1, 1, 0, 0);
+        });
+        IngestPipeline pipeline = new IngestPipeline(normalizer, commit, monitor,
+                mock(DetectClient.class), new SimpleMeterRegistry());
+        String body;
+        try (var fixture = getClass().getResourceAsStream("/fixtures/falco-native-event.json")) {
+            var json = (com.fasterxml.jackson.databind.node.ObjectNode) new com.fasterxml.jackson.databind.ObjectMapper().readTree(fixture);
+            json.put("eventId", "stored-event-1").put("tenantId", "spoofed");
+            body = json.toString();
+        }
+        com.socp.platform.tenant.context.TenantContext.runWith("tenant-a", () -> {
+            assertEquals(1, pipeline.process(body, "service:hips-web", "hips:stored-event-1")
+                    .get("acknowledged"));
+            pipeline.process(body, "service:hips-web", "hips:stored-event-1");
+            pipeline.process(body, "service:hips-web", "hips:stored-event-2");
+        });
+
+        assertEquals(3, committed.size());
+        assertEquals(committed.get(0).eventId(), committed.get(1).eventId());
+        assertEquals(IngestionEventIdentity.fingerprint(committed.get(0)),
+                IngestionEventIdentity.fingerprint(committed.get(1)));
+        assertNotEquals(committed.get(0).eventId(), committed.get(2).eventId());
+        for (SearchEvent event : committed) {
+            assertEquals("tenant-a", event.fields().get("tenant_id"));
+            assertEquals("service:hips-web", event.fields().get("collector"));
+            assertEquals("Synthetic process event for ingestion verification", event.msg());
+            assertEquals("falco", event.source());
+            assertEquals(Instant.parse("2026-09-22T12:30:45.123456789Z"), event.timestamp());
+            assertEquals("bash", event.ecs().get("process.name"));
+            assertEquals("alice", event.ecs().get("user.name"));
+            assertEquals("1001", event.ecs().get("user.id"));
+            assertEquals("syscall", event.ecs().get("falco.source"));
+            assertEquals("host", event.fields().get("detection_routing_field"));
+            assertEquals("fixture-host", event.fields().get("detection_routing_value"));
+        }
+    }
+
+    @Test
     void commitsNormalizedBatchOnceAndReportsCollectorCounters() {
         IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
         IngestionCommitService commit = mock(IngestionCommitService.class);

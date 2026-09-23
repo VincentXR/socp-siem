@@ -5,7 +5,7 @@ The gate requires the operational tools, their runbook registrations, and a
 single database roster that cannot silently fall behind service databases:
 
 * ``build/backup-postgres.sh`` / ``backup-postgres-all.sh`` / ``restore-postgres.sh``
-  and ``build/replay-dlq.py`` are present and non-empty;
+  and the DLQ Python/Java transport files are present and non-empty;
 * ``build/postgres-databases.txt`` equals the ``CREATE DATABASE`` set in
   ``infra/init-sql/pg/01_databases.sql`` and the hard-coded array in
   ``infra/init-sql/pg/02_runtime_grants.sh`` (so "one consistency backup" cannot
@@ -34,6 +34,8 @@ REQUIRED_TOOLS = (
     "apply-tenant-rls.sh",
     "apply-postgres-roles.sh",
     "replay-dlq.py",
+    "dlq_transport.py",
+    "kafka/DlqTransport.java",
 )
 
 

@@ -44,15 +44,13 @@ public final class DetectionContentCatalog {
         return out;
     }
 
-    /** Add package metadata without changing the executable RuleSpec contract. */
+    /** Add display/execution defaults; package ownership must come from persisted state. */
     public static Map<String, Object> enrich(Map<String, Object> input) {
         Map<String, Object> spec = new LinkedHashMap<>(input == null ? Map.of() : input);
         String id = String.valueOf(spec.getOrDefault("id", ""));
         Map<String, Map<String, Object>> metadata = metadataById();
         Map<String, Object> meta = metadata.get(id);
         if (meta != null) {
-            copyIfMissing(spec, "contentPack", MANIFEST.get("packId"));
-            copyIfMissing(spec, "contentVersion", MANIFEST.get("version"));
             copyIfMissing(spec, "version", meta.get("version"));
             copyIfMissing(spec, "status", meta.get("status"));
             copyIfMissing(spec, "owner", meta.get("owner"));
@@ -63,8 +61,6 @@ public final class DetectionContentCatalog {
             copyIfMissing(spec, "investigationGuide", meta.get("investigationGuide"));
             copyIfMissing(spec, "falsePositives", meta.get("falsePositives"));
         } else {
-            copyIfMissing(spec, "contentPack", MANIFEST.get("packId"));
-            copyIfMissing(spec, "contentVersion", MANIFEST.get("version"));
             copyIfMissing(spec, "version", "0.1.0");
             copyIfMissing(spec, "status", Boolean.parseBoolean(String.valueOf(spec.getOrDefault("enabled", true)))
                     ? "ACTIVE" : "DISABLED");

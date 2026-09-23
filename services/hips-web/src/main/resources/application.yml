@@ -4,6 +4,10 @@ server:
     context-path: /hips-web
 
 spring:
+  task:
+    scheduling:
+      pool:
+        size: 2
   application:
     name: hips-web
   datasource:
@@ -22,6 +26,15 @@ spring:
 
 
 socp:
+  hips:
+    history-retention:
+      enabled: ${SOCP_HIPS_HISTORY_RETENTION_ENABLED:true}
+      days: ${SOCP_HIPS_HISTORY_RETENTION_DAYS:30}
+      batch-size: ${SOCP_HIPS_HISTORY_RETENTION_BATCH_SIZE:1000}
+      max-batches: ${SOCP_HIPS_HISTORY_RETENTION_MAX_BATCHES:10}
+      max-run-ms: ${SOCP_HIPS_HISTORY_RETENTION_MAX_RUN_MS:10000}
+      delay-ms: ${SOCP_HIPS_HISTORY_RETENTION_DELAY_MS:60000}
+      initial-delay-ms: ${SOCP_HIPS_HISTORY_RETENTION_INITIAL_DELAY_MS:60000}
   demo-data:
     enabled: ${SOCP_DEMO_DATA_ENABLED:true}
   security:

@@ -4,6 +4,7 @@ import com.socp.detect.web.config.DetectRuntimeRole;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -12,12 +13,15 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
+import java.util.function.LongConsumer;
 
 /**
  * Consumes canonical socp-events only to transactionally persist route outbox
@@ -34,21 +38,33 @@ public class DetectionRouteSourceConsumer {
     private final String sourceTopic;
     private final String groupId;
     private final boolean enabled;
+    private final Function<Properties, Consumer<String, String>> consumerFactory;
+    private final LongConsumer retrySleep;
     private final AtomicBoolean running = new AtomicBoolean();
-    private volatile KafkaConsumer<String, String> consumer;
+    private volatile Consumer<String, String> consumer;
     private Thread thread;
 
+    @Autowired
     public DetectionRouteSourceConsumer(
             DetectionRouteOutboxService routes,
             @Value("${socp.kafka.bootstrap:localhost:9092}") String bootstrap,
             @Value("${socp.detect.routing.source-topic:${socp.kafka.topic:socp-events}}") String sourceTopic,
             @Value("${socp.detect.routing.source-group-id:socp-detect-router-v2}") String groupId,
             @Value("${socp.detect.routing.publisher-enabled:false}") boolean enabled) {
+        this(routes, bootstrap, sourceTopic, groupId, enabled, KafkaConsumer::new, DetectionRouteSourceConsumer::sleep);
+    }
+
+    DetectionRouteSourceConsumer(DetectionRouteOutboxService routes, String bootstrap, String sourceTopic,
+                                 String groupId, boolean enabled,
+                                 Function<Properties, Consumer<String, String>> consumerFactory,
+                                 LongConsumer retrySleep) {
         this.routes = routes;
         this.bootstrap = bootstrap;
         this.sourceTopic = sourceTopic;
         this.groupId = groupId;
         this.enabled = enabled;
+        this.consumerFactory = consumerFactory;
+        this.retrySleep = retrySleep;
     }
 
     @PostConstruct
@@ -61,16 +77,18 @@ public class DetectionRouteSourceConsumer {
     private void run() {
         long restartDelay = 250L;
         while (running.get()) {
-            try (KafkaConsumer<String, String> current = new KafkaConsumer<>(properties())) {
+            try (Consumer<String, String> current = consumerFactory.apply(properties())) {
                 consumer = current;
                 current.subscribe(java.util.List.of(sourceTopic));
-                restartDelay = 250L;
                 while (running.get()) {
                     var records = current.poll(Duration.ofMillis(500));
                     for (var record : records) {
                         routes.route(record.topic(), record.partition(), record.offset(), record.value());
                         TopicPartition partition = new TopicPartition(record.topic(), record.partition());
                         current.commitSync(Map.of(partition, new OffsetAndMetadata(record.offset() + 1)));
+                        // A fresh Kafka session or an empty poll does not prove that
+                        // the failing database/plan boundary has recovered.
+                        restartDelay = 250L;
                     }
                 }
             } catch (WakeupException stopping) {
@@ -79,12 +97,12 @@ public class DetectionRouteSourceConsumer {
                 // Fail closed: the source offset is intentionally not committed.
                 log.error("Detection routing plan is unsupported; canonical source remains pending: {}",
                         incompatible.getMessage());
-                sleep(restartDelay);
+                retrySleep.accept(restartDelay);
                 restartDelay = Math.min(30_000L, restartDelay * 2);
             } catch (RuntimeException failure) {
                 log.warn("Detection route source session failed; uncommitted source will replay: {}",
                         failure.getMessage());
-                sleep(restartDelay);
+                retrySleep.accept(restartDelay);
                 restartDelay = Math.min(30_000L, restartDelay * 2);
             } finally {
                 consumer = null;
@@ -117,7 +135,7 @@ public class DetectionRouteSourceConsumer {
     @PreDestroy
     void stop() {
         running.set(false);
-        KafkaConsumer<String, String> current = consumer;
+        Consumer<String, String> current = consumer;
         if (current != null) current.wakeup();
         if (thread != null) thread.interrupt();
     }

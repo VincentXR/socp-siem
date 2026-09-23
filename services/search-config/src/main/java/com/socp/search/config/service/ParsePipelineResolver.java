@@ -30,6 +30,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ParsePipelineResolver {
 
     private static final Logger log = LoggerFactory.getLogger(ParsePipelineResolver.class);
+    private static final int MAX_CACHE_ENTRIES = 2048;
     private final ParseRuleStore rules;
     private final ParseRuleExecutor executor;
     private final Map<String, List<ParseRuleExecutor.CompiledRule>> cache = new ConcurrentHashMap<>();
@@ -78,12 +79,34 @@ public class ParsePipelineResolver {
         long revision = rules.revision(tenant);
         if (guard.isStale(tenant, revision)) {
             synchronized (cache) {
-                cache.keySet().removeIf(key -> key.startsWith(tenant + "|"));
-                guard.markFresh(tenant, revision);
+                long current = rules.revision(tenant);
+                if (guard.isStale(tenant, current)) {
+                    cache.keySet().removeIf(key -> key.startsWith(tenant + "|"));
+                    guard.markFresh(tenant, current);
+                }
             }
         }
         String key = tenant + "|" + context.sourceId() + "|" + context.parseRuleIds();
-        return cache.computeIfAbsent(key, ignored -> compileCandidates(context));
+        List<ParseRuleExecutor.CompiledRule> cached = cache.get(key);
+        if (cached != null) return cached;
+        List<ParseRuleExecutor.CompiledRule> compiled = compileCandidates(context);
+        synchronized (cache) {
+            cached = cache.get(key);
+            if (cached != null) return cached;
+            // A local write during compilation must not reinstall obsolete rules.
+            if (rules.revision(tenant) != revision) return compiled;
+            while (cache.size() >= MAX_CACHE_ENTRIES) {
+                var entries = cache.keySet().iterator();
+                if (!entries.hasNext()) break;
+                cache.remove(entries.next());
+            }
+            cache.put(key, compiled);
+            return compiled;
+        }
+    }
+
+    int cachedPipelines() {
+        return cache.size();
     }
 
     private List<ParseRuleExecutor.CompiledRule> compileCandidates(IngestSourceContext context) {

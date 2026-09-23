@@ -47,6 +47,23 @@ class AssetControllerTest {
     private AssetStore store;
 
     @Test
+    void relatedLookupValidatesIdentityBoundsAndAuthorization() throws Exception {
+        var asset = Asset.create("host", "SERVER", "203.0.113.7", "Linux", "sec", "HIGH");
+        given(store.related(2, 20, "203.0.113.7", "host")).willReturn(new org.springframework.data.domain.PageImpl<>(
+                List.of(asset), org.springframework.data.domain.PageRequest.of(1, 20), 21));
+        mvc.perform(get("/api/v1/assets/related").param("ip", " 203.0.113.7 ").param("name", " host ").param("page", "2")
+                        .header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(21))
+                .andExpect(jsonPath("$.data.items[0].id").value(asset.id()));
+        for (String query : List.of("", "?ip=" + "x".repeat(65), "?name=" + "x".repeat(129), "?name=host&size=501", "?name=host&page=0")) {
+            mvc.perform(get("/api/v1/assets/related" + query).header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "analyst"))
+                    .andExpect(status().isBadRequest());
+        }
+        mvc.perform(get("/api/v1/assets/related?name=host").header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "viewer"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void listReturnsPagedEnvelope() throws Exception {
         given(store.page(1, 500, "")).willReturn(new org.springframework.data.domain.PageImpl<>(
                 List.of(Asset.create("web01", "SERVER", "10.0.0.5", "Ubuntu 22.04", "infra", "HIGH")),
@@ -65,6 +82,19 @@ class AssetControllerTest {
                 .andExpect(jsonPath("$.data.items[0].name").value("web01"))
                 .andExpect(jsonPath("$.data.items[0].ip").value("10.0.0.5"))
                 .andExpect(jsonPath("$.data.items[0].criticality").value("HIGH"));
+    }
+
+    @Test
+    void directDetailUsesTheOwningStoreAndMissingIdsReturn404() throws Exception {
+        Asset asset = new Asset("outside-page", "linked-host", "SERVER", "203.0.113.7", "Linux", "sec", "HIGH", java.time.Instant.now());
+        given(store.get("outside-page")).willReturn(asset);
+        mvc.perform(get("/api/v1/assets/outside-page").header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value("outside-page"));
+        mvc.perform(get("/api/v1/assets/missing").header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/assets/outside-page").header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "viewer"))
+                .andExpect(status().isForbidden());
+        verify(store).get("outside-page");
     }
 
     @Test

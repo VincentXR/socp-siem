@@ -16,4 +16,7 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 public @interface RequireIngestIdentity {
     String message() default "Collector or service identity is required";
+
+    /** Raw HTTP body limit, resolved before message conversion. */
+    String maxBodyBytes() default "${socp.ingest.limits.max-body-bytes:16777216}";
 }

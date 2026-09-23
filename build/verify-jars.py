@@ -1,28 +1,83 @@
-# -*- coding: utf-8 -*-
-"""校验所有后端服务 jar 是否为可运行 fat jar（含 Main-Class + BOOT-INF）。
-背景：增量 package 时 spring-boot repackage 的 up-to-date 判断不可靠，
-可能随机产出"瘦 jar"（几十 KB、无主清单）导致 java -jar 起不来。
-用法：python socp/build/verify-jars.py  （退出码 0=全部正常）
+#!/usr/bin/env python3
+"""Check every registered service's Spring Boot archive before release packaging.
+
+This validates archive structure, not application startup or dependency health.
+Run after Maven package: python build/verify-jars.py.
 """
-import glob
-import os
+
+from pathlib import Path
 import sys
+import xml.etree.ElementTree as ET
 import zipfile
 
-root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-jars = sorted(glob.glob(os.path.join(root, "services", "*", "target", "*-1.0.0-SNAPSHOT.jar")))
-bad = []
-for j in jars:
-    with zipfile.ZipFile(j) as z:
-        has_main = "META-INF/MANIFEST.MF" in z.namelist() and b"Main-Class" in z.read("META-INF/MANIFEST.MF")
-        boot = any(n.startswith("BOOT-INF/") for n in z.namelist())
-        if not (has_main and boot):
-            bad.append(os.path.basename(os.path.dirname(os.path.dirname(j))) + "  (" + j + ")")
+from runtime_topology import current_registry, validate_registry
 
-print("jar 总数: %d" % len(jars))
-if bad:
-    print("BAD(%d) 瘦 jar（需 clean package 重建）:" % len(bad))
-    for b in bad:
-        print("  " + b)
-    sys.exit(1)
-print("全部 %d 个 jar 均为可运行 fat jar" % len(jars))
+
+ROOT = Path(__file__).resolve().parents[1]
+NS = {"m": "http://maven.apache.org/POM/4.0.0"}
+
+
+def expected_jar(module: str) -> Path:
+    pom = ET.parse(ROOT / "services" / module / "pom.xml").getroot()
+    artifact = pom.findtext("m:artifactId", namespaces=NS)
+    version = (pom.findtext("m:version", namespaces=NS)
+               or pom.findtext("m:parent/m:version", namespaces=NS))
+    if not artifact or not version:
+        raise ValueError(f"{module}: missing artifactId/version in Maven project")
+    name = pom.findtext("m:build/m:finalName", namespaces=NS) or f"{artifact}-{version}"
+    name = name.replace("${project.artifactId}", artifact).replace("${project.version}", version)
+    if "${" in name or any(part in name for part in ("/", "\\")):
+        raise ValueError(f"{module}: cannot resolve archive name {name!r}")
+    return ROOT / "services" / module / "target" / f"{name}.jar"
+
+
+def check_archive(path: Path) -> None:
+    with zipfile.ZipFile(path) as archive:
+        entries = set(archive.namelist())
+        manifest = archive.read("META-INF/MANIFEST.MF").decode("utf-8")
+        # Manifest continuation lines begin with a single space.
+        manifest = manifest.replace("\r\n ", "").replace("\n ", "")
+        attributes = {}
+        for line in manifest.splitlines():
+            if not line:  # Only the main section describes the launch classes.
+                break
+            key, separator, value = line.partition(": ")
+            if separator:
+                attributes[key.lower()] = value.strip()
+        main = attributes.get("main-class", "")
+        start = attributes.get("start-class", "")
+        if not main or main.replace(".", "/") + ".class" not in entries:
+            raise ValueError("missing Main-Class or launcher bytecode")
+        if not start or "BOOT-INF/classes/" + start.replace(".", "/") + ".class" not in entries:
+            raise ValueError("missing Start-Class or application bytecode")
+        if not any(name.startswith("BOOT-INF/lib/") and name.endswith(".jar") for name in entries):
+            raise ValueError("missing packaged dependencies under BOOT-INF/lib")
+
+
+def main() -> int:
+    try:
+        modules, services = current_registry()
+        errors = validate_registry(modules, services)
+        if not modules:
+            errors.append("executable module registry is empty")
+    except (OSError, ValueError) as failure:
+        print(f"[FAIL] cannot read executable module registry: {failure}", file=sys.stderr)
+        return 1
+    checked = 0
+    for module in modules:
+        try:
+            path = expected_jar(module)
+            check_archive(path)
+            checked += 1
+        except (OSError, ValueError, KeyError, ET.ParseError, zipfile.BadZipFile) as failure:
+            errors.append(f"{module}: {failure}")
+    if errors:
+        for error in errors:
+            print(f"[FAIL] {error}", file=sys.stderr)
+        return 1
+    print(f"Spring Boot archive structure passed: {checked} registered service jars")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

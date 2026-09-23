@@ -16,7 +16,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.annotation.Value;
 
 import jakarta.annotation.PreDestroy;
@@ -26,18 +25,22 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Retries the durable Detection -> Alert Web hand-off.
  *
- * <p>Claiming is an optimistic database update, so multiple detect-web
- * instances sharing a database cannot publish the same outbox row at the same
- * time.  A stale PROCESSING row is returned to the correct stage after a
- * publisher crash.  Alert Web itself is idempotent by tenant + sourceAlertId.
+ * <p>Conditional claims and unique claim tokens prevent an expired publisher
+ * from overwriting a newer owner's state, including after operator requeue.
+ * Lease expiry can still overlap external deliveries; Alert Web is idempotent
+ * by tenant + sourceAlertId. Stale PROCESSING rows return to the correct stage
+ * or become DEAD at the retry limit.
  * The optional secondary-analysis event is a second stage; it never causes a failed
  * Alert Web request to be retried as a new alert.</p>
  */
@@ -147,7 +150,8 @@ public class DetectionAlertOutboxPublisher {
                 DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_MS);
     }
 
-    private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final AtomicBoolean activeTrigger = new AtomicBoolean(false);
+    private final AtomicBoolean activeDrain = new AtomicBoolean(false);
 
     /** Triggers an immediate asynchronous outbox publish cycle on alert enqueue. */
     public void triggerAsync() {
@@ -169,12 +173,12 @@ public class DetectionAlertOutboxPublisher {
             initialDelayString = "${socp.detect.alert-outbox.initial-delay-ms:1000}")
     @TenantSystemJob
     public void publishDue() {
-        if (!formalOutput()) return;
+        if (!formalOutput() || !activeDrain.compareAndSet(false, true)) return;
         long started = System.nanoTime();
         int rounds = 0;
         try {
             recoverStaleClaims();
-            int exhausted = repository.markExhausted(maxAttempts, "retry limit reached", Instant.now());
+            int exhausted = repository.markExhaustedBatch(maxAttempts, Instant.now(), 100);
             if (exhausted > 0) {
                 log.error("Detection alert outbox rows moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
@@ -187,6 +191,7 @@ public class DetectionAlertOutboxPublisher {
         } catch (Exception ex) {
             log.warn("Detection alert outbox scan failed; next scan will retry: {}", ex.getMessage());
         } finally {
+            activeDrain.set(false);
             if (performanceMetrics != null) {
                 performanceMetrics.outboxDrain("alert_delivery", rounds, System.nanoTime() - started);
                 refreshBacklog();
@@ -222,13 +227,16 @@ public class DetectionAlertOutboxPublisher {
             rounds++;
             List<CompletableFuture<Void>> deliveries = new ArrayList<>();
             for (DetectionAlertOutboxEntity event : due) {
-                if (!claim(event, stage)) continue;
-                deliveries.add(CompletableFuture.runAsync(() -> {
-                    try (TenantContext.Scope ignored = TenantContext.open(event.getTenantId())) {
-                        boolean acquired = false;
-                        try {
-                            deliveryPermits.acquire();
-                            acquired = true;
+                // Wait for capacity before starting the database lease. A slow
+                // destination must not expire claims queued behind other sends.
+                if (!acquireBefore(deadlineNanos)) break;
+                if (!claim(event, stage)) {
+                    deliveryPermits.release();
+                    continue;
+                }
+                try {
+                    deliveries.add(CompletableFuture.runAsync(() -> {
+                        try (TenantContext.Scope ignored = TenantContext.open(event.getTenantId())) {
                             if ("PENDING".equals(stage)) {
                                 Instant claimedAt = performanceMetrics == null
                                         ? Instant.now() : performanceMetrics.outboxClaimed(event);
@@ -239,14 +247,18 @@ public class DetectionAlertOutboxPublisher {
                                 }
                                 publishOriginalAlarm(event);
                             }
-                        } catch (InterruptedException interrupted) {
-                            Thread.currentThread().interrupt();
-                            fail(event, "delivery interrupted", stage);
                         } finally {
-                            if (acquired) deliveryPermits.release();
+                            deliveryPermits.release();
                         }
-                    }
-                }, deliveryExecutor));
+                    }, deliveryExecutor));
+                } catch (RuntimeException rejected) {
+                    deliveryPermits.release();
+                    withTenant(event, () -> {
+                        fail(event, "delivery executor unavailable", stage);
+                        return null;
+                    });
+                    break;
+                }
             }
             CompletableFuture.allOf(deliveries.toArray(CompletableFuture[]::new)).join();
             if (due.size() < 100) break;
@@ -254,13 +266,30 @@ public class DetectionAlertOutboxPublisher {
         return rounds;
     }
 
+    private boolean acquireBefore(long deadlineNanos) {
+        long remaining = deadlineNanos - System.nanoTime();
+        if (remaining <= 0) return false;
+        try {
+            if (!deliveryPermits.tryAcquire(remaining, TimeUnit.NANOSECONDS)) return false;
+            if (System.nanoTime() >= deadlineNanos) {
+                deliveryPermits.release();
+                return false;
+            }
+            return true;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
     private boolean claim(DetectionAlertOutboxEntity event, String expectedStage) {
         try {
-            boolean claimed = repository.claim(event.getAlertId(), expectedStage, Instant.now(), maxAttempts) == 1;
+            String token = UUID.randomUUID().toString();
+            boolean claimed = repository.claim(event.getAlertId(), expectedStage, event.getAttempts(),
+                    token, Instant.now(), maxAttempts) == 1;
             if (claimed) {
-                // The repository increments atomically. Keep the detached object
-                // aligned so a subsequent save cannot overwrite that increment.
                 event.setAttempts(event.getAttempts() + 1);
+                event.setClaimToken(token);
             }
             return claimed;
         } catch (Exception ex) {
@@ -315,60 +344,48 @@ public class DetectionAlertOutboxPublisher {
                 return;
             }
             Instant now = Instant.now();
-            event.setStatus("PUBLISHED");
-            event.setPublishedAt(now);
-            event.setNextAttemptAt(now);
-            event.setUpdatedAt(now);
-            event.setLastError(null);
-            save(event);
-            if (performanceMetrics != null) performanceMetrics.outboxStateTransaction("published_state");
+            if (repository.markPublished(event.getAlertId(), event.getClaimToken(), event.getDeliveredAt(), now) == 1) {
+                event.setStatus("PUBLISHED");
+                if (performanceMetrics != null) performanceMetrics.outboxStateTransaction("published_state");
+            } else {
+                log.warn("Detection alert outbox acknowledgement lost claim alertId={}", event.getAlertId());
+            }
         } catch (Exception ex) {
             fail(event, "original alarm exception: " + ex.getMessage(), "DELIVERED");
         }
     }
 
-    @Transactional
     void recoverStaleClaims() {
-        Instant cutoff = Instant.now().minus(Duration.ofMinutes(2));
-        for (DetectionAlertOutboxEntity event : repository.findByStatusAndUpdatedAtBefore("PROCESSING", cutoff)) {
-            event.setStatus(event.alertDelivered() ? "DELIVERED" : "PENDING");
-            event.setNextAttemptAt(Instant.now());
-            event.setUpdatedAt(Instant.now());
-            repository.save(event);
-            lifecycle("recovered", 1);
-        }
+        Instant now = Instant.now();
+        int recovered = repository.recoverStaleBatch(now.minus(Duration.ofMinutes(2)), now, maxAttempts, 100);
+        if (recovered > 0) lifecycle("recovered", recovered);
     }
 
-    @Transactional
     void fail(DetectionAlertOutboxEntity event, String reason, String stage) {
         int attempts = event.getAttempts();
         Instant now = Instant.now();
         var decision = OutboxRetryPolicy.afterClaim(attempts, maxAttempts, now, reason, 60);
-        event.setAttempts(attempts);
-        event.setUpdatedAt(now);
+        String status = decision.exhausted() ? "DEAD" : stage;
+        Instant next = decision.exhausted() ? now : decision.nextAttemptAt();
+        if (repository.markFailed(event.getAlertId(), event.getClaimToken(), status, event.getDeliveredAt(),
+                next, decision.error(), now) != 1) {
+            log.warn("Detection alert outbox failure lost claim alertId={}", event.getAlertId());
+            return;
+        }
+        event.setStatus(status);
+        event.setNextAttemptAt(next);
         event.setLastError(decision.error());
         if (decision.exhausted()) {
-            event.setStatus("DEAD");
-            event.setNextAttemptAt(now);
-            repository.save(event);
             if (performanceMetrics != null) performanceMetrics.outboxStateTransaction("dead_state");
             lifecycle("dead", 1);
             log.error("Detection alert outbox moved to DEAD alertId={} stage={} attempts={} reason={}",
                     event.getAlertId(), stage, attempts, event.getLastError());
             return;
         }
-        event.setStatus(stage);
-        event.setNextAttemptAt(decision.nextAttemptAt());
-        repository.save(event);
         if (performanceMetrics != null) performanceMetrics.outboxStateTransaction("retry_state");
         lifecycle("retry", 1);
         log.warn("Detection alert outbox retry scheduled alertId={} stage={} attempts={} next={} reason={}",
                 event.getAlertId(), stage, attempts, event.getNextAttemptAt(), event.getLastError());
-    }
-
-    @Transactional
-    void save(DetectionAlertOutboxEntity event) {
-        repository.save(event);
     }
 
     @Scheduled(fixedDelayString = "${socp.detect.alert-outbox.cleanup-interval-ms:3600000}",

@@ -16,5 +16,13 @@ public interface EndpointEventRepository extends TenantScopedRepository<Endpoint
     Optional<EndpointEventEntity> findByEventIdAndTenantId(String eventId, String tenantId);
     long countByTenantId(String tenantId);
 
-    List<EndpointEventEntity> findTop200ByTenantIdOrderByReceivedAtDesc(String tenantId);
+    @org.springframework.data.jpa.repository.Query("""
+            select e from EndpointEventEntity e where e.tenantId = :tenantId
+              and :hostname <> '' and lower(trim(e.hostname)) = lower(:hostname)
+            """)
+    Page<EndpointEventEntity> findByHostname(@org.springframework.data.repository.query.Param("tenantId") String tenantId,
+                                            @org.springframework.data.repository.query.Param("hostname") String hostname,
+                                            Pageable pageable);
+
+    List<EndpointEventEntity> findTop200ByTenantIdOrderByReceivedAtDescEventIdAsc(String tenantId);
 }

@@ -17,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -78,7 +79,8 @@ public class OsEventReader {
             int transportSize = Math.min(5_001, pageSize + 1);
             byte[] request = compiler.compile(ast, tenant, transportSize, includeTimeline).toString()
                     .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            var response = transport.exchange("POST", "/" + properties.getSearchIndex() + "/_search",
+            var response = transport.exchange("POST", "/" + properties.getSearchIndex()
+                            + "/_search?allow_partial_search_results=false",
                     "application/json", request);
             if (!response.successful()) {
                 if (response.status() >= 400 && response.status() < 500 && response.status() != 429) {
@@ -102,6 +104,7 @@ public class OsEventReader {
     private SplEngine.QueryResult parse(byte[] body, SearchQueryAst ast, int size, long started,
                                         boolean includeTimeline) throws Exception {
         JsonNode root = MAPPER.readTree(body);
+        requireCompleteResponse(root);
         JsonNode hits = root.path("hits").path("hits");
         List<SearchEvent> events = new ArrayList<>();
         List<List<Object>> sortValues = new ArrayList<>();
@@ -129,6 +132,23 @@ public class OsEventReader {
                 (System.nanoTime() - started) / 1_000_000L,
                 root.has("took") ? root.path("took").asLong() : null,
                 timeline.rows(), timeline.approximate());
+    }
+
+    private static void requireCompleteResponse(JsonNode root) throws IOException {
+        if (root == null || !root.isObject() || !root.path("timed_out").isBoolean()
+                || root.path("timed_out").asBoolean() || root.path("terminated_early").asBoolean()) {
+            throw new IOException("OpenSearch search did not complete");
+        }
+        JsonNode shards = root.path("_shards");
+        if (!shards.path("total").isIntegralNumber() || !shards.path("successful").isIntegralNumber()
+                || !shards.path("failed").isIntegralNumber() || shards.path("total").asLong() < 0
+                || shards.path("failed").asLong() != 0
+                || shards.path("successful").asLong() != shards.path("total").asLong()) {
+            throw new IOException("OpenSearch search has incomplete shards");
+        }
+        if (!root.path("hits").path("hits").isArray()) {
+            throw new IOException("OpenSearch search has no valid hits response");
+        }
     }
 
     private static Timeline parseTimeline(JsonNode aggregations) {

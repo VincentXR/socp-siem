@@ -7,7 +7,7 @@ import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onScopeDispose, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import { aiAsk, appendInvestigationToIncident, investigateAlert, type AiResult, type InvestigationResult } from '../api'
@@ -23,10 +23,15 @@ const question = ref('')
 const result = ref<AiResult | null>(null)
 const loading = ref(false)
 const askError = ref('')
+const askRequest = useLatestRequest()
 const alertId = ref('')
 const investigation = ref<InvestigationResult | null>(null)
 const investigationLoading = ref(false)
-const appendLoading = ref(false)
+const appendTarget = ref<string | null>(null)
+const appendLoading = computed(() => appendTarget.value !== null)
+let investigationVersion = 0
+let disposed = false
+onScopeDispose(() => { disposed = true })
 const investigationError = ref('')
 const investigationRequest = useLatestRequest()
 
@@ -49,33 +54,47 @@ async function ask(queryText?: string) {
   const query = (queryText || question.value).trim()
   if (!query || loading.value) return
   question.value = query
+  const request = askRequest.start()
   loading.value = true
   askError.value = ''
   try {
-    result.value = await aiAsk(query)
+    const response = await aiAsk(query, { signal: request.signal })
+    if (request.isCurrent()) result.value = response
   } catch (error) {
-    askError.value = error instanceof Error ? error.message : String(error)
+    if (request.isCurrent()) askError.value = error instanceof Error ? error.message : String(error)
   } finally {
-    loading.value = false
+    if (request.isCurrent()) loading.value = false
   }
 }
 
 function clear() {
+  askRequest.cancel()
+  loading.value = false
   question.value = ''
   result.value = null
   askError.value = ''
 }
 
-async function investigate() {
-  const id = alertId.value.trim()
-  if (!id || investigationLoading.value || appendLoading.value) return
-  if (route.query.alarmId !== id) void router.replace({ query: { ...route.query, alarmId: id } })
+function resetInvestigation() {
+  investigationVersion++
+  investigationRequest.cancel()
+  investigationLoading.value = false
+  investigation.value = null
+  investigationError.value = ''
+}
+
+watch(() => alertId.value.trim(), resetInvestigation, { flush: 'sync' })
+
+async function loadInvestigation(id: string) {
+  if (disposed || investigationLoading.value) return
+  resetInvestigation()
   investigationLoading.value = true
   const request = investigationRequest.start()
-  investigationError.value = ''
   try {
     const response = await investigateAlert(id, { signal: request.signal })
-    if (request.isCurrent()) investigation.value = response
+    if (!request.isCurrent()) return
+    if (response.alertId !== id) throw new Error(t('ai.investigation.contextMismatch'))
+    investigation.value = response
   } catch (error) {
     if (request.isCurrent()) investigationError.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -83,34 +102,53 @@ async function investigate() {
   }
 }
 
-function openAlarm(): void {
-  if (!alertId.value.trim()) return
-  void router.push({ name: 'alarms', query: { alarmId: alertId.value.trim() } })
-}
-
-async function appendToIncident() {
-  if (!investigation.value || appendLoading.value || investigation.value.summaryAppended) return
-  const targetInvestigationId = investigation.value.investigationId
-  appendLoading.value = true
-  investigationError.value = ''
+async function investigate() {
+  const id = alertId.value.trim()
+  if (!id || investigationLoading.value) return
+  if (contextAlarmId.value === id) { await loadInvestigation(id); return }
+  const version = investigationVersion
   try {
-    const updated = await appendInvestigationToIncident(targetInvestigationId)
-    // A newer investigate() may have replaced the card while this request was
-    // in flight; writing its stale result would show the previous alarm's
-    // analysis under the current alarm's input.
-    if (investigation.value?.investigationId === targetInvestigationId) investigation.value = updated
+    // The route watcher owns loading after navigation, including Back/Forward.
+    const failure = await router.replace({ query: { ...route.query, alarmId: id, alertId: undefined } })
+    if (failure) throw failure
   } catch (error) {
-    investigationError.value = error instanceof Error ? error.message : String(error)
-  } finally {
-    appendLoading.value = false
+    if (!disposed && version === investigationVersion)
+      investigationError.value = error instanceof Error ? error.message : String(error)
   }
 }
 
-onMounted(() => {
-  if (!contextAlarmId.value) return
-  alertId.value = contextAlarmId.value
-  void investigate()
-})
+function openAlarm(): void {
+  if (!contextAlarmId.value.trim()) return
+  void router.push({ name: 'alarms', query: { alarmId: contextAlarmId.value.trim() } })
+}
+
+async function appendToIncident() {
+  const current = investigation.value
+  if (!current || appendLoading.value || investigationLoading.value || current.summaryAppended
+    || current.alertId !== alertId.value.trim()) return
+  const version = investigationVersion
+  const target = current.investigationId
+  appendTarget.value = target
+  investigationError.value = ''
+  const ownsView = () => !disposed && version === investigationVersion && investigation.value?.investigationId === target
+  try {
+    const updated = await appendInvestigationToIncident(target)
+    if (!ownsView()) return
+    if (updated.investigationId !== target || updated.alertId !== current.alertId)
+      throw new Error(t('ai.investigation.contextMismatch'))
+    investigation.value = updated
+  } catch (error) {
+    if (ownsView()) investigationError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    if (!disposed) appendTarget.value = null
+  }
+}
+
+watch(contextAlarmId, id => {
+  alertId.value = id
+  resetInvestigation()
+  if (id.trim()) void loadInvestigation(id.trim())
+}, { immediate: true })
 </script>
 
 <template>
@@ -181,7 +219,8 @@ onMounted(() => {
         <el-input v-model="alertId" clearable :placeholder="t('ai.investigation.alertId')" @keyup.enter="investigate" />
         <el-button type="primary" :loading="investigationLoading" @click="investigate">{{ t('ai.investigation.investigate') }}</el-button>
       </div>
-      <div v-if="investigationError" class="ai-error">{{ investigationError }}</div>
+      <div v-if="appendLoading && appendTarget !== investigation?.investigationId" role="status" class="ai-muted">{{ t('ai.investigation.previousAppendPending') }}</div>
+      <div v-if="investigationError" role="alert" class="ai-error">{{ investigationError }}</div>
       <div v-if="investigation" class="ai-result">
         <div class="ai-investigation-meta">
           <el-tag size="small" :type="investigation.status === 'COMPLETED' ? 'success' : 'warning'">{{ investigation.status }}</el-tag>
@@ -214,7 +253,7 @@ onMounted(() => {
           </div>
         </div>
         <div class="ai-append-row">
-          <el-button type="success" plain :loading="appendLoading" :disabled="investigation.summaryAppended" @click="appendToIncident">
+          <el-button type="success" plain :loading="appendTarget === investigation.investigationId" :disabled="appendLoading || investigation.summaryAppended" @click="appendToIncident">
             {{ investigation.summaryAppended ? t('ai.investigation.appendedToIncident') : t('ai.investigation.appendSummaryToIncident') }}
           </el-button>
           <span v-if="investigation.incidentId" class="ai-muted">{{ investigation.incidentId }}</span>

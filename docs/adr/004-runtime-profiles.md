@@ -34,7 +34,7 @@ development fallback from silently being used with integration or production.
   `socp.demo-data.enabled=true` is detected. Local demo seeding is controlled
   by `SOCP_DEMO_DATA_ENABLED` and is disabled by the production overlays.
 - Production JWT verification accepts exactly one source: HMAC secret or
-  JWKS/issuer. JWKS deployments must also configure `socp.security.audience`
+  JWKS/issuer. Every production verifier must configure `socp.security.audience`
   (comma-separated values are supported) so tokens issued to unrelated clients
   are rejected. Production defaults to JWKS/issuer; HMAC is an explicit
   emergency compatibility exception controlled by

@@ -19,6 +19,7 @@ final class TenantCacheGuard {
     private final long ttlMillis;
 
     TenantCacheGuard(long ttlMillis) {
+        if (ttlMillis < 1) throw new IllegalArgumentException("config cache TTL must be positive");
         this.ttlMillis = ttlMillis;
     }
 
@@ -31,7 +32,7 @@ final class TenantCacheGuard {
 
     /** Records the token a refreshed cache was built from. */
     void markFresh(String tenant, long token) {
-        if (states.size() > MAX_TRACKED_TENANTS && !states.containsKey(tenant)) {
+        if (states.size() >= MAX_TRACKED_TENANTS && !states.containsKey(tenant)) {
             states.clear();
         }
         states.put(tenant, new State(token, System.currentTimeMillis()));
@@ -43,7 +44,7 @@ final class TenantCacheGuard {
     }
 
     private boolean isExpired(State state) {
-        return ttlMillis > 0 && System.currentTimeMillis() - state.startedAt() >= ttlMillis;
+        return System.currentTimeMillis() - state.startedAt() >= ttlMillis;
     }
 
     private record State(long token, long startedAt) {

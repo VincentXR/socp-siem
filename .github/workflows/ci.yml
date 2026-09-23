@@ -82,7 +82,7 @@ jobs:
 
       - name: Collect commit-scoped validation evidence
         if: always()
-        run: python3 build/collect-evidence.py --output .cache/evidence
+        run: python3 build/collect-evidence.py --output .cache/evidence --require-tests
 
       - name: Upload validation evidence
         if: always()

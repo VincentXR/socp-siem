@@ -13,11 +13,12 @@ import ElRow from 'element-plus/es/components/row/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ActionFeedback from '../components/ActionFeedback.vue'
 import PageHeader from '../components/PageHeader.vue'
-import { onMounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRequest } from '../composables/useRequest'
 import {
-  appendWatchlist, deleteWatchlist, listWatchlists, putWatchlist,
+  ApiError, appendWatchlist, createWatchlist as createWatchlistOnly, deleteWatchlist, getWatchlist, listWatchlists,
   listTechniques, uebaEntities, uebaEntity, uebaScore, uebaSummary,
-  type RiskEntity, type RiskSummary, type ScoreBreakdown, type Watchlist,
+  type RiskEntity, type RiskSummary, type ScoreBreakdown, type Watchlist, type WatchlistSummary,
 } from '../api'
 import UebaEntityDrawer from '../components/ueba/UebaEntityDrawer.vue'
 import UebaRiskPanel from '../components/ueba/UebaRiskPanel.vue'
@@ -41,26 +42,33 @@ const riskSummary = ref<RiskSummary | null>(null)
 const riskLimit = ref(20)
 const entityDrawer = ref(false)
 const entityDetail = ref<RiskEntity | null>(null)
-const watchlists = ref<Watchlist[]>([])
+const entityRequest = useRequest<RiskEntity>()
+const { loading: entityLoading, error: entityError } = entityRequest
+const watchlists = ref<WatchlistSummary[]>([])
 const uebaTab = ref('entities')
 const scoreForm = ref({ severity: 'HIGH', mitre: 'T1110', tiHits: 1, recentAlerts: 3, assetCriticality: 2 })
-const scoreResult = ref<ScoreBreakdown | null>(null)
+const scoreRequest = useRequest<ScoreBreakdown>()
+const { data: scoreResult, loading: scoreLoading, error: scoreError } = scoreRequest
 const attackTechniques = ref<Array<{ id: string; name: string }>>([])
 const techniquesLoading = ref(false)
+let watchlistRevision = 0
+let disposed = false
 
 async function loadUeba() {
   if (loading.value) return
   loading.value = true
   techniquesLoading.value = true
+  const loadedWatchlistRevision = watchlistRevision
   try {
   const [entities, summary, lists, techniques] = await Promise.allSettled([uebaEntities(riskLimit.value), uebaSummary(), listWatchlists(), listTechniques()])
+  if (disposed) return
   techniqueError.value = techniques.status === 'rejected' ? String(techniques.reason) : ''
   if (techniques.status === 'fulfilled') attackTechniques.value = techniques.value.items.map(technique => ({ id: technique.id, name: technique.name }))
   loadError.value = [entities, summary, lists].filter(item => item.status === 'rejected').map(item => String((item as PromiseRejectedResult).reason)).join(' · ')
   if (entities.status === 'fulfilled') riskEntities.value = entities.value
   if (summary.status === 'fulfilled') riskSummary.value = summary.value
-  if (lists.status === 'fulfilled') watchlists.value = lists.value
-  if (!scoreResult.value) await calcScore()
+  if (lists.status === 'fulfilled' && loadedWatchlistRevision === watchlistRevision) watchlists.value = lists.value
+  if (!scoreResult.value && !scoreLoading.value) void calcScore()
   } finally {
     techniquesLoading.value = false
     loading.value = false
@@ -70,20 +78,49 @@ async function loadUeba() {
 async function openEntity(entity: RiskEntity) {
   entityDetail.value = entity
   entityDrawer.value = true
-  try { entityDetail.value = await uebaEntity(entity.entity) } catch (failure) { loadError.value = String(failure) }
+  await loadEntityDetail()
+}
+
+async function loadEntityDetail() {
+  const id = entityDetail.value?.entity
+  if (!id || !entityDrawer.value) return
+  const result = await entityRequest.execute(signal => uebaEntity(id, { signal }))
+  if (result && entityDrawer.value && entityDetail.value?.entity === id) entityDetail.value = result
 }
 
 async function calcScore() {
-  try { scoreResult.value = await uebaScore(scoreForm.value) } catch (failure) { loadError.value = String(failure) }
+  const input = { ...scoreForm.value }
+  scoreRequest.reset()
+  await scoreRequest.execute(signal => uebaScore(input, { signal }))
 }
 
-async function refreshWatchlists() { watchlists.value = await listWatchlists() }
-async function createWatchlist(name: string, values: string[]) { if (!canWrite.value) return; await putWatchlist(name, values); await refreshWatchlists() }
-async function appendToWatchlist(name: string, values: string[]) { if (!canWrite.value) return; await appendWatchlist(name, values); await refreshWatchlists() }
+// Sliders change their model before committing a calculation. Hide the old
+// answer immediately, including a response arriving during that interaction.
+watch(scoreForm, () => scoreRequest.reset(), { deep: true, flush: 'sync' })
+watch(entityDrawer, visible => { if (!visible) entityRequest.reset() }, { flush: 'sync' })
+onUnmounted(() => { disposed = true; entityRequest.cancel(); scoreRequest.cancel() })
+
+function acceptWatchlist(saved: Watchlist) {
+  watchlistRevision++
+  watchlists.value = [...watchlists.value.filter(item => item.name !== saved.name), { name: saved.name, size: saved.size }].sort((left, right) => left.name.localeCompare(right.name))
+  return saved
+}
+async function createWatchlist(name: string, values: string[]) {
+  if (!canWrite.value) throw new Error(t('ueba.readOnly'))
+  try { return acceptWatchlist(await createWatchlistOnly(name, values)) }
+  catch (failure) {
+    if (failure instanceof ApiError && failure.status === 409 && failure.rawMessage === 'watchlist already exists') throw new Error(t('forms.duplicateName'))
+    throw failure
+  }
+}
+async function appendToWatchlist(name: string, values: string[]) {
+  if (!canWrite.value) throw new Error(t('ueba.readOnly'))
+  return acceptWatchlist(await appendWatchlist(name, values))
+}
 async function removeWatchlist(name: string) {
   if (!canWrite.value) return
   if (!await confirmDanger(t('ueba.deleteWatchlistConfirm', { name }), { title: t('common.delete') })) return
-  try { await deleteWatchlist(name); await refreshWatchlists() }
+  try { await deleteWatchlist(name); watchlistRevision++; watchlists.value = watchlists.value.filter(item => item.name !== name) }
   catch (failure) { loadError.value = String(failure) }
 }
 
@@ -128,6 +165,7 @@ onMounted(loadUeba)
       <el-tab-pane :label="t('ueba.watchlists')" name="watchlists">
         <UebaWatchlistsPanel
           :watchlists="watchlists"
+          :load="getWatchlist"
           :create="createWatchlist"
           :append="appendToWatchlist"
           :can-write="canWrite"
@@ -136,10 +174,10 @@ onMounted(loadUeba)
       </el-tab-pane>
       <el-tab-pane :label="t('ueba.advancedTools')" name="score">
         <div class="workspace-hint">{{ t('ueba.scoreSimulationHint') }}</div>
-        <UebaScorePanel :form="scoreForm" :result="scoreResult" :techniques="attackTechniques" :techniques-loading="techniquesLoading" @calculate="calcScore" />
+        <UebaScorePanel :form="scoreForm" :result="scoreResult" :loading="scoreLoading" :error="scoreError?.message" :techniques="attackTechniques" :techniques-loading="techniquesLoading" @calculate="calcScore" />
       </el-tab-pane>
     </el-tabs>
 
-    <UebaEntityDrawer v-model="entityDrawer" :entity="entityDetail" @go-alarms="goToAlarms" />
+    <UebaEntityDrawer v-model="entityDrawer" :entity="entityDetail" :loading="entityLoading" :error="entityError?.message" @retry="loadEntityDetail" @go-alarms="goToAlarms" />
   </div>
 </template>

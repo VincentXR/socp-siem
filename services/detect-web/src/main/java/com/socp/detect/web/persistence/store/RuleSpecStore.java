@@ -13,26 +13,26 @@ import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.config.RuleSpec;
 import com.socp.rule.rules.Rule;
 import com.socp.rule.util.Json;
+import com.socp.detect.web.model.RuleCatalogMetadata;
+import com.socp.detect.web.model.RuleWriteCondition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 
 /**
- * 规则描述存储——JPA + H2 文件库（Flyway V1 建表），重启不丢；接口与原内存版一致。
+ * 规则描述存储——JPA + PostgreSQL/H2，按租户串行化内容安装和规则修订。
  * 规则以 RuleSpec 的 JSON Map 形态保存（见 {@link com.socp.rule.config.RuleSpec}），spec 整体序列化为 JSON 列。
  */
 @Component
@@ -42,26 +42,29 @@ public class RuleSpecStore {
 
     /** Compatibility/list endpoints must never materialise an unbounded tenant catalogue. */
     private static final int MAX_COMPATIBILITY_LIST_SIZE = 500;
+    private static final int MAX_HISTORY_PAGE_SIZE = 100;
+    private static final RuleCatalogCoordinator.Pack PACK = contentPack();
 
     private final RuleRepository repo;
     private final RuleRevisionRepository revisions;
     private final RuleContentConflictRepository conflicts;
+    private final RuleCatalogCoordinator catalog;
     private final com.socp.detect.web.routing.DetectionRoutingTopologyGuard topologyGuard;
-    private final Set<String> initializedTenants = ConcurrentHashMap.newKeySet();
 
     public RuleSpecStore(RuleRepository repo, RuleRevisionRepository revisions,
-                         RuleContentConflictRepository conflicts) {
-        this(repo, revisions, conflicts, null);
+                         RuleContentConflictRepository conflicts, RuleCatalogCoordinator catalog) {
+        this(repo, revisions, conflicts, catalog, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public RuleSpecStore(RuleRepository repo, RuleRevisionRepository revisions,
-                         RuleContentConflictRepository conflicts,
+                         RuleContentConflictRepository conflicts, RuleCatalogCoordinator catalog,
                          com.socp.detect.web.routing.DetectionRoutingTopologyGuard topologyGuard) {
+        this.topologyGuard = topologyGuard;
         this.repo = repo;
         this.revisions = revisions;
         this.conflicts = conflicts;
-        this.topologyGuard = topologyGuard;
+        this.catalog = catalog;
         TenantContext.runWith("default", () -> ensureTenantContent("default"));
     }
 
@@ -85,14 +88,9 @@ public class RuleSpecStore {
             if (id.isBlank()) continue;
             Optional<RuleEntity> current = repo.findByRuleIdAndTenantId(id, tenant);
             if (current.isEmpty()) {
-                try {
-                    savePackaged(spec, tenant);
-                } catch (DataIntegrityViolationException racedInstaller) {
-                    // Multiple Detection instances can start against the same
-                    // database. Another instance winning this idempotent insert
-                    // race means the packaged rule is already installed.
-                    if (repo.findByRuleIdAndTenantId(id, tenant).isEmpty()) throw racedInstaller;
-                }
+                if (revisions.findFirstByTenantIdAndRuleIdOrderByRevisionDesc(tenant, id)
+                        .map(head -> "DELETE".equals(head.getSource())).orElse(false)) continue;
+                savePackaged(spec, tenant);
                 continue;
             }
             Map<String, Object> stored = Json.parseObject(current.get().getSpec());
@@ -125,7 +123,61 @@ public class RuleSpecStore {
     }
 
     public Map<String, Object> save(Map<String, Object> spec, String tenant) {
-        return saveInternal(spec, tenant, false, false);
+        return inCatalog(tenant, () -> saveInternal(spec, tenant, false, false));
+    }
+
+    /** API creation is never an upsert, including Sigma imports with supplied IDs. */
+    public Map<String, Object> create(Map<String, Object> spec) {
+        String tenant = tenant();
+        return inCatalog(tenant, () -> {
+            Object id = spec.get("id");
+            if (id != null && repo.findByRuleIdAndTenantId(String.valueOf(id), tenant).isPresent()) {
+                throw ApiException.of(409, "rule already exists; read it and use a conditional update");
+            }
+            return saveInternal(spec, tenant, false, false);
+        });
+    }
+
+    public Map<String, Object> update(Map<String, Object> spec, RuleWriteCondition condition) {
+        String tenant = tenant();
+        return inCatalog(tenant, () -> {
+            Map<String, Object> current = current(String.valueOf(spec.get("id")), tenant);
+            if (condition != null) condition.check(current);
+            if (current == null) throw ApiException.notFound("rule not found");
+            Map<String, Object> updated = new LinkedHashMap<>(spec);
+            String status = String.valueOf(updated.getOrDefault("status", current.get("status"))).toUpperCase(java.util.Locale.ROOT);
+            boolean wasActive = "ACTIVE".equalsIgnoreCase(String.valueOf(current.get("status")));
+            if ("ACTIVE".equals(status)) {
+                if (!wasActive) throw ApiException.forbidden("rule activation requires the /activate transition");
+                if (Boolean.FALSE.equals(updated.get("enabled"))) status = "DISABLED";
+            } else if ("DISABLED".equals(status) && Boolean.TRUE.equals(updated.get("enabled"))) {
+                throw ApiException.forbidden("rule activation requires the /activate transition");
+            }
+            updated.put("status", status);
+            updated.put("enabled", "ACTIVE".equals(status));
+            return saveInternal(updated, tenant, false, false);
+        });
+    }
+
+    public Map<String, Object> activate(String id, RuleWriteCondition condition) {
+        String tenant = tenant();
+        return inCatalog(tenant, () -> {
+            Map<String, Object> current = current(id, tenant);
+            if (condition != null) condition.check(current);
+            if (current == null) throw ApiException.notFound("rule not found");
+            if ("ARCHIVED".equalsIgnoreCase(String.valueOf(current.get("status")))) throw ApiException.of(409, "archived rule cannot be activated");
+            current.put("status", "ACTIVE");
+            current.put("enabled", true);
+            return saveInternal(current, tenant, false, false);
+        });
+    }
+
+    private Map<String, Object> current(String id, String tenant) {
+        return repo.findByRuleIdAndTenantId(id, tenant).map(this::representation).orElse(null);
+    }
+
+    private Map<String, Object> representation(RuleEntity entity) {
+        return RuleWriteCondition.representation(entity.getTenantId(), DetectionContentCatalog.enrich(Json.parseObject(entity.getSpec())));
     }
 
     private Map<String, Object> savePackaged(Map<String, Object> spec, String tenant) {
@@ -134,8 +186,7 @@ public class RuleSpecStore {
 
     private Map<String, Object> saveInternal(Map<String, Object> input, String tenant,
                                              boolean packagedWrite, boolean restore) {
-        if (topologyGuard == null) return saveChecked(input, tenant, packagedWrite, restore);
-        return topologyGuard.mutate(tenant, () -> saveChecked(input, tenant, packagedWrite, restore));
+        return saveChecked(input, tenant, packagedWrite, restore);
     }
 
     private Map<String, Object> saveChecked(Map<String, Object> input, String tenant,
@@ -145,6 +196,8 @@ public class RuleSpecStore {
         RuleEntity existing = requestedId == null || String.valueOf(requestedId).isBlank()
                 ? null : repo.findByRuleIdAndTenantId(String.valueOf(requestedId), tenant).orElse(null);
         if (packagedWrite) {
+            spec.put("contentPack", PACK.id());
+            spec.put("contentVersion", PACK.version());
             spec.remove("contentCustomized");
         } else if (existing == null) {
             // A user-created rule is user-owned even when its id collides with a
@@ -182,13 +235,16 @@ public class RuleSpecStore {
         if (id == null || String.valueOf(id).isBlank()) {
             // 前端新建规则可不带 id，服务端生成
             spec = new LinkedHashMap<>(spec);
-            spec.put("id", "RULE-" + UUID.randomUUID().toString().substring(0, 8).toUpperCase());
+            spec.put("id", "RULE-" + UUID.randomUUID().toString().toUpperCase(java.util.Locale.ROOT));
         }
         List<String> errors = DetectionContentCatalog.validateSpec(spec);
         if (!errors.isEmpty()) {
             throw ApiException.badRequest("rule contract validation failed: " + String.join(", ", errors));
         }
         compileOrReject(spec);
+        // Caller metadata is never a version authority. A fresh persisted nonce
+        // prevents stale writes after restore or delete/recreate, even for equal bodies.
+        spec.put(RuleWriteCondition.TOKEN, UUID.randomUUID().toString());
         String ruleId = String.valueOf(spec.get("id"));
         if (topologyGuard != null) topologyGuard.validateMutation(tenant, ruleId, spec);
         for (String advisory : DetectionContentCatalog.partitionLocalAdvisories(spec)) {
@@ -216,7 +272,7 @@ public class RuleSpecStore {
             String source = restore ? "RESTORE" : (existing == null ? "ADD" : "EDIT");
             appendRevision(tenant, ruleId, specJson, spec.get("status"), source);
         }
-        return spec;
+        return RuleWriteCondition.representation(tenant, spec);
     }
 
     /**
@@ -268,43 +324,74 @@ public class RuleSpecStore {
         conflict.setStoredVersion(stored);
         conflict.setStatus("PENDING");
         conflict.setDetectedAt(Instant.now());
-        try {
-            conflicts.save(conflict);
-        } catch (DataIntegrityViolationException racedRecorder) {
-            // Concurrent replicas both detected the same upgrade; the unique key
-            // keeps a single pending conflict per (rule, pack, version).
-        }
+        conflicts.save(conflict);
     }
 
-    /** Bounded, tenant-scoped view of a rule's version chain (oldest first). */
+    /** Legacy full-spec response, oldest first; large histories require paged metadata. */
     public List<Map<String, Object>> revisions(String ruleId) {
         return revisions(ruleId, tenant());
     }
 
     public List<Map<String, Object>> revisions(String ruleId, String tenant) {
         ensureTenantContent(tenant);
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (RuleRevisionEntity revision : revisions.findByTenantIdAndRuleIdOrderByRevisionAsc(tenant, ruleId)) {
-            Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("revision", revision.getRevision());
-            entry.put("ruleId", revision.getRuleId());
-            entry.put("status", revision.getStatus());
-            entry.put("source", revision.getSource());
-            entry.put("changedBy", revision.getChangedBy());
-            entry.put("changedAt", revision.getChangedAt() == null ? null : revision.getChangedAt().toString());
-            entry.put("spec", Json.parseObject(revision.getSpec()));
-            out.add(entry);
-        }
-        return out;
+        var result = revisions.findByTenantIdAndRuleIdOrderByRevisionAsc(tenant, ruleId,
+                PageRequest.of(0, MAX_HISTORY_PAGE_SIZE));
+        if (result.hasNext()) throw ApiException.badRequest("rule history exceeds 100 revisions; use page and size, then fetch one revision");
+        return result.getContent().stream().map(RuleSpecStore::revisionDetail).toList();
+    }
+
+    public Page<Map<String, Object>> revisionPage(String ruleId, int page, int size) {
+        checkHistoryPage(page, size);
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        return revisions.findAllByTenantIdAndRuleId(tenant, ruleId,
+                PageRequest.of(page - 1, size, Sort.by(Sort.Direction.DESC, "revision")))
+                .map(row -> revisionMetadata(row.getRevision(), row.getRuleId(), row.getStatus(),
+                        row.getSource(), row.getChangedBy(), row.getChangedAt()));
+    }
+
+    public Map<String, Object> revision(String ruleId, long revision) {
+        if (revision < 1) throw ApiException.badRequest("revision must be positive");
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        return revisions.findByTenantIdAndRuleIdAndRevision(tenant, ruleId, revision)
+                .map(RuleSpecStore::revisionDetail).orElse(null);
+    }
+
+    private static Map<String, Object> revisionMetadata(long revision, String ruleId, String status,
+                                                       String source, String changedBy, Instant changedAt) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("revision", revision);
+        entry.put("ruleId", ruleId);
+        entry.put("status", status);
+        entry.put("source", source);
+        entry.put("changedBy", changedBy);
+        entry.put("changedAt", changedAt == null ? null : changedAt.toString());
+        return entry;
+    }
+
+    private static Map<String, Object> revisionDetail(RuleRevisionEntity row) {
+        Map<String, Object> entry = revisionMetadata(row.getRevision(), row.getRuleId(), row.getStatus(),
+                row.getSource(), row.getChangedBy(), row.getChangedAt());
+        Map<String, Object> spec = Json.parseObject(row.getSpec());
+        entry.put("spec", spec.containsKey(RuleWriteCondition.TOKEN)
+                ? RuleWriteCondition.representation(row.getTenantId(), spec) : spec);
+        return entry;
     }
 
     /** Pending "content pack updated, local customized" conflicts for the tenant. */
     public List<Map<String, Object>> contentConflicts() {
+        var result = contentConflictPage(1, MAX_HISTORY_PAGE_SIZE);
+        if (result.hasNext()) throw ApiException.badRequest("content conflicts exceed 100 records; use page and size");
+        return result.getContent();
+    }
+
+    public Page<Map<String, Object>> contentConflictPage(int page, int size) {
+        checkHistoryPage(page, size);
         String tenant = tenant();
         ensureTenantContent(tenant);
-        List<Map<String, Object>> out = new ArrayList<>();
-        for (RuleContentConflictEntity conflict : conflicts
-                .findByTenantIdAndStatusOrderByDetectedAtAsc(tenant, "PENDING")) {
+        return conflicts.findByTenantIdAndStatus(tenant, "PENDING",
+                PageRequest.of(page - 1, size, Sort.by("detectedAt", "id"))).map(conflict -> {
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("ruleId", conflict.getRuleId());
             entry.put("contentPack", conflict.getContentPack());
@@ -312,24 +399,36 @@ public class RuleSpecStore {
             entry.put("storedVersion", conflict.getStoredVersion());
             entry.put("status", conflict.getStatus());
             entry.put("detectedAt", conflict.getDetectedAt() == null ? null : conflict.getDetectedAt().toString());
-            out.add(entry);
+            return entry;
+        });
+    }
+
+    private static void checkHistoryPage(int page, int size) {
+        if (page < 1 || size < 1 || size > MAX_HISTORY_PAGE_SIZE) {
+            throw ApiException.badRequest("page must be >= 1 and size between 1 and 100");
         }
-        return out;
     }
 
     /**
      * Re-applies a historical revision as the rule's new head, appending a
      * RESTORE entry rather than deleting history. Returns the persisted spec, or
-     * null when the rule or revision does not exist for this tenant.
+     * null when the revision does not exist for this tenant. A deleted rule can
+     * be recreated from its retained revision.
      */
     public Map<String, Object> restoreRevision(String ruleId, long revision) {
+        return restoreRevision(ruleId, revision, null);
+    }
+
+    public Map<String, Object> restoreRevision(String ruleId, long revision, RuleWriteCondition condition) {
         String tenant = tenant();
-        ensureTenantContent(tenant);
-        RuleRevisionEntity target = revisions
-                .findByTenantIdAndRuleIdAndRevision(tenant, ruleId, revision).orElse(null);
-        if (target == null) return null;
-        Map<String, Object> spec = Json.parseObject(target.getSpec());
-        return saveInternal(spec, tenant, false, true);
+        return inCatalog(tenant, () -> {
+            if (condition != null) condition.check(current(ruleId, tenant));
+            RuleRevisionEntity target = revisions
+                    .findByTenantIdAndRuleIdAndRevision(tenant, ruleId, revision).orElse(null);
+            if (target == null) return null;
+            Map<String, Object> spec = Json.parseObject(target.getSpec());
+            return saveInternal(spec, tenant, false, true);
+        });
     }
 
     public List<Map<String, Object>> list() {
@@ -339,7 +438,7 @@ public class RuleSpecStore {
     public List<Map<String, Object>> list(String tenant) {
         ensureTenantContent(tenant);
         return repo.findByTenantId(tenant).stream()
-                .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())))
+                .map(this::representation)
                 .toList();
     }
 
@@ -356,8 +455,8 @@ public class RuleSpecStore {
         ensureTenantContent(tenant);
         int boundedLimit = Math.max(1, Math.min(MAX_COMPATIBILITY_LIST_SIZE, limit));
         return repo.findByTenantId(tenant, PageRequest.of(0, boundedLimit,
-                        Sort.by(Sort.Order.asc("id"))))
-                .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())))
+                        Sort.by(Sort.Order.asc("ruleId"))))
+                .map(this::representation)
                 .getContent();
     }
 
@@ -376,8 +475,46 @@ public class RuleSpecStore {
         String tenant = tenant();
         ensureTenantContent(tenant);
         return repo.findByTenantId(tenant, PageRequest.of(page - 1, size,
-                        Sort.by(Sort.Order.asc("id"))))
-                .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())));
+                        Sort.by(Sort.Order.asc("ruleId"))))
+                .map(this::representation);
+    }
+
+    public Page<Map<String, Object>> search(int page, int size, String keyword, String status,
+                                            String reference, String alias) {
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        return repo.search(tenant, keyword.toLowerCase(java.util.Locale.ROOT), status,
+                        reference.isEmpty() ? "" : RuleCatalogMetadata.referenceToken(reference),
+                        alias.isEmpty() ? "" : RuleCatalogMetadata.referenceToken(alias),
+                        PageRequest.of(page - 1, size, Sort.by("ruleId")))
+                .map(this::representation);
+    }
+
+    public Page<Map<String, Object>> options(int page, int size, String keyword) {
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        return repo.options(tenant, keyword.toLowerCase(java.util.Locale.ROOT), PageRequest.of(page - 1, size));
+    }
+
+    public List<Map<String, Object>> lookup(List<String> ids) {
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        return ids.isEmpty() ? List.of() : repo.lookup(tenant, ids);
+    }
+
+    public List<String> activeTechniques() {
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        // Return a bounded projection, never complete rule bodies. Oversized
+        // metadata fails explicitly instead of silently reporting partial coverage.
+        List<String> groups = repo.activeTechniques(tenant, PageRequest.of(0, 10_001));
+        if (groups.size() > 10_000) throw ApiException.badRequest("active technique catalogue exceeds 10000 groups");
+        Set<String> techniques = new java.util.TreeSet<>();
+        for (String group : groups) {
+            techniques.addAll(List.of(group.split("\n")));
+            if (techniques.size() > 10_000) throw ApiException.badRequest("active technique catalogue exceeds 10000 techniques");
+        }
+        return List.copyOf(techniques);
     }
 
     public Map<String, Object> get(String id) {
@@ -387,7 +524,7 @@ public class RuleSpecStore {
     public Map<String, Object> get(String id, String tenant) {
         ensureTenantContent(tenant);
         return repo.findByRuleIdAndTenantId(id, tenant)
-                .map(e -> DetectionContentCatalog.enrich(Json.parseObject(e.getSpec())))
+                .map(this::representation)
                 .orElse(null);
     }
 
@@ -396,19 +533,27 @@ public class RuleSpecStore {
     }
 
     public boolean delete(String id) {
-        String tenant = tenant();
-        if (topologyGuard == null) return deleteChecked(id, tenant);
-        return topologyGuard.mutate(tenant, () -> deleteChecked(id, tenant));
+        return delete(id, null);
     }
 
-    private boolean deleteChecked(String id, String tenant) {
-        Optional<RuleEntity> e = repo.findByRuleIdAndTenantId(id, tenant);
-        if (e.isEmpty()) return false;
-        if (topologyGuard != null) topologyGuard.validateMutation(tenant, id, null);
-        appendRevision(tenant, id, e.get().getSpec(),
-                Json.parseObject(e.get().getSpec()).get("status"), "DELETE");
-        repo.delete(e.get());
-        return true;
+    public boolean delete(String id, RuleWriteCondition condition) {
+        String tenant = tenant();
+        return inCatalog(tenant, () -> {
+            Optional<RuleEntity> e = repo.findByRuleIdAndTenantId(id, tenant);
+            Map<String, Object> current = e.map(this::representation).orElse(null);
+            if (condition != null) {
+                condition.check(current);
+                if (current != null && "ACTIVE".equalsIgnoreCase(String.valueOf(current.get("status")))) {
+                    throw ApiException.of(409, "disable the rule before deleting it");
+                }
+            }
+            if (e.isEmpty()) return false;
+            if (topologyGuard != null) topologyGuard.validateMutation(tenant, id, null);
+            appendRevision(tenant, id, e.get().getSpec(),
+                    Json.parseObject(e.get().getSpec()).get("status"), "DELETE");
+            repo.delete(e.get());
+            return true;
+        });
     }
 
     /** Acting principal for the version chain; falls back to "system" outside a request. */
@@ -457,13 +602,28 @@ public class RuleSpecStore {
     }
 
     private void ensureTenantContent(String tenant) {
-        String normalized = tenant == null || tenant.isBlank() ? "default" : tenant;
-        if (!initializedTenants.add(normalized)) return;
+        inCatalog(tenant, () -> null);
+    }
+
+    private <T> T inCatalog(String tenant, Supplier<T> operation) {
+        Supplier<T> coordinated = () -> catalog.withCatalog(tenant, PACK,
+                () -> syncPackagedContent(tenant), operation);
+        // First pin also holds topology before reading the catalogue. Keep one lock order.
+        return topologyGuard == null ? coordinated.get() : topologyGuard.mutate(tenant, coordinated);
+    }
+
+    private static RuleCatalogCoordinator.Pack contentPack() {
+        Map<String, Object> manifest = DetectionContentCatalog.manifest();
         try {
-            syncPackagedContent(normalized);
-        } catch (RuntimeException failure) {
-            initializedTenants.remove(normalized);
-            throw failure;
+            byte[] canonical = Json.mapper().writer()
+                    .with(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+                    .writeValueAsBytes(manifest);
+            String fingerprint = java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(canonical));
+            return new RuleCatalogCoordinator.Pack(String.valueOf(manifest.get("packId")),
+                    String.valueOf(manifest.get("version")), fingerprint);
+        } catch (Exception failure) {
+            throw new IllegalStateException("Unable to fingerprint packaged rule content", failure);
         }
     }
 }

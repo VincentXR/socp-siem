@@ -88,7 +88,7 @@ onUnmounted(() => {
 
 <template>
   <div>
-    <div style="display:flex;gap:10px;align-items:center;margin-bottom:12px">
+    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px">
       <span style="font-size:13px;color:var(--ns-text-3)">Top N</span>
       <el-input-number :model-value="riskLimit" :min="5" :max="100" :step="5" size="small" @change="onLimitChange" />
       <el-button size="small" @click="emit('refresh')">{{ t('common.refresh') }}</el-button>
@@ -97,13 +97,13 @@ onUnmounted(() => {
       </span>
     </div>
     <el-row :gutter="12">
-      <el-col :span="10">
+      <el-col :xs="24" :md="10">
         <el-card shadow="never">
           <template #header>{{ t('ueba.riskTop') }}</template>
           <div ref="riskBarEl" style="height:340px"></div>
         </el-card>
       </el-col>
-      <el-col :span="14">
+      <el-col :xs="24" :md="14">
         <el-card shadow="never">
           <template #header>{{ t('ueba.entityDetails') }}</template>
           <el-table :data="entities" size="small" border height="340" @row-click="emit('select', $event)">

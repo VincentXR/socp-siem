@@ -5,7 +5,7 @@ import 'element-plus/es/components/table/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import AnimatedNumber from '../AnimatedNumber.vue'
 import EmptyState from '../components/EmptyState.vue'
 import MetricCard from '../components/MetricCard.vue'
@@ -28,6 +28,8 @@ const props = defineProps<{
   filteredAlarms: Alarm[]
   healths: Record<string, string>
   loading?: boolean
+  refreshing?: boolean
+  updatedAt?: number
   error?: string
   goAlarms?: (query?: Record<string, string>) => void
   openAlarm?: (id: string) => void
@@ -39,12 +41,10 @@ const { t, d } = useI18n()
 
 const LEVELS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const
 
-const now = () => d(new Date(), 'time')
-const updatedAt = ref(now())
-function onRefresh() {
-  updatedAt.value = now()
-  emit('refresh')
-}
+const refreshLabel = computed(() => props.updatedAt
+  ? t('overview.lastRefresh', { time: d(new Date(props.updatedAt), 'dateTime') })
+  : t('overview.awaitingRefresh'))
+function onRefresh() { emit('refresh') }
 
 const trendSum = computed(() => Object.values(props.sitStats?.trend7d ?? {}).reduce((a, b) => a + b, 0))
 const highPending = computed(() => props.stat.critical + props.stat.high)
@@ -73,10 +73,10 @@ function severityLabel(level: string): string {
 <template>
   <div class="page-pad view-enter">
     <PageHeader :eyebrow="t('menuGroup.overview')" :title="t('overview.title')">
-      <template #description>{{ t('overview.description') }} · {{ updatedAt }}</template>
+      <template #description>{{ t('overview.description') }} · {{ refreshLabel }}</template>
       <template #actions>
         <span class="ov-date-pill">{{ t('overview.last7Days') }}</span>
-        <el-button type="primary" size="small" round @click="onRefresh">{{ t('common.refresh') }}</el-button>
+        <el-button type="primary" size="small" round :loading="props.refreshing" @click="onRefresh">{{ t('common.refresh') }}</el-button>
       </template>
     </PageHeader>
 

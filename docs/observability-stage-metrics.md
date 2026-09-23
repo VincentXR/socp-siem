@@ -65,18 +65,19 @@ are intended for dashboards; raw event IDs are never metric labels.
 ## Alert thresholds
 
 The `socp-event-path` Prometheus rule group ships with the chart and is off by
-default because it needs the Prometheus Operator CRDs. Each threshold below was
-chosen so that a healthy pipeline sits well clear of it, and so that the alert
-can resolve again.
+default because it needs the Prometheus Operator CRDs. Each threshold below
+is an operational default rather than a measured capacity or latency baseline.
+Tune thresholds against the target deployment and inspect the owning metric
+when an alert resolves; resolution does not always mean the backlog is empty.
 
 | Alert | Threshold | Basis |
 | --- | --- | --- |
-| `SocpDetectionConsumerLag` | no lag reported, or `> 10000` | `absent()` is required: the series only exists while a consumer reports one. A bare `max()` evaluates to nothing when the consumer wedges, so the alert would fall silent exactly when the thing it watches has stopped. 10000 records is roughly a minute of a loaded pipeline, far above normal catch-up. |
-| `Socp*OutboxOldestAge` | `> 300s` pending | Two drain cycles should clear a row; five minutes of pending means the publisher is wedged rather than briefly behind. |
-| `Socp*OutboxDead` | `delta(...[15m]) > 0` | Dead rows are retained deliberately for investigation and replay, so the count never returns to zero. Alerting on the absolute count latches forever; alerting on growth resolves once the backlog stops worsening. |
+| `SocpDetectionConsumerLag` | no lag reported, or `> 10000`, for 10m | `absent()` covers complete loss of the lag series; it does not detect a single missing consumer while another reports. A count of 10000 is not a fixed elapsed-time estimate. |
+| `Socp*OutboxOldestAge` | `> 300s` pending | Investigate dependency availability, retry backoff, and drain capacity. Pending age alone does not identify the cause. |
+| `Socp*OutboxDead` | `delta(...[15m]) > 0` for 5m | Detects net growth. Unresolved rows can remain after this alert resolves; removals can also mask new failures. Inspect the absolute count and use the admin requeue/discard workflow in ADR 005 to close retained rows. |
 | `SocpDeadLetterGrowth` | `increase(...[15m]) > 0` | The indexer counter is monotonic, so `increase()` is the correct function here; the dead counts above are gauges and use `delta()`. |
 | `SocpDetectionRuleIsolated` | `max(socp_detection_rules_isolated_count) > 0` for 5m | Isolation is the last-resort path that keeps a bad rule from killing the engine; it is silent unless paged, and resolves when the operator fixes or disables the rule. |
-| `SocpDetectionOffsetPinned` | `max(socp_detection_offset_pinned) > 10000` for 15m | Normal in-flight processing keeps the pin far below one lane queue; a sustained six-digit pin means a record never finalizes and the commit watermark cannot advance. |
+| `SocpDetectionOffsetPinned` | `max(socp_detection_offset_pinned) > 10000` for 15m | Indicates a sustained gap behind the contiguous commit watermark. Inspect blocked records and durable writes before diagnosing a stuck lane. |
 | Detection retry blocked (`SocpDetectionRetryBlocked`) | blocked partitions `> 0` and oldest block `> 300s` | Five minutes distinguishes ordinary dependency jitter from a recovery path that needs operator attention. Alert on age, not every retry attempt. |
 | `SocpDetectionDlqHandoffGrowth` | `increase(socp_detection_dlq_handoff_total{outcome="committed"}[15m]) > 0` | Dependency outages must leave the committed hand-off flat; growth means poison records reached the dead-letter topic and need the redrive procedure. |
 | `SocpDetectionRoutingMismatchGrowth` | `increase(socp_detection_rule_routing_mismatch_total[30m]) > 0` for 10m | A routed-state contract mismatch; ticket-level content quality, not an outage. |

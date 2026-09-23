@@ -19,6 +19,14 @@ spring:
   flyway:
     enabled: true
     baseline-on-migrate: true
+  mail:
+    properties:
+      "[mail.smtp.connectiontimeout]": 3000
+      "[mail.smtp.timeout]": 3000
+      "[mail.smtp.writetimeout]": 3000
+      "[mail.smtps.connectiontimeout]": 3000
+      "[mail.smtps.timeout]": 3000
+      "[mail.smtps.writetimeout]": 3000
 
 
 socp:

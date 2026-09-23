@@ -39,14 +39,25 @@ import { useConfirm } from '../composables/useConfirm'
 import { tOr } from '../utils/i18nLabel'
 import { threatIntelApi, type Ioc } from '../api/domains'
 import { SEVERITIES, type IocInput } from '../api'
-import { readImportRows, type ImportRow } from '../lib/resource-import'
+import { readImportRows } from '../lib/resource-import'
+import { IOC_TYPES, prepareIocImport } from '../lib/ioc-import'
+import { useMutation } from '../composables/useMutation'
+import { useUnsavedChanges } from '../composables/useUnsavedChanges'
+import { useRoute } from 'vue-router'
+import ActionFeedback from '../components/ActionFeedback.vue'
 import { useI18n } from '../composables/useI18n'
 import { useWriteAccess } from '../composables/useWriteAccess'
 
 const { t, d } = useI18n()
 const canWrite = useWriteAccess()
 const { confirmDanger } = useConfirm()
-const IOC_TYPES = ['IP', 'DOMAIN', 'URL', 'SHA256', 'MD5', 'EMAIL']
+const route = useRoute()
+const mutation = useMutation()
+const actionBusy = mutation.busy
+const actionError = mutation.error
+const importUnconfirmed = ref(false)
+const importResult = ref<{ imported: number; skipped: number; errors: string[] } | null>(null)
+const statsError = ref('')
 const tiStat = ref<{ total?: number; byType?: Record<string, number> }>({})
 const loadError = ref('')
 const matchValue = ref('')
@@ -57,8 +68,6 @@ const detailIoc = ref<Ioc | null>(null)
 const iocImportInput = ref<HTMLInputElement | null>(null)
 const importPreviewVisible = ref(false)
 const importPreviewRows = ref<IocInput[]>([])
-const importBusy = ref(false)
-const iocBusy = ref(false)
 const lifecycleBusyId = ref('')
 const matchBusy = ref(false)
 const newIoc = ref({ type: 'IP', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' })
@@ -84,15 +93,11 @@ const lifecycleLabel = (value: unknown) => {
 }
 const formatTime = (value?: string | null) => value ? d(value, 'dateTime') : t('time.notAvailable')
 
-function rowValue(row: ImportRow, ...keys: string[]): string {
-  const key = keys.find(candidate => row[candidate] !== undefined)
-  return key ? String(row[key] ?? '').trim() : ''
-}
-
 async function loadTi(): Promise<void> {
   const request = latestRequest.start()
   loading.value = true
   loadError.value = ''
+  statsError.value = ''
   try {
     const [listResult, statResult] = await Promise.allSettled([
       threatIntelApi.list(iocType.value || undefined, iocPage.value, iocSize.value, listQuery.keywordParam.value, { signal: request.signal }),
@@ -102,19 +107,23 @@ async function loadTi(): Promise<void> {
     if (listResult.status === 'fulfilled') {
       iocs.value = listResult.value.items
       iocTotal.value = listResult.value.total
+      const current = iocs.value.find(item => item.id === detailIoc.value?.id)
+      if (current) detailIoc.value = current
     }
     else loadError.value = listResult.reason instanceof Error ? listResult.reason.message : String(listResult.reason)
     if (!request.isCurrent()) return
     if (statResult.status === 'fulfilled') tiStat.value = statResult.value
+    else { tiStat.value = {}; statsError.value = statResult.reason instanceof Error ? statResult.reason.message : String(statResult.reason) }
   } finally {
     if (request.isCurrent()) loading.value = false
   }
 }
 
 function resetIocForm(): void { newIoc.value = { type: 'IP', value: '', severity: 'HIGH', source: 'manual', description: '', tags: '' } }
-function openCreateIoc(): void { if (!canWrite.value) return; editingIocId.value = null; resetIocForm(); showIocDialog.value = true }
+function openCreateIoc(): void { if (!canWrite.value || actionBusy.value || showIocDialog.value || importPreviewVisible.value) return; actionError.value = ''; editingIocId.value = null; resetIocForm(); showIocDialog.value = true }
 function openEditIoc(value: unknown): void {
-  if (!canWrite.value) return
+  if (!canWrite.value || actionBusy.value || showIocDialog.value || importPreviewVisible.value) return
+  actionError.value = ''
   const ioc = value as Ioc
   editingIocId.value = ioc.id
   newIoc.value = { type: ioc.type, value: ioc.value, severity: ioc.severity, source: ioc.source, description: ioc.description || '', tags: (ioc.tags || []).join(', ') }
@@ -123,40 +132,46 @@ function openEditIoc(value: unknown): void {
 }
 
 async function saveIoc(): Promise<void> {
-  if (iocBusy.value || !newIoc.value.value.trim()) return
+  if (!canWrite.value || actionBusy.value || !newIoc.value.value.trim()) return
+  const id = editingIocId.value
   const payload = { type: newIoc.value.type.toUpperCase(), value: newIoc.value.value.trim(), severity: newIoc.value.severity, source: newIoc.value.source.trim() || 'manual', description: newIoc.value.description.trim() || undefined, tags: newIoc.value.tags.split(/[,;\n]+/).map(tag => tag.trim()).filter(Boolean) }
-  iocBusy.value = true
-  try {
-    if (editingIocId.value) await threatIntelApi.update(editingIocId.value, payload)
-    else await threatIntelApi.create(payload)
-    ElMessage.success(editingIocId.value ? t('threat.updated') : t('threat.added'))
+  await mutation.run(async () => {
+    const saved = id ? await threatIntelApi.update(id, payload) : await threatIntelApi.create(payload)
+    if (detailIoc.value?.id === saved.id) detailIoc.value = saved
+    latestRequest.cancel()
+    iocDialogGuard.markSaved()
     showIocDialog.value = false
+    ElMessage.success(id ? t('threat.updated') : t('threat.added'))
     await loadTi()
-  } catch (cause) { ElMessage.error(cause instanceof Error ? cause.message : t('threat.saveFailed')) }
-  finally { iocBusy.value = false }
+  })
 }
 
 async function removeIoc(ioc: Ioc): Promise<void> {
-  if (!canWrite.value) return
-  if (!await confirmDanger(t('threat.confirmDelete', { value: ioc.value }), { title: t('common.delete') })) return
-  try { await threatIntelApi.remove(ioc.id); ElMessage.success(t('threat.deleted')); await loadTi() }
-  catch (cause) { ElMessage.error(cause instanceof Error ? cause.message : t('threat.deleteFailed')) }
+  if (!canWrite.value || actionBusy.value) return
+  await mutation.run(async () => {
+    if (!await confirmDanger(t('threat.confirmDelete', { value: ioc.value }), { title: t('common.delete') })) return
+    await threatIntelApi.remove(ioc.id)
+    latestRequest.cancel()
+    if (detailIoc.value?.id === ioc.id) { showDetailDrawer.value = false; detailIoc.value = null }
+    ElMessage.success(t('threat.deleted'))
+    await loadTi()
+  })
 }
 
 async function toggleLifecycle(value: unknown): Promise<void> {
-  if (!canWrite.value || lifecycleBusyId.value) return
+  if (!canWrite.value || actionBusy.value) return
   const ioc = value as Ioc
-  // The list keeps the row after a revoke, so confirm the intent to stop matching first.
-  if (!ioc.revoked && !await confirmDanger(t('threat.revokeConfirm'), { title: t('threat.revoke') })) return
-  lifecycleBusyId.value = ioc.id
-  try {
-    await threatIntelApi.setRevoked(ioc.id, !ioc.revoked)
-    ElMessage.success(ioc.revoked ? t('threat.restored') : t('threat.revokedSuccess'))
-    await loadTi()
-    detailIoc.value = iocs.value.find(item => item.id === ioc.id) ?? null
-  }
-  catch (cause) { ElMessage.error(cause instanceof Error ? cause.message : t('threat.lifecycleFailed')) }
-  finally { lifecycleBusyId.value = '' }
+  await mutation.run(async () => {
+    if (!ioc.revoked && !await confirmDanger(t('threat.revokeConfirm'), { title: t('threat.revoke') })) return
+    lifecycleBusyId.value = ioc.id
+    try {
+      const updated = await threatIntelApi.setRevoked(ioc.id, !ioc.revoked)
+      latestRequest.cancel()
+      if (detailIoc.value?.id === ioc.id) detailIoc.value = updated
+      ElMessage.success(ioc.revoked ? t('threat.restored') : t('threat.revokedSuccess'))
+      await loadTi()
+    } finally { lifecycleBusyId.value = '' }
+  })
 }
 
 function openDetail(ioc: Ioc): void { detailIoc.value = ioc; showDetailDrawer.value = true }
@@ -178,70 +193,78 @@ async function doTiMatch(): Promise<void> {
   finally { if (request.isCurrent()) matchBusy.value = false }
 }
 
-function selectIocImport(): void { iocImportInput.value?.click() }
+function selectIocImport(): void {
+  if (!canWrite.value || actionBusy.value || showIocDialog.value || importPreviewVisible.value) return
+  iocImportInput.value?.click()
+}
 async function importIocFile(event: Event): Promise<void> {
-  if (!canWrite.value) return
+  if (!canWrite.value || actionBusy.value) return
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
-  try {
-    const rows = await readImportRows(file)
-    const payload = rows.map(row => {
-      const severity = rowValue(row, 'severity').toUpperCase()
-      return { type: rowValue(row, 'type').toUpperCase() || 'IP', value: rowValue(row, 'value'), severity: SEVERITIES.includes(severity as typeof SEVERITIES[number]) ? severity : 'HIGH', source: rowValue(row, 'source') || 'import', description: rowValue(row, 'description'), tags: rowValue(row, 'tags').split(/[,;\n]+/).map(tag => tag.trim()).filter(Boolean) }
-    }).filter(row => row.value)
-    importPreviewRows.value = payload
-    importPreviewVisible.value = true
-  } catch (cause) { ElMessage.error(cause instanceof Error ? cause.message : t('threat.importFailed')) }
-  finally { input.value = '' }
+  await mutation.run(async () => {
+    try {
+      importPreviewRows.value = prepareIocImport(await readImportRows(file))
+      importUnconfirmed.value = false; importResult.value = null
+      importPreviewVisible.value = true
+    } finally { input.value = '' }
+  })
 }
 
 async function confirmIocImport(): Promise<void> {
-  if (!canWrite.value || importBusy.value || !importPreviewRows.value.length) return
-  importBusy.value = true
-  try {
-    const imported = await threatIntelApi.bulkImport(importPreviewRows.value)
-    if (imported.skipped) ElMessage.warning(t('threat.importSkipped', { imported: imported.imported, skipped: imported.skipped }))
-    else ElMessage.success(t('threat.importSuccess', { count: imported.imported }))
+  if (!canWrite.value || actionBusy.value || !importPreviewRows.value.length) return
+  const payload = importPreviewRows.value.map(row => ({ ...row, tags: [...(row.tags ?? [])] }))
+  await mutation.run(async () => {
+    try { importResult.value = await threatIntelApi.bulkImport(payload) }
+    catch (failure) { importUnconfirmed.value = true; throw failure }
+    latestRequest.cancel()
+    importUnconfirmed.value = false
     importPreviewRows.value = []
+    importGuard.markSaved()
     importPreviewVisible.value = false
     await loadTi()
-  } catch (cause) { ElMessage.error(cause instanceof Error ? cause.message : t('threat.importFailed')) }
-  finally { importBusy.value = false }
+  })
 }
 
-const iocDialogGuard = useFormDialog(showIocDialog, () => newIoc.value, () => iocBusy.value)
+watch(matchValue, () => { matchRequest.cancel(); matchBusy.value = false; tiMatchResult.value = null })
+const iocDialogGuard = useFormDialog(showIocDialog, () => newIoc.value, () => actionBusy.value)
+const importGuard = useFormDialog(importPreviewVisible, () => importPreviewRows.value, () => actionBusy.value)
+useUnsavedChanges(() => null, () => false, () => actionBusy.value)
 onMounted(loadTi)
-watch([iocPage, iocSize], () => { listQuery.sync(); void loadTi() })
+watch([iocPage, iocSize, iocType], () => { listQuery.sync(); void loadTi() })
 useDebouncedWatch(iocKeyword, () => {
+  if (iocKeyword.value.trim() === (typeof route.query.q === 'string' ? route.query.q.trim() : '')) return
   if (iocPage.value !== 1) iocPage.value = 1
   else { listQuery.sync(); void loadTi() }
 })
-function onIocTypeChange(): void {
-  iocPage.value = 1
-  listQuery.sync()
-  void loadTi()
-}
+watch([() => route.query.q, () => route.query.page, () => route.query.type], () => {
+  const before = { page: iocPage.value, type: iocType.value, keyword: iocKeyword.value.trim() }
+  listQuery.applyRouteQuery()
+  if (before.page === iocPage.value && before.type === iocType.value && before.keyword !== iocKeyword.value.trim()) void loadTi()
+})
 </script>
 
 <template>
   <div class="page-pad view-enter">
+    <ActionFeedback v-if="!showIocDialog && !importPreviewVisible" :error="actionError" />
+    <ActionFeedback :error="statsError" />
+    <el-alert v-if="importResult" :title="t('threat.importSkipped', { imported: importResult.imported, skipped: importResult.skipped })" :type="importResult.skipped ? 'warning' : 'success'" :closable="false"><ul v-if="importResult.errors.length"><li v-for="(error, index) in importResult.errors.slice(0, 20)" :key="index">{{ error }}</li></ul></el-alert>
     <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('threat.title')" :description="t('threat.description')"><template #actions><el-button size="small" :loading="loading" @click="loadTi">{{ t('common.refresh') }}</el-button></template></PageHeader>
-    <div class="page-metrics ti-metrics"><MetricCard :label="t('threat.total')" tone="info">{{ tiStat.total ?? 0 }}</MetricCard><MetricCard v-for="(count, kind) in (tiStat.byType || {})" :key="kind" :label="kind">{{ count }}</MetricCard></div>
+    <div class="page-metrics ti-metrics"><MetricCard :label="t('threat.total')" tone="info">{{ tiStat.total ?? '\u2014' }}</MetricCard><MetricCard v-for="(count, kind) in (tiStat.byType || {})" :key="kind" :label="kind">{{ count }}</MetricCard></div>
 
     <div class="threat-query-layout">
-      <FilterToolbar class="ti-query-toolbar" :count="iocTotal"><el-input v-model="iocKeyword" :placeholder="t('threat.listSearchPlaceholder')" clearable @input="iocPage = 1" /><el-select v-model="iocType" :placeholder="t('threat.allTypes')" clearable @change="onIocTypeChange"><el-option v-for="type in IOC_TYPES" :key="type" :label="type" :value="type" /></el-select></FilterToolbar>
+      <FilterToolbar class="ti-query-toolbar" :count="iocTotal"><el-input v-model="iocKeyword" :placeholder="t('threat.listSearchPlaceholder')" clearable @input="iocPage = 1" /><el-select v-model="iocType" :placeholder="t('threat.allTypes')" clearable @change="iocPage = 1"><el-option v-for="type in IOC_TYPES" :key="type" :label="type" :value="type" /></el-select></FilterToolbar>
       <div class="threat-match-tool"><div><strong>{{ t('threat.matchToolTitle') }}</strong><span>{{ t('threat.matchToolHint') }}</span></div><div class="threat-match-controls"><el-input v-model="matchValue" :placeholder="t('threat.matchPlaceholder')" @keyup.enter="doTiMatch" /><el-button type="primary" :loading="matchBusy" @click="doTiMatch">{{ t('threat.checkMatch') }}</el-button></div></div>
     </div>
     <el-alert v-if="matchBusy" :title="t('common.loading')" type="info" :closable="false" style="margin-bottom:14px" />
     <el-alert v-else-if="tiMatchResult" :title="tiMatchResult.matched ? t('threat.matched', { value: tiMatchResult.ioc?.value ?? '-', severity: tiMatchResult.ioc?.severity ?? '-' }) : t('threat.noMatch')" :type="tiMatchResult.matched ? 'error' : 'info'" :closable="false" style="margin-bottom:14px" />
-    <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateIoc">{{ t('threat.addIoc') }}</el-button><el-button v-if="canWrite" @click="selectIocImport">{{ t('threat.batchImport') }}</el-button><input ref="iocImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importIocFile" /><span class="hint">{{ t('threat.descriptionHint') }}</span></div>
+    <div class="add-bar"><el-button v-if="canWrite" type="primary" :disabled="actionBusy" @click="openCreateIoc">{{ t('threat.addIoc') }}</el-button><el-button v-if="canWrite" :disabled="actionBusy" @click="selectIocImport">{{ t('threat.batchImport') }}</el-button><input ref="iocImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importIocFile" /><span class="hint">{{ t('threat.descriptionHint') }}</span></div>
 
-    <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocTotal" :loading="loading" :error="loadError" :retry="loadTi" :empty-title="t('threat.iocList')" :empty-description="t('threat.description')"><el-table :data="iocs" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openDetailRow"><el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 90)" /><el-table-column prop="value" column-key="value" :label="t('threat.iocValue')" :width="columnWidth('value')" min-width="180" show-overflow-tooltip><template #default="{ row }"><RowActivate :aria-label="row.value" @activate="openDetailRow(row)">{{ row.value }}</RowActivate></template></el-table-column><el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 120)" show-overflow-tooltip /><el-table-column prop="confidence" :label="t('threat.confidence')" width="100"><template #default="{ row }">{{ row.confidence == null ? t('time.notAvailable') : `${row.confidence}%` }}</template></el-table-column><el-table-column :label="t('common.status')" width="90"><template #default="{ row }"><el-tag :type="lifecycleLabel(row).type" size="small">{{ lifecycleLabel(row).text }}</el-tag></template></el-table-column><el-table-column :label="t('threat.validUntil')" width="155"><template #default="{ row }">{{ formatTime(row.validUntil || row.expiration) }}</template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150" :resizable="false"><template #default="{ row }"><el-button v-if="canWrite" link type="primary" size="small" @click.stop="openEditIoc(row as Ioc)">{{ t('common.edit') }}</el-button><el-button v-if="canWrite" link :type="row.revoked ? 'success' : 'warning'" size="small" :loading="lifecycleBusyId === row.id" :disabled="!!lifecycleBusyId && lifecycleBusyId !== row.id" @click.stop="toggleLifecycle(row as Ioc)">{{ row.revoked ? t('threat.restore') : t('threat.revoke') }}</el-button></template></el-table-column></el-table></DataTableCard>
+    <DataTableCard v-model:current-page="iocPage" v-model:page-size="iocSize" :total="iocTotal" :loading="loading" :error="loadError" :retry="loadTi" :empty-title="t('threat.iocList')" :empty-description="t('threat.description')"><el-table :data="iocs" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openDetailRow"><el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 90)" /><el-table-column prop="value" column-key="value" :label="t('threat.iocValue')" :width="columnWidth('value')" min-width="180" show-overflow-tooltip><template #default="{ row }"><RowActivate :aria-label="row.value" @activate="openDetailRow(row)">{{ row.value }}</RowActivate></template></el-table-column><el-table-column prop="source" column-key="source" :label="t('common.source')" :width="columnWidth('source', 120)" show-overflow-tooltip /><el-table-column prop="confidence" :label="t('threat.confidence')" width="100"><template #default="{ row }">{{ row.confidence == null ? t('time.notAvailable') : `${row.confidence}%` }}</template></el-table-column><el-table-column :label="t('common.status')" width="90"><template #default="{ row }"><el-tag :type="lifecycleLabel(row).type" size="small">{{ lifecycleLabel(row).text }}</el-tag></template></el-table-column><el-table-column :label="t('threat.validUntil')" width="155"><template #default="{ row }">{{ formatTime(row.validUntil || row.expiration) }}</template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150" :resizable="false"><template #default="{ row }"><el-button v-if="canWrite" link type="primary" size="small" :disabled="actionBusy" @click.stop="openEditIoc(row as Ioc)">{{ t('common.edit') }}</el-button><el-button v-if="canWrite" link :type="row.revoked ? 'success' : 'warning'" size="small" :loading="lifecycleBusyId === row.id" :disabled="actionBusy" @click.stop="toggleLifecycle(row as Ioc)">{{ row.revoked ? t('threat.restore') : t('threat.revoke') }}</el-button></template></el-table-column></el-table></DataTableCard>
 
-    <el-dialog v-model="showIocDialog" :before-close="iocDialogGuard.beforeClose" :close-on-click-modal="false" :title="editingIocId ? t('threat.editIoc') : t('threat.addIoc')" width="640px"><el-form :disabled="iocBusy" label-position="top"><p class="dialog-hint">{{ t('threat.manualScopeHint') }}</p><FormGrid :columns="2">
+    <el-dialog v-model="showIocDialog" :before-close="iocDialogGuard.beforeClose" :close-on-click-modal="false" :title="editingIocId ? t('threat.editIoc') : t('threat.addIoc')" width="640px"><ActionFeedback :error="actionError" /><el-form :disabled="actionBusy" label-position="top"><p class="dialog-hint">{{ t('threat.manualScopeHint') }}</p><FormGrid :columns="2">
           <FormField :label="t('threat.iocValue')" required :hint="t('threat.valueHint')" full>
-            <el-input v-model="newIoc.value" :placeholder="t('threat.valuePlaceholder')" />
+            <el-input v-model="newIoc.value" :maxlength="2048" :placeholder="t('threat.valuePlaceholder')" />
           </FormField>
           <FormField :label="t('common.type')">
             <el-select v-model="newIoc.type"><el-option v-for="type in IOC_TYPES" :key="type" :label="type" :value="type" /></el-select>
@@ -250,18 +273,18 @@ function onIocTypeChange(): void {
             <el-select v-model="newIoc.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" /></el-select>
           </FormField>
           <FormField :label="t('common.source')">
-            <el-input v-model="newIoc.source" :placeholder="t('threat.sourcePlaceholder')" />
+            <el-input v-model="newIoc.source" :maxlength="256" :placeholder="t('threat.sourcePlaceholder')" />
           </FormField>
           <FormField :label="t('threat.tags')" :hint="t('threat.tagsHint')">
             <el-input v-model="newIoc.tags" :placeholder="t('threat.tagsPlaceholder')" />
           </FormField>
           <FormField :label="t('common.description')" full>
-            <el-input v-model="newIoc.description" type="textarea" :rows="3" />
+            <el-input v-model="newIoc.description" :maxlength="4096" type="textarea" :rows="3" />
           </FormField>
-        </FormGrid></el-form><template #footer><el-button @click="iocDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :disabled="!newIoc.value.trim()" :loading="iocBusy" @click="saveIoc">{{ t('common.save') }}</el-button></template></el-dialog>
+        </FormGrid></el-form><template #footer><el-button @click="iocDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :disabled="!canWrite || actionBusy || !newIoc.value.trim()" :loading="actionBusy" @click="saveIoc">{{ t('common.save') }}</el-button></template></el-dialog>
 
-    <el-dialog v-model="importPreviewVisible" :title="t('threat.importPreviewTitle')" width="720px" :close-on-click-modal="false"><p class="dialog-hint">{{ t('forms.importPreview', { count: importPreviewRows.length, shown: Math.min(importPreviewRows.length, 20) }) }}</p><el-table :data="importPreviewRows.slice(0, 20)" size="small" max-height="360" border><el-table-column prop="type" :label="t('common.type')" width="90" /><el-table-column prop="value" :label="t('threat.iocValue')" min-width="200" show-overflow-tooltip /><el-table-column prop="severity" :label="t('common.severity')" width="110" /><el-table-column prop="source" :label="t('common.source')" width="130" show-overflow-tooltip /></el-table><template #footer><el-button @click="importPreviewVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="importBusy" @click="confirmIocImport">{{ t('threat.confirmImport') }}</el-button></template></el-dialog>
+    <el-dialog v-model="importPreviewVisible" :before-close="importGuard.beforeClose" :title="t('threat.importPreviewTitle')" width="720px" :close-on-click-modal="false"><ActionFeedback :error="actionError" /><p v-if="importUnconfirmed" role="status" class="dialog-hint">{{ t('threat.importUnconfirmed') }}</p><p class="dialog-hint">{{ t('threat.importLimits') }}</p><p class="dialog-hint">{{ t('forms.importPreview', { count: importPreviewRows.length, shown: Math.min(importPreviewRows.length, 20) }) }}</p><el-table :data="importPreviewRows.slice(0, 20)" size="small" max-height="360" border><el-table-column prop="type" :label="t('common.type')" width="90" /><el-table-column prop="value" :label="t('threat.iocValue')" min-width="200" show-overflow-tooltip /><el-table-column prop="severity" :label="t('common.severity')" width="110" /><el-table-column prop="source" :label="t('common.source')" width="130" show-overflow-tooltip /></el-table><template #footer><el-button @click="importGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="actionBusy" :disabled="!canWrite || actionBusy || !importPreviewRows.length" @click="confirmIocImport">{{ t('threat.confirmImport') }}</el-button></template></el-dialog>
 
-    <el-drawer :model-value="showDetailDrawer" :title="detailIoc?.value || t('threat.iocDetails')" size="min(560px, 96vw)" @close="showDetailDrawer = false"><template v-if="detailIoc"><div class="threat-detail-status"><SevBadge :value="detailIoc.severity" /><el-tag :type="lifecycleLabel(detailIoc).type" size="small">{{ lifecycleLabel(detailIoc).text }}</el-tag><span class="mono">{{ detailIoc.type }}</span></div><dl class="threat-detail-grid"><dt>{{ t('common.source') }}</dt><dd>{{ detailIoc.source || t('time.notAvailable') }}</dd><dt>{{ t('threat.confidence') }}</dt><dd>{{ detailIoc.confidence == null ? t('time.notAvailable') : `${detailIoc.confidence}%` }}</dd><dt>{{ t('threat.validFrom') }}</dt><dd>{{ formatTime(detailIoc.validFrom) }}</dd><dt>{{ t('threat.validUntil') }}</dt><dd>{{ formatTime(detailIoc.validUntil || detailIoc.expiration) }}</dd><dt>{{ t('threat.provenance') }}</dt><dd>{{ detailIoc.provenance || t('time.notAvailable') }}</dd><dt>{{ t('common.description') }}</dt><dd>{{ detailIoc.description || t('time.notAvailable') }}</dd></dl><div v-if="detailIoc.tags?.length" class="threat-detail-tags"><el-tag v-for="tag in detailIoc.tags" :key="tag" size="small">{{ tag }}</el-tag></div><div v-if="canWrite" class="threat-detail-actions"><el-button type="primary" @click="openEditIoc(detailIoc)">{{ t('common.edit') }}</el-button><el-button :type="detailIoc.revoked ? 'success' : 'warning'" :loading="lifecycleBusyId === detailIoc.id" :disabled="!!lifecycleBusyId && lifecycleBusyId !== detailIoc.id" @click="toggleLifecycle(detailIoc)">{{ detailIoc.revoked ? t('threat.restore') : t('threat.revoke') }}</el-button><el-button type="danger" plain @click="removeIoc(detailIoc)">{{ t('common.delete') }}</el-button></div></template></el-drawer>
+    <el-drawer :model-value="showDetailDrawer" :title="detailIoc?.value || t('threat.iocDetails')" size="min(560px, 96vw)" @close="showDetailDrawer = false"><template v-if="detailIoc"><ActionFeedback :error="actionError" /><div class="threat-detail-status"><SevBadge :value="detailIoc.severity" /><el-tag :type="lifecycleLabel(detailIoc).type" size="small">{{ lifecycleLabel(detailIoc).text }}</el-tag><span class="mono">{{ detailIoc.type }}</span></div><dl class="threat-detail-grid"><dt>{{ t('common.source') }}</dt><dd>{{ detailIoc.source || t('time.notAvailable') }}</dd><dt>{{ t('threat.confidence') }}</dt><dd>{{ detailIoc.confidence == null ? t('time.notAvailable') : `${detailIoc.confidence}%` }}</dd><dt>{{ t('threat.validFrom') }}</dt><dd>{{ formatTime(detailIoc.validFrom) }}</dd><dt>{{ t('threat.validUntil') }}</dt><dd>{{ formatTime(detailIoc.validUntil || detailIoc.expiration) }}</dd><dt>{{ t('threat.provenance') }}</dt><dd>{{ detailIoc.provenance || t('time.notAvailable') }}</dd><dt>{{ t('common.description') }}</dt><dd>{{ detailIoc.description || t('time.notAvailable') }}</dd></dl><div v-if="detailIoc.tags?.length" class="threat-detail-tags"><el-tag v-for="tag in detailIoc.tags" :key="tag" size="small">{{ tag }}</el-tag></div><div v-if="canWrite" class="threat-detail-actions"><el-button type="primary" :disabled="actionBusy" @click="openEditIoc(detailIoc)">{{ t('common.edit') }}</el-button><el-button :type="detailIoc.revoked ? 'success' : 'warning'" :loading="lifecycleBusyId === detailIoc.id" :disabled="actionBusy" @click="toggleLifecycle(detailIoc)">{{ detailIoc.revoked ? t('threat.restore') : t('threat.revoke') }}</el-button><el-button type="danger" plain :disabled="actionBusy" @click="removeIoc(detailIoc)">{{ t('common.delete') }}</el-button></div></template></el-drawer>
   </div>
 </template>

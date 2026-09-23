@@ -343,7 +343,7 @@ public final class RuleEngine implements AutoCloseable {
             long started = instrumented ? System.nanoTime() : 0L;
             rule.accept(event);
             if (instrumented) {
-                observer.ruleEvaluated(rule.id(), System.nanoTime() - started);
+                notifyRuleEvaluated(rule.id(), System.nanoTime() - started);
             }
             ruleCircuits.computeIfAbsent(rule.id(), ignored -> new RuleCircuitState()).success();
         } catch (RuntimeException failure) {
@@ -515,6 +515,15 @@ public final class RuleEngine implements AutoCloseable {
             observer.evaluationCompleted(event, emittedAlerts);
         } catch (RuntimeException metricsFailure) {
             log.debug("Rule processing observer failed at evaluation boundary: {}", metricsFailure.getMessage());
+        }
+    }
+
+    private void notifyRuleEvaluated(String ruleId, long nanos) {
+        try {
+            observer.ruleEvaluated(ruleId, nanos);
+        } catch (RuntimeException metricsFailure) {
+            log.debug("Rule processing observer failed at rule boundary ruleId={}: {}",
+                    ruleId, metricsFailure.getMessage());
         }
     }
 
@@ -731,8 +740,11 @@ public final class RuleEngine implements AutoCloseable {
 
         private synchronized boolean failure(Throwable failure, boolean permanent) {
             failures++;
-            consecutiveFailures++;
             lastFailure = failure == null ? "unknown" : String.valueOf(failure.getMessage());
+            // Dependency outages (including corrupt external state) must never
+            // be acknowledged as successful evaluations after enough retries.
+            if (RuleDependencyException.causedBy(failure)) return false;
+            consecutiveFailures++;
             if (permanent || consecutiveFailures >= RULE_FAILURE_THRESHOLD) {
                 openUntilNanos = System.nanoTime() + RULE_FUSE_COOLDOWN_NANOS;
                 return true;

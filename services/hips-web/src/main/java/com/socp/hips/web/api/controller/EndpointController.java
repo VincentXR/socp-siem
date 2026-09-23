@@ -55,6 +55,50 @@ public class EndpointController {
                 result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
 
+    /** Exact, tenant-scoped identity association; independent of the inventory's first page. */
+    @RequireRole({"admin", "analyst"})
+    @GetMapping("/related")
+    public ApiResult<PageResponse<Endpoint>> related(@RequestParam(defaultValue = "") String ip,
+                                                     @RequestParam(defaultValue = "") String hostname,
+                                                     @RequestParam(defaultValue = "1") int page,
+                                                     @RequestParam(defaultValue = "20") int size) {
+        requireValidRange(page, size);
+        String normalizedIp = ip == null ? "" : ip.trim();
+        String normalizedHostname = hostname == null ? "" : hostname.trim();
+        if (normalizedIp.length() > 64 || normalizedHostname.length() > 128
+                || (normalizedIp.isEmpty() && normalizedHostname.isEmpty())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "provide an IP (up to 64 characters) or hostname (up to 128 characters)");
+        }
+        Page<Endpoint> result = store.related(page, size, normalizedIp, normalizedHostname);
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @GetMapping("/{id}")
+    public ApiResult<Endpoint> get(@PathVariable String id) {
+        return ApiResult.ok(requireEndpoint(id));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @GetMapping("/{id}/events")
+    public ApiResult<PageResponse<Map<String, Object>>> endpointEvents(@PathVariable String id,
+                                                                        @RequestParam(defaultValue = "1") int page,
+                                                                        @RequestParam(defaultValue = "20") int size) {
+        requireValidRange(page, size);
+        Endpoint endpoint = requireEndpoint(id);
+        Page<Map<String, Object>> result = events.forHostname(endpoint.hostname(), page, size);
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
+    }
+
+    private Endpoint requireEndpoint(String id) {
+        Endpoint endpoint = store.get(id);
+        if (endpoint == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "endpoint not found");
+        return endpoint;
+    }
+
     @RequireRole({"admin", "analyst"})
     @PostMapping
     public ApiResult<Endpoint> register(@Valid @RequestBody RegisterRequest req) {
@@ -91,6 +135,9 @@ public class EndpointController {
         Map<String, Object> out = new java.util.LinkedHashMap<>(store.stats());
         List<Map<String, Object>> tenantEvents = events.list();
         out.put("events", events.count());
+        out.put("eventByTypeScope", "LATEST_EVENTS");
+        out.put("eventByTypeSampleSize", tenantEvents.size());
+        out.put("eventByTypeSampleLimit", 200);
         out.put("eventByType", tenantEvents.stream().collect(java.util.stream.Collectors.groupingBy(
                 e -> String.valueOf(e.getOrDefault("type", "UNKNOWN")),
                 java.util.stream.Collectors.counting())));

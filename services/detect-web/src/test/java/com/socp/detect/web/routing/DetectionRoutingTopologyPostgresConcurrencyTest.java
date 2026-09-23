@@ -36,7 +36,7 @@ class DetectionRoutingTopologyPostgresConcurrencyTest extends DetectionRoutingTo
     @Test
     void firstPinWaitsForConcurrentRuleMutationAndReadsItsCommittedTopology() throws Exception {
         var guard = new DetectionRoutingTopologyGuard(topology, rules, transactions, 8);
-        var store = new RuleSpecStore(rules, revisions, conflicts, guard);
+        var store = new RuleSpecStore(rules, revisions, conflicts, catalog, guard);
         String tenant = "audit-topology-race";
         TenantContext.set(tenant);
         store.save(rule("RACE", "custom.entity", "ACTIVE"));

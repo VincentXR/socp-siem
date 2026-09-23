@@ -50,13 +50,9 @@ public class ReferenceSetController {
     @RequireRole({"admin", "analyst"})
     @PostMapping("/{id}/entries")
     public ApiResult<Map<String, Object>> addEntry(@PathVariable String id, @Valid @RequestBody ReferenceEntryRequest body) {
-        ReferenceSet rs = store.get(id);
-        if (rs == null) throw ApiException.notFound("未找到查找表 " + id);
-        List<String> entries = new java.util.ArrayList<>(rs.entries());
-        String v = body.value();
-        if (!entries.contains(v)) entries.add(v);
-        store.add(new ReferenceSet(rs.id(), rs.name(), rs.description(), List.copyOf(entries)));
-        return ApiResult.ok(Map.of("ok", true, "size", entries.size()));
+        ReferenceSet updated = store.addEntry(id, body.value());
+        if (updated == null) throw ApiException.notFound("Reference set not found: " + id);
+        return ApiResult.ok(Map.of("ok", true, "size", updated.entries().size()));
     }
 
     @RequireRole({"admin", "analyst"})

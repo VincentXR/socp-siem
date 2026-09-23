@@ -76,3 +76,9 @@ Coverage remains a floor and is not a substitute for these invariants. The
 repository keeps aggregate/module floors and also checks executable Java lines
 changed by a pull request. Tests for critical invariants take precedence over
 generic DTO coverage.
+
+The [artifact collector](testing.md#validation-artifact-collection) records missing
+or corrupt inputs explicitly. A commit-named output directory identifies the
+checkout; it does not by itself prove that every local report came from that
+commit or from one complete run. Collection success, test outcomes and runtime
+evidence have separate meanings in the generated summaries.

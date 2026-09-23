@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import 'element-plus/es/components/empty/style/css.mjs'
+import 'element-plus/es/components/button/style/css.mjs'
+import ElEmpty from 'element-plus/es/components/empty/index.mjs'
+import ElButton from 'element-plus/es/components/button/index.mjs'
+import ActionFeedback from '../ActionFeedback.vue'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/col/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
@@ -24,6 +29,8 @@ type ScoreForm = { severity: string; mitre: string; tiHits: number; recentAlerts
 const props = defineProps<{
   form: ScoreForm
   result: ScoreBreakdown | null
+  loading?: boolean
+  error?: string
   techniques?: Array<{ id: string; name: string }>
   techniquesLoading?: boolean
 }>()
@@ -37,7 +44,7 @@ const techniqueOptions = computed(() => {
 })
 const severities = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO']
 const breakdownLabel: Record<string, string> = {
-  base: 'ueba.severityBaseline', tactic: 'ueba.primaryTactic', intel: 'ueba.threatIntelHits',
+  severity: 'ueba.severityBaseline', base: 'ueba.severityBaseline', tactic: 'ueba.primaryTactic', intel: 'ueba.threatIntelHits',
   frequency: 'ueba.recentEntityAlerts', asset: 'ueba.assetCriticality',
 }
 function riskColor(level: string) {
@@ -48,7 +55,7 @@ function riskColor(level: string) {
 
 <template>
   <el-row :gutter="12">
-    <el-col :span="10">
+    <el-col :xs="24" :md="10">
       <el-card shadow="never">
         <template #header>{{ t('ueba.scoreInputs') }}</template>
         <el-form label-position="top" size="small">
@@ -69,9 +76,12 @@ function riskColor(level: string) {
         </el-form>
       </el-card>
     </el-col>
-    <el-col :span="14">
+    <el-col :xs="24" :md="14">
       <el-card shadow="never">
         <template #header>{{ t('ueba.scoreBreakdown') }}</template>
+        <div v-if="loading" role="status">{{ t('common.loading') }}</div>
+        <ActionFeedback :error="error" />
+        <el-button v-if="error" @click="emit('calculate')">{{ t('common.retry') }}</el-button>
         <div v-if="result">
           <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:16px">
             <span style="font-size:44px;font-weight:700" :style="{ color: riskColor(result.level) }">{{ result.score }}</span>
@@ -84,7 +94,7 @@ function riskColor(level: string) {
             <span class="bd-val">+{{ value }}</span>
           </div>
         </div>
-        <el-empty v-else :description="t('ueba.unavailable')" />
+        <el-empty v-else-if="!loading && !error" :description="t('ueba.scoreAwaiting')" />
       </el-card>
     </el-col>
   </el-row>

@@ -39,7 +39,8 @@ import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { useRequest } from '../composables/useRequest'
 import SevBadge from '../components/SevBadge.vue'
 import PageHeader from '../components/PageHeader.vue'
 import {
@@ -56,11 +57,22 @@ const { columnWidth: categoryColumnWidth, onHeaderDragEnd: onCategoryHeaderDragE
 const { columnWidth: fieldColumnWidth, onHeaderDragEnd: onFieldHeaderDragEnd } = useTableColumnWidths('meta-fields')
 const metaTab = ref('ds')
 const editingId = ref('')
-const loading = ref(false)
-const loadError = ref('')
-const dataSourceTypes = ref<DataSourceType[]>([])
-const logCategories = ref<LogCategory[]>([])
-const fieldDefs = ref<FieldDef[]>([])
+const typesRequest = useRequest<DataSourceType[]>()
+const categoriesRequest = useRequest<LogCategory[]>()
+const fieldsRequest = useRequest<FieldDef[]>()
+const typesLoading = typesRequest.loading
+const categoriesLoading = categoriesRequest.loading
+const fieldsLoading = fieldsRequest.loading
+const loading = computed(() => typesLoading.value || categoriesLoading.value || fieldsLoading.value)
+const loadError = computed(() => [
+  [t('meta.dataSourceTypes'), typesRequest.error.value?.message],
+  [t('meta.logCategories'), categoriesRequest.error.value?.message],
+  [t('meta.fieldDictionary'), fieldsRequest.error.value?.message],
+].filter(([, error]) => error).map(([label, error]) => `${label}: ${error}`).join(' ? '))
+const dataSourceTypes = computed(() => typesRequest.data.value ?? [])
+const logCategories = computed(() => categoriesRequest.data.value ?? [])
+const fieldDefs = computed(() => fieldsRequest.data.value ?? [])
+let disposed = false
 const showDsDialog = ref(false)
 const showCatDialog = ref(false)
 const showFieldDialog = ref(false)
@@ -114,22 +126,12 @@ function openNewMetadata(kind: 'ds' | 'category' | 'field') {
 }
 
 async function loadMeta() {
-  if (loading.value) return
-  loading.value = true
-  loadError.value = ''
-  try {
-    const [types, categories, fields] = await Promise.allSettled([listDataSourceTypes(), listCategories(), listFields()])
-    const failures: string[] = []
-    if (types.status === 'fulfilled') dataSourceTypes.value = types.value
-    else failures.push(types.reason instanceof Error ? types.reason.message : String(types.reason))
-    if (categories.status === 'fulfilled') logCategories.value = categories.value
-    else failures.push(categories.reason instanceof Error ? categories.reason.message : String(categories.reason))
-    if (fields.status === 'fulfilled') fieldDefs.value = fields.value
-    else failures.push(fields.reason instanceof Error ? fields.reason.message : String(fields.reason))
-    loadError.value = failures.length ? t('meta.loadFailed') + ': ' + failures.join(' · ') : ''
-  } finally {
-    loading.value = false
-  }
+  if (disposed) return
+  await Promise.all([
+    typesRequest.execute(signal => listDataSourceTypes({ signal })),
+    categoriesRequest.execute(signal => listCategories({ signal })),
+    fieldsRequest.execute(signal => listFields({ signal })),
+  ])
 }
 
 async function addDsType() {
@@ -194,6 +196,10 @@ const showDsDialogGuard = useFormDialog(showDsDialog, () => newDsType.value, () 
 const showCatDialogGuard = useFormDialog(showCatDialog, () => newCategory.value, () => actionBusy.value)
 const showFieldDialogGuard = useFormDialog(showFieldDialog, () => newField.value, () => actionBusy.value)
 onMounted(() => { void loadMeta() })
+onUnmounted(() => {
+  disposed = true
+  typesRequest.cancel(); categoriesRequest.cancel(); fieldsRequest.cancel()
+})
 </script>
 
 <template>
@@ -233,7 +239,7 @@ onMounted(() => { void loadMeta() })
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.registryTitle') }}</template>
-          <el-table v-loading="loading" :data="dataSourceTypes" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onDsHeaderDragEnd">
+          <el-table v-loading="typesLoading" :data="dataSourceTypes" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onDsHeaderDragEnd">
             <el-table-column prop="code" column-key="code" :label="t('meta.code')" :width="dsColumnWidth('code', 130)" />
             <el-table-column prop="name" column-key="name" :label="t('meta.name')" :width="dsColumnWidth('name', 150)" />
             <el-table-column prop="description" column-key="description" :label="t('meta.explanation')" :width="dsColumnWidth('description')" min-width="300" show-overflow-tooltip />
@@ -272,7 +278,7 @@ onMounted(() => { void loadMeta() })
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.taxonomyTitle') }}</template>
-          <el-table v-loading="loading" :data="logCategories" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onCategoryHeaderDragEnd">
+          <el-table v-loading="categoriesLoading" :data="logCategories" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onCategoryHeaderDragEnd">
             <el-table-column prop="code" column-key="code" :label="t('meta.code')" :width="categoryColumnWidth('code', 120)" />
             <el-table-column prop="name" column-key="name" :label="t('meta.name')" :width="categoryColumnWidth('name', 130)" />
             <el-table-column prop="description" column-key="description" :label="t('meta.explanation')" :width="categoryColumnWidth('description')" min-width="260" show-overflow-tooltip />
@@ -317,7 +323,7 @@ onMounted(() => { void loadMeta() })
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.fieldDictionaryTitle') }}</template>
-          <el-table v-loading="loading" :data="fieldDefs" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onFieldHeaderDragEnd">
+          <el-table v-loading="fieldsLoading" :data="fieldDefs" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onFieldHeaderDragEnd">
             <el-table-column prop="fieldName" column-key="fieldName" :label="t('meta.fieldName')" :width="fieldColumnWidth('fieldName', 130)" />
             <el-table-column prop="fieldLabel" column-key="fieldLabel" :label="t('meta.fieldLabel')" :width="fieldColumnWidth('fieldLabel', 110)" />
             <el-table-column prop="fieldType" column-key="fieldType" :label="t('meta.dataType')" :width="fieldColumnWidth('fieldType', 80)" />

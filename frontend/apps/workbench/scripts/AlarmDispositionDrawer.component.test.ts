@@ -52,8 +52,7 @@ describe('AlarmDispositionDrawer', () => {
     const searchButton = wrapper.findAll('button').find(button => button.text() === '在日志检索中打开')
     expect(searchButton).toBeTruthy()
     await searchButton!.trigger('click')
-    expect(window.sessionStorage.getItem('socp.search.query')).toBe('eventId:evt-1')
-    expect(goSearch).toHaveBeenCalledOnce()
+    expect(goSearch).toHaveBeenCalledExactlyOnceWith('eventId:evt-1')
   })
 
   it('sends one Idempotency-Key per note and reuses it when the submit is retried', async () => {
@@ -79,4 +78,20 @@ describe('AlarmDispositionDrawer', () => {
     expect(mocks.addAlarmNote).toHaveBeenCalledTimes(2)
     expect(mocks.addAlarmNote.mock.calls[1][3]).toBe(idempotencyKey)
   })
+
+  it('only exposes AI investigation to operators allowed to write', async () => {
+    const goAi = vi.fn()
+    const wrapper = mount(AlarmDispositionDrawer, {
+      props: { modelValue: true, alarm, goCase: vi.fn(), goSearch: vi.fn(), goAi, canWrite: false },
+    })
+    await flushPromises()
+    const aiButton = () => wrapper.findAll('button').find(button => button.text().includes('AI'))
+    expect(aiButton()).toBeUndefined()
+    await wrapper.setProps({ canWrite: true })
+    expect(aiButton()).toBeDefined()
+    await aiButton()!.trigger('click')
+    expect(goAi).toHaveBeenCalledExactlyOnceWith('alarm-1')
+    wrapper.unmount()
+  })
+
 })

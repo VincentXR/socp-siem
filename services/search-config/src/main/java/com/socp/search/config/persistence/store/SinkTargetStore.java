@@ -2,6 +2,7 @@ package com.socp.search.config.persistence.store;
 
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.platform.error.exception.ApiException;
 import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.config.VectorProperties;
 import com.socp.search.config.domain.SinkTarget;
@@ -10,9 +11,10 @@ import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
- * 输出目标存储——租户自持行落 PG search.t_sink_target。
+ * 输出目标存储——租户自持行落 PG search.t_tenant_catalog_entry。
  *
  * <p>平台内置目标（SEARCH ingest / OpenSearch）不再注册为租户目录模板：它们只是
  * 按稳定 id 寻址的回退元数据，既不出现在任何租户的 list() 结果里，也不会被渲染器
@@ -23,12 +25,14 @@ import java.util.List;
 @SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class SinkTargetStore {
 
+    private static final int MAX_TARGETS = 128;
     /** 平台内置 SEARCH ingest 目标的稳定 id。 */
     public static final String PLATFORM_INGEST_ID = "platform-search-ingest";
     /** 平台内置 OpenSearch 目标的稳定 id（默认不可路由，仅占位说明）。 */
     public static final String PLATFORM_OPENSEARCH_ID = "platform-opensearch-bulk";
 
     private final TenantCatalog<SinkTarget> catalog;
+    private final TenantCatalogPersistence persistence;
     private final List<SinkTarget> platformTargets;
 
     public SinkTargetStore() {
@@ -38,6 +42,7 @@ public class SinkTargetStore {
     @Autowired
     public SinkTargetStore(TenantCatalogPersistence persistence, ObjectMapper objectMapper,
                            VectorProperties vectorProperties) {
+        this.persistence = persistence;
         this.catalog = persistence == null
                 ? new TenantCatalog<>(SinkTarget::id)
                 : new TenantCatalog<>(SinkTarget::id, "sink_target", SinkTarget.class,
@@ -89,11 +94,24 @@ public class SinkTargetStore {
     }
 
     public SinkTarget save(SinkTarget t) {
-        return catalog.save(t);
+        return mutate(() -> {
+            if (platformTarget(t.id()) != null || catalog.get(t.id()) != null) {
+                throw new ApiException(409, "Output target ID already exists");
+            }
+            if (catalog.list().size() >= MAX_TARGETS) {
+                throw ApiException.badRequest("Tenant output target limit exceeded: " + MAX_TARGETS);
+            }
+            return catalog.save(t);
+        });
     }
 
     /** 平台回退元数据不可被租户删除；未知 id 不再写墓碑。 */
     public boolean delete(String id) {
-        return platformTarget(id) == null && catalog.delete(id);
+        return platformTarget(id) == null && mutate(() -> catalog.delete(id));
+    }
+
+    private <T> T mutate(Supplier<T> operation) {
+        if (persistence != null) return persistence.mutate(operation);
+        synchronized (catalog) { return operation.get(); }
     }
 }

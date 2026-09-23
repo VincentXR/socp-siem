@@ -18,7 +18,7 @@ class NotifyChannelEditingTest {
         NotificationDispatcher dispatcher = mock(NotificationDispatcher.class);
         Channel original = new Channel("one", "Original", "LOG", "local", false, "");
         when(channels.get("one")).thenReturn(original);
-        when(channels.add(any())).thenAnswer(call -> call.getArgument(0));
+        when(channels.update(any())).thenAnswer(call -> call.getArgument(0));
         when(dispatcher.test(original)).thenReturn(Map.of("status", "logged"));
         NotifyController controller = new NotifyController(channels, dispatcher, 500);
         Channel updated = controller.update("one", new ChannelCreateRequest("Edited", "LOG", "local", false, "note")).data();
@@ -27,6 +27,8 @@ class NotifyChannelEditingTest {
         assertThat(controller.test("one").getStatusCode().value()).isEqualTo(200);
         verify(dispatcher).test(original);
         verify(dispatcher, never()).dispatch(any());
+        when(channels.update(org.mockito.ArgumentMatchers.argThat(ch -> "missing".equals(ch.id()))))
+                .thenThrow(com.socp.platform.error.exception.ApiException.notFound("missing"));
         assertThatThrownBy(() -> controller.update("missing", new ChannelCreateRequest("Edited", "LOG", "local", false, "")))
                 .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
                 .hasFieldOrPropertyWithValue("code", 404);

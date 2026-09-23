@@ -1,14 +1,8 @@
 package com.socp.hips.web.api.controller;
 
 import com.socp.hips.web.api.request.EndpointEventRequest;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.hips.web.persistence.store.EndpointEventStore;
-import com.socp.platform.client.http.ServiceCall;
-import com.socp.platform.client.http.SocpHttpClient;
-import com.socp.platform.client.service.SocpService;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.socp.hips.web.service.EndpointEventDelivery;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -22,8 +16,11 @@ import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.api.PageResponse;
 import org.springframework.data.domain.Page;
 import jakarta.validation.Valid;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.web.bind.annotation.RequestHeader;
+import com.socp.platform.auth.security.CollectorCredentialRegistry;
+import com.socp.platform.auth.security.RequireService;
 
-import java.util.List;
 import java.util.Map;
 
 /** Endpoint event ingress hosted by the HIPS domain deployment. */
@@ -31,36 +28,35 @@ import java.util.Map;
 @RequestMapping("/api/v1")
 public class EndpointCollectionController {
 
-    private static final Logger log = LoggerFactory.getLogger(EndpointCollectionController.class);
-
     private final EndpointEventStore events;
-    private final SocpHttpClient http;
-    private final ObjectMapper objectMapper;
+    private final EndpointEventDelivery delivery;
     private final int maxListSize;
 
-    public EndpointCollectionController(EndpointEventStore events, SocpHttpClient http, ObjectMapper objectMapper,
+    public EndpointCollectionController(EndpointEventStore events, EndpointEventDelivery delivery,
                                         @Value("${socp.web.list-max-size:500}") int maxListSize) {
         this.events = events;
-        this.http = http;
-        this.objectMapper = objectMapper;
+        this.delivery = delivery;
         this.maxListSize = maxListSize;
     }
 
-    @com.socp.platform.auth.security.RequireIngestIdentity
+    @com.socp.platform.auth.security.RequireIngestIdentity(
+            maxBodyBytes = "${socp.hips.ingest.max-body-bytes:262144}")
     @PostMapping("/events")
-    public ApiResult<Map<String, Object>> report(@Valid @RequestBody EndpointEventRequest input) {
-        Map<String, Object> event = events.add(input.asMap());
-        ServiceCall forward = http.post(SocpService.SEARCH, "/api/v1/ingest", serialize(event),
-                SocpHttpClient.NDJSON, 5000);
-        if (!forward.ok()) {
-            log.warn("Endpoint event forwarding failed id={} reason={}",
-                    event.get("eventId"), forward.failureReason());
-        }
+    public ApiResult<Map<String, Object>> report(@Valid @RequestBody EndpointEventRequest input,
+            HttpServletRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        String collector = (String) request.getAttribute(CollectorCredentialRegistry.COLLECTOR_ID_ATTRIBUTE);
+        String service = (String) request.getAttribute(RequireService.SERVICE_ID_ATTRIBUTE);
+        // A verified service proof is the effective identity when AuthInterceptor delegates a tenant.
+        String producer = service != null ? "service:" + service : collector != null ? "collector:" + collector : null;
+        Map<String, Object> event = delivery.accept(input.asMap(), producer, idempotencyKey);
+        boolean acknowledged = delivery.forward(event);
         return ApiResult.ok(Map.of(
                 "accepted", true,
                 "eventId", event.get("eventId"),
                 "total", events.count(),
-                "forwarded", forward.ok()));
+                "forwarded", acknowledged,
+                "deliveryStatus", delivery.status(event)));
     }
 
     /** 已接收端点事件：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */
@@ -79,11 +75,4 @@ public class EndpointCollectionController {
         }
     }
 
-    private String serialize(Map<String, Object> event) {
-        try {
-            return objectMapper.writeValueAsString(event);
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("Unable to serialize endpoint event", ex);
-        }
-    }
 }

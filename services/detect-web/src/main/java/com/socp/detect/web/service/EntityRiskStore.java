@@ -10,10 +10,9 @@ import com.socp.rule.util.Json;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
+import org.springframework.transaction.annotation.Isolation;
 
+import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
@@ -26,19 +25,22 @@ import java.util.UUID;
 @Component
 public class EntityRiskStore {
 
-    private static final int MAX_TOP_CANDIDATES = 500;
+    private static final int MAX_TOP_RESULTS = 500;
     private static final double HALF_LIFE_SECONDS = Duration.ofHours(6).toSeconds();
     private static final double INJECT_RATIO = 0.45;
     private static final Duration RECENT_WINDOW = Duration.ofHours(1);
 
     private final EntityRiskProfileRepository profiles;
     private final EntityRiskAlertRepository appliedAlerts;
+    private final EntityRiskCounterStore counters;
 
-    public EntityRiskStore(EntityRiskProfileRepository profiles, EntityRiskAlertRepository appliedAlerts) {
+    public EntityRiskStore(EntityRiskProfileRepository profiles, EntityRiskAlertRepository appliedAlerts, EntityRiskCounterStore counters) {
         this.profiles = profiles;
         this.appliedAlerts = appliedAlerts;
+        this.counters = counters;
     }
 
+    @Transactional
     public RiskScorer.Score record(String entity, Severity severity, String mitre,
                                    String ruleId, String ruleName, int tiHits) {
         return recordForAlert("unkeyed-" + UUID.randomUUID(), entity, severity, mitre,
@@ -62,6 +64,10 @@ public class EntityRiskStore {
         String key = entity == null || entity.isBlank() ? "unknown" : entity;
         EntityRiskProfileEntity profile = profiles.findForUpdate(tenant, key)
                 .orElseGet(() -> newProfile(tenant, key, now));
+        // Another transaction may have committed this alert while we waited
+        // for the profile lock. Its durable receipt remains authoritative.
+        existing = appliedAlerts.findByTenantIdAndAlertId(tenant, alertId).orElse(null);
+        if (existing != null) return scoreOf(existing);
         int recent = Math.toIntExact(Math.min(10,
                 appliedAlerts.countByTenantIdAndEntityAndCreatedAtAfter(
                         tenant, key, now.minus(RECENT_WINDOW))));
@@ -69,17 +75,23 @@ public class EntityRiskStore {
 
         profile.setScore(Math.min(100, decayed(profile, now) + score.score() * INJECT_RATIO));
         profile.setScoreAt(now);
-        profile.setAlerts(profile.getAlerts() + 1);
+        profile.setAlerts(Math.addExact(profile.getAlerts(), 1));
         profile.setLastSeen(now);
         Severity previous = Severity.valueOf(profile.getMaxSeverity());
         if (severity != null && severity.level() > previous.level()) profile.setMaxSeverity(severity.name());
-        Map<String, Integer> mitreCounts = counts(profile.getMitreJson());
-        Map<String, Integer> ruleCounts = counts(profile.getRulesJson());
-        if (mitre != null && !mitre.isBlank() && !"null".equals(mitre)) mitreCounts.merge(mitre, 1, Integer::sum);
-        if (ruleName != null && !ruleName.isBlank()) ruleCounts.merge(ruleName, 1, Integer::sum);
-        profile.setMitreJson(json(mitreCounts));
-        profile.setRulesJson(json(ruleCounts));
-        profiles.save(profile);
+        // Make a new parent visible to the JDBC FK, still inside this transaction.
+        profiles.saveAndFlush(profile);
+        if (!profile.isCountersMigrated()) {
+            counters.seed(tenant, profile.getStorageId(), legacyCounts(profile.getMitreJson()), legacyCounts(profile.getRulesJson()));
+            profile.setCountersMigrated(true);
+            profile.setMitreJson("{}");
+            profile.setRulesJson("{}");
+            profiles.save(profile);
+        }
+        if (mitre != null && !mitre.isBlank() && !"null".equals(mitre))
+            counters.increment(tenant, profile.getStorageId(), "MITRE", mitre);
+        if (ruleName != null && !ruleName.isBlank())
+            counters.increment(tenant, profile.getStorageId(), "RULE", ruleName);
 
         EntityRiskAlertEntity applied = new EntityRiskAlertEntity();
         applied.setStorageId(storageId(tenant, alertId));
@@ -94,46 +106,40 @@ public class EntityRiskStore {
         return score;
     }
 
+    @Transactional(readOnly = true, timeout = 5, isolation = Isolation.REPEATABLE_READ)
     public List<Map<String, Object>> top(int limit) {
         Instant now = Instant.now();
-        int boundedLimit = Math.max(1, Math.min(MAX_TOP_CANDIDATES, limit));
-        // Score decay is applied in Java, but the candidate set is bounded at
-        // the database boundary. A tenant-created entity population must not
-        // turn the ranking endpoint into an unbounded materialisation.
-        Page<EntityRiskProfileEntity> page = profiles.findByTenantId(tenant(),
-                PageRequest.of(0, boundedLimit, Sort.by(Sort.Order.desc("score"),
-                        Sort.Order.asc("entity"))));
-        // Spring Data never returns null here.  If a replacement repository
-        // violates that contract, fail closed with an empty ranking rather
-        // than falling back to an unbounded tenant materialisation.
-        List<EntityRiskProfileEntity> candidates = page == null ? List.of() : page.getContent();
-        return candidates.stream()
-                .map(profile -> toMap(profile, now))
-                .sorted((a, b) -> Double.compare((Double) b.get("risk"), (Double) a.get("risk")))
-                .limit(boundedLimit)
-                .toList();
+        int boundedLimit = Math.max(1, Math.min(MAX_TOP_RESULTS, limit));
+        String tenant = tenant();
+        var selected = profiles.topAt(tenant, now.getEpochSecond(), boundedLimit);
+        var snapshot = counters.readTop(tenant, selected.stream().filter(EntityRiskProfileEntity::isCountersMigrated)
+                .map(EntityRiskProfileEntity::getStorageId).toList());
+        return selected.stream().map(profile -> toMap(profile, now,
+                snapshot.getOrDefault(profile.getStorageId(), EntityRiskCounterStore.Counters.EMPTY))).toList();
     }
 
+    @Transactional(readOnly = true, timeout = 5, isolation = Isolation.REPEATABLE_READ)
     public Map<String, Object> get(String entity) {
-        return profiles.findByTenantIdAndEntity(tenant(), entity)
-                .map(profile -> toMap(profile, Instant.now())).orElse(null);
+        String tenant = tenant();
+        return profiles.findByTenantIdAndEntity(tenant, entity).map(profile -> {
+            var snapshot = counters.readTop(tenant, profile.isCountersMigrated() ? List.of(profile.getStorageId()) : List.of());
+            return toMap(profile, Instant.now(), snapshot.getOrDefault(profile.getStorageId(), EntityRiskCounterStore.Counters.EMPTY));
+        }).orElse(null);
     }
 
+    @Transactional(readOnly = true, timeout = 5)
     public Map<String, Object> summary() {
-        Instant now = Instant.now();
-        List<EntityRiskProfileEntity> all = profiles.findByTenantId(tenant());
-        Map<String, Integer> byLevel = new LinkedHashMap<>();
-        for (String level : List.of("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")) byLevel.put(level, 0);
-        double max = 0;
-        for (EntityRiskProfileEntity profile : all) {
-            double risk = decayed(profile, now);
-            max = Math.max(max, risk);
-            byLevel.merge(RiskScorer.level((int) Math.round(risk)), 1, Integer::sum);
-        }
+        var summary = profiles.summarizeAt(tenant(), Instant.now().getEpochSecond());
+        Map<String, Long> byLevel = new LinkedHashMap<>();
+        byLevel.put("CRITICAL", summary.getCritical());
+        byLevel.put("HIGH", summary.getHigh());
+        byLevel.put("MEDIUM", summary.getMedium());
+        byLevel.put("LOW", summary.getLow());
+        byLevel.put("INFO", summary.getInfo());
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("entities", all.size());
+        result.put("entities", summary.getEntities());
         result.put("byLevel", byLevel);
-        result.put("maxRisk", Math.round(max * 10) / 10.0);
+        result.put("maxRisk", summary.getMaximum());
         result.put("halfLifeHours", HALF_LIFE_SECONDS / 3600.0);
         return result;
     }
@@ -174,10 +180,8 @@ public class EntityRiskStore {
         return 0;
     }
 
-    private static Map<String, Object> toMap(EntityRiskProfileEntity profile, Instant now) {
+    private static Map<String, Object> toMap(EntityRiskProfileEntity profile, Instant now, EntityRiskCounterStore.Counters snapshot) {
         double risk = Math.round(decayed(profile, now) * 10) / 10.0;
-        Map<String, Integer> mitre = counts(profile.getMitreJson());
-        Map<String, Integer> rules = counts(profile.getRulesJson());
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("entity", profile.getEntity());
         result.put("risk", risk);
@@ -186,19 +190,31 @@ public class EntityRiskStore {
         result.put("maxSeverity", profile.getMaxSeverity());
         result.put("firstSeen", profile.getFirstSeen().toString());
         result.put("lastSeen", profile.getLastSeen().toString());
-        result.put("mitre", ranked(mitre, "technique", 8));
-        result.put("topRules", ranked(rules, "rule", 5));
+        result.put("mitre", profile.isCountersMigrated() ? snapshot.mitre() : ranked(legacyCounts(profile.getMitreJson()), "technique", 8));
+        result.put("topRules", profile.isCountersMigrated() ? snapshot.rules() : ranked(legacyCounts(profile.getRulesJson()), "rule", 5));
         result.put("critical", com.socp.rule.engine.Watchlists.contains(
                 profile.getTenantId(), "crown_jewels", profile.getEntity()));
         return result;
     }
 
-    private static List<Map<String, Object>> ranked(Map<String, Integer> values, String key, int limit) {
+    private static List<Map<String, Object>> ranked(Map<String, Long> values, String key, int limit) {
         return values.entrySet().stream()
-                .sorted(Map.Entry.<String, Integer>comparingByValue(Comparator.reverseOrder()))
+                .sorted(Map.Entry.<String, Long>comparingByValue(Comparator.reverseOrder()).thenComparing(Map.Entry.comparingByKey()))
                 .limit(limit)
                 .map(entry -> Map.<String, Object>of(key, entry.getKey(), "count", entry.getValue()))
                 .toList();
+    }
+
+    private static Map<String, Long> legacyCounts(String value) {
+        Map<String, Long> result = new LinkedHashMap<>();
+        if (value == null || value.isBlank()) return result;
+        Json.parseObject(value).forEach((key, count) -> {
+            if (!(count instanceof Number number)) throw new IllegalStateException("Invalid legacy entity-risk count");
+            long exact = new BigDecimal(number.toString()).longValueExact();
+            if (exact < 0) throw new IllegalStateException("Negative legacy entity-risk count requires repair");
+            result.put(key, exact);
+        });
+        return result;
     }
 
     private static RiskScorer.Score scoreOf(EntityRiskAlertEntity entity) {

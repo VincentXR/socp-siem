@@ -1,6 +1,7 @@
 package com.socp.report.web.persistence.store;
 
 
+import com.socp.platform.error.exception.ApiException;
 import io.minio.BucketExistsArgs;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.ListObjectsArgs;
@@ -23,14 +24,12 @@ import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Iterator;
 import java.util.Map;
 
 /**
- * MinIO 对象存储（S3 协议）：报表导出/归档。
- *
- * <p>生产环境把报表快照、案件证据、资产附件归档到对象存储（低成本、可审计）；
- * 当前落地 REPORT 链路：日报/趋势 JSON 导出 → 存 MinIO `reports/` 前缀，支持
- * 列表与 7 天有效期的预签名下载链接。MinIO 不可用时静默降级（不影响报表主链路）。
+ * Tenant-scoped report JSON storage. Optional storage never blocks report reads,
+ * but archive operations fail explicitly when disabled or unavailable.
  */
 @Component
 public class ReportObjectStore {
@@ -48,21 +47,29 @@ public class ReportObjectStore {
     }
 
     public ReportObjectStore(String url, String accessKey, String secretKey, String bucket, boolean enabled) {
-        this.bucket = bucket;
-        this.enabled = enabled;
-        if (!enabled) {
-            this.client = null;
-            return;
-        }
-        this.client = MinioClient.builder()
-                .endpoint(url)
-                .credentials(accessKey, secretKey)
-                .build();
+        this(enabled ? MinioClient.builder().endpoint(url).credentials(accessKey, secretKey).build()
+                : null, bucket);
+        if (!enabled) return;
         try {
             ensureBucket();
         } catch (Exception e) {
-            log.warn("MinIO 初始化失败（静默降级）: {}", e.getMessage());
+            log.warn("Report archive bucket initialization failed; archive operations will report failures", e);
         }
+    }
+
+    ReportObjectStore(MinioClient client, String bucket) {
+        this.client = client;
+        this.bucket = bucket;
+        this.enabled = client != null;
+    }
+
+    private void requireStorage() {
+        if (!enabled) throw ApiException.of(503, "Report object storage is disabled");
+    }
+
+    private ApiException unavailable(String operation, Exception failure) {
+        log.warn("Report object storage {} failed", operation, failure);
+        return ApiException.of(503, "Report object storage is unavailable; please retry later");
     }
 
     private void ensureBucket() throws Exception {
@@ -73,21 +80,20 @@ public class ReportObjectStore {
         }
     }
 
-    /** 保存对象，返回对象 key；失败返回 null（静默降级）。 */
+    /** Return the key only after the storage write is acknowledged. */
     public String put(String key, String content, String contentType) {
-        if (!enabled || client == null) return null;
+        requireStorage();
         try {
+            byte[] bytes = content.getBytes(StandardCharsets.UTF_8);
             client.putObject(PutObjectArgs.builder()
                     .bucket(bucket)
                     .object(key)
-                    .stream(new ByteArrayInputStream(content.getBytes(StandardCharsets.UTF_8)),
-                            content.getBytes(StandardCharsets.UTF_8).length, -1)
+                    .stream(new ByteArrayInputStream(bytes), bytes.length, -1)
                     .contentType(contentType)
                     .build());
             return key;
         } catch (Exception e) {
-            log.warn("MinIO 写入失败 key={} err={}（静默降级）", key, e.getMessage());
-            return null;
+            throw unavailable("write", e);
         }
     }
 
@@ -100,12 +106,13 @@ public class ReportObjectStore {
     public List<Map<String, Object>> list(String prefix, int limit) {
         List<Map<String, Object>> out = new ArrayList<>();
         int boundedLimit = Math.max(1, Math.min(5_000, limit));
-        if (!enabled || client == null) return out;
+        requireStorage();
         try {
-            for (Result<Item> r : client.listObjects(ListObjectsArgs.builder()
-                    .bucket(bucket).prefix(prefix).recursive(true).build())) {
-                if (out.size() >= boundedLimit) break;
-                Item item = r.get();
+            Iterator<Result<Item>> objects = client.listObjects(ListObjectsArgs.builder()
+                    .bucket(bucket).prefix(prefix).recursive(true).build()).iterator();
+            // Check the bound before hasNext: the SDK may fetch another page there.
+            while (out.size() < boundedLimit && objects.hasNext()) {
+                Item item = objects.next().get();
                 Map<String, Object> m = new LinkedHashMap<>();
                 m.put("key", item.objectName());
                 m.put("size", item.size());
@@ -113,33 +120,31 @@ public class ReportObjectStore {
                 out.add(m);
             }
         } catch (Exception e) {
-            log.warn("MinIO 列表失败 prefix={} err={}（静默降级）", prefix, e.getMessage());
+            throw unavailable("list", e);
         }
         return out;
     }
 
     /** 生成 7 天有效的预签名下载 URL。 */
     public String presignedGet(String key) {
-        if (!enabled || client == null) return null;
+        requireStorage();
         try {
             return client.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
                     .bucket(bucket).object(key).method(Method.GET)
                     .expiry(60 * 60 * 24 * 7).build());
         } catch (Exception e) {
-            log.warn("MinIO 预签名失败 key={} err={}（静默降级）", key, e.getMessage());
-            return null;
+            throw unavailable("sign", e);
         }
     }
 
     /** 删除对象。 */
     public boolean remove(String key) {
-        if (!enabled || client == null) return false;
+        requireStorage();
         try {
             client.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build());
             return true;
         } catch (Exception e) {
-            log.warn("MinIO 删除失败 key={} err={}（静默降级）", key, e.getMessage());
-            return false;
+            throw unavailable("delete", e);
         }
     }
 

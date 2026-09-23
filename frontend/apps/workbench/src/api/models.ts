@@ -201,6 +201,7 @@ export interface LateEventPolicy {
 export interface RuleSpec {
   [extension: string]: unknown
   id: string; name: string; type: string; severity: string; message?: string
+  revisionToken?: string
   alert?: { [extension: string]: unknown; title?: string; description?: string }
   enabled: boolean; status?: string; window?: string; keyField?: string; groupBy?: string; routingField?: string
   lateEventPolicy?: LateEventPolicy | null; threshold?: number
@@ -262,7 +263,8 @@ export interface RiskEntity {
 }
 export interface RiskSummary { entities: number; byLevel: Record<string, number>; maxRisk: number; halfLifeHours: number }
 export interface ScoreBreakdown { score: number; level: string; breakdown: Record<string, number> }
-export interface Watchlist { name: string; size: number; values: string[] }
+export interface WatchlistSummary { name: string; size: number }
+export interface Watchlist extends WatchlistSummary { values: string[] }
 
 export interface TaskRuntime {
   accepted: number; skipped: number; forwarded: number; bytes: number

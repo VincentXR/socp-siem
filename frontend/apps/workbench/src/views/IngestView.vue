@@ -14,6 +14,7 @@ import ActionFeedback from '../components/ActionFeedback.vue'
 import FormField from '../components/FormField.vue'
 import FormGrid from '../components/FormGrid.vue'
 import FormSection from '../components/FormSection.vue'
+import PagerBar from '../components/PagerBar.vue'
 const mutation = useMutation()
 const { busy: actionBusy, error: actionError } = mutation
 const { confirmDanger } = useConfirm()
@@ -45,11 +46,11 @@ import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   ApiError,
   createOutput, createSource, deleteOutput, deleteParseRule, deleteSource, updateSource,
-  ingestSummary, listCategories, listIngestTasks, listOutputs, listParseRules, listSources,
+  ingestSummary, listCategories, listIngestTasks, listOutputs, listParseRulesPage, resolveParseRules, listSourcesPage,
   previewParse, renderConfig, startIngestTask, stopIngestTask,
   SOURCE_TYPES, PARSE_FORMATS,
   type IngestTask, type IngestSummary, type LogCategory, type LogSource, type LogSourceInput, type ParseRule, type SinkTarget,
@@ -59,17 +60,39 @@ import { fmtBytes, fmtTime } from '../lib/ui'
 import PageHeader from '../components/PageHeader.vue'
 
 const { t } = useI18n()
+const MULTILINE_PLACEHOLDER = '{ start_pattern = "^\\s", mode = "continue_through" }'
 const ingestTab = ref(String(route.query.tab || 'tasks'))
 const sources = ref<LogSource[]>([])
+const sourcePage = ref(1)
+const sourceSize = ref(20)
+const sourceTotal = ref(0)
+const sourceSearchDraft = ref('')
+const sourceQuery = ref('')
 const outputs = ref<SinkTarget[]>([])
 const parseRules = ref<ParseRule[]>([])
+const rulePage = ref(1)
+const ruleSize = ref(20)
+const ruleTotal = ref(0)
+const ruleSearchDraft = ref('')
+const ruleQuery = ref('')
+const sourceRuleOptions = ref<ParseRule[]>([])
+const sourceRuleTotal = ref(0)
+const selectedSourceRules = ref<ParseRule[]>([])
+const sourceRuleSelectionVersion = ref(0)
+const sourceRuleLoading = ref(false)
+let sourceRuleSearchTimer: number | null = null
+let sourceRuleSearchGeneration = 0
 const logCategories = ref<LogCategory[]>([])
 const newSource = ref({ name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1 as number | null, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true })
 const newOutput = ref({ name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true })
 const sourceErrors = ref<Record<string, string>>({})
 const outputErrors = ref<Record<string, string>>({})
 /** Background list refresh, the dialogs, and page actions keep separate errors. */
-const loadError = ref('')
+type LoadKey = 'sources' | 'outputs' | 'rules' | 'ruleOptions' | 'selectedRules' | 'tasks' | 'summary' | 'categories'
+const loadErrors = ref<Partial<Record<LoadKey, string>>>({})
+const loadError = computed(() => Object.values(loadErrors.value).filter(Boolean).join(' · '))
+const readControllers = new Map<LoadKey, AbortController>()
+let disposed = false
 const sourceError = ref('')
 const outputError = ref('')
 const renderError = ref('')
@@ -81,14 +104,18 @@ const editingSourceId = ref<string | null>(null)
 
 const tasks = ref<IngestTask[]>([])
 const taskSummary = ref<IngestSummary | null>(null)
+const summaryStale = computed(() => !!loadErrors.value.summary && !!taskSummary.value)
 const taskBusy = ref<Record<string, boolean>>({})
 const testDialog = ref(false)
 const testTarget = ref<IngestTask | null>(null)
 const testSample = ref('')
 type ParsePreviewAttempt = { ruleId?: string; rule?: string; format?: string; matched: boolean; error?: string }
+type ParsePreviewWithFields = ParsePreviewAttempt & { fields: Record<string, string> }
 type ParsePreviewResult = { ok: boolean; matched: boolean; sample: string; rule?: string; format?: string; fields: Record<string, string>; attempts?: ParsePreviewAttempt[]; error?: string }
 const testResult = ref<ParsePreviewResult | null>(null)
 const testLoading = ref(false)
+let previewGeneration = 0
+let previewController: AbortController | null = null
 
 type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
 const HEALTH_KEYS: Record<string, string> = {
@@ -105,10 +132,6 @@ function outputLabel(id: string | null | undefined): string {
   return output ? `${output.name} · ${output.id}` : id
 }
 
-function reportLoadFailure(text: string): void {
-  loadError.value = loadError.value ? `${loadError.value} · ${text}` : text
-}
-
 /** Moves a failure out of the shared action slot into the surface that owns it. */
 function isolateError(target: { value: string }, completed: boolean): void {
   if (completed) { target.value = ''; return }
@@ -116,15 +139,95 @@ function isolateError(target: { value: string }, completed: boolean): void {
   actionError.value = ''
 }
 
-async function loadSources() { try { sources.value = await listSources() } catch (failure) { reportLoadFailure(String(failure)) } }
-async function loadOutputs() { try { outputs.value = await listOutputs() } catch (failure) { reportLoadFailure(String(failure)) } }
-async function loadParseRules() { try { parseRules.value = await listParseRules() } catch (failure) { reportLoadFailure(String(failure)) } }
-async function loadTasks() {
-  const [taskResult, summaryResult] = await Promise.allSettled([listIngestTasks(), ingestSummary()])
-  if (taskResult.status === 'fulfilled') tasks.value = taskResult.value
-  else reportLoadFailure(String(taskResult.reason))
-  taskSummary.value = summaryResult.status === 'fulfilled' ? summaryResult.value : null
+async function loadList<T>(key: LoadKey, request: (signal: AbortSignal) => Promise<T>, publish: (value: T) => void): Promise<void> {
+  if (disposed) return
+  readControllers.get(key)?.abort()
+  const controller = new AbortController()
+  readControllers.set(key, controller)
+  const ownsResult = () => !disposed && readControllers.get(key) === controller && !controller.signal.aborted
+  try {
+    const value = await request(controller.signal)
+    if (!ownsResult()) return
+    publish(value)
+    loadErrors.value = { ...loadErrors.value, [key]: '' }
+  } catch (failure) {
+    if (ownsResult()) loadErrors.value = { ...loadErrors.value, [key]: String(failure) }
+  } finally {
+    if (readControllers.get(key) === controller) readControllers.delete(key)
+  }
 }
+const loadSources = () => loadList('sources',
+  signal => listSourcesPage(sourcePage.value, sourceSize.value, sourceQuery.value, { signal }), value => {
+    sources.value = value.items
+    sourceTotal.value = value.total
+    const lastPage = Math.max(1, Math.ceil(value.total / sourceSize.value))
+    if (sourcePage.value > lastPage) sourcePage.value = lastPage
+  })
+function applySourceSearch() {
+  sourceQuery.value = sourceSearchDraft.value.trim()
+  if (sourcePage.value === 1) void loadSources()
+  else sourcePage.value = 1
+}
+watch([sourcePage, sourceSize], () => { void loadSources() })
+const loadOutputs = () => loadList('outputs', signal => listOutputs({ signal }), value => { outputs.value = value })
+const loadParseRules = () => loadList('rules',
+  signal => listParseRulesPage(rulePage.value, ruleSize.value, ruleQuery.value, { signal }), value => {
+    parseRules.value = value.items
+    ruleTotal.value = value.total
+    const lastPage = Math.max(1, Math.ceil(value.total / ruleSize.value))
+    if (rulePage.value > lastPage) rulePage.value = lastPage
+  })
+function applyRuleSearch() {
+  ruleQuery.value = ruleSearchDraft.value.trim()
+  if (rulePage.value === 1) void loadParseRules()
+  else rulePage.value = 1
+}
+watch([rulePage, ruleSize], () => { void loadParseRules() })
+async function loadSourceRuleOptions(query: string) {
+  const generation = ++sourceRuleSearchGeneration
+  sourceRuleLoading.value = true
+  await loadList('ruleOptions', signal => listParseRulesPage(1, 50, query, { signal }), value => {
+    sourceRuleOptions.value = value.items
+    sourceRuleTotal.value = value.total
+  })
+  if (generation === sourceRuleSearchGeneration) sourceRuleLoading.value = false
+}
+function searchSourceRules(query: string) {
+  if (sourceRuleSearchTimer !== null) window.clearTimeout(sourceRuleSearchTimer)
+  readControllers.get('ruleOptions')?.abort()
+  sourceRuleOptions.value = []
+  sourceRuleTotal.value = 0
+  sourceRuleLoading.value = true
+  sourceRuleSearchGeneration++
+  sourceRuleSearchTimer = window.setTimeout(() => {
+    sourceRuleSearchTimer = null
+    void loadSourceRuleOptions(query)
+  }, 250)
+}
+function loadSelectedSourceRules(ids: string[]) {
+  selectedSourceRules.value = []
+  if (!ids.length) return Promise.resolve()
+  return loadList('selectedRules', signal => resolveParseRules(ids, { signal }), value => {
+    selectedSourceRules.value = value
+    sourceRuleSelectionVersion.value++
+  })
+}
+function sourceRuleOptionLabel(id: string) {
+  return sourceRuleOptions.value.find(rule => rule.id === id)?.name
+    ?? selectedSourceRules.value.find(rule => rule.id === id)?.name ?? id
+}
+function onSourceRuleChange(ids: string[]) {
+  const known = [...sourceRuleOptions.value, ...selectedSourceRules.value]
+  selectedSourceRules.value = ids.flatMap(id => {
+    const rule = known.find(item => item.id === id)
+    return rule ? [rule] : []
+  })
+}
+const loadCategories = () => loadList('categories', signal => listCategories({ signal }), value => { logCategories.value = value })
+const loadTasks = () => Promise.all([
+  loadList('tasks', signal => listIngestTasks({ signal }), value => { tasks.value = value }),
+  loadList('summary', signal => ingestSummary({ signal }), value => { taskSummary.value = value }),
+])
 function onIngestTab(key: string | number) {
   const tab = String(key)
   ingestTab.value = tab
@@ -136,6 +239,18 @@ function onIngestTab(key: string | number) {
 
 const EMPTY_SOURCE = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true }
 
+function prepareSourceRuleSelector(ids: string[]) {
+  if (sourceRuleSearchTimer !== null) { window.clearTimeout(sourceRuleSearchTimer); sourceRuleSearchTimer = null }
+  readControllers.get('ruleOptions')?.abort()
+  readControllers.get('selectedRules')?.abort()
+  sourceRuleOptions.value = []
+  selectedSourceRules.value = []
+  sourceRuleSelectionVersion.value++
+  sourceRuleTotal.value = 0
+  loadErrors.value = { ...loadErrors.value, ruleOptions: '', selectedRules: '' }
+  void loadSourceRuleOptions('')
+  void loadSelectedSourceRules(ids)
+}
 function openCreateSource() {
   if (!canWrite.value) return
   editingSourceId.value = null
@@ -144,6 +259,7 @@ function openCreateSource() {
   sourceError.value = ''
   actionError.value = ''
   showSourceDialog.value = true
+  prepareSourceRuleSelector([])
 }
 function openEditSource(source: LogSource) {
   if (!canWrite.value) return
@@ -161,6 +277,7 @@ function openEditSource(source: LogSource) {
   sourceError.value = ''
   actionError.value = ''
   showSourceDialog.value = true
+  prepareSourceRuleSelector(source.parseRuleIds || [])
 }
 
 /** Required fields only; empty optional targets are submitted as empty. */
@@ -206,6 +323,9 @@ async function saveSource() {
   if (newSource.value.type === 'KAFKA') source.topic = newSource.value.topic.trim()
   if (editingSourceId.value) await updateSource(editingSourceId.value, source)
   else await createSource(source)
+  sourceSearchDraft.value = source.name
+  sourceQuery.value = source.name
+  sourcePage.value = 1
   editingSourceId.value = null
   showSourceDialog.value = false
   await loadSources()
@@ -296,8 +416,15 @@ async function toggleTask(task: IngestTask) {
 }
 function openTest(task: IngestTask) {
   if (!canWrite.value) return
+  cancelPreview()
   actionError.value = ''
   testTarget.value = task; testSample.value = ''; testResult.value = null; testDialog.value = true
+}
+function cancelPreview() {
+  previewGeneration++
+  previewController?.abort()
+  previewController = null
+  testLoading.value = false
 }
 function toggleTaskRow(row: unknown) { toggleTask(row as IngestTask) }
 function openTestRow(row: unknown) { openTest(row as IngestTask) }
@@ -312,19 +439,33 @@ function defaultPreviewSample(task: IngestTask): string {
   }, null, 2)
 }
 async function runTest() {
-  if (!canWrite.value || !testTarget.value) return
+  if (!canWrite.value || !testTarget.value || !testDialog.value || testLoading.value) return
+  const target = testTarget.value
+  const generation = ++previewGeneration
+  const controller = new AbortController()
+  previewController = controller
   testLoading.value = true
-  const sample = testSample.value.trim() || defaultPreviewSample(testTarget.value)
-  const ruleIds = testTarget.value.parseRuleIds?.length ? testTarget.value.parseRuleIds : [undefined]
+  testResult.value = null
+  const sample = testSample.value.trim() || defaultPreviewSample(target)
+  const ruleIds = target.parseRuleIds?.length ? [...target.parseRuleIds] : [undefined]
+  const ownsResult = () => !disposed && testDialog.value && generation === previewGeneration && !controller.signal.aborted
   try {
-    const attempts = await Promise.all(ruleIds.map(async ruleId => {
-      try {
-        const result = await previewParse({ ruleId, format: ruleId ? undefined : testTarget.value?.format || 'AUTO', line: sample })
-        return { ruleId, rule: result.rule, format: result.format, matched: result.matched, error: result.error, fields: result.fields }
-      } catch (error) {
-        return { ruleId, matched: false, error: error instanceof Error ? error.message : String(error), fields: {} }
+    const attempts = new Array<ParsePreviewWithFields>(ruleIds.length)
+    let next = 0
+    async function worker() {
+      while (next < ruleIds.length && ownsResult()) {
+        const index = next++
+        const ruleId = ruleIds[index]
+        try {
+          const result = await previewParse({ ruleId, format: ruleId ? undefined : target.format || 'AUTO', line: sample }, { signal: controller.signal })
+          attempts[index] = { ruleId, rule: result.rule, format: result.format, matched: result.matched, error: result.error, fields: result.fields }
+        } catch (error) {
+          attempts[index] = { ruleId, matched: false, error: error instanceof Error ? error.message : String(error), fields: {} }
+        }
       }
-    }))
+    }
+    await Promise.all(Array.from({ length: Math.min(4, ruleIds.length) }, () => worker()))
+    if (!ownsResult()) return
     const selected = attempts.find(attempt => attempt.matched) ?? attempts[0]
     testResult.value = {
       ok: Boolean(selected?.matched), matched: Boolean(selected?.matched), sample,
@@ -333,26 +474,43 @@ async function runTest() {
       attempts: attempts.length > 1 ? attempts.map(({ fields: _fields, ...attempt }) => attempt) : undefined,
     }
   } catch (error) {
-    testResult.value = { ok: false, matched: false, sample, fields: {}, error: String(error) }
+    if (ownsResult()) testResult.value = { ok: false, matched: false, sample, fields: {}, error: String(error) }
   }
-  finally { testLoading.value = false }
+  finally {
+    if (generation === previewGeneration) { previewController = null; testLoading.value = false }
+  }
 }
 
 const showSourceDialogGuard = useFormDialog(showSourceDialog, () => newSource.value, () => actionBusy.value)
 const showOutputDialogGuard = useFormDialog(showOutputDialog, () => newOutput.value, () => actionBusy.value)
 async function refreshAll() {
   actionError.value = ''
-  loadError.value = ''
-  await Promise.allSettled([loadSources(), loadOutputs(), loadParseRules(), loadTasks(), listCategories().then(result => { logCategories.value = result })])
+  loadErrors.value = {}
+  await Promise.all([loadSources(), loadOutputs(), loadParseRules(), loadTasks(), loadCategories()])
 }
-onMounted(async () => {
-  await refreshAll()
+onMounted(() => { void refreshAll() })
+watch(testDialog, open => { if (!open) cancelPreview() })
+watch(showSourceDialog, open => {
+  if (open) return
+  if (sourceRuleSearchTimer !== null) { window.clearTimeout(sourceRuleSearchTimer); sourceRuleSearchTimer = null }
+  sourceRuleSearchGeneration++
+  sourceRuleLoading.value = false
+  readControllers.get('ruleOptions')?.abort()
+  readControllers.get('selectedRules')?.abort()
+})
+onUnmounted(() => {
+  disposed = true
+  cancelPreview()
+  if (sourceRuleSearchTimer !== null) window.clearTimeout(sourceRuleSearchTimer)
+  for (const controller of readControllers.values()) controller.abort()
+  readControllers.clear()
 })
 </script>
 
 <template>
   <div class="page-pad view-enter">
     <ActionFeedback :error="loadError" />
+    <el-alert v-if="summaryStale" :title="t('ingest.summaryStale')" type="warning" :closable="false" show-icon />
     <ActionFeedback :error="actionError" />
     <PageHeader :eyebrow="t('menuGroup.ingestAndConfig')" :title="t('ingest.title')" :description="t('ingest.description')">
       <template #actions>
@@ -362,12 +520,12 @@ onMounted(async () => {
     <el-tabs v-model="ingestTab" @tab-change="onIngestTab">
       <el-tab-pane :label="t('ingest.tasks')" name="tasks">
         <el-row class="metrics-row" :gutter="12" style="margin-bottom:14px">
-          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary?.enabledSources ?? 0 }}/{{ taskSummary?.sources ?? 0 }}</div><div class="label">{{ t('ingest.runningTotal') }}</div></div></el-card></el-col>
-          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ taskSummary?.eps1m ?? 0 }}</div><div class="label">{{ t('ingest.eps') }}</div></div></el-card></el-col>
-          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-success)">{{ taskSummary?.accepted ?? 0 }}</div><div class="label">{{ t('ingest.accepted') }}</div></div></el-card></el-col>
-          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary?.forwarded ?? 0 }}</div><div class="label">{{ t('ingest.forwarded') }}</div></div></el-card></el-col>
-          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" :style="{ color: (taskSummary?.skipped ?? 0) > 0 ? 'var(--ns-warning)' : 'var(--ns-text-3)' }">{{ taskSummary?.skipped ?? 0 }}</div><div class="label">{{ t('ingest.skipped') }}</div></div></el-card></el-col>
-          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ fmtBytes(taskSummary?.bytes ?? 0) }}</div><div class="label">{{ t('ingest.cumulativeBytes') }}</div></div></el-card></el-col>
+          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary ? `${taskSummary.enabledSources}/${taskSummary.sources}` : t('time.notAvailable') }}</div><div class="label">{{ t('ingest.runningTotal') }}</div></div></el-card></el-col>
+          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ taskSummary?.eps1m ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.eps') }}</div></div></el-card></el-col>
+          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-success)">{{ taskSummary?.accepted ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.accepted') }}</div></div></el-card></el-col>
+          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary?.forwarded ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.forwarded') }}</div></div></el-card></el-col>
+          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" :style="{ color: (taskSummary?.skipped ?? 0) > 0 ? 'var(--ns-warning)' : 'var(--ns-text-3)' }">{{ taskSummary?.skipped ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.skipped') }}</div></div></el-card></el-col>
+          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary ? fmtBytes(taskSummary.bytes) : t('time.notAvailable') }}</div><div class="label">{{ t('ingest.cumulativeBytes') }}</div></div></el-card></el-col>
         </el-row>
         <el-card shadow="never">
           <template #header><div style="display:flex;align-items:center;gap:10px"><span>{{ t('ingest.taskConfigMetrics') }}</span><el-tag v-for="(count, health) in (taskSummary?.byHealth ?? {})" :key="health" size="small" :type="healthMeta(String(health)).type" style="margin-left:2px">{{ healthMeta(String(health)).text }} {{ count }}</el-tag><el-button size="small" style="margin-left:auto" @click="loadTasks">{{ t('common.refresh') }}</el-button></div></template>
@@ -393,7 +551,7 @@ onMounted(async () => {
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.sourcesTab')" name="sources">
-        <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateSource">+ {{ t('ingest.addSource') }}</el-button><el-button @click="loadSources">{{ t('ingest.refresh') }}</el-button><el-button type="primary" plain @click="doRender">{{ t('ingest.renderConfig') }}</el-button><span class="hint">{{ t('ingest.sourceHint') }}</span></div>
+        <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateSource">+ {{ t('ingest.addSource') }}</el-button><el-input v-model="sourceSearchDraft" clearable maxlength="128" :placeholder="t('ingest.sourceSearchPlaceholder')" style="width:min(280px,100%)" @keyup.enter="applySourceSearch" @clear="applySourceSearch" /><el-button @click="applySourceSearch">{{ t('common.search') }}</el-button><el-button @click="loadSources">{{ t('ingest.refresh') }}</el-button><el-button type="primary" plain @click="doRender">{{ t('ingest.renderConfig') }}</el-button><span class="hint">{{ t('ingest.sourceHint') }}</span></div>
         <ActionFeedback :error="renderError" />
         <el-drawer v-model="showSourceDialog" :before-close="showSourceDialogGuard.beforeClose" :title="editingSourceId ? t('ingest.editSource') : t('ingest.addSource')" size="min(760px, 96vw)" :close-on-click-modal="false"><ActionFeedback :error="sourceError" />
           <el-form label-position="top" :disabled="actionBusy">
@@ -412,7 +570,9 @@ onMounted(async () => {
                   <el-select v-model="newSource.categoryId" filterable default-first-option clearable :placeholder="t('meta.authPlaceholder')"><el-option v-for="category in logCategories" :key="category.id" :label="category.code + ' ' + category.name" :value="category.id" /></el-select>
                 </FormField>
                 <FormField :label="t('ingest.boundRules')" full>
-                  <el-select v-model="newSource.parseRuleIds" multiple collapse-tags filterable default-first-option :placeholder="t('ingest.autoDetect')"><el-option v-for="rule in parseRules" :key="rule.id" :label="rule.name" :value="rule.id" /></el-select>
+                  <el-select :key="sourceRuleSelectionVersion" v-model="newSource.parseRuleIds" multiple collapse-tags filterable remote :remote-method="searchSourceRules" :loading="sourceRuleLoading" :placeholder="t('ingest.autoDetect')" @change="onSourceRuleChange"><el-option v-for="rule in sourceRuleOptions" :key="rule.id" :label="rule.name" :value="rule.id" /><el-option v-for="id in newSource.parseRuleIds.filter(id => !sourceRuleOptions.some(rule => rule.id === id))" :key="id" :label="sourceRuleOptionLabel(id)" :value="id" /><el-option v-if="sourceRuleTotal > 50" value="__more_rules__" :label="t('ingest.ruleSearchMore', { count: sourceRuleTotal })" disabled /></el-select>
+                  <small v-if="sourceRuleTotal > 50" class="hint">{{ t('ingest.ruleSearchMore', { count: sourceRuleTotal }) }}</small>
+                  <ActionFeedback :error="loadErrors.ruleOptions || loadErrors.selectedRules" />
                 </FormField>
                 <FormField :label="t('ingest.outputTarget')">
                   <el-select v-model="newSource.sinkTargetId" clearable filterable :placeholder="t('ingest.outputTargetPlaceholder')"><el-option :label="t('ingest.disabledDefault')" value="" /><el-option v-if="newSource.sinkTargetId && !outputs.some(output => output.id === newSource.sinkTargetId)" :label="newSource.sinkTargetId" :value="newSource.sinkTargetId" /><el-option v-for="output in outputs" :key="output.id" :label="`${output.name} · ${output.type}`" :value="output.id" /></el-select>
@@ -428,7 +588,7 @@ onMounted(async () => {
             <FormSection v-if="newSource.type === 'FILE'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.fileAccessHint')">
               <FormGrid :columns="2">
                 <FormField :label="t('ingest.multilineLabel')" :hint="t('ingest.multilineHint')" full>
-                  <el-input v-model="newSource.multiline" type="textarea" :rows="2" :placeholder="t('ingest.multilinePlaceholder')" />
+                  <el-input v-model="newSource.multiline" type="textarea" :rows="2" :placeholder="MULTILINE_PLACEHOLDER" />
                 </FormField>
                 <FormField :label="t('ingest.filePath')"><el-input v-model="newSource.path" :placeholder="t('ingest.filePathPlaceholder')" /></FormField>
                 <FormField :label="t('ingest.readFrom')"><el-select v-model="newSource.readFrom"><el-option :label="t('ingest.readFromBeginning')" value="beginning" /><el-option :label="t('ingest.readFromEnd')" value="end" /></el-select></FormField>
@@ -458,7 +618,7 @@ onMounted(async () => {
           </el-form>
           <template #footer><el-button @click="showSourceDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="saveSource">{{ editingSourceId ? t('common.save') : t('ingest.addSource') }}</el-button></template>
         </el-drawer>
-        <el-card shadow="never"><el-table :data="sources" size="small" border><el-table-column prop="name" :label="t('common.name')" width="130" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="110" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="80" /><el-table-column :label="t('ingest.target')" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.path || row.address || row.topic || t('time.notAvailable') }}</template></el-table-column><el-table-column :label="t('ingest.protocol')" width="70"><template #default="{ row }">{{ row.protocol || t('time.notAvailable') }}</template></el-table-column><el-table-column prop="env" :label="t('ingest.environment')" width="65" /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="120"><template #default="{ row }"><el-button link type="primary" size="small" @click="openEditSource(row as LogSource)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeSource(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table></el-card>
+        <el-card shadow="never"><el-table :data="sources" size="small" border><el-table-column prop="name" :label="t('common.name')" width="130" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="110" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="80" /><el-table-column :label="t('ingest.target')" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.path || row.address || row.topic || t('time.notAvailable') }}</template></el-table-column><el-table-column :label="t('ingest.protocol')" width="70"><template #default="{ row }">{{ row.protocol || t('time.notAvailable') }}</template></el-table-column><el-table-column prop="env" :label="t('ingest.environment')" width="65" /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="120"><template #default="{ row }"><el-button link type="primary" size="small" @click="openEditSource(row as LogSource)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeSource(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="sourcePage" v-model:page-size="sourceSize" :total="sourceTotal" :page-sizes="[20, 50, 100]" /></el-card>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.outputTab')" name="outputs">
@@ -486,8 +646,8 @@ onMounted(async () => {
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.rulesTab')" name="rules">
-        <div style="margin-bottom:12px"><el-button v-if="canWrite" type="primary" @click="router.push({ name: 'parser-new' })">{{ t('ingest.addParseRule') }}</el-button><el-button @click="loadParseRules">{{ t('ingest.refresh') }}</el-button><span style="color:var(--ns-text-3);font-size:12px;margin-left:8px">{{ t('ingest.parserHint') }}</span></div>
-        <el-card shadow="never"><el-table :data="parseRules" size="small" border><el-table-column prop="name" :label="t('ingest.ruleName')" width="180" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="90" /><el-table-column prop="pattern" :label="t('ingest.patternDescription')" min-width="300" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="70"><template #default="{ row }"><el-button link size="small" @click="router.push({ name: 'parser-edit', params: { parserId: row.id } })">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeParseRule(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table></el-card>
+        <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="router.push({ name: 'parser-new' })">{{ t('ingest.addParseRule') }}</el-button><el-input v-model="ruleSearchDraft" clearable maxlength="128" :placeholder="t('ingest.ruleSearchPlaceholder')" style="width:min(280px,100%)" @keyup.enter="applyRuleSearch" @clear="applyRuleSearch" /><el-button @click="applyRuleSearch">{{ t('common.search') }}</el-button><el-button @click="loadParseRules">{{ t('ingest.refresh') }}</el-button><span class="hint">{{ t('ingest.parserHint') }}</span></div>
+        <el-card shadow="never"><el-table :data="parseRules" size="small" border><el-table-column prop="name" :label="t('ingest.ruleName')" width="180" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="90" /><el-table-column prop="pattern" :label="t('ingest.patternDescription')" min-width="300" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="70"><template #default="{ row }"><el-button link size="small" @click="router.push({ name: 'parser-edit', params: { parserId: row.id } })">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeParseRule(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="rulePage" v-model:page-size="ruleSize" :total="ruleTotal" :page-sizes="[20, 50, 100]" /></el-card>
       </el-tab-pane>
     </el-tabs>
     <el-dialog v-model="showRender" title="vector.toml" width="720px"><ActionFeedback :error="renderError" /><el-button size="small" type="primary" @click="copyRender">{{ t('common.copy') }}</el-button><pre style="background:var(--ns-bg-subtle);border:1px solid var(--ns-border);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:440px;margin-top:10px">{{ renderText }}</pre></el-dialog>

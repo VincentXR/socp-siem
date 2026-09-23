@@ -1,6 +1,9 @@
 package com.socp.search.config.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.re2j.Matcher;
+import com.google.re2j.Pattern;
+import com.google.re2j.PatternSyntaxException;
 import com.socp.search.config.domain.ParseFormat;
 import com.socp.search.config.domain.ParseRule;
 import com.socp.search.config.config.SearchRuntimeRole;
@@ -16,8 +19,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Compiles and executes one tenant-owned parsing rule.
@@ -35,9 +36,10 @@ public class ParseRuleExecutor {
     private static final int MAX_REGEX_PATTERN_CHARS = 8 * 1024;
     private static final int MAX_REGEX_INPUT_CHARS = 256 * 1024;
     private static final int MAX_REGEX_QUANTIFIERS = 128;
+    private static final int MAX_REGEX_PROGRAM_SIZE = 4_096;
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final Pattern NAMED_GROUP = Pattern.compile("\\(\\?<([A-Za-z][A-Za-z0-9_]*)>");
-    private static final Pattern KV = Pattern.compile("([A-Za-z0-9_.-]+)=(\"[^\"]*\"|'[^']*'|\\S+)");
+    private static final java.util.regex.Pattern KV = java.util.regex.Pattern.compile(
+            "([A-Za-z0-9_.-]+)=(\"[^\"]*\"|'[^']*'|\\S+)");
     private static final Set<String> SUPPORTED_FORMATS = Set.of(
             "REGEX", "JSON", "KV", "SYSLOG", "CEF", "LEEF", "AUTO");
     private static final Set<String> FILTER_TYPES = Set.of(
@@ -63,7 +65,15 @@ public class ParseRuleExecutor {
                 throw new IllegalArgumentException("REGEX parse rule requires pattern");
             }
             validateRegexBudget(rule.pattern());
-            regex = Pattern.compile(rule.pattern());
+            try {
+                regex = Pattern.compile(rule.pattern());
+                if (regex.programSize() > MAX_REGEX_PROGRAM_SIZE) {
+                    throw new IllegalArgumentException("REGEX program exceeds "
+                            + MAX_REGEX_PROGRAM_SIZE + " instructions");
+                }
+            } catch (PatternSyntaxException invalid) {
+                throw new IllegalArgumentException("invalid or unsupported REGEX pattern", invalid);
+            }
         }
         List<CompiledFilter> filters = new ArrayList<>();
         for (Map<String, Object> raw : rule.filters()) {
@@ -120,9 +130,7 @@ public class ParseRuleExecutor {
         if (!matcher.find()) return null;
 
         Map<String, String> output = new LinkedHashMap<>();
-        List<String> names = new ArrayList<>();
-        Matcher named = NAMED_GROUP.matcher(rule.pattern());
-        while (named.find()) names.add(named.group(1));
+        Set<String> names = pattern.namedGroups().keySet();
 
         if (!names.isEmpty()) {
             for (String name : names) {
@@ -304,7 +312,7 @@ public class ParseRuleExecutor {
 
     private static Map<String, String> parseKv(String input) {
         Map<String, String> output = new LinkedHashMap<>();
-        Matcher matcher = KV.matcher(input);
+        java.util.regex.Matcher matcher = KV.matcher(input);
         while (matcher.find()) {
             String value = matcher.group(2);
             if ((value.startsWith("\"") && value.endsWith("\""))

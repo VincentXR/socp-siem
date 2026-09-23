@@ -15,5 +15,8 @@ public class ConfigCacheProperties {
     private long ttlMs = 60_000L;
 
     public long getTtlMs() { return ttlMs; }
-    public void setTtlMs(long ttlMs) { this.ttlMs = ttlMs; }
+    public void setTtlMs(long ttlMs) {
+        if (ttlMs < 1) throw new IllegalArgumentException("config cache TTL must be positive");
+        this.ttlMs = ttlMs;
+    }
 }

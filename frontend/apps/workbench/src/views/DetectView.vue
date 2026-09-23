@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteUpdate, useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import { watch } from 'vue'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
@@ -29,13 +29,16 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, inject, onMounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
+import PagerBar from '../components/PagerBar.vue'
+import { useLatestRequest } from '../composables/useLatestRequest'
 import EmptyState from '../components/EmptyState.vue'
 import FieldConditionBuilder from '../components/FieldConditionBuilder.vue'
+import RuleRevisionHistory from '../components/RuleRevisionHistory.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { WORKBENCH_STATE } from '../app/workbenchState'
 import {
-  activateGasRule, createGasRule, deleteGasRule, gasStats, listRules, SEVERITIES, updateGasRule,
-  listFields, listRefSets, testGasRules,
+  activateGasRule, createGasRule, deleteGasRule, gasStats, listRulePage, getRule, SEVERITIES, updateGasRule,
+  listFields, listWatchlists, testGasRules,
   listTechniques,
   type DetectionIngestEvent, type FieldDef, type GasStats, type LateEventPolicy, type ReferenceSet, type RuleCondition, type RuleSpec, type Technique,
 } from '../api'
@@ -44,6 +47,7 @@ import { useConfirm } from '../composables/useConfirm'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { tOr } from '../utils/i18nLabel'
 import { traceRuleConditions } from '../lib/detection-test'
+import { ApiError } from '../api/core'
 
 const { t } = useI18n()
 const { confirmDanger } = useConfirm()
@@ -74,12 +78,37 @@ const RULE_TYPES = ['pattern', 'threshold', 'correlation', 'correlation-set', 'b
 const ADVANCED_TYPES = ['correlation-set', 'baseline', 'rare']
 const STATEFUL_TYPES = ['threshold', 'correlation', 'correlation-set', 'baseline', 'rare']
 
-const allRules = ref<RuleSpec[]>([])
+const rules = ref<RuleSpec[]>([])
+const rulesTotal = ref(0)
+const listRequests = useLatestRequest()
+const editorRequests = useLatestRequest()
+const editorLoading = ref(false)
+let pendingPagination: LocationQueryRaw | null = null
+function updatePagination(patch: LocationQueryRaw): void {
+  // The pager emits size and page reset in one tick. Merge them before
+  // navigating so the second event cannot restore the previous page size.
+  pendingPagination = { ...(pendingPagination ?? route.query), ...patch }
+  queueMicrotask(() => {
+    if (!pendingPagination) return
+    const query = pendingPagination
+    pendingPagination = null
+    void router.push({ query })
+  })
+}
+const rulePage = computed({
+  get: () => { const value = Number(route.query.page); return Number.isSafeInteger(value) && value >= 1 && value <= 2147483647 ? value : 1 },
+  set: value => updatePagination({ page: value > 1 ? String(value) : undefined }),
+})
+const rulePageSize = computed({
+  get: () => [10, 20, 50].includes(Number(route.query.size)) ? Number(route.query.size) : 20,
+  set: value => updatePagination({ size: String(value), page: undefined }),
+})
 const fieldDefs = ref<FieldDef[]>([])
 const referenceSets = ref<ReferenceSet[]>([])
 const techniques = ref<Technique[]>([])
 const gasStat = ref<GasStats>({ rules: 0, eventCount: 0, alertCount: 0, dropCount: 0, suppressedCount: 0, queueLoad: 0 })
 const loading = ref(false)
+const supportLoading = ref(false)
 const saving = ref(false)
 const loadError = ref('')
 const fieldLoadError = ref('')
@@ -88,6 +117,11 @@ const techniqueLoadError = ref('')
 const actionMessage = ref('')
 const saveError = ref('')
 const saveNotice = ref('')
+const saveConflict = ref(false)
+// The precondition belongs to the fetched head, never to editable advanced JSON.
+const loadedRevisionToken = ref<string>()
+const historyOpen = ref(false)
+const historyRuleId = ref('')
 /** Row-level problems per condition block, rendered inline by the builders. */
 type ConditionErrors = { match: Record<number, string>; matchAny: Record<number, Record<number, string>>; steps: Record<number, Record<number, string>>; whitelist: Record<number, string> }
 const emptyConditionErrors = (): ConditionErrors => ({ match: {}, matchAny: {}, steps: {}, whitelist: {} })
@@ -157,12 +191,9 @@ const ownerOptions = computed(() => {
   if (current) values.add(current)
   return [...values].filter(Boolean)
 })
-const changes = useUnsavedChanges(() => ({ form: ruleForm.value, json: advancedJson.value }), () => showRuleEditor.value)
+const changes = useUnsavedChanges(() => ({ form: ruleForm.value, json: advancedJson.value }), () => showRuleEditor.value, () => saving.value)
+onBeforeRouteUpdate((to, from) => to.path !== from.path || to.query.copy === from.query.copy || changes.canLeave())
 const rawOnlyRuleType = computed(() => Boolean(ruleForm.value.type) && !RULE_TYPES.includes(ruleForm.value.type))
-const visibleRules = computed(() => ruleStatusFilter.value
-  ? allRules.value.filter(rule => ruleStatus(rule) === ruleStatusFilter.value)
-  : allRules.value)
-const rules = computed(() => visibleRules.value.filter(rule => `${rule.name} ${rule.type}`.toLowerCase().includes(ruleKeyword.value.toLowerCase())))
 
 function normalizeRuleSpec(row: unknown): RuleSpec | null {
   if (!row || typeof row !== 'object') return null
@@ -175,13 +206,10 @@ function normalizeRuleSpec(row: unknown): RuleSpec | null {
   } as RuleSpec
 }
 
-async function loadRules(): Promise<void> {
-  if (loading.value) return
-  loading.value = true
-  loadError.value = ''
-  const [ruleResult, statResult, fieldResult, refsetResult, techniqueResult] = await Promise.allSettled([listRules(), gasStats(), listFields(), listRefSets(), listTechniques()])
-  if (ruleResult.status === 'fulfilled') allRules.value = ruleResult.value.map(normalizeRuleSpec).filter((rule): rule is RuleSpec => rule !== null)
-  else loadError.value = ruleResult.reason instanceof Error ? ruleResult.reason.message : String(ruleResult.reason)
+async function loadSupport(): Promise<void> {
+  if (supportLoading.value) return
+  supportLoading.value = true
+  const [statResult, fieldResult, refsetResult, techniqueResult] = await Promise.allSettled([gasStats(), listFields(), listWatchlists(), listTechniques()])
   if (statResult.status === 'fulfilled') gasStat.value = statResult.value
   if (fieldResult.status === 'fulfilled') {
     fieldDefs.value = fieldResult.value
@@ -190,7 +218,7 @@ async function loadRules(): Promise<void> {
     fieldLoadError.value = fieldResult.reason instanceof Error ? fieldResult.reason.message : String(fieldResult.reason)
   }
   if (refsetResult.status === 'fulfilled') {
-    referenceSets.value = refsetResult.value
+    referenceSets.value = refsetResult.value.map(list => ({ id: list.name, name: list.name, description: '', entries: [], size: list.size }))
     referenceLoadError.value = ''
   } else {
     referenceLoadError.value = refsetResult.reason instanceof Error ? refsetResult.reason.message : String(refsetResult.reason)
@@ -201,7 +229,7 @@ async function loadRules(): Promise<void> {
   } else {
     techniqueLoadError.value = techniqueResult.reason instanceof Error ? techniqueResult.reason.message : String(techniqueResult.reason)
   }
-  loading.value = false
+  supportLoading.value = false
 }
 
 function onGroupByChange(value: unknown): void {
@@ -219,19 +247,50 @@ function onKeyFieldChange(value: unknown): void { onGroupByChange(value) }
 function openRuleEditor(row?: unknown): void {
   if (!canManageRules.value) return
   const rule = row ? normalizeRuleSpec(row) : null
-  void router.push(rule ? { name: 'rule-edit', params: { ruleId: String(rule.id) } } : { name: 'rule-new' })
+  void router.push(rule ? { name: 'rule-edit', params: { ruleId: String(rule.id) }, query: route.query } : { name: 'rule-new', query: route.query })
+}
+function openRuleHistory(row?: unknown): void {
+  if (!canManageRules.value || saving.value) return
+  const id = row ? normalizeRuleSpec(row)?.id : ruleEditingId.value
+  if (!id) return
+  historyRuleId.value = String(id)
+  historyOpen.value = true
+}
+function acceptRestoredRule(rule: RuleSpec): void {
+  if (ruleEditingId.value === String(rule.id)) {
+    sourceRule.value = clone(rule); ruleForm.value = formFromRule(rule); advancedJson.value = JSON.stringify(rule, null, 2)
+    loadedRevisionToken.value = rule.revisionToken
+    saveError.value = ''; saveConflict.value = false; saveNotice.value = ''; advancedError.value = ''
+    ruleFieldErrors.value = {}; conditionErrors.value = emptyConditionErrors()
+    changes.markSaved()
+  }
+  void loadRules()
 }
 async function syncEditorRoute() {
-  if (!route.meta.editor) { showRuleEditor.value = false; return }
+  const request = editorRequests.start()
+  showRuleEditor.value = false
+  editorLoading.value = false
+  if (!route.meta.editor) return
   const id = String(route.params.ruleId || route.query.copy || '')
   if (!canManageRules.value && (!id || Boolean(route.query.copy))) {
-    showRuleEditor.value = false
     await router.replace({ name: 'detect' })
     return
   }
-  const rule = id ? allRules.value.find(item => String(item.id) === id) : null
-  if (id && !rule) { loadError.value = t('detect.ruleNotFound', { id }); showRuleEditor.value = false; return }
+  loadError.value = ''
+  editorLoading.value = Boolean(id)
+  let rule: RuleSpec | null = null
+  try {
+    rule = id ? normalizeRuleSpec(await getRule(id, { signal: request.signal })) : null
+    if (!request.isCurrent()) return
+    if (id && !rule) throw new Error(t('detect.ruleNotFound', { id }))
+  } catch (failure) {
+    if (request.isCurrent()) loadError.value = failure instanceof Error ? failure.message : String(failure)
+    return
+  } finally {
+    if (request.isCurrent()) editorLoading.value = false
+  }
   ruleEditingId.value = rule && !route.query.copy ? String(rule.id) : null
+  loadedRevisionToken.value = ruleEditingId.value ? rule?.revisionToken : undefined
   sourceRule.value = rule ? clone(rule) : null
   ruleForm.value = rule ? formFromRule(rule) : emptyRuleForm()
   if (route.query.copy && sourceRule.value) {
@@ -242,14 +301,14 @@ async function syncEditorRoute() {
     ruleForm.value.enabled = false
   }
   advancedJson.value = JSON.stringify(sourceRule.value ?? {}, null, 2)
-  saveError.value = ''; advancedError.value = ''; saveNotice.value = ''
+  saveError.value = ''; advancedError.value = ''; saveNotice.value = ''; saveConflict.value = false
   ruleFieldErrors.value = {}; conditionErrors.value = emptyConditionErrors()
   showRuleEditor.value = true
   changes.markSaved()
 }
 async function closeRuleEditor(): Promise<void> {
   if (saving.value) return
-  await router.push({ name: 'detect' })
+  await router.push({ name: 'detect', query: { ...route.query, copy: undefined } })
 }
 
 /** Blank, half-typed, or usable: a row with neither field nor value is blank. */
@@ -388,6 +447,7 @@ function buildRuleSpec(conditions: ConditionBlocks): Partial<RuleSpec> {
   // Lifecycle transitions are separate operations. An edit cannot promote a
   // draft or disabled rule through the ordinary update endpoint.
   delete spec.status
+  delete spec.revisionToken
   if (ruleEditingId.value) {
     spec.id = ruleEditingId.value
     spec.enabled = textValue(sourceRule.value?.status).toUpperCase() === 'ACTIVE' ? ruleForm.value.enabled : false
@@ -398,9 +458,10 @@ function buildRuleSpec(conditions: ConditionBlocks): Partial<RuleSpec> {
 }
 
 async function saveRule(): Promise<void> {
-  if (!canManageRules.value) return
+  if (!canManageRules.value || saving.value) return
   saveError.value = ''
   saveNotice.value = ''
+  saveConflict.value = false
   ruleFieldErrors.value = {}
   if (!ruleForm.value.name.trim()) {
     ruleFieldErrors.value.name = t('forms.fieldRequired', { field: t('common.name') })
@@ -417,20 +478,25 @@ async function saveRule(): Promise<void> {
   saving.value = true
   try {
     const spec = buildRuleSpec(checked.blocks)
-    const saved = ruleEditingId.value ? await updateGasRule(ruleEditingId.value, spec) : await createGasRule(spec)
+    const saved = ruleEditingId.value ? await updateGasRule(ruleEditingId.value, spec, loadedRevisionToken.value) : await createGasRule(spec)
     const normalized = normalizeRuleSpec(saved)
     if (normalized) { ruleEditingId.value = String(normalized.id); sourceRule.value = clone(normalized); ruleForm.value = formFromRule(normalized); advancedJson.value = JSON.stringify(normalized, null, 2) }
+    loadedRevisionToken.value = normalized?.revisionToken
     changes.markSaved()
     await loadRules()
     if (checked.blank) saveNotice.value = t('detect.ignoredEmptyConditions', { count: checked.blank })
-    if (ruleEditingId.value) await router.replace({ name: 'rule-edit', params: { ruleId: ruleEditingId.value } })
+    // The write is settled and the saved form is the new baseline. Release the
+    // navigation guard before moving a newly created rule to its edit route.
+    saving.value = false
+    if (ruleEditingId.value) await router.replace({ name: 'rule-edit', params: { ruleId: ruleEditingId.value }, query: { ...route.query, copy: undefined } })
   } catch (error) {
-    saveError.value = t('detect.saveFailed', { message: error instanceof Error ? error.message : String(error) })
+    saveConflict.value = error instanceof ApiError && [412, 428].includes(error.status)
+    saveError.value = saveConflict.value ? t('detect.concurrentEdit') : t('detect.saveFailed', { message: error instanceof Error ? error.message : String(error) })
   } finally { saving.value = false }
 }
 
 function applyAdvancedJson(): void {
-  if (!canManageRules.value) return
+  if (!canManageRules.value || saving.value) return
   advancedError.value = ''
   try {
     const parsed = JSON.parse(advancedJson.value) as unknown
@@ -438,6 +504,20 @@ function applyAdvancedJson(): void {
     if (!normalized) throw new Error(t('detect.invalidRuleJson'))
     sourceRule.value = clone(normalized); ruleForm.value = formFromRule(normalized); advancedJson.value = JSON.stringify(normalized, null, 2)
   } catch (error) { advancedError.value = error instanceof Error ? error.message : String(error) }
+}
+
+function downloadRuleDraft(): void {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(buildRuleSpec(draftConditions()), null, 2)], { type: 'application/json' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${(ruleEditingId.value || 'rule').replace(/[^A-Za-z0-9._-]/g, '_')}-draft.json`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+function ruleMutationMessage(error: unknown): string {
+  return error instanceof ApiError && [412, 428].includes(error.status)
+    ? t('detect.listConcurrentEdit') : error instanceof Error ? error.message : String(error)
 }
 
 function ruleUpdateSpec(rule: RuleSpec, enabled: boolean, status: string): Partial<RuleSpec> {
@@ -451,14 +531,14 @@ async function toggleRule(row: unknown): Promise<void> {
   actionMessage.value = ''
   const status = textValue(rule.status).toUpperCase()
   if (status === 'ACTIVE' || rule.enabled) {
-    try { await updateGasRule(String(rule.id), ruleUpdateSpec(rule, false, 'DISABLED')); await loadRules() }
-    catch (error) { actionMessage.value = error instanceof Error ? error.message : String(error) }
+    try { await updateGasRule(String(rule.id), ruleUpdateSpec(rule, false, 'DISABLED'), rule.revisionToken); await loadRules() }
+    catch (error) { actionMessage.value = ruleMutationMessage(error) }
     return
   }
   if (!canActivate.value) { actionMessage.value = t('detect.activationAdminOnly'); return }
   if (status === 'ARCHIVED') return
-  try { await activateGasRule(String(rule.id)); await loadRules() }
-  catch (error) { actionMessage.value = error instanceof Error ? error.message : String(error) }
+  try { await activateGasRule(String(rule.id), rule.revisionToken); await loadRules() }
+  catch (error) { actionMessage.value = ruleMutationMessage(error) }
 }
 
 async function removeRule(row: unknown): Promise<void> {
@@ -470,14 +550,14 @@ async function removeRule(row: unknown): Promise<void> {
     return
   }
   if (!await confirmDanger(t('detect.deleteRuleConfirm'))) return
-  try { await deleteGasRule(String(rule.id)); await loadRules() }
-  catch (error) { actionMessage.value = error instanceof Error ? error.message : String(error) }
+  try { await deleteGasRule(String(rule.id), rule.revisionToken); await loadRules() }
+  catch (error) { actionMessage.value = ruleMutationMessage(error) }
 }
 
 function copyRuleAsDraft(row: unknown): void {
   if (!canManageRules.value) return
   const rule = normalizeRuleSpec(row)
-  if (rule) void router.push({ name: 'rule-new', query: { copy: String(rule.id) } })
+  if (rule) void router.push({ name: 'rule-new', query: { ...route.query, copy: String(rule.id) } })
 }
 
 function testSingleRule(row: unknown): void {
@@ -558,22 +638,65 @@ async function runIsolatedTest(): Promise<void> {
   finally { testing.value = false }
 }
 
-watch(() => route.fullPath, () => { void syncEditorRoute() })
-onMounted(async () => { await loadRules(); await syncEditorRoute() })
+function applyRuleFilters(): void {
+  void router.push({ query: { ...route.query, q: ruleKeyword.value.trim() || undefined,
+    status: ruleStatusFilter.value || undefined, page: undefined } })
+}
+
+async function loadRuleList(): Promise<void> {
+  if (route.name !== 'detect') return
+  const request = listRequests.start()
+  loadError.value = ''
+  loading.value = true
+  testRuleId.value = ''
+  testResult.value = null
+  try {
+    const result = await listRulePage({ page: rulePage.value, size: rulePageSize.value,
+      q: typeof route.query.q === 'string' ? route.query.q : undefined,
+      status: typeof route.query.status === 'string' ? route.query.status : undefined,
+      ...(typeof route.query.reference === 'string' ? { reference: route.query.reference } : {}) }, { signal: request.signal })
+    if (!request.isCurrent()) return
+    rules.value = result.items.map(normalizeRuleSpec).filter((rule): rule is RuleSpec => rule !== null)
+    rulesTotal.value = result.total
+    const lastPage = Math.max(1, result.totalPages ?? Math.ceil(result.total / result.size))
+    if (rulePage.value > lastPage) await router.replace({ query: { ...route.query, page: lastPage > 1 ? String(lastPage) : undefined } })
+  } catch (failure) {
+    if (request.isCurrent()) { rules.value = []; rulesTotal.value = 0; loadError.value = String(failure) }
+  } finally {
+    if (request.isCurrent()) loading.value = false
+  }
+}
+
+async function loadRules(): Promise<void> { await Promise.all([loadSupport(), loadRuleList()]) }
+async function refreshRules(): Promise<void> {
+  if (saving.value) return
+  if (route.meta.editor && !await changes.canLeave()) return
+  await Promise.all([loadRules(), route.meta.editor ? syncEditorRoute() : Promise.resolve()])
+}
+watch(() => [route.name, route.params.ruleId, route.query.copy], () => { void syncEditorRoute() }, { immediate: true })
+watch(() => [route.name, route.query.q, route.query.status, route.query.reference, route.query.page, route.query.size], () => {
+  if (route.name !== 'detect') { listRequests.cancel(); return }
+  ruleKeyword.value = typeof route.query.q === 'string' ? route.query.q : ''
+  ruleStatusFilter.value = typeof route.query.status === 'string' ? route.query.status : ''
+  void loadRuleList()
+}, { immediate: true })
+onMounted(loadSupport)
+watch(() => route.fullPath, () => { historyOpen.value = false })
 </script>
 
 <template>
   <div class="page-pad view-enter detect-view">
+    <p v-if="editorLoading" role="status">{{ t('common.loading') }}</p>
     <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('detect.title')" :description="t('detect.workspaceDescription')">
-      <template #actions><el-button v-if="showRuleEditor" @click="closeRuleEditor">{{ t('forms.back') }}</el-button><el-select v-if="!showRuleEditor" v-model="ruleStatusFilter" size="small" clearable :placeholder="t('common.filter')" style="width:150px"><el-option v-for="status in ['DRAFT', 'TESTING', 'ACTIVE', 'DISABLED', 'ARCHIVED']" :key="status" :label="lifecycleStatusLabel(status)" :value="status" /></el-select><el-button size="small" :loading="loading" @click="loadRules">{{ t('common.refresh') }}</el-button><el-button v-if="canManageRules && !showRuleEditor" type="primary" size="small" @click="openRuleEditor()">{{ t('detect.createRule') }}</el-button></template>
+      <template #actions><el-button v-if="route.meta.editor" :disabled="saving" @click="closeRuleEditor">{{ t('forms.back') }}</el-button><el-select v-if="!route.meta.editor" v-model="ruleStatusFilter" size="small" @change="applyRuleFilters" clearable :placeholder="t('common.filter')" style="width:150px"><el-option v-for="status in ['DRAFT', 'TESTING', 'ACTIVE', 'DISABLED', 'ARCHIVED']" :key="status" :label="lifecycleStatusLabel(status)" :value="status" /></el-select><el-button size="small" :loading="loading || supportLoading || editorLoading" @click="refreshRules">{{ t('common.refresh') }}</el-button><el-button v-if="canManageRules && !route.meta.editor" type="primary" size="small" @click="openRuleEditor()">{{ t('detect.createRule') }}</el-button></template>
     </PageHeader>
     <div v-if="showRuleEditor && !canManageRules" class="page-readonly-hint">{{ t('detect.readOnly') }}</div>
 
-    <div v-if="referenceLoadError" class="detect-feedback error" role="alert"><strong>{{ t('menu.refset') }}</strong><span>{{ referenceLoadError }}</span><el-button size="small" :loading="loading" @click="loadRules">{{ t('common.refresh') }}</el-button></div>
-    <div v-if="loadError" class="detect-feedback error" role="alert"><strong>{{ t('detect.loadFailed') }}</strong><span>{{ loadError }}</span><el-button size="small" @click="loadRules">{{ t('common.refresh') }}</el-button></div>
+    <div v-if="referenceLoadError" class="detect-feedback error" role="alert"><strong>{{ t('ueba.watchlists') }}</strong><span>{{ referenceLoadError }}</span><el-button size="small" :loading="loading || supportLoading || editorLoading" @click="refreshRules">{{ t('common.refresh') }}</el-button></div>
+    <div v-if="loadError" class="detect-feedback error" role="alert"><strong>{{ t('detect.loadFailed') }}</strong><span>{{ loadError }}</span><el-button size="small" @click="refreshRules">{{ t('common.refresh') }}</el-button></div>
     <div v-if="actionMessage" class="detect-feedback error" role="alert">{{ actionMessage }}</div>
 
-    <div v-if="!showRuleEditor" class="detect-stat-grid">
+    <div v-if="!route.meta.editor" class="detect-stat-grid">
       <el-card shadow="never"><div class="detect-stat"><span>{{ t('detect.rulesCount') }}</span><b>{{ gasStat.rules ?? 0 }}</b></div></el-card>
       <el-card shadow="never"><div class="detect-stat"><span>{{ t('detect.eventsCount') }}</span><b>{{ gasStat.eventCount ?? 0 }}</b></div></el-card>
       <el-card shadow="never"><div class="detect-stat"><span>{{ t('detect.alarmsCount') }}</span><b class="danger-text">{{ gasStat.alertCount ?? 0 }}</b></div></el-card>
@@ -582,8 +705,9 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
 
 
     <section v-if="showRuleEditor" class="detect-editor-workspace" :class="{ 'detect-editor-readonly': !canManageRules }">
-      <div class="workspace-section-head"><div><div class="page-eyebrow">{{ t('detect.editorEyebrow') }}</div><h2>{{ ruleEditingId ? t('detect.editor.editRule') : t('detect.createRule') }}</h2><p>{{ t('detect.editorHint') }}</p></div><div class="workspace-section-actions"><el-tag v-if="ruleEditingId" :type="statusTag(ruleForm.status)" size="small">{{ lifecycleStatusLabel(ruleForm.status) }}</el-tag><el-button size="small" @click="closeRuleEditor">{{ t('common.cancel') }}</el-button></div></div>
-      <el-form label-position="top" class="detect-editor-form" :disabled="!canManageRules">
+      <div class="workspace-section-head"><div><div class="page-eyebrow">{{ t('detect.editorEyebrow') }}</div><h2>{{ ruleEditingId ? t('detect.editor.editRule') : t('detect.createRule') }}</h2><p>{{ t('detect.editorHint') }}</p></div><div class="workspace-section-actions"><el-button v-if="canManageRules && ruleEditingId" size="small" :disabled="saving" @click="openRuleHistory()">{{ t('detect.revisionHistory') }}</el-button><el-tag v-if="ruleEditingId" :type="statusTag(ruleForm.status)" size="small">{{ lifecycleStatusLabel(ruleForm.status) }}</el-tag><el-button size="small" :disabled="saving" @click="closeRuleEditor">{{ t('common.cancel') }}</el-button></div></div>
+      <p v-if="saving" class="form-hint" role="status">{{ t('common.busySaving') }}</p>
+      <el-form label-position="top" class="detect-editor-form" :disabled="!canManageRules || saving">
         <section ref="scopeSection" class="detect-form-section"><div class="detect-form-section-title"><span>01</span><div><h3>{{ t('detect.dataScope') }}</h3><p>{{ t('detect.dataScopeHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('common.name')" required :error="ruleFieldErrors.name"><el-input v-model="ruleForm.name" :placeholder="t('detect.editor.namePlaceholder')" /></el-form-item><el-form-item :label="t('common.type')"><el-select v-model="ruleForm.type"><el-option v-if="rawOnlyRuleType" :label="typeLabel(ruleForm.type)" :value="ruleForm.type" /><el-option v-for="type in RULE_TYPES" :key="type" :label="typeLabel(type)" :value="type" /></el-select></el-form-item><el-form-item :label="t('common.severity')"><el-select v-model="ruleForm.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" /></el-select></el-form-item><el-form-item :label="t('detect.editor.window')"><el-input v-model="ruleForm.window" :placeholder="t('detect.editor.windowPlaceholder')" /></el-form-item></div></section>
 
         <section ref="logicSection" class="detect-form-section">
@@ -593,20 +717,20 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
               <div class="condition-block-head"><b>{{ t('detect.correlationSteps') }}</b><el-button v-if="canManageRules" size="small" plain @click="addStep">{{ t('detect.addStep') }}</el-button></div>
               <div v-for="(step, stepIndex) in ruleForm.steps" :key="stepIndex" class="condition-group">
                 <div class="condition-group-head"><span>{{ t('detect.step') }} {{ stepIndex + 1 }}</span><el-button v-if="canManageRules && ruleForm.steps.length > 1" link type="danger" size="small" @click="ruleForm.steps.splice(stepIndex, 1)">{{ t('common.delete') }}</el-button></div>
-                <FieldConditionBuilder v-model="ruleForm.steps[stepIndex]" :read-only="!canManageRules" :errors="conditionErrors.steps[stepIndex]" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
+                <FieldConditionBuilder v-model="ruleForm.steps[stepIndex]" :read-only="!canManageRules || saving" :errors="conditionErrors.steps[stepIndex]" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
               </div>
               <EmptyState v-if="!ruleForm.steps.length" :title="t('detect.noSteps')" :description="t('detect.addStepHint')" />
             </div>
           </template>
           <template v-else>
             <div class="condition-block">
-              <FieldConditionBuilder v-model="ruleForm.match" :read-only="!canManageRules" :errors="conditionErrors.match" :title="t('detect.allConditions')" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
+              <FieldConditionBuilder v-model="ruleForm.match" :read-only="!canManageRules || saving" :errors="conditionErrors.match" :title="t('detect.allConditions')" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
             </div>
             <div class="condition-block">
               <div class="condition-block-head"><b>{{ t('detect.anyConditionGroup') }}</b><el-button v-if="canManageRules" size="small" plain @click="addMatchAnyGroup">{{ t('detect.addGroup') }}</el-button></div>
               <div v-for="(group, groupIndex) in ruleForm.matchAny" :key="groupIndex" class="condition-group">
                 <div class="condition-group-head"><span>{{ t('detect.conditionGroup') }} {{ groupIndex + 1 }}</span><el-button v-if="canManageRules" link type="danger" size="small" @click="ruleForm.matchAny.splice(groupIndex, 1)">{{ t('common.delete') }}</el-button></div>
-                <FieldConditionBuilder v-model="ruleForm.matchAny[groupIndex]" :read-only="!canManageRules" :errors="conditionErrors.matchAny[groupIndex]" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
+                <FieldConditionBuilder v-model="ruleForm.matchAny[groupIndex]" :read-only="!canManageRules || saving" :errors="conditionErrors.matchAny[groupIndex]" :fields="fieldDefs" :reference-sets="referenceSets" :add-label="t('detect.addCondition')" :empty-hint="t('detect.noConditions')" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" />
               </div>
               <p v-if="!ruleForm.matchAny.length" class="form-hint">{{ t('detect.noAnyGroupHint') }}</p>
             </div>
@@ -620,23 +744,26 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
           </div>
         </section>
 
-        <section ref="alertSection" class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-select v-model="ruleForm.mitre" filterable default-first-option clearable placeholder="T1110"><el-option v-if="ruleForm.mitre && !techniques.some(item => item.id === ruleForm.mitre)" :label="ruleForm.mitre + ' (custom)'" :value="ruleForm.mitre" /><el-option v-for="technique in techniques" :key="technique.id" :label="`${technique.id} · ${technique.name}`" :value="technique.id" /></el-select><span v-if="techniqueLoadError" class="form-hint">{{ t('detect.fieldCatalogFallback') }}</span></el-form-item></div><div class="condition-block"><FieldConditionBuilder v-model="ruleForm.whitelist" :read-only="!canManageRules" :errors="conditionErrors.whitelist" :title="t('detect.editor.whitelist')" :add-label="t('detect.editor.addWhitelist')" :empty-hint="t('detect.noWhitelistHint')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" /></div></section>
+        <section ref="alertSection" class="detect-form-section"><div class="detect-form-section-title"><span>03</span><div><h3>{{ t('detect.alertContent') }}</h3><p>{{ t('detect.alertContentHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('detect.editor.alertTitle')"><el-input v-model="ruleForm.alertTitle" :placeholder="t('detect.editor.alertTitlePlaceholder')" /></el-form-item><el-form-item :label="t('detect.editor.alertDescription')"><el-input v-model="ruleForm.alertDescription" :placeholder="t('detect.editor.alertDescriptionPlaceholder')" /></el-form-item><el-form-item :label="t('detect.compatMessage')"><el-input v-model="ruleForm.message" /></el-form-item><el-form-item :label="t('detect.mitre')"><el-select v-model="ruleForm.mitre" filterable default-first-option clearable placeholder="T1110"><el-option v-if="ruleForm.mitre && !techniques.some(item => item.id === ruleForm.mitre)" :label="ruleForm.mitre + ' (custom)'" :value="ruleForm.mitre" /><el-option v-for="technique in techniques" :key="technique.id" :label="`${technique.id} · ${technique.name}`" :value="technique.id" /></el-select><span v-if="techniqueLoadError" class="form-hint">{{ t('detect.fieldCatalogFallback') }}</span></el-form-item></div><div class="condition-block"><FieldConditionBuilder v-model="ruleForm.whitelist" :read-only="!canManageRules || saving" :errors="conditionErrors.whitelist" :title="t('detect.editor.whitelist')" :add-label="t('detect.editor.addWhitelist')" :empty-hint="t('detect.noWhitelistHint')" :fields="fieldDefs" :reference-sets="referenceSets" :field-placeholder="t('detect.fieldPlaceholder')" :value-placeholder="t('detect.valuePlaceholder')" /></div></section>
 
-        <section class="detect-form-section"><div class="detect-form-section-title"><span>04</span><div><h3>{{ t('detect.advancedFields') }}</h3><p>{{ t('detect.advancedFieldsHint') }}</p></div></div><div v-if="ADVANCED_TYPES.includes(ruleForm.type) || rawOnlyRuleType" class="detect-advanced-warning"><b>{{ t('detect.advancedType') }}</b><span>{{ t('detect.advancedTypeHint') }}</span></div><div class="detect-form-grid compact-grid"><el-form-item :label="t('detect.routingField')"><el-select v-model="ruleForm.routingField" disabled :placeholder="t('detect.fieldPlaceholder')"><el-option v-if="ruleForm.routingField && !fieldDefs.some(field => field.fieldName === ruleForm.routingField)" :label="ruleForm.routingField" :value="ruleForm.routingField" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName" /></el-select><span class="form-hint">{{ t('detect.routingField') }} = {{ t('detect.groupBy') }}</span></el-form-item><el-form-item v-if="STATEFUL_TYPES.includes(ruleForm.type)" :label="t('detect.allowedLateness')"><el-input v-model="ruleForm.lateAllowedLateness" :placeholder="t('detect.allowedLatenessPlaceholder')" /></el-form-item><el-form-item v-if="STATEFUL_TYPES.includes(ruleForm.type)" :label="t('detect.lateHandling')"><el-select v-model="ruleForm.lateHandling"><el-option :label="t('detect.lateHandlingDrop')" value="DROP" /><el-option :label="t('detect.lateHandlingAccept')" value="ACCEPT" /></el-select></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.warmup')"><el-input v-model.number="ruleForm.warmup" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.baselineWindows')"><el-input v-model.number="ruleForm.baselineWindows" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.sigma')"><el-input v-model.number="ruleForm.sigma" type="number" min="0" max="100" /></el-form-item><el-form-item :label="t('detect.ruleVersion')"><el-input v-model="ruleForm.version" /></el-form-item><el-form-item :label="t('detect.owner')"><el-select v-model="ruleForm.owner" filterable default-first-option allow-create clearable :placeholder="t('detect.ownerPlaceholder')"><el-option v-for="owner in ownerOptions" :key="owner" :label="owner" :value="owner" /></el-select></el-form-item><el-form-item :label="t('detect.contentPack')"><el-input v-model="ruleForm.contentPack" /></el-form-item><el-form-item :label="t('detect.contentVersion')"><el-input v-model="ruleForm.contentVersion" /></el-form-item></div><details class="advanced-json"><summary>{{ t('detect.rawRuleJson') }}</summary><p>{{ t('detect.rawRuleJsonHint') }}</p><textarea v-model="advancedJson" :readonly="!canManageRules" rows="12" spellcheck="false" /><div v-if="advancedError" class="detect-feedback error">{{ advancedError }}</div><el-button v-if="canManageRules" size="small" @click="applyAdvancedJson">{{ t('detect.applyRawJson') }}</el-button></details></section>
+        <section class="detect-form-section"><div class="detect-form-section-title"><span>04</span><div><h3>{{ t('detect.advancedFields') }}</h3><p>{{ t('detect.advancedFieldsHint') }}</p></div></div><div v-if="ADVANCED_TYPES.includes(ruleForm.type) || rawOnlyRuleType" class="detect-advanced-warning"><b>{{ t('detect.advancedType') }}</b><span>{{ t('detect.advancedTypeHint') }}</span></div><div class="detect-form-grid compact-grid"><el-form-item :label="t('detect.routingField')"><el-select v-model="ruleForm.routingField" disabled :placeholder="t('detect.fieldPlaceholder')"><el-option v-if="ruleForm.routingField && !fieldDefs.some(field => field.fieldName === ruleForm.routingField)" :label="ruleForm.routingField" :value="ruleForm.routingField" /><el-option v-for="field in fieldDefs" :key="field.fieldName" :label="field.fieldName" :value="field.fieldName" /></el-select><span class="form-hint">{{ t('detect.routingField') }} = {{ t('detect.groupBy') }}</span></el-form-item><el-form-item v-if="STATEFUL_TYPES.includes(ruleForm.type)" :label="t('detect.allowedLateness')"><el-input v-model="ruleForm.lateAllowedLateness" :placeholder="t('detect.allowedLatenessPlaceholder')" /></el-form-item><el-form-item v-if="STATEFUL_TYPES.includes(ruleForm.type)" :label="t('detect.lateHandling')"><el-select v-model="ruleForm.lateHandling"><el-option :label="t('detect.lateHandlingDrop')" value="DROP" /><el-option :label="t('detect.lateHandlingAccept')" value="ACCEPT" /></el-select></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.warmup')"><el-input v-model.number="ruleForm.warmup" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.baselineWindows')"><el-input v-model.number="ruleForm.baselineWindows" type="number" min="1" /></el-form-item><el-form-item v-if="ruleForm.type === 'baseline'" :label="t('detect.sigma')"><el-input v-model.number="ruleForm.sigma" type="number" min="0" max="100" /></el-form-item><el-form-item :label="t('detect.ruleVersion')"><el-input v-model="ruleForm.version" /></el-form-item><el-form-item :label="t('detect.owner')"><el-select v-model="ruleForm.owner" filterable default-first-option allow-create clearable :placeholder="t('detect.ownerPlaceholder')"><el-option v-for="owner in ownerOptions" :key="owner" :label="owner" :value="owner" /></el-select></el-form-item><el-form-item :label="t('detect.contentPack')"><el-input v-model="ruleForm.contentPack" /></el-form-item><el-form-item :label="t('detect.contentVersion')"><el-input v-model="ruleForm.contentVersion" /></el-form-item></div><details class="advanced-json"><summary>{{ t('detect.rawRuleJson') }}</summary><p>{{ t('detect.rawRuleJsonHint') }}</p><textarea v-model="advancedJson" :readonly="!canManageRules || saving" rows="12" spellcheck="false" /><div v-if="advancedError" class="detect-feedback error">{{ advancedError }}</div><el-button v-if="canManageRules" size="small" @click="applyAdvancedJson">{{ t('detect.applyRawJson') }}</el-button></details></section>
 
-        <section class="detect-form-section lifecycle-section"><div class="detect-form-section-title"><span>05</span><div><h3>{{ t('detect.testAndRelease') }}</h3><p>{{ t('detect.testAndReleaseHint') }}</p></div></div><div class="lifecycle-row"><div><span class="form-label">{{ t('detect.ruleStatus') }}</span><el-tag :type="statusTag(ruleForm.status)" size="small">{{ lifecycleStatusLabel(ruleForm.status) }}</el-tag><span class="form-hint inline-hint">{{ ruleEditingId ? t('detect.lifecycleReadOnly') : t('detect.newRuleTesting') }}</span></div><div class="lifecycle-toggle"><span>{{ t('detect.executionToggle') }}</span><el-switch v-model="ruleForm.enabled" :disabled="!ruleEditingId || ruleForm.status !== 'ACTIVE'" /></div></div></section>
+        <section class="detect-form-section lifecycle-section"><div class="detect-form-section-title"><span>05</span><div><h3>{{ t('detect.testAndRelease') }}</h3><p>{{ t('detect.testAndReleaseHint') }}</p></div></div><div class="lifecycle-row"><div><span class="form-label">{{ t('detect.ruleStatus') }}</span><el-tag :type="statusTag(ruleForm.status)" size="small">{{ lifecycleStatusLabel(ruleForm.status) }}</el-tag><span class="form-hint inline-hint">{{ ruleEditingId ? t('detect.lifecycleReadOnly') : t('detect.newRuleTesting') }}</span></div><div class="lifecycle-toggle"><span>{{ t('detect.executionToggle') }}</span><el-switch v-model="ruleForm.enabled" :disabled="saving || !ruleEditingId || ruleForm.status !== 'ACTIVE'" /></div></div></section>
       </el-form>
       <div v-if="saveError" class="detect-feedback error detect-save-feedback" role="alert">{{ saveError }}</div>
+      <div v-if="saveConflict" class="detect-conflict-actions"><el-button @click="downloadRuleDraft">{{ t('detect.downloadDraft') }}</el-button><el-button @click="refreshRules">{{ t('detect.reloadCurrent') }}</el-button></div>
       <div v-if="!saveError && saveNotice" class="detect-feedback notice" role="status">{{ saveNotice }}</div>
-      <div class="detect-editor-footer"><el-button v-if="canManageRules" @click="showTest = true">{{ t('forms.test') }}</el-button><el-button @click="closeRuleEditor">{{ t('common.cancel') }}</el-button><el-button v-if="canManageRules" type="primary" :loading="saving" @click="saveRule">{{ t('common.save') }}</el-button></div>
+      <div class="detect-editor-footer"><el-button v-if="canManageRules" @click="showTest = true">{{ t('forms.test') }}</el-button><el-button :disabled="saving" @click="closeRuleEditor">{{ t('common.cancel') }}</el-button><el-button v-if="canManageRules" type="primary" :loading="saving" @click="saveRule">{{ t('common.save') }}</el-button></div>
     </section>
+
+    <RuleRevisionHistory v-if="historyOpen" v-model="historyOpen" :rule-id="historyRuleId" :can-restore="canActivate" :has-draft="changes.dirty.value" @busy="saving = $event" @restored="acceptRestoredRule" />
 
     <el-drawer v-model="showTest" :title="t('detect.testTitle')" size="min(1100px, 96vw)">
     <section class="detect-test-workspace">
       <div class="workspace-section-head"><div><h2>{{ t('detect.testTitle') }}</h2><p>{{ t('detect.testHint') }}</p></div><el-tag type="info" size="small">{{ t('detect.isolatedTest') }}</el-tag></div>
       <div class="detect-test-grid">
         <div class="detect-test-form">
-          <label>{{ t('detect.testRule') }}<el-select v-model="testRuleId" clearable :placeholder="t('detect.allRules')"><el-option :label="t('detect.allRules')" value="" /><el-option v-for="rule in rules" :key="rule.id" :label="rule.name" :value="String(rule.id)" /></el-select></label>
+          <label>{{ t('detect.testRule') }}<el-select v-model="testRuleId" clearable :placeholder="t('detect.pageRules')"><el-option :label="t('detect.pageRules')" value="" /><el-option v-for="rule in rules" :key="rule.id" :label="rule.name" :value="String(rule.id)" /></el-select></label>
           <label>{{ t('common.source') }}<el-input v-model="testInput.source" /></label><label>{{ t('common.host') }}<el-input v-model="testInput.host" /></label>
           <label>{{ t('common.severity') }}<el-select v-model="testInput.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" /></el-select></label>
           <label class="full-width">{{ t('detect.testMessage') }}<el-input v-model="testInput.message" /></label><label class="full-width">{{ t('detect.testFields') }}<el-input v-model="testInput.fieldsText" type="textarea" :rows="4" spellcheck="false" /></label>
@@ -653,11 +780,13 @@ onMounted(async () => { await loadRules(); await syncEditorRoute() })
       </div>
     </section>
     </el-drawer>
-    <section v-if="!showRuleEditor" class="detect-list-section"><el-input v-model="ruleKeyword" :placeholder="t('forms.search')" clearable style="margin-bottom:12px" /><div class="workspace-section-head list-head"><div><h2>{{ t('detect.rules') }}</h2><p>{{ t('detect.lifecycleHint') }}</p></div><span class="toolbar-count">{{ t('common.total', { total: rules.length }) }}</span></div><el-card shadow="never" class="detect-table-card"><el-table v-loading="loading" :data="rules" size="small" row-key="id" border allow-drag-last-column @header-dragend="onHeaderDragEnd"><el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="180" show-overflow-tooltip /><el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 150)"><template #default="{ row }"><span>{{ typeLabel(row.type) }}</span></template></el-table-column><el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 110)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column><el-table-column column-key="match" :label="t('detect.matchingConditions')" :width="columnWidth('match')" min-width="260" show-overflow-tooltip><template #default="{ row }"><span v-if="row.match?.length" class="mono">{{ row.match.map((condition: RuleCondition) => `${condition.field} ${condition.op} ${condition.value}`).join(' AND ') }}</span><span v-else-if="row.steps?.length">{{ t('detect.stepCount', { count: row.steps.length }) }}</span><span v-else>—</span></template></el-table-column><el-table-column column-key="status" :label="t('detect.ruleStatus')" :width="columnWidth('status', 110)"><template #default="{ row }"><el-tag :type="statusTag(ruleStatus(row))" size="small">{{ lifecycleStatusLabel(ruleStatus(row)) }}</el-tag></template></el-table-column><el-table-column :label="t('common.actions')" width="250" fixed="right" :resizable="false"><template #default="{ row }"><el-button v-if="canManageRules" link type="primary" size="small" @click="openRuleEditor(row)">{{ t('common.edit') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="testSingleRule(row)">{{ t('detect.testRule') }}</el-button><el-button v-if="canActivate && ruleStatus(row) === 'ACTIVE'" link size="small" @click="toggleRule(row)">{{ t('common.disable') }}</el-button><el-button v-if="canActivate && ['DISABLED', 'DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="toggleRule(row)">{{ t('common.enable') }}</el-button><el-button v-if="canManageRules && ruleStatus(row) !== 'ARCHIVED'" link size="small" @click="copyRuleAsDraft(row)">{{ t('common.copy') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'DISABLED'].includes(ruleStatus(row))" link type="danger" size="small" @click="removeRule(row)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><EmptyState v-if="!loading && !rules.length" :title="t('detect.noRules')" :description="t('detect.noRulesHint')" /></el-card></section>
+    <section v-if="!route.meta.editor" class="detect-list-section"><p v-if="typeof route.query.reference === 'string'" class="form-hint">{{ t('detect.watchlistFilter', { name: route.query.reference }) }} <el-button link @click="router.push({ query: { ...route.query, reference: undefined, page: undefined } })">{{ t('detect.clearWatchlistFilter') }}</el-button></p><form class="rule-search" @submit.prevent="applyRuleFilters"><el-input v-model="ruleKeyword" :placeholder="t('forms.search')" :aria-label="t('forms.search')" clearable maxlength="256" @clear="applyRuleFilters" /><el-button native-type="submit" size="small" :loading="loading">{{ t('forms.search') }}</el-button></form><div class="workspace-section-head list-head"><div><h2>{{ t('detect.rules') }}</h2><p>{{ t('detect.lifecycleHint') }}</p></div><span class="toolbar-count">{{ t('common.total', { total: rulesTotal }) }}</span></div><el-card shadow="never" class="detect-table-card"><el-table v-loading="loading" :data="rules" size="small" row-key="id" border allow-drag-last-column @header-dragend="onHeaderDragEnd"><el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="180" show-overflow-tooltip /><el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 150)"><template #default="{ row }"><span>{{ typeLabel(row.type) }}</span></template></el-table-column><el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 110)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column><el-table-column column-key="match" :label="t('detect.matchingConditions')" :width="columnWidth('match')" min-width="260" show-overflow-tooltip><template #default="{ row }"><span v-if="row.match?.length" class="mono">{{ row.match.map((condition: RuleCondition) => `${condition.field} ${condition.op} ${condition.value}`).join(' AND ') }}</span><span v-else-if="row.steps?.length">{{ t('detect.stepCount', { count: row.steps.length }) }}</span><span v-else>—</span></template></el-table-column><el-table-column column-key="status" :label="t('detect.ruleStatus')" :width="columnWidth('status', 110)"><template #default="{ row }"><el-tag :type="statusTag(ruleStatus(row))" size="small">{{ lifecycleStatusLabel(ruleStatus(row)) }}</el-tag></template></el-table-column><el-table-column :label="t('common.actions')" width="340" fixed="right" :resizable="false"><template #default="{ row }"><el-button v-if="canManageRules" link type="primary" size="small" @click="openRuleEditor(row)">{{ t('common.edit') }}</el-button><el-button v-if="canManageRules" link size="small" @click="openRuleHistory(row)">{{ t('detect.revisionHistory') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="testSingleRule(row)">{{ t('detect.testRule') }}</el-button><el-button v-if="canActivate && ruleStatus(row) === 'ACTIVE'" link size="small" @click="toggleRule(row)">{{ t('common.disable') }}</el-button><el-button v-if="canActivate && ['DISABLED', 'DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="toggleRule(row)">{{ t('common.enable') }}</el-button><el-button v-if="canManageRules && ruleStatus(row) !== 'ARCHIVED'" link size="small" @click="copyRuleAsDraft(row)">{{ t('common.copy') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'DISABLED'].includes(ruleStatus(row))" link type="danger" size="small" @click="removeRule(row)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="rulePage" v-model:page-size="rulePageSize" :total="rulesTotal" /><EmptyState v-if="!loading && !loadError && !rules.length" :title="t('detect.noRules')" :description="t('detect.noRulesHint')" /></el-card></section>
   </div>
 </template>
 
 <style scoped>
+.rule-search { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; }
+.rule-search .el-input { min-width: 0; flex: 1; }
 .detect-view { display: flex; flex-direction: column; gap: 16px; }
 .detect-stat-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
 .detect-stat { display: flex; flex-direction: column; gap: 8px; }.detect-stat span, .workspace-section-head p, .detect-form-section-title p, .form-hint { color: var(--ns-text-3); font-size: 12px; }.detect-stat b { color: var(--ns-text); font-size: 26px; line-height: 1; font-variant-numeric: tabular-nums; }.danger-text { color: var(--ns-danger) !important; }

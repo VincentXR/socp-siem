@@ -46,6 +46,12 @@ public class AlarmDelivery {
     @Column(name = "claimed_at")
     private Instant claimedAt;
 
+    @Column(name = "claim_token", length = 36)
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String claimToken;
+
+    public String getClaimToken() { return claimToken; }
+
     @Column(name = "delivered_at")
     private Instant deliveredAt;
 

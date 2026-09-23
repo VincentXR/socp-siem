@@ -129,11 +129,12 @@ def api(tok, path, body=None, method=None, *, headers=None, include_headers=Fals
         with urllib.request.urlopen(req, timeout=20) as r:
             result = r.status, json.loads(r.read().decode()), dict(r.headers)
     except urllib.error.HTTPError as e:
-        try:
-            body = json.loads(e.read().decode())
-        except (ValueError, UnicodeError):
-            body = {}
-        result = e.code, body, dict(e.headers)
+        with e:
+            try:
+                body = json.loads(e.read().decode())
+            except (ValueError, UnicodeError):
+                body = {}
+            result = e.code, body, dict(e.headers)
     return result if include_headers else result[:2]
 
 
@@ -186,51 +187,60 @@ def list_rules(tok):
     return list_items(unwrap(r)) if st == 200 else []
 
 
-def activate_rule(publisher, rule_id):
-    st, result = api(publisher, f"/detect-web/api/v1/rules/{rule_id}/activate", {}, "POST")
-    value = unwrap(result) if st == 200 else {}
-    return st == 200 and value.get("status") == "ACTIVE", f"activate status={st}"
+def revision_headers(rule):
+    token = rule.get("revisionToken") if isinstance(rule, dict) else None
+    if not isinstance(token, str) or len(token) != 64 or any(c not in "0123456789abcdef" for c in token):
+        raise RuntimeError("Detection API did not return a current revisionToken; update the server and reload before writing")
+    return {"If-Match": '"' + token + '"'}
 
 
-def ensure_web_shell_rule(tok, publisher):
-    """场景 3 需要 WEB-SHELL 规则——不存在则通过 API 新建（演示规则生命周期 + 热更新广播）。"""
-    for r_ in list_rules(tok):
-        if r_.get("id") == "WEB-SHELL":
-            return (True, "已激活") if r_.get("status") == "ACTIVE" else activate_rule(publisher, "WEB-SHELL")
+def activate_demo_rule(tok, rule):
+    """The explicitly run demo promotes its reviewed fixture through /activate."""
+    if str(rule.get("status", "")).upper() == "ACTIVE":
+        return True, "已存在且已启用"
+    st, result = api(tok, "/detect-web/api/v1/rules/" + rule["id"] + "/activate", {}, "POST",
+                     headers=revision_headers(rule))
+    return st == 200, result
+
+
+def ensure_web_shell_rule(tok, publisher=None):
+    """场景 3：按 ID 读取规则，仅在不存在时创建，再显式启用演示规则。"""
+    st, result = api(tok, "/detect-web/api/v1/rules/WEB-SHELL")
+    if st == 200:
+        return activate_demo_rule(publisher or tok, unwrap(result))
+    if st != 404:
+        return False, "读取 WEB-SHELL 失败: HTTP %s" % st
     body = {
         "id": "WEB-SHELL", "name": "Web Shell 命令执行", "type": "pattern", "severity": "CRITICAL",
         "message": "疑似 Web Shell 命令执行：{msg} @ {host}", "mitre": "T1505.003",
         "match": [
             {"field": "msg", "op": "regex",
-             "value": "(?i)shell\\.jsp|/bin/sh\\s+-c|cmd=whoami|eval\\s*\\(|base64_decode|assert\\s*\\("},
+             "value": r"(?i)shell\.jsp|/bin/sh\s+-c|cmd=whoami|eval\s*\(|base64_decode|assert\s*\("},
         ],
     }
-    st, r = api(tok, "/detect-web/api/v1/rules", body, "POST")
-    return activate_rule(publisher, "WEB-SHELL") if st == 200 else (False, f"create status={st}")
+    st, result = api(tok, "/detect-web/api/v1/rules", body, "POST")
+    return activate_demo_rule(publisher or tok, unwrap(result)) if st == 200 else (False, result)
 
 
-def ensure_exec_rule(tok, publisher):
-    """场景 2：EXEC-SUSPICIOUS-SHELL 旧版 regex（powershell -enc 字面）匹配不到
-    'powershell -nop -w hidden -enc ...'——通过 updateRule 修正（演示规则热更新）。"""
-    for r_ in list_rules(tok):
-        if r_.get("id") != "EXEC-SUSPICIOUS-SHELL":
-            continue
-        m = json.dumps(r_.get("match", []), ensure_ascii=False)
-        if "powershell.*" in m:
-            return (True, "已是最新") if r_.get("status") == "ACTIVE" else activate_rule(publisher, r_["id"])
-        updated = dict(r_)
-        # Updating a match keeps the persisted lifecycle state. Never send an
-        # ACTIVE transition through the ordinary create/update endpoint.
+def ensure_exec_rule(tok, publisher=None):
+    """场景 2：按已读取版本修正命令匹配规则，再显式启用演示规则。"""
+    st, result = api(tok, "/detect-web/api/v1/rules/EXEC-SUSPICIOUS-SHELL")
+    if st != 200:
+        return False, "读取 EXEC-SUSPICIOUS-SHELL 失败: HTTP %s" % st
+    current = unwrap(result)
+    if "powershell.*" not in json.dumps(current.get("match", []), ensure_ascii=False):
+        updated = dict(current)
         updated.pop("status", None)
         updated["match"] = [
             {"field": "msg", "op": "regex",
-             "value": "(?i)powershell.*(-enc|encodedcommand)|certutil -urlcache|invoke-expression|iex\\s*\\("},
+             "value": r"(?i)powershell.*(-enc|encodedcommand)|certutil -urlcache|invoke-expression|iex\s*\("},
         ]
-        st, r = api(tok, f"/detect-web/api/v1/rules/{r_['id']}", updated, "PUT")
+        st, result = api(tok, "/detect-web/api/v1/rules/EXEC-SUSPICIOUS-SHELL", updated, "PUT",
+                        headers=revision_headers(current))
         if st != 200:
-            return False, f"update status={st}"
-        return (True, "匹配已更新") if r_.get("status") == "ACTIVE" else activate_rule(publisher, r_["id"])
-    return False, "规则不存在"
+            return False, result
+        current = unwrap(result)
+    return activate_demo_rule(publisher or tok, current)
 
 
 def main():

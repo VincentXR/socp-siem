@@ -34,6 +34,10 @@ public class SmtpNotificationSender {
         if (sender == null) {
             return DeliveryResult.failure("SMTP_UNAVAILABLE", "spring.mail.host is not configured");
         }
+        if (!(sender instanceof org.springframework.mail.javamail.JavaMailSenderImpl configured)
+                || !boundedTimeouts(configured)) {
+            return DeliveryResult.failure("SMTP_TIMEOUT_INVALID", "SMTP connect/read/write timeouts must each be between 1 and 10000 ms");
+        }
 
         SimpleMailMessage message = new SimpleMailMessage();
         message.setFrom(properties.getFrom());
@@ -44,8 +48,22 @@ public class SmtpNotificationSender {
             sender.send(message);
             return DeliveryResult.success();
         } catch (RuntimeException failure) {
-            return DeliveryResult.failure("SMTP_SEND_FAILED", failure.getMessage());
+            return DeliveryResult.failure("SMTP_SEND_FAILED", "SMTP delivery failed; remote acceptance may be unknown");
         }
+    }
+
+    private static boolean boundedTimeouts(org.springframework.mail.javamail.JavaMailSenderImpl sender) {
+        String protocol = sender.getProtocol();
+        if (protocol == null) protocol = sender.getSession().getProperty("mail.transport.protocol");
+        if (protocol == null) protocol = "smtp";
+        if (!"smtp".equals(protocol) && !"smtps".equals(protocol)) return false;
+        for (String option : java.util.List.of("connectiontimeout", "timeout", "writetimeout")) {
+            try {
+                int value = Integer.parseInt(sender.getSession().getProperty("mail." + protocol + "." + option));
+                if (value < 1 || value > 10_000) return false;
+            } catch (RuntimeException invalid) { return false; }
+        }
+        return true;
     }
 
     public record DeliveryResult(boolean sent, String errorCode, String detail) {

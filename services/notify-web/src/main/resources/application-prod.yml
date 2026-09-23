@@ -13,8 +13,8 @@ spring:
       # accepts TCP but never responds would pin the dispatch worker and the
       # request thread forever. Bound all three phases explicitly.
       mail.smtp.connectiontimeout: ${SOCP_SMTP_CONNECTION_TIMEOUT_MS:3000}
-      mail.smtp.timeout: ${SOCP_SMTP_TIMEOUT_MS:10000}
-      mail.smtp.writetimeout: ${SOCP_SMTP_WRITE_TIMEOUT_MS:10000}
+      mail.smtp.timeout: ${SOCP_SMTP_TIMEOUT_MS:3000}
+      mail.smtp.writetimeout: ${SOCP_SMTP_WRITE_TIMEOUT_MS:3000}
 
 socp:
   demo-data:

@@ -101,6 +101,7 @@ public class DetectEngineService {
     private final AtomicLong rebuildRetries = new AtomicLong();
     private volatile String recoveryFailure;
     private final ReentrantReadWriteLock engineLifecycle = new ReentrantReadWriteLock(true);
+    private org.springframework.transaction.support.TransactionTemplate committedReloadTransaction;
 
     @Value("${socp.detect.tenant.max-events-per-second:0}")
     private long tenantMaxEventsPerSecond = 0L;
@@ -208,6 +209,14 @@ public class DetectEngineService {
     public DetectEngineService(RuleSpecStore store, RecentAlertSink sink, AlertForwarder forwarder,
                                RuleChangePublisher rulePublisher) {
         this(store, sink, forwarder, rulePublisher, new InMemoryDetectionStateStore());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void configureCommittedReloadTransaction(org.springframework.transaction.PlatformTransactionManager manager) {
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(manager);
+        transaction.setPropagationBehavior(
+                org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        committedReloadTransaction = transaction;
     }
 
     public RecoveryStatus recoveryStatus() {
@@ -942,6 +951,21 @@ public class DetectEngineService {
         return ruleService.listRulesPage(page, size);
     }
 
+    public org.springframework.data.domain.Page<Map<String, Object>> searchRules(
+            int page, int size, String keyword, String status, String reference, String alias) {
+        return ruleService.searchRules(page, size, keyword, status, reference, alias);
+    }
+
+    public org.springframework.data.domain.Page<Map<String, Object>> ruleOptions(int page, int size, String keyword) {
+        return ruleService.ruleOptions(page, size, keyword);
+    }
+
+    public Map<String, Object> getRule(String id) { return ruleService.getRule(id); }
+
+    public List<Map<String, Object>> lookupRules(List<String> ids) { return ruleService.lookupRules(ids); }
+
+    public List<String> activeRuleTechniques() { return ruleService.activeTechniques(); }
+
     public Map<String, Object> contentManifest() {
         return ruleService.contentManifest();
     }
@@ -955,7 +979,12 @@ public class DetectEngineService {
 
     @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> updateRule(Map<String, Object> spec) {
-        Map<String, Object> saved = ruleService.updateRule(spec);
+        return updateRule(spec, null);
+    }
+
+    @org.springframework.transaction.annotation.Transactional
+    public Map<String, Object> updateRule(Map<String, Object> spec, com.socp.detect.web.model.RuleWriteCondition condition) {
+        Map<String, Object> saved = ruleService.updateRule(spec, condition);
         reloadAfterCommit();
         return saved;
     }
@@ -963,14 +992,24 @@ public class DetectEngineService {
     /** Promote a tested rule into the live engine under an explicit approval permission. */
     @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> activateRule(String id) {
-        Map<String, Object> activated = ruleService.activateRule(id);
+        return activateRule(id, null);
+    }
+
+    @org.springframework.transaction.annotation.Transactional
+    public Map<String, Object> activateRule(String id, com.socp.detect.web.model.RuleWriteCondition condition) {
+        Map<String, Object> activated = ruleService.activateRule(id, condition);
         reloadAfterCommit();
         return activated;
     }
 
     @org.springframework.transaction.annotation.Transactional
     public boolean deleteRule(String id) {
-        boolean removed = ruleService.deleteRule(id);
+        return deleteRule(id, null);
+    }
+
+    @org.springframework.transaction.annotation.Transactional
+    public boolean deleteRule(String id, com.socp.detect.web.model.RuleWriteCondition condition) {
+        boolean removed = ruleService.deleteRule(id, condition);
         if (removed) reloadAfterCommit();
         return removed;
     }
@@ -983,10 +1022,27 @@ public class DetectEngineService {
         return ruleService.contentConflicts();
     }
 
+    public org.springframework.data.domain.Page<Map<String, Object>> ruleRevisionPage(String id, int page, int size) {
+        return ruleService.revisionPage(id, page, size);
+    }
+
+    public Map<String, Object> ruleRevision(String id, long revision) {
+        return ruleService.revision(id, revision);
+    }
+
+    public org.springframework.data.domain.Page<Map<String, Object>> ruleContentConflictPage(int page, int size) {
+        return ruleService.contentConflictPage(page, size);
+    }
+
     /** Rolls a rule back to a historical revision by re-applying it as a new head. */
     @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> restoreRuleRevision(String id, long revision) {
-        Map<String, Object> restored = ruleService.restoreRevision(id, revision);
+        return restoreRuleRevision(id, revision, null);
+    }
+
+    @org.springframework.transaction.annotation.Transactional
+    public Map<String, Object> restoreRuleRevision(String id, long revision, com.socp.detect.web.model.RuleWriteCondition condition) {
+        Map<String, Object> restored = ruleService.restoreRevision(id, revision, condition);
         reloadAfterCommit();
         return restored;
     }
@@ -1001,7 +1057,11 @@ public class DetectEngineService {
                 new org.springframework.transaction.support.TransactionSynchronization() {
                     @Override
                     public void afterCommit() {
-                        reload();
+                        // The just-committed transaction still has resources bound here.
+                        // A catalogue rebuild takes a row lock, so it needs a fresh transaction.
+                        var transaction = committedReloadTransaction;
+                        if (transaction == null) reload();
+                        else transaction.executeWithoutResult(status -> reload());
                     }
                 });
     }

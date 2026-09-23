@@ -5,17 +5,21 @@
 
 ## Decision
 
-SOCP uses three explicit Outbox boundaries:
+The event pipeline uses the following durable Outbox boundaries:
 
 1. `search-config` writes each canonical event and its
-   `t_ingestion_outbox` publication intent in one transaction. The bounded,
-   multi-instance-safe publisher waits for Kafka acknowledgement before
+   `t_ingestion_outbox` publication intent in one transaction. The publisher
+   scans bounded batches, claims rows atomically, and waits for Kafka acknowledgement before
    marking the intent `PUBLISHED`.
-2. `detect-web` writes a fully materialized detection alert to
+2. Detection's canonical source consumer commits its source receipt and frozen
+   routing deliveries together before committing the canonical Kafka offset.
+   The route publisher waits for broker acknowledgement on
+   `socp-detection-routed-v2`; stable delivery IDs absorb publication replay.
+3. `detect-web` writes a fully materialized detection alert to
    `t_detection_alert_outbox` before the rule-engine worker continues. The
    publisher retries Alert Web, then publishes `socp-alarm-original` for
    the secondary analyzer embedded in the Detection worker.
-3. `alert-web` writes `t_alarm` and its `outbox_event` row in the same
+4. `alert-web` writes `t_alarm` and its `outbox_event` row in the same
    database transaction. `OutboxPublisher` waits for a Kafka broker
    acknowledgement before marking the row `PUBLISHED`. It scans bounded
    batches, uses an optimistic `PENDING -> PROCESSING` claim across instances,
@@ -25,6 +29,10 @@ SOCP uses three explicit Outbox boundaries:
 
 Alert Web enforces `(tenant_id, source_alert_id)` idempotency. The Alert Outbox
 guarantees broker acknowledgement before its row becomes `PUBLISHED`.
+Detection route publication uses monotonic attempts to fence late state
+updates. Detection alert publication uses a unique claim token because manual
+requeue resets its attempts. See the [state contract](../detection-state-semantics.md)
+for expiry, delivery-stage, and upgrade semantics.
 
 ## Why
 

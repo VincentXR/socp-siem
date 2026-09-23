@@ -44,6 +44,10 @@ public class DetectionAlertOutboxEntity {
     @Column(nullable = false)
     private int attempts;
 
+    /** Unique per claim, including after an operator resets the retry counter. */
+    @Column(name = "claim_token", length = 36)
+    private String claimToken;
+
     @Column(name = "next_attempt_at", nullable = false)
     private Instant nextAttemptAt;
 
@@ -111,6 +115,14 @@ public class DetectionAlertOutboxEntity {
 
     public void setAttempts(int attempts) {
         this.attempts = attempts;
+    }
+
+    public String getClaimToken() {
+        return claimToken;
+    }
+
+    public void setClaimToken(String claimToken) {
+        this.claimToken = claimToken;
     }
 
     public Instant getNextAttemptAt() {

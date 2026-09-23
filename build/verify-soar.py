@@ -195,6 +195,7 @@ def main() -> int:
     activity += read("services/soar-web/src/main/java/com/socp/soar/web/temporal/SoarActivityExecutionService.java")
     activity_contract = read("services/soar-web/src/main/java/com/socp/soar/web/temporal/SoarActivity.java")
     recovery = read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarRunRecoveryWorker.java")
+    recovery_state = read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarRunRecoveryState.java")
     runtime = read("services/soar-web/src/main/java/com/socp/soar/web/config/SoarRuntimeProperties.java")
     application = read("services/soar-web/src/main/resources/application.yml")
     production = read("services/soar-web/src/main/resources/application-prod.yml")
@@ -237,8 +238,11 @@ def main() -> int:
         "secret redaction": "[REDACTED]" in activity,
         "stale outbox recovery": "recoverStaleClaims" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarDispatchWorker.java"),
         "cancellation is a one-way activity fence": '"CANCELLING".equals(run.getStatus())' in activity,
-        "stale cancellation settles as cancelled": 'run.setStatus("CANCELLED")' in recovery
-        and '"CANCELLING".equals(run.getStatus())' in recovery,
+        "recovery requires an unchanged version and a terminal observation":
+        "describeWorkflow" in recovery and "claimRecoveryCheck" in recovery
+        and "snapshot.getRowVersion()" in recovery_state
+        and "WorkflowState.CLOSED" in recovery_state and "WorkflowState.NOT_FOUND" in recovery_state
+        and 'run.setStatus("CANCELLED")' in recovery_state,
         "SOAR runtime switches are bound": "evaluationEnabled" in runtime
         and "controlPlaneEnabled" in runtime and "executionEnabled" in runtime
         and "executionTenantAllowlist" in runtime

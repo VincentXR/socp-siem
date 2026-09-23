@@ -48,6 +48,28 @@ class EndpointControllerTest {
     private EndpointEventStore events;
 
     @Test
+    void independentDetailAndHistoryRequireAnOwnedEndpoint() throws Exception {
+        Endpoint endpoint = Endpoint.register("web01", "203.0.113.7", "Linux", "agent");
+        given(store.get(endpoint.id())).willReturn(endpoint);
+        given(events.forHostname("web01", 2, 20)).willReturn(new org.springframework.data.domain.PageImpl<>(
+                List.of(Map.<String, Object>of("eventId", "old-event")), org.springframework.data.domain.PageRequest.of(1, 20), 21));
+        mvc.perform(get("/api/v1/endpoints/" + endpoint.id()).header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.hostname").value("web01"));
+        mvc.perform(get("/api/v1/endpoints/" + endpoint.id() + "/events?page=2&size=20").header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(21))
+                .andExpect(jsonPath("$.data.items[0].eventId").value("old-event"));
+        for (String suffix : List.of("", "/events")) {
+            mvc.perform(get("/api/v1/endpoints/missing" + suffix).header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "analyst"))
+                    .andExpect(status().isNotFound());
+            mvc.perform(get("/api/v1/endpoints/" + endpoint.id() + suffix).header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "viewer"))
+                    .andExpect(status().isForbidden());
+        }
+        mvc.perform(get("/api/v1/endpoints/" + endpoint.id() + "/events?size=501").header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isBadRequest());
+        org.mockito.Mockito.verify(events, org.mockito.Mockito.times(1)).forHostname(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+    }
+
+    @Test
     void listReturnsPagedEnvelope() throws Exception {
         given(store.page(1, 500, "")).willReturn(new org.springframework.data.domain.PageImpl<>(
                 List.of(
@@ -78,6 +100,27 @@ class EndpointControllerTest {
                         .param("page", "1")
                         .param("size", "501"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void relatedLookupUsesExactNormalizedKeysAndBoundedPages() throws Exception {
+        given(store.related(2, 20, "203.0.113.7", "Target-HOST")).willReturn(new org.springframework.data.domain.PageImpl<>(
+                List.of(Endpoint.register("Target-HOST", "203.0.113.7", "Linux", "agent")),
+                org.springframework.data.domain.PageRequest.of(1, 20), 21));
+        mvc.perform(get("/api/v1/endpoints/related").header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "analyst")
+                        .param("ip", " 203.0.113.7 ").param("hostname", " Target-HOST ").param("page", "2"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.page").value(2))
+                .andExpect(jsonPath("$.data.total").value(21)).andExpect(jsonPath("$.data.size").value(20))
+                .andExpect(jsonPath("$.data.items[0].hostname").value("Target-HOST"));
+        mvc.perform(get("/api/v1/endpoints/related").header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "viewer").param("ip", "203.0.113.7"))
+                .andExpect(status().isForbidden());
+        for (var params : List.of(Map.of("hostname", " "), Map.of("ip", "x".repeat(65)),
+                Map.of("hostname", "x".repeat(129)), Map.of("ip", "203.0.113.7", "size", "501"),
+                Map.of("ip", "203.0.113.7", "page", "0"))) {
+            var request = get("/api/v1/endpoints/related").header(HttpHeaders.AUTHORIZATION, BEARER).header("X-Role", "analyst");
+            params.forEach(request::param);
+            mvc.perform(request).andExpect(status().isBadRequest());
+        }
     }
 
     @Test
@@ -148,7 +191,7 @@ class EndpointControllerTest {
                 "byStatus", Map.of("ONLINE", 1L, "OFFLINE", 1L)));
         given(events.list()).willReturn(List.of(
                 Map.of("type", "process"), Map.of("type", "network"), Map.of("eventId", "event-3")));
-        given(events.count()).willReturn(3L);
+        given(events.count()).willReturn(503L);
         given(events.page(1, 2)).willReturn(new org.springframework.data.domain.PageImpl<>(
                 List.of(Map.of("type", "process"), Map.of("type", "network")),
                 org.springframework.data.domain.PageRequest.of(0, 2), 3));
@@ -166,7 +209,10 @@ class EndpointControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.total").value(2))
                 .andExpect(jsonPath("$.data.online").value(1))
-                .andExpect(jsonPath("$.data.events").value(3))
+                .andExpect(jsonPath("$.data.events").value(503))
+                .andExpect(jsonPath("$.data.eventByTypeScope").value("LATEST_EVENTS"))
+                .andExpect(jsonPath("$.data.eventByTypeSampleSize").value(3))
+                .andExpect(jsonPath("$.data.eventByTypeSampleLimit").value(200))
                 .andExpect(jsonPath("$.data.eventByType.process").value(1))
                 .andExpect(jsonPath("$.data.eventByType.UNKNOWN").value(1));
     }

@@ -7,6 +7,7 @@ import { useFormDialog } from '../composables/useFormDialog'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useConfirm } from '../composables/useConfirm'
 import { useMutation } from '../composables/useMutation'
+import { useLatestRequest } from '../composables/useLatestRequest'
 import { tOr } from '../utils/i18nLabel'
 import ActionFeedback from '../components/ActionFeedback.vue'
 const mutation = useMutation()
@@ -40,7 +41,8 @@ import FormSection from '../components/FormSection.vue'
 import { updateChannel, testChannel, createChannel, deleteChannel, dispatchLog, listChannels, toggleChannel, type Channel, type DispatchLogEntry } from '../api'
 import { useI18n } from '../composables/useI18n'
 
-const { t } = useI18n()
+const { t, d } = useI18n()
+const latestRead = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('notify-channels')
 
 const channelTypes = ['SLACK', 'WEBHOOK', 'DINGTALK', 'WECOM', 'WECHAT', 'EMAIL', 'LOG'] as const
@@ -54,7 +56,7 @@ const targetLabel = computed(() => form.value.type === 'EMAIL'
 const targetPlaceholder = computed(() => form.value.type === 'EMAIL' ? 'soc@example.com' : 'https://example.com/webhook')
 
 function channelTypeLabel(type: string): string {
-  return tOr(t, 'notify.types.' + type, type)
+  return type ? tOr(t, 'notify.types.' + type, type) : '—'
 }
 function dispatchStatusLabel(status: string): string {
   const value = String(status || '').toLowerCase()
@@ -74,18 +76,23 @@ function displayTarget(channel: Channel): string {
   return channel.target.slice(0, 10) + '…' + channel.target.slice(-6)
 }
 function openChannel(channel?: Channel) {
-  if (!canWrite.value) return
+  if (!canWrite.value || actionBusy.value) return
   editingId.value = channel?.id || ''
   form.value = channel ? { ...channel } : { name: '', type: 'SLACK', target: '', enabled: false, description: '' }
   fieldErrors.value = {}
   dialogError.value = ''
   actionError.value = ''
+  testState.value = 'idle'
   dialogVisible.value = true
 }
 async function sendTest(channel: Channel) {
-  if (!canWrite.value) return
+  if (!canWrite.value || actionBusy.value) return
   if (!await confirmDanger(t('notify.testConfirm', { name: channel.name }))) return
-  await mutation.run(async () => { await testChannel(channel.id); ElMessage.success(t('forms.testSent')); await loadNotify() })
+  if (!canWrite.value || actionBusy.value) return
+  await mutation.run(async () => {
+    try { showTestResult(await testChannel(channel.id)) }
+    finally { await loadNotify() }
+  })
 }
 
 const logs = ref<DispatchLogEntry[]>([])
@@ -95,6 +102,7 @@ const loading = ref(false)
 const loadError = ref('')
 /** Failures of the dialog's own save, so a page error cannot land in a form. */
 const dialogError = ref('')
+const testState = ref<'idle' | 'running' | 'failed'>('idle')
 const form = ref({ name: '', type: 'SLACK', target: '', enabled: true, description: '' })
 
 /** Moves a failure out of the shared action slot into the surface that owns it. */
@@ -110,10 +118,13 @@ function onChannelTypeChange(type: string) {
 }
 
 async function loadNotify() {
-  if (loading.value) return
+  const request = latestRead.start()
   loading.value = true
   try {
-    const [channelResult, logResult] = await Promise.allSettled([listChannels(), dispatchLog()])
+    const [channelResult, logResult] = await Promise.allSettled([
+      listChannels({ signal: request.signal }), dispatchLog({ signal: request.signal }),
+    ])
+    if (!request.isCurrent()) return
     const failures: string[] = []
     if (channelResult.status === 'fulfilled') channels.value = channelResult.value.items
     else failures.push(String(channelResult.reason))
@@ -121,7 +132,7 @@ async function loadNotify() {
     else failures.push(String(logResult.reason))
     loadError.value = failures.join(' · ')
   } finally {
-    loading.value = false
+    if (request.isCurrent()) loading.value = false
   }
 }
 
@@ -150,26 +161,31 @@ function resetChannelForm() {
   fieldErrors.value = {}
 }
 
-/** Writes the channel and returns its id, or null when nothing could be saved. */
-async function persistChannel(): Promise<string | null> {
-  if (!canWrite.value) return null
+/** Retain the acknowledged resource before any separate test delivery can fail. */
+async function persistChannel(): Promise<string> {
   if (form.value.type === 'LOG') form.value.target = 'local'
   const payload = { ...form.value, name: form.value.name.trim(), target: form.value.target.trim() }
-  if (editingId.value) {
-    await updateChannel(editingId.value, payload)
-    return editingId.value
-  }
-  const created = await createChannel(payload)
-  return created?.id ?? null
+  const saved = editingId.value ? await updateChannel(editingId.value, payload) : await createChannel(payload)
+  if (!saved?.id) throw new Error(t('notify.saveUnconfirmed'))
+  editingId.value = saved.id
+  form.value = { name: saved.name, type: saved.type, target: saved.target, enabled: saved.enabled, description: saved.description || '' }
+  dialogVisibleGuard.markSaved()
+  channels.value = [...channels.value.filter(channel => channel.id !== saved.id), saved]
+  return saved.id
+}
+
+function showTestResult(result: { status: string }): void {
+  if (result.status === 'logged') ElMessage.success(t('notify.testLogged'))
+  else if (result.status === 'sent') ElMessage.success(t('forms.testSent'))
+  else throw new Error(t('notify.testUnconfirmed'))
 }
 
 async function addChannel() {
-  if (!canWrite.value) return
+  if (!canWrite.value || actionBusy.value) return
   if (!validateChannel()) return
   dialogError.value = ''
   isolateError(dialogError, await mutation.run(async () => {
-    const id = await persistChannel()
-    if (!id) return
+    await persistChannel()
     resetChannelForm()
     dialogVisible.value = false
     await loadNotify()
@@ -177,35 +193,39 @@ async function addChannel() {
 }
 
 /**
- * Saves and immediately tests, because the test endpoint works on a stored
- * channel: without this an operator learns a webhook is wrong only after it has
- * been persisted and has already been handed real alerts.
+ * Configuration persistence and test delivery are separate acknowledged steps.
+ * Retrying an unchanged saved configuration sends only a new test request.
  */
 async function saveAndTestChannel() {
-  if (!canWrite.value) return
+  if (!canWrite.value || actionBusy.value) return
   if (!validateChannel()) return
   dialogError.value = ''
   isolateError(dialogError, await mutation.run(async () => {
-    const id = await persistChannel()
-    if (!id) return
-    await testChannel(id)
-    resetChannelForm()
-    dialogVisible.value = false
-    await loadNotify()
-    ElMessage.success(t('forms.testSent'))
+    const id = editingId.value && !dialogVisibleGuard.dirty.value ? editingId.value : await persistChannel()
+    testState.value = 'running'
+    try {
+      showTestResult(await testChannel(id))
+      testState.value = 'idle'
+      resetChannelForm()
+      dialogVisible.value = false
+    } catch (failure) {
+      testState.value = 'failed'
+      throw failure
+    } finally { await loadNotify() }
   }))
 }
 
 async function removeChannel(id: string) {
-  if (!canWrite.value) return
+  if (!canWrite.value || actionBusy.value) return
   if (!await confirmDanger(t('notify.confirmDelete'))) return
+  if (!canWrite.value || actionBusy.value) return
   return mutation.run(async () => {
     await deleteChannel(id)
     await loadNotify()
   })
 }
 async function toggle(id: string) {
-  if (!canWrite.value) return
+  if (!canWrite.value || actionBusy.value) return
   await mutation.run(async () => { await toggleChannel(id); await loadNotify() })
 }
 
@@ -220,7 +240,7 @@ onMounted(loadNotify)
     <PageHeader :title="t('notify.title')" :description="t('notify.description')">
       <template #actions>
         <el-button size="small" :loading="loading" @click="loadNotify">{{ t('common.refresh') }}</el-button>
-        <el-button v-if="canWrite" type="primary" size="small" @click="openChannel()">{{ t('notify.createChannel') }}</el-button>
+        <el-button v-if="canWrite" type="primary" size="small" :disabled="actionBusy" @click="openChannel()">{{ t('notify.createChannel') }}</el-button>
       </template>
     </PageHeader>
 
@@ -231,14 +251,14 @@ onMounted(loadNotify)
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 120)"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
         <el-table-column column-key="target" :label="t('notify.target')" :width="columnWidth('target')" min-width="200" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ displayTarget(row as Channel) }}</span></template></el-table-column>
         <el-table-column column-key="enabled" :label="t('common.enable')" :width="columnWidth('enabled', 90)"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.enabled') : t('common.disabled') }}</el-tag></template></el-table-column>
-        <el-table-column v-if="canWrite" :label="t('common.actions')" width="260" :resizable="false"><template #default="{ row }"><el-button link size="small" @click="openChannel(row as Channel)">{{ t('common.edit') }}</el-button><el-button link size="small" :disabled="actionBusy" @click="sendTest(row as Channel)">{{ t('forms.test') }}</el-button><el-button link type="primary" size="small" :disabled="actionBusy" @click="toggle(row.id)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" @click="removeChannel(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
+        <el-table-column v-if="canWrite" :label="t('common.actions')" width="260" :resizable="false"><template #default="{ row }"><el-button link size="small" :disabled="actionBusy" @click="openChannel(row as Channel)">{{ t('common.edit') }}</el-button><el-button link size="small" :disabled="actionBusy" @click="sendTest(row as Channel)">{{ t('forms.test') }}</el-button><el-button link type="primary" size="small" :disabled="actionBusy" @click="toggle(row.id)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" :disabled="actionBusy" @click="removeChannel(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
       </el-table>
     </el-card>
 
     <el-card shadow="never">
       <template #header>{{ t('notify.dispatchLogsLive') }}</template>
       <el-table v-loading="loading" :data="logs" size="small" border :empty-text="t('common.empty')">
-        <el-table-column prop="ts" :label="t('common.timestamp')" width="210" />
+        <el-table-column prop="ts" :label="t('common.timestamp')" width="210"><template #default="{ row }">{{ d(row.ts) }}</template></el-table-column>
         <el-table-column prop="channel" :label="t('notify.channel')" min-width="150" show-overflow-tooltip />
         <el-table-column prop="type" :label="t('common.type')" width="110"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
         <el-table-column prop="ruleId" :label="t('notify.rule')" min-width="200" show-overflow-tooltip />
@@ -247,6 +267,7 @@ onMounted(loadNotify)
     </el-card>
 
     <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="editingId ? t('common.edit') : t('notify.createChannel')" width="640px" :close-on-click-modal="false"><ActionFeedback :error="dialogError" />
+      <p v-if="testState !== 'idle'" role="status" class="dialog-hint">{{ t(testState === 'running' ? 'notify.savedTesting' : 'notify.savedTestFailed') }}</p>
       <el-form :disabled="actionBusy" label-position="top">
         <FormGrid :columns="2">
           <FormField :label="t('common.name')" required :error="fieldErrors.name">
@@ -269,7 +290,7 @@ onMounted(loadNotify)
           </FormField>
         </FormGrid>
       </el-form>
-      <template #footer><el-button @click="dialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addChannel">{{ t('common.save') }}</el-button><el-button v-if="canWrite" plain :loading="actionBusy" @click="saveAndTestChannel">{{ t('notify.saveAndTest') }}</el-button></template>
+      <template #footer><el-button :disabled="actionBusy" @click="dialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addChannel">{{ t('common.save') }}</el-button><el-button v-if="canWrite" plain :loading="actionBusy" @click="saveAndTestChannel">{{ t(testState === 'failed' && !dialogVisibleGuard.dirty.value ? 'notify.retryTest' : 'notify.saveAndTest') }}</el-button></template>
     </el-dialog>
   </div>
 </template>

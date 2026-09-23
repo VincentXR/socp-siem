@@ -150,6 +150,20 @@ public interface AlarmRepository extends TenantScopedRepository<Alarm, String>, 
     List<Alarm> topRiskForStatistics(
             @Param("tenant") String tenant, @Param("since") Instant since, Pageable pageable);
 
+    @org.springframework.data.jpa.repository.QueryHints(
+            @jakarta.persistence.QueryHint(name = "jakarta.persistence.query.timeout", value = "5000"))
+    @Query("""
+           select new com.socp.alert.domain.AlarmTechniqueCount(a.mitre, count(a))
+           from Alarm a
+           where a.tenantId = :tenant
+             and a.occurredAt >= :since and a.occurredAt < :until
+             and a.mitre in :techniques
+           group by a.mitre
+           """)
+    List<com.socp.alert.domain.AlarmTechniqueCount> countByTechniqueInWindow(
+            @Param("tenant") String tenant, @Param("techniques") List<String> techniques,
+            @Param("since") Instant since, @Param("until") Instant until);
+
     long countByTenantIdAndOccurredAtGreaterThanEqualAndOccurredAtLessThan(
             String tenantId, Instant startInclusive, Instant endExclusive);
 }

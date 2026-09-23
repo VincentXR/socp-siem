@@ -61,6 +61,12 @@ public class EndpointStore {
         return repository.findByTenantId(tenant()).stream().map(EndpointStore::fromEntity).toList();
     }
 
+    @Transactional(readOnly = true)
+    public Endpoint get(String id) {
+        return repository.findByTenantIdAndEndpointId(tenant(), id)
+                .map(EndpointStore::fromEntity).orElse(null);
+    }
+
     /** Reads one bounded tenant page directly from the endpoint table. */
     @Transactional(readOnly = true)
     public Page<Endpoint> page(int page, int size, String query) {
@@ -71,6 +77,15 @@ public class EndpointStore {
                 ? repository.findByTenantId(tenant(), pageable)
                 : repository.searchByTenantId(tenant(), normalized, pageable);
         return result.map(EndpointStore::fromEntity);
+    }
+
+    /** Exact OR association; empty keys never match empty stored identities. */
+    @Transactional(readOnly = true)
+    public Page<Endpoint> related(int page, int size, String ip, String hostname) {
+        Pageable pageable = PageRequest.of(page - 1, size,
+                Sort.by(Sort.Order.asc("hostname"), Sort.Order.asc("storageId")));
+        return repository.findRelatedByTenantId(tenant(), ip == null ? "" : ip.trim(),
+                hostname == null ? "" : hostname.trim(), pageable).map(EndpointStore::fromEntity);
     }
 
     /** Computes endpoint health counts in the database, including heartbeat expiry. */

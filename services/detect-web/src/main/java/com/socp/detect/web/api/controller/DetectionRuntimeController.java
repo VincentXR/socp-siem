@@ -8,6 +8,7 @@ import com.socp.detect.web.config.DetectRuntimeRole;
 import com.socp.detect.web.engine.AlertStreamHub;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.platform.auth.security.RequireRole;
+import com.socp.platform.auth.security.RequestBodyLimit;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.Alert;
@@ -54,6 +55,7 @@ public class DetectionRuntimeController {
 
     @RequireRole({"admin", "analyst"})
     @PostMapping("/ingest")
+    @RequestBodyLimit(maxBytes = 256 * 1024)
     public ResponseEntity<ApiResult<DetectionIngestResponse>> ingest(
             @Valid @RequestBody DetectionIngestRequest request,
             @RequestHeader(value = "Idempotency-Key", required = false)
@@ -68,12 +70,13 @@ public class DetectionRuntimeController {
         return ResponseEntity.ok(ApiResult.ok(new DetectionIngestResponse(true, queueLoad, null)));
     }
 
-    /** NDJSON batch ingress used by SEARCH forwarding. */
+    /** Manual NDJSON ingress for verification; canonical Search events arrive through Kafka. */
     public DetectionBulkIngestResponse ingestBulk(@RequestBody String body) {
         return ingestBulk(body, null).data();
     }
 
     @RequireRole({"admin", "analyst"})
+    @RequestBodyLimit(maxBytes = 16 * 1024 * 1024)
     @PostMapping(value = "/ingest/bulk", consumes = {
             MediaType.APPLICATION_JSON_VALUE, "application/x-ndjson", MediaType.TEXT_PLAIN_VALUE
     })

@@ -11,6 +11,7 @@ import hmac
 import os
 import sys
 import time
+import uuid
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -150,26 +151,38 @@ check("occurredAt 缺省时回退服务端时间",
 
 # ---------- 3. 多租户隔离 ----------
 print("\n[3] 多租户隔离（TenantContext + BaseEntity.tenantId）")
-call("POST", tenant="t2", body={"ruleId": "R-T2", "ruleName": "租户2专属规则",
-                                "severity": "LOW", "message": "仅 t2 可见", "entity": "192.168.1.1"})
+t2_rule = "R-T2-" + uuid.uuid4().hex[:12]
+t2_status, _, t2_created = call("POST", tenant="t2", body={
+    "ruleId": t2_rule, "ruleName": "租户2专属规则",
+    "severity": "LOW", "message": "仅 t2 可见", "entity": "192.168.1.1"})
+t2_alarm_id = (t2_created.get("data") or {}).get("id")
+check("t2 当前告警写入成功", t2_status == 200 and t2_created.get("code") == 0 and bool(t2_alarm_id),
+      "HTTP=%s id=%s" % (t2_status, t2_alarm_id))
 time.sleep(1.1)  # 让限流桶回满，避免污染本组断言
-_, _, t1 = call(tenant="t1")
+t1_status, _, t1 = call(tenant="t1")
 time.sleep(1.1)
-_, _, t2 = call(tenant="t2")
+t2_status, _, t2 = call(tenant="t2")
+check("t1 本次告警列表读取成功", t1_status == 200 and t1.get("code") == 0,
+      "HTTP=%s" % t1_status)
+check("t2 本次告警列表读取成功", t2_status == 200 and t2.get("code") == 0,
+      "HTTP=%s" % t2_status)
 
 
-def _alarm_rule_ids(body):
+def _alarm_items(body):
     """列表 data 兼容裸数组与统一分页对象 {items,total,...} 两种形状。"""
     data = body.get("data") or []
     if isinstance(data, dict):
         data = data.get("items") or []
-    return [a["ruleId"] for a in data]
+    return data
 
 
-t1_rules = _alarm_rule_ids(t1)
-t2_rules = _alarm_rule_ids(t2)
-check("t1 看不到 t2 的告警", "R-T2" not in t1_rules, "t1=%s" % t1_rules)
-check("t2 只看到自己的告警", t2_rules and all(r == "R-T2" for r in t2_rules), "t2=%s" % t2_rules)
+t1_items = _alarm_items(t1)
+t2_items = _alarm_items(t2)
+check("t1 看不到本次 t2 告警", bool(t2_alarm_id) and all(a.get("id") != t2_alarm_id for a in t1_items),
+      "t2 id=%s" % t2_alarm_id)
+check("t2 能看到本次独有告警", bool(t2_alarm_id) and any(
+    a.get("id") == t2_alarm_id and a.get("ruleId") == t2_rule for a in t2_items),
+    "t2 id=%s" % t2_alarm_id)
 
 # ---------- 4. 链路追踪 ----------
 print("\n[4] 链路追踪（网关注入 traceId 并回写响应头）")

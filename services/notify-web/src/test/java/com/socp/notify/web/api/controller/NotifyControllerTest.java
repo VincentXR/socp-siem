@@ -29,6 +29,15 @@ import static org.mockito.Mockito.verify;
 @ExtendWith(MockitoExtension.class)
 class NotifyControllerTest {
 
+    @Test void countOnlyCompatibilityDoesNotLoadTheCatalogueAndOverflowIsRejected() {
+        given(channels.count()).willReturn(1200L);
+        assertEquals(1200, controller().channels(1, 0).data().total());
+        assertEquals(List.of(), controller().channels(1, 0).data().items());
+        verify(channels, never()).list(org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
+        assertThatThrownBy(() -> controller().channels(Integer.MAX_VALUE, 500))
+                .isInstanceOf(ApiException.class).hasFieldOrPropertyWithValue("code", 400);
+    }
+
     @Mock private ChannelStore channels;
     @Mock private NotificationDispatcher dispatcher;
 
@@ -41,10 +50,10 @@ class NotifyControllerTest {
     void channelListingDelegatesToTenantScopedStore() {
         TenantContext.set("tenant-a");
         List<Channel> expected = List.of(new Channel("CH-1", "Ops", "LOG", "local", true, ""));
-        given(channels.list()).willReturn(expected);
+        given(channels.list(1, 500)).willReturn(new org.springframework.data.domain.PageImpl<>(expected));
 
         assertEquals(expected, controller().channels(1, 500).data().items());
-        verify(channels).list();
+        verify(channels).list(1, 500);
     }
 
     @Test
@@ -70,7 +79,7 @@ class NotifyControllerTest {
     @Test
     void toggleFailsWithNotFoundWithoutWritingWhenChannelIsMissing() {
         TenantContext.set("tenant-a");
-        given(channels.get("missing")).willReturn(null);
+        given(channels.toggle("missing")).willThrow(ApiException.notFound("missing"));
 
         assertThatThrownBy(() -> controller().toggle("missing"))
                 .isInstanceOf(ApiException.class)
@@ -81,15 +90,10 @@ class NotifyControllerTest {
     @Test
     void toggleInvertsEnabledStateAndPersistsUpdatedChannel() {
         TenantContext.set("tenant-a");
-        Channel existing = new Channel("CH-1", "Ops", "LOG", "local", true, "notes");
-        given(channels.get("CH-1")).willReturn(existing);
-        ArgumentCaptor<Channel> captor = ArgumentCaptor.forClass(Channel.class);
-
+        Channel updated = new Channel("CH-1", "Ops", "LOG", "local", false, "notes");
+        given(channels.toggle("CH-1")).willReturn(updated);
         Map<String, Object> result = controller().toggle("CH-1").data();
-
-        verify(channels).add(captor.capture());
-        Channel updated = captor.getValue();
-        assertEquals(false, updated.enabled());
+        verify(channels).toggle("CH-1");
         assertSame(updated, result.get("channel"));
     }
 

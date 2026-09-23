@@ -157,6 +157,25 @@ class SoarRetryGuardCoverageTest {
     }
 
     @Test
+    void retryRejectsOversizedRestoredUtf8InputBeforeCreatingRunOrOutbox() {
+        SoarRunEntity original = run("run-1", "req-1", SoarRunStatus.FAILED);
+        original.setPlaybookVersionId("ver-1");
+        original.setInputJson("{\"original\":\"" + "界".repeat(80000) + "\"}");
+        original.setOutputJson("{\"variables\":{\"restored\":\"" + "界".repeat(10000) + "\"}}");
+        given(runs.findByTenantIdAndId("tenant-a", "run-1")).willReturn(Optional.of(original));
+        given(nodes.findByTenantIdAndRunIdOrderByUpdatedAtAsc("tenant-a", "run-1")).willReturn(List.of());
+        given(runs.findByTenantIdAndRequestId(eq("tenant-a"), anyString())).willReturn(Optional.empty());
+        given(versions.findByTenantIdAndId("tenant-a", "ver-1"))
+                .willReturn(Optional.of(version("pb-1", "ver-1", "PUBLISHED", SAFE_DEFINITION)));
+        given(validator.validate(anyString())).willReturn(validation(true, 0));
+
+        assertRejected(HttpStatus.PAYLOAD_TOO_LARGE, "SOAR_INPUT_TOO_LARGE",
+                () -> service.retryRun("run-1", "restore failed run"));
+        verify(runs, never()).save(any(SoarRunEntity.class));
+        verify(dispatches, never()).save(any(SoarDispatchOutboxEntity.class));
+    }
+
+    @Test
     void retryRunResumesAFailedRunFromItsFirstFailedNode() {
         SoarRunEntity original = run("run-1", "req-1", SoarRunStatus.FAILED);
         original.setExecutionSeriesId("series-1");

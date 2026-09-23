@@ -20,8 +20,9 @@ Detection rules should not know whether an event came from Syslog, CEF, LEEF,
 Sysmon, Falco, or NDJSON. Kafka separates ingestion rate from detection rate
 and allows the search index to be rebuilt from the event stream. The Detection
 Outbox separates rule evaluation from Alert Web availability. The OpenSearch
-consumer waits for every bulk item acknowledgement before committing its
-partition offset and uses event ID as document ID for idempotent replay.
+consumer requires successful indexing or acknowledged dead-letter delivery
+for every preceding item before committing a partition offset. It uses event
+ID as document ID for idempotent indexing replay.
 
 ## Trade-offs
 

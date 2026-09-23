@@ -9,11 +9,15 @@ import jakarta.persistence.Table;
 /** 通知渠道持久化实体（t_channel）。 */
 @Entity
 @Table(name = "t_channel")
-public class ChannelEntity {
+public class ChannelEntity implements org.springframework.data.domain.Persistable<String> {
+    @jakarta.persistence.Transient private boolean newEntity = true;
+    @Override public boolean isNew() { return newEntity; }
+    @jakarta.persistence.PostLoad @jakarta.persistence.PostPersist
+    void persisted() { newEntity = false; }
     @Id @Column(length = 64) private String id;
     @Column(nullable = false, length = 128) private String name;
     @Column(nullable = false, length = 32) private String type;
-    @Column(length = 512) private String target;
+    @Column(length = 2048) private String target;
     @Column(nullable = false) private boolean enabled;
     @Column(length = 512) private String description;
     @Column(name = "tenant_id", nullable = false, length = 64) private String tenantId;
@@ -31,4 +35,8 @@ public class ChannelEntity {
     public String getDescription() { return description; }
     public String getTenantId() { return tenantId; }
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
+    public void update(String name, String type, String target, boolean enabled, String description) {
+        this.name = name; this.type = type; this.target = target;
+        this.enabled = enabled; this.description = description;
+    }
 }

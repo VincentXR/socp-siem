@@ -11,7 +11,7 @@ import { useI18n } from '../composables/useI18n'
 const props = withDefaults(defineProps<{
   modelValue: RuleCondition[]
   fields?: FieldDef[]
-  referenceSets?: ReferenceSet[]
+  referenceSets?: Array<Pick<ReferenceSet, 'id' | 'name' | 'description'> & { entries?: string[]; size?: number }>
   operators?: string[]
   maxConditions?: number
   title?: string
@@ -149,7 +149,7 @@ function fieldMeta(fieldName: string): string {
       <el-select v-if="isReferenceOperator(condition.op)" :model-value="condition.value" :disabled="props.readOnly" filterable default-first-option clearable :placeholder="valuePlaceholder" @change="updateRow(index, { value: String($event ?? '') })">
         <el-option v-if="condition.value && !referenceSets.some(refset => refset.name === condition.value)" :label="condition.value" :value="condition.value" />
         <el-option v-for="refset in referenceSets" :key="refset.id" :label="refset.name" :value="refset.name">
-          <div class="field-condition-option"><b>{{ refset.name }}</b><small>{{ refset.entries.length }} entries · {{ refset.description }}</small></div>
+          <div class="field-condition-option"><b>{{ refset.name }}</b><small>{{ t('ueba.itemCount', { count: refset.size ?? refset.entries?.length ?? 0 }) }}<template v-if="refset.description"> · {{ refset.description }}</template></small></div>
         </el-option>
       </el-select>
       <el-select v-else-if="isBooleanField(condition.field)" :model-value="condition.value" :disabled="props.readOnly" clearable :placeholder="valuePlaceholder" @change="updateRow(index, { value: String($event ?? '') })">

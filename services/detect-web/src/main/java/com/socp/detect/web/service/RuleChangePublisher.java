@@ -73,6 +73,7 @@ public class RuleChangePublisher {
     private int cleanupMaxBatches = DEFAULT_CLEANUP_MAX_BATCHES;
 
     private volatile KafkaProducer<String, String> producer;
+    private final java.util.concurrent.atomic.AtomicBoolean activeDrain = new java.util.concurrent.atomic.AtomicBoolean();
     private Instant nextRecoveryAt = Instant.EPOCH;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -118,10 +119,11 @@ public class RuleChangePublisher {
             refreshBacklog();
             return;
         }
+        if (!activeDrain.compareAndSet(false, true)) return;
         try {
             Instant now = Instant.now();
             recoverStaleIfDue(now);
-            int exhausted = repository.markExhausted(effectiveMaxAttempts(), "retry limit reached", now);
+            int exhausted = repository.markExhaustedBatch(effectiveMaxAttempts(), "retry limit reached", now, 100);
             if (exhausted > 0) {
                 log.error("Rule-change outbox rows moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
@@ -134,12 +136,16 @@ public class RuleChangePublisher {
                         .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", Instant.now());
                 if (pending.isEmpty()) break;
                 rounds++;
-                for (RuleChangeOutbox row : pending) deliver(row);
+                for (RuleChangeOutbox row : pending) {
+                    if (System.nanoTime() >= deadline) break;
+                    TenantContext.runWith(row.getTenantId(), () -> deliver(row));
+                }
                 if (pending.size() < 100) break;
             }
         } catch (RuntimeException failure) {
             log.warn("Rule-change outbox scan failed; next scan will retry: {}", failure.getMessage());
         } finally {
+            activeDrain.set(false);
             refreshBacklog();
         }
     }
@@ -158,8 +164,9 @@ public class RuleChangePublisher {
     }
 
     private void deliver(RuleChangeOutbox row) {
+        String token = UUID.randomUUID().toString();
         Instant now = Instant.now();
-        if (repository.claim(row.getId(), now, effectiveMaxAttempts()) != 1) return;
+        if (repository.claim(row.getId(), now, effectiveMaxAttempts(), row.getAttempts(), token) != 1) return;
         try {
             Map<String, Object> event = new LinkedHashMap<>();
             event.put("eventId", row.getId());
@@ -170,29 +177,29 @@ public class RuleChangePublisher {
             String value = MAPPER.writeValueAsString(event);
             KafkaClientSupport.sendAndAwait(kafkaProducer(), topic,
                     row.getTenantId() + ':' + row.getRuleId(), value, Duration.ofSeconds(10));
-            if (repository.markPublished(row.getId(), Instant.now()) != 1) {
+            if (repository.markPublished(row.getId(), Instant.now(), token) != 1) {
                 log.warn("Rule-change outbox state changed before broker acknowledgement id={}", row.getId());
             }
         } catch (Exception failure) {
-            scheduleRetry(row, failure);
+            scheduleRetry(row, token, failure);
         }
     }
 
-    void scheduleRetry(RuleChangeOutbox row, Exception failure) {
+    void scheduleRetry(RuleChangeOutbox row, String token, Exception failure) {
         int attempt = row.getAttempts() + 1;
         String error = failure.getClass().getSimpleName() + ": " + failure.getMessage();
         Instant now = Instant.now();
         var decision = OutboxRetryPolicy.afterClaim(attempt, effectiveMaxAttempts(), now, error, 300);
         try {
             if (decision.exhausted()) {
-                if (repository.markDead(row.getId(), decision.error(), now) == 1) {
+                if (repository.markDead(row.getId(), decision.error(), now, token) == 1) {
                     log.error("Rule-change outbox moved to DEAD tenant={} ruleId={} attempts={} reason={}",
                             row.getTenantId(), row.getRuleId(), decision.attempts(), decision.error());
                     lifecycle("dead", 1);
                 }
                 return;
             }
-            if (repository.scheduleRetry(row.getId(), decision.nextAttemptAt(), decision.error(), now) == 1) {
+            if (repository.scheduleRetry(row.getId(), decision.nextAttemptAt(), decision.error(), now, token) == 1) {
                 log.warn("Rule-change delivery scheduled for retry tenant={} ruleId={} attempt={} next={}: {}",
                         row.getTenantId(), row.getRuleId(), decision.attempts(), decision.nextAttemptAt(), decision.error());
                 lifecycle("retry", 1);
@@ -205,7 +212,7 @@ public class RuleChangePublisher {
 
     private void recoverStaleIfDue(Instant now) {
         if (now.isBefore(nextRecoveryAt)) return;
-        int recovered = repository.recoverStale(now.minus(Duration.ofMinutes(2)), now);
+        int recovered = repository.recoverStaleBatch(now.minus(Duration.ofMinutes(2)), now, 100);
         if (recovered > 0) {
             log.warn("Recovered stale rule-change outbox rows count={}", recovered);
             lifecycle("recovered", recovered);

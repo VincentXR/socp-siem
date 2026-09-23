@@ -34,11 +34,12 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { ElTimeline, ElTimelineItem } from 'element-plus/es/components/timeline/index.mjs'
 import { computed, inject, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import DataTableCard from '../components/DataTableCard.vue'
 import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
+import PagerBar from '../components/PagerBar.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useDebouncedWatch } from '../composables/useDebouncedWatch'
@@ -49,20 +50,32 @@ import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
 import { WORKBENCH_STATE } from '../app/workbenchState'
 
-const { t } = useI18n()
+const { t, d } = useI18n()
 const workbenchState = inject(WORKBENCH_STATE, null)
 const route = useRoute()
 const router = useRouter()
 
 const stats = ref<{ total?: number; open?: number; resolved?: number }>({})
+const statsError = ref('')
 const detail = ref<CaseInfo | null>(null)
+const detailError = ref('')
+const detailLoading = ref(false)
+const latestDetail = useLatestRequest()
+const latestTimeline = useLatestRequest()
 const timeline = ref<TimelineEvent[]>([])
 const timelineError = ref('')
+const timelineLoading = ref(false)
+const timelinePage = ref(1)
+const timelineSize = ref(20)
+const timelineTotal = ref(0)
 const drawerVisible = ref(false)
 const createDialogVisible = ref(false)
 const caseForm = ref({ title: '', entity: '', severity: 'HIGH', assignee: '' })
+const titleError = ref('')
 const newStatus = ref('')
 const detailAssignee = ref('')
+const exportMutation = useMutation()
+const selectedId = computed(() => typeof route.query.caseId === 'string' ? route.query.caseId : '')
 const CASE_STATUSES = ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']
 const loadError = ref('')
 const cases = ref<CaseInfo[]>([])
@@ -74,12 +87,12 @@ const keyword = listQuery.keyword
 const statusFilter = listQuery.filters.status
 const loading = ref(false)
 const latestRequest = useLatestRequest()
-const detailRequest = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('cases')
 const assigneeOptions = computed(() => Array.from(new Set([
   ...(workbenchState?.operatorOptions.value ?? []),
   workbenchState?.currentUser.value ?? '',
   ...cases.value.map(item => item.assignee ?? ''),
+  detail.value?.assignee ?? '',
 ].filter(Boolean))))
 
 async function loadCases() {
@@ -99,45 +112,73 @@ async function loadCases() {
       loadError.value = caseResult.reason instanceof Error ? caseResult.reason.message : String(caseResult.reason)
     }
     if (!request.isCurrent()) return
-    if (statResult.status === 'fulfilled') stats.value = statResult.value
-    openCaseFromQuery()
+    statsError.value = statResult.status === 'rejected' ? String(statResult.reason) : ''
+    stats.value = statResult.status === 'fulfilled' ? statResult.value : {}
   } finally {
     if (request.isCurrent()) loading.value = false
   }
 }
 
-async function openCase(item: CaseInfo) {
-  const request = detailRequest.start()
+/** The route owns selection, so links and browser history do not depend on a list page. */
+async function loadDetail() {
+  const request = latestDetail.start()
+  latestTimeline.cancel()
+  const id = selectedId.value
+  detail.value = null
+  newStatus.value = ''; detailAssignee.value = ''
+  detailGuard.markSaved()
+  timeline.value = []; timelineError.value = ''; timelineLoading.value = false
+  timelinePage.value = 1; timelineTotal.value = 0
+  detailError.value = ''; actionError.value = ''
+  createDialogVisible.value = false
+  drawerVisible.value = Boolean(id)
+  detailLoading.value = Boolean(id)
+  if (!id) return
+  try {
+    const result = await caseApi.get(id, { signal: request.signal })
+    if (!request.isCurrent()) return
+    if (!result.found || !result.case.id) throw new Error(t('cases.notFound'))
+    applyDetail(result.case as CaseInfo)
+    void loadTimeline()
+  } catch (failure) {
+    if (request.isCurrent()) detailError.value = String(failure)
+  } finally {
+    if (request.isCurrent()) detailLoading.value = false
+  }
+}
+
+function applyDetail(item: CaseInfo) {
   detail.value = item
   newStatus.value = item.status
   detailAssignee.value = item.assignee ?? ''
-  drawerVisible.value = true
   detailGuard.markSaved()
-  timeline.value = []; timelineError.value = ''
+}
+
+async function loadTimeline() {
+  if (!detail.value) return
+  const request = latestTimeline.start()
+  const id = detail.value.id
+  timelineLoading.value = true; timelineError.value = ''; timeline.value = []
   try {
-    const response = await caseApi.timeline(item.id, 1, 100, { signal: request.signal })
-    if (request.isCurrent()) timeline.value = response.items
+    const result = await caseApi.timeline(id, timelinePage.value, timelineSize.value, { signal: request.signal })
+    if (!request.isCurrent()) return
+    timeline.value = result.items; timelineTotal.value = result.total
   } catch (failure) {
     if (request.isCurrent()) timelineError.value = String(failure)
+  } finally {
+    if (request.isCurrent()) timelineLoading.value = false
   }
 }
-function openCaseRow(row: unknown) { openCase(row as CaseInfo) }
 
-async function openCaseFromQuery(): Promise<void> {
-  const id = typeof route.query.caseId === 'string' ? route.query.caseId : ''
-  if (!id) return
-  const match = cases.value.find(item => item.id === id || item.caseNo === id)
-  if (detail.value?.id === id || (match && detail.value?.id === match.id)) return
-  if (match) { await openCase(match); return }
-  const request = detailRequest.start()
-  try {
-    const response = await caseApi.get(id, { signal: request.signal })
-    if (!request.isCurrent()) return
-    if (response.found) await openCase(response.case)
-    else actionError.value = t('errors.NOT_FOUND')
-  } catch (failure) {
-    if (request.isCurrent()) actionError.value = String(failure)
-  }
+function openCaseRow(row: unknown) {
+  if (actionBusy.value) return
+  void router.push({ query: { ...route.query, caseId: (row as CaseInfo).id } })
+}
+
+function closeDetail() {
+  const query = { ...route.query }
+  delete query.caseId
+  void router.push({ query })
 }
 
 function openAlarm(id: string): void {
@@ -150,86 +191,96 @@ function openRule(id: string): void {
 }
 
 async function updateStatus() {
-  return mutation.run(async () => {
-  if (!detail.value || !newStatus.value) return
-  try {
-    const result = await caseApi.updateStatus(detail.value.id, newStatus.value, detailAssignee.value.trim() || undefined)
-    detail.value = result.case
-    detailAssignee.value = result.case.assignee ?? detailAssignee.value
-    detailGuard.markSaved()
-    await loadCases()
-  } catch (error) {
-    throw error
-  }
+  if (!canWrite.value || actionBusy.value || !detail.value || !newStatus.value) return
+  const id = detail.value.id
+  const status = newStatus.value
+  const assignee = detailAssignee.value.trim() || undefined
+  const saved = await mutation.run(async () => {
+    const result = await caseApi.updateStatus(id, status, assignee)
+    applyDetail(result.case)
+    cases.value = cases.value.map(item => item.id === id ? result.case : item)
+    ElMessage.success(t('cases.updatedSuccessfully'))
   })
+  if (saved) { void loadCases(); void loadTimeline() }
 }
 
 function openCreateCase() {
+  if (!canWrite.value || actionBusy.value) return
+  actionError.value = ''
+  titleError.value = ''
   caseForm.value = { title: '', entity: '', severity: 'HIGH', assignee: '' }
   createDialogVisible.value = true
 }
 
 async function saveCase() {
-  return mutation.run(async () => {
+  if (!canWrite.value || actionBusy.value) return
+  titleError.value = ''
   if (!caseForm.value.title.trim()) {
-    ElMessage.warning(t('cases.pleaseEnterTitle'))
+    titleError.value = t('cases.pleaseEnterTitle')
     return
   }
-  try {
+  let createdId = ''
+  const saved = await mutation.run(async () => {
     const created = await caseApi.create({
       title: caseForm.value.title.trim(), entity: caseForm.value.entity.trim(),
       severity: caseForm.value.severity, assignee: caseForm.value.assignee.trim() || undefined,
     })
     createDialogVisible.value = false
+    createdId = created.case.id
     ElMessage.success(t('cases.createdSuccessfully'))
-    await loadCases()
-    await openCase(created.case)
-  } catch (error) {
-    throw error
-  }
   })
+  if (saved) {
+    await router.push({ query: { ...route.query, caseId: createdId } })
+    void loadCases()
+  }
 }
 
 const createDialogVisibleGuard = useFormDialog(createDialogVisible, () => caseForm.value, () => actionBusy.value)
 const detailGuard = useFormDialog(drawerVisible, () => ({ status: newStatus.value, assignee: detailAssignee.value }), () => actionBusy.value)
+onBeforeRouteUpdate(async (to, from) => to.query.caseId === from.query.caseId
+  || await createDialogVisibleGuard.canLeave() && await detailGuard.canLeave())
 onMounted(loadCases)
 watch([page, size], () => { listQuery.sync(); void loadCases() })
 useDebouncedWatch([keyword, statusFilter], () => {
+  const routeKeyword = typeof route.query.q === 'string' ? route.query.q.trim() : ''
+  const routeStatus = typeof route.query.status === 'string' && CASE_STATUSES.includes(route.query.status) ? route.query.status : ''
+  // A browser-history restore is already loaded at its requested page. Do not
+  // let its delayed filter watcher turn it into a fresh page-one search.
+  if (keyword.value.trim() === routeKeyword && statusFilter.value === routeStatus) return
   if (page.value !== 1) page.value = 1
   else { listQuery.sync(); void loadCases() }
 })
-watch(() => route.query.caseId, openCaseFromQuery)
-watch(drawerVisible, visible => {
-  if (!visible) detailRequest.cancel()
-  if (!visible && route.query.caseId) {
-    const query = { ...route.query }
-    delete query.caseId
-    void router.replace({ query })
-  }
+watch(selectedId, () => { void loadDetail() }, { immediate: true })
+watch([timelinePage, timelineSize], () => { void loadTimeline() })
+watch([() => route.query.page, () => route.query.q, () => route.query.status], () => {
+  const before = { page: page.value, keyword: keyword.value.trim(), status: statusFilter.value }
+  listQuery.applyRouteQuery()
+  if (before.page === page.value && (before.keyword !== keyword.value.trim() || before.status !== statusFilter.value)) void loadCases()
 })
 </script>
 
 <template>
   <div class="page-pad view-enter">
-    <ActionFeedback :error="actionError" />
+    <ActionFeedback :error="exportMutation.error.value" />
     <PageHeader :eyebrow="t('menuGroup.alarmsAndEvents')" :title="t('cases.title')" :description="t('cases.description')">
       <template #actions>
-        <el-button v-if="canWrite" type="primary" size="small" @click="openCreateCase">{{ t('cases.createCase') }}</el-button>
-        <el-button size="small" @click="caseApi.export()">{{ t('cases.exportJson') }}</el-button>
+        <el-button v-if="canWrite" type="primary" size="small" :disabled="actionBusy" @click="openCreateCase">{{ t('cases.createCase') }}</el-button>
+        <el-button v-if="canWrite" size="small" :loading="exportMutation.busy.value" @click="exportMutation.run(caseApi.export)">{{ t('cases.exportJson') }}</el-button>
       </template>
     </PageHeader>
 
     <div class="page-metrics">
-      <MetricCard :label="t('cases.totalCases')" tone="info">{{ stats.total ?? 0 }}</MetricCard>
-      <MetricCard :label="t('cases.activeCases')" tone="warning">{{ stats.open ?? 0 }}</MetricCard>
-      <MetricCard :label="t('cases.resolvedCases')" tone="success">{{ stats.resolved ?? 0 }}</MetricCard>
+      <MetricCard :label="t('cases.totalCases')" tone="info">{{ stats.total ?? '—' }}</MetricCard>
+      <MetricCard :label="t('cases.activeCases')" tone="warning">{{ stats.open ?? '—' }}</MetricCard>
+      <MetricCard :label="t('cases.resolvedCases')" tone="success">{{ stats.resolved ?? '—' }}</MetricCard>
     </div>
+    <ActionFeedback :error="statsError" />
 
     <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="total" :loading="loading" :error="loadError" :retry="loadCases" :empty-title="t('cases.emptyCases')" :empty-description="t('cases.description')">
       <template #toolbar>
         <FilterToolbar :count="total">
-        <el-input v-model="keyword" :placeholder="t('cases.searchPlaceholder')" clearable @input="page = 1" />
-        <el-select v-model="statusFilter" :placeholder="t('cases.allStatuses')" clearable @change="page = 1">
+        <el-input v-model="keyword" :disabled="actionBusy" :placeholder="t('cases.searchPlaceholder')" clearable @input="page = 1" />
+        <el-select v-model="statusFilter" :disabled="actionBusy" :placeholder="t('cases.allStatuses')" clearable @change="page = 1">
           <el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="tOr(t, 'statuses.' + status, status)" :value="status" />
         </el-select>
         </FilterToolbar>
@@ -241,7 +292,7 @@ watch(drawerVisible, visible => {
         <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 90)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
         <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 120)"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ tOr(t, 'statuses.' + row.status, row.status) }}</el-tag></template></el-table-column>
         <el-table-column prop="alarmCount" column-key="alarmCount" :label="t('cases.associatedAlarms')" :width="columnWidth('alarmCount', 90)"><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
-        <el-table-column :label="t('common.actions')" width="100" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click="openCaseRow(row)">{{ t('cases.detailsTimeline') }}</el-button></template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="100" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" :disabled="actionBusy" @click.stop="openCaseRow(row)">{{ t('cases.detailsTimeline') }}</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>
 
@@ -249,7 +300,7 @@ watch(drawerVisible, visible => {
       <el-form :disabled="actionBusy" label-position="top">
         <FormSection :title="t('cases.identity')" :hint="t('cases.identityHint')">
           <FormGrid :columns="2">
-            <FormField :label="t('cases.caseTitle')" required full>
+            <FormField :label="t('cases.caseTitle')" required full :error="titleError">
               <el-input v-model="caseForm.title" :placeholder="t('cases.titlePlaceholder')" />
             </FormField>
             <FormField :label="t('common.entity')" :hint="t('cases.entityHint')">
@@ -265,13 +316,17 @@ watch(drawerVisible, visible => {
         </FormSection>
       </el-form>
       <template #footer>
-        <el-button @click="createDialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button>
+        <el-button :disabled="actionBusy" @click="createDialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button>
         <el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="saveCase">{{ t('common.save') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-drawer v-model="drawerVisible" :before-close="detailGuard.beforeClose" :title="`${t('cases.title')} · ${detail?.title ?? ''}`" size="min(520px, 96vw)">
+    <el-drawer :model-value="drawerVisible" :before-close="closeDetail" :title="`${t('cases.title')} · ${detail?.title ?? selectedId}`" size="min(520px, 96vw)">
+      <p v-if="detailLoading" role="status">{{ t('common.loading') }}</p>
+      <ActionFeedback :error="detailError" />
+      <el-button v-if="detailError" @click="loadDetail">{{ t('common.retry') }}</el-button>
       <template v-if="detail">
+        <ActionFeedback :error="actionError" />
         <el-descriptions :column="2" size="small" border>
           <el-descriptions-item :label="t('cases.caseId')">{{ detail.id }}</el-descriptions-item>
           <el-descriptions-item v-if="detail.caseNo" :label="t('cases.caseNo')">{{ detail.caseNo }}</el-descriptions-item>
@@ -279,7 +334,7 @@ watch(drawerVisible, visible => {
           <el-descriptions-item :label="t('common.severity')"><SevBadge :value="detail.severity" /></el-descriptions-item>
           <el-descriptions-item :label="t('cases.status')">{{ tOr(t, 'statuses.' + detail.status, detail.status) }}</el-descriptions-item>
           <el-descriptions-item :label="t('cases.assignee')">
-            <el-select v-if="canWrite" v-model="detailAssignee" filterable default-first-option allow-create clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%">
+            <el-select v-if="canWrite" v-model="detailAssignee" :disabled="actionBusy" filterable default-first-option allow-create clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%">
               <el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" />
             </el-select>
             <span v-else>{{ detail.assignee || '—' }}</span>
@@ -296,14 +351,30 @@ watch(drawerVisible, visible => {
         <template v-if="canWrite">
           <p class="dialog-hint">{{ t('forms.changeStatus') }}</p>
           <div class="case-status-row">
-            <el-select v-model="newStatus"><el-option v-for="status in ['OPEN', 'INVESTIGATING', 'CONTAINED', 'RESOLVED', 'CLOSED']" :key="status" :label="tOr(t, 'statuses.' + status, status)" :value="status" /></el-select>
+            <el-select v-model="newStatus" :disabled="actionBusy" :aria-label="t('cases.status')"><el-option v-for="status in CASE_STATUSES" :key="status" :label="tOr(t, 'statuses.' + status, status)" :value="status" /></el-select>
             <el-button type="primary" :loading="actionBusy" @click="updateStatus">{{ t('cases.updateStatus') }}</el-button>
           </div>
           <p class="drawer-readonly-hint">{{ t('forms.changeStatus') }} + {{ t('forms.assign') }}</p>
         </template>
         <el-divider content-position="left">{{ t('cases.timeline') }}</el-divider>
-        <ActionFeedback :error="timelineError" /><el-timeline><el-timeline-item v-for="(event, index) in timeline" :key="index" :timestamp="event.ts" placement="top"><div>{{ event.message }}</div><div class="case-event-meta">{{ event.type }} · {{ event.source }}</div></el-timeline-item></el-timeline>
+        <section class="case-timeline" :aria-label="t('cases.timeline')" :aria-busy="timelineLoading">
+          <p v-if="timelineLoading" role="status">{{ t('common.loading') }}</p>
+          <ActionFeedback :error="timelineError" />
+          <el-button v-if="timelineError" @click="loadTimeline">{{ t('common.retry') }}</el-button>
+          <p v-else-if="!timelineLoading && !timeline.length" class="dialog-hint">{{ t('cases.emptyTimeline') }}</p>
+          <el-timeline v-else><el-timeline-item v-for="(event, index) in timeline" :key="index" :timestamp="d(event.ts)" placement="top"><div>{{ event.message }}</div><div class="case-event-meta">{{ event.type }} · {{ event.source }}</div></el-timeline-item></el-timeline>
+          <PagerBar v-if="timelineTotal" v-model:current-page="timelinePage" v-model:page-size="timelineSize" :total="timelineTotal" />
+        </section>
       </template>
     </el-drawer>
   </div>
 </template>
+
+<style scoped>
+.case-timeline :deep(.el-pagination) {
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  row-gap: 8px;
+}
+</style>
