@@ -38,19 +38,53 @@ def real_token():
     return _TOKEN["t"]
 
 
+def encoded(value):
+    return base64.urlsafe_b64encode(
+        json.dumps(value, separators=(",", ":")).encode()
+    ).rstrip(b"=").decode()
+
+
+def decode_jwk_integer(value):
+    padding = "=" * (-len(value) % 4)
+    return int.from_bytes(base64.urlsafe_b64decode(value + padding), "big")
+
+
+def rsa_signature(signing_input, jwk):
+    """Create an RS256 PKCS#1 v1.5 signature from a disposable private JWK.
+
+    The slice verifier intentionally has no third-party Python dependencies.
+    CI already generates this short-lived key, so integer RSA signing keeps the
+    executable contract aligned with the gateway without persisting key files.
+    """
+    modulus = decode_jwk_integer(jwk["n"])
+    private_exponent = decode_jwk_integer(jwk["d"])
+    size = (modulus.bit_length() + 7) // 8
+    digest_info = bytes.fromhex("3031300d060960864801650304020105000420")
+    encoded_digest = digest_info + hashlib.sha256(signing_input).digest()
+    padding_length = size - len(encoded_digest) - 3
+    if padding_length < 8:
+        raise ValueError("RSA key is too small for an RS256 signature")
+    message = b"\x00\x01" + (b"\xff" * padding_length) + b"\x00" + encoded_digest
+    signature = pow(int.from_bytes(message, "big"), private_exponent, modulus)
+    return signature.to_bytes(size, "big")
+
+
 def tenant_token(tenant):
     """Return a valid token whose signed tenant claim matches the test tenant.
 
     Browser login intentionally issues the user's home tenant (``default``),
-    while this contract test needs two tenants.  When the CI/local HMAC secret
-    is available, mint short-lived test tokens with the same issuer and claims
-    as the gateway.  In dev-bypass mode the normal session token is sufficient
-    because the gateway resolves the tenant from ``X-Tenant-Id``.
+    while this contract test needs two tenants.  When a CI/local signing
+    credential is available, mint short-lived tokens with the same claims
+    as the gateway.  Integration CI uses its disposable RSA JWK; local HMAC
+    remains supported for the development slice.  In dev-bypass mode the
+    normal session token is sufficient because the gateway resolves the tenant
+    from ``X-Tenant-Id``.
     """
     if tenant in _TENANT_TOKENS:
         return _TENANT_TOKENS[tenant]
+    signing_jwk = os.getenv("SOCP_AUTH_SIGNING_JWK")
     secret = os.getenv("SOCP_JWT_SECRET") or os.getenv("SOCP_LOGIN_SECRET")
-    if not secret or tenant == "default":
+    if (not signing_jwk and not secret) or tenant == "default":
         token = real_token()
     else:
         now = int(time.time())
@@ -60,25 +94,28 @@ def tenant_token(tenant):
             if value.strip()
         ]
 
-        def encoded(value):
-            return base64.urlsafe_b64encode(
-                json.dumps(value, separators=(",", ":")).encode()
-            ).rstrip(b"=").decode()
-
-        header = encoded({"alg": "HS256", "typ": "JWT"})
+        jwk = json.loads(signing_jwk) if signing_jwk else None
+        header = encoded({
+            "alg": "RS256" if jwk else "HS256",
+            "typ": "JWT",
+            **({"kid": jwk["kid"]} if jwk else {}),
+        })
         payload = encoded({
             "sub": "verify-slice",
-            "iss": "socp-gateway",
+            "jti": str(uuid.uuid4()),
+            "iss": os.getenv("SOCP_AUTH_ISSUER", "socp-gateway"),
             "aud": audiences,
             "tenant": tenant,
             "role": "analyst",
+            "locale": "zh-CN",
+            "identity_type": "user",
             "iat": now,
             "exp": now + 600,
         })
         signing_input = f"{header}.{payload}".encode()
-        signature = base64.urlsafe_b64encode(
-            hmac.new(secret.encode(), signing_input, hashlib.sha256).digest()
-        ).rstrip(b"=").decode()
+        raw_signature = (rsa_signature(signing_input, jwk) if jwk else
+                         hmac.new(secret.encode(), signing_input, hashlib.sha256).digest())
+        signature = base64.urlsafe_b64encode(raw_signature).rstrip(b"=").decode()
         token = f"{header}.{payload}.{signature}"
     _TENANT_TOKENS[tenant] = token
     return token

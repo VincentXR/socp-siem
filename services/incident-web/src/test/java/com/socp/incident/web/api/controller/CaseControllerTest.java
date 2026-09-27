@@ -104,6 +104,31 @@ class CaseControllerTest {
     }
 
     @Test
+    void getReturnsTheCaseDirectlyAndMissingIsNotFound() throws Exception {
+        Case incident = Case.create("SSH investigation", "203.0.113.10", "HIGH", "analyst");
+        given(service.get(incident.id())).willReturn(incident);
+
+        mvc.perform(get("/api/v1/incidents/{id}", incident.id()).header("Authorization", BEARER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(incident.id()))
+                .andExpect(jsonPath("$.data.found").doesNotExist());
+        mvc.perform(get("/api/v1/incidents/{id}", "missing").header("Authorization", BEARER))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void reverseLooksUpCaseByAlarmWithoutScanningAListPage() throws Exception {
+        Case incident = Case.create("SSH investigation", "203.0.113.10", "HIGH", "analyst");
+        given(service.findByAlarmId("alarm-outside-page")).willReturn(incident);
+
+        mvc.perform(get("/api/v1/incidents/by-alarm")
+                        .header("Authorization", BEARER)
+                        .param("alarmId", "alarm-outside-page"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(incident.id()));
+    }
+
+    @Test
     void listRejectsZeroSize() throws Exception {
         mvc.perform(get("/api/v1/incidents")
                         .header("Authorization", BEARER)

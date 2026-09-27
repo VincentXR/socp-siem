@@ -30,6 +30,9 @@ class CiCredentialsTest(unittest.TestCase):
             self.assertGreaterEqual(len(first[name].encode()), 32)
             self.assertNotEqual(first[name], second[name])
         self.assertEqual(first["SOCP_JWT_SECRET"], first["SOCP_LOGIN_SECRET"])
+        self.assertEqual(first["SOCP_SECURITY_ISSUER_URI"], first["SOCP_AUTH_ISSUER"])
+        self.assertEqual(first["SOCP_SECURITY_JWK_SET_URI"],
+                         "http://127.0.0.1:18092/.well-known/socp-jwks.json")
         self.assertEqual(first["SOCP_PG_PASSWORD"], first["SOCP_PG_RUNTIME_PASSWORD"])
         self.assertNotEqual(first["SOCP_PG_RUNTIME_PASSWORD"], first["SOCP_PG_MIGRATION_PASSWORD"])
         self.assertEqual(first["PIPELINE_CK_AUTH"], "default:" + first["SOCP_CK_PASSWORD"])

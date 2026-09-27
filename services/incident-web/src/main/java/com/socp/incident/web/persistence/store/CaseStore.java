@@ -8,8 +8,12 @@ import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.domain.TimelineEvent;
 import com.socp.incident.web.persistence.entity.CaseEntity;
 import com.socp.incident.web.persistence.entity.CaseTimelineEntity;
+import com.socp.incident.web.persistence.entity.AlarmCaseLinkEntity;
+import com.socp.incident.web.persistence.entity.CaseRuleLinkEntity;
 import com.socp.incident.web.persistence.repository.CaseRepository;
 import com.socp.incident.web.persistence.repository.CaseTimelineRepository;
+import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
+import com.socp.incident.web.persistence.repository.CaseRuleLinkRepository;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -26,6 +30,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.Map;
+import java.util.LinkedHashMap;
 
 /** Tenant-scoped case persistence with an append-only normalized timeline. */
 @Component
@@ -33,20 +39,29 @@ public class CaseStore {
 
     private final CaseRepository repo;
     private final CaseTimelineRepository timelineRepo;
+    private final AlarmCaseLinkRepository alarmLinkRepo;
+    private final CaseRuleLinkRepository ruleLinkRepo;
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-    private static final List<String> OPEN_STATUSES = List.of("OPEN", "INVESTIGATING");
+    private static final List<String> OPEN_STATUSES = List.of("OPEN", "INVESTIGATING", "CONTAINED");
 
     /** Compatibility constructor for focused unit tests without JPA timeline wiring. */
     public CaseStore(CaseRepository repo) {
-        this(repo, null);
+        this(repo, null, null, null);
+    }
+
+    public CaseStore(CaseRepository repo, CaseTimelineRepository timelineRepo) {
+        this(repo, timelineRepo, null, null);
     }
 
     @Autowired
-    public CaseStore(CaseRepository repo, CaseTimelineRepository timelineRepo) {
+    public CaseStore(CaseRepository repo, CaseTimelineRepository timelineRepo,
+                     AlarmCaseLinkRepository alarmLinkRepo, CaseRuleLinkRepository ruleLinkRepo) {
         this.repo = repo;
         this.timelineRepo = timelineRepo;
+        this.alarmLinkRepo = alarmLinkRepo;
+        this.ruleLinkRepo = ruleLinkRepo;
     }
 
     @Transactional
@@ -54,7 +69,13 @@ public class CaseStore {
         String tenant = tenant();
         CaseEntity entity = toEntity(c);
         entity.setTenantId(tenant);
+        if (alarmLinkRepo != null && ruleLinkRepo != null) {
+            entity.setAlarmIdsJson("[]");
+            entity.setRuleIdsJson("[]");
+            entity.setTimelineJson("[]");
+        }
         repo.save(entity);
+        persistAssociations(c, tenant);
         if (timelineRepo != null) {
             for (TimelineEvent event : c.timeline()) {
                 CaseTimelineEntity row = toTimelineEntity(c.id(), event, tenant);
@@ -81,8 +102,23 @@ public class CaseStore {
                 Sort.by(Sort.Order.desc("updatedAt"), Sort.Order.asc("id")));
         String normalizedQuery = query == null ? "" : query.trim();
         String normalizedStatus = status == null ? "" : status.trim();
-        return repo.searchByTenantId(tenant(), normalizedQuery, normalizedStatus, pageable)
-                .map(entity -> fromEntity(entity, false));
+        String tenant = tenant();
+        Page<CaseEntity> entities = repo.searchByTenantId(tenant, normalizedQuery, normalizedStatus, pageable);
+        if (entities.isEmpty() || alarmLinkRepo == null || ruleLinkRepo == null) {
+            return entities.map(entity -> fromEntity(entity, false));
+        }
+        List<String> ids = entities.getContent().stream().map(CaseEntity::getId).toList();
+        Map<String, List<String>> alarms = new LinkedHashMap<>();
+        alarmLinkRepo.findByTenantIdAndCaseIdIn(tenant, ids).forEach(link ->
+                alarms.computeIfAbsent(link.getCaseId(), ignored -> new ArrayList<>()).add(link.getAlarmId()));
+        alarms.values().forEach(values -> values.sort(String::compareTo));
+        Map<String, List<String>> rules = new LinkedHashMap<>();
+        ruleLinkRepo.findByTenantIdAndCaseIdIn(tenant, ids).forEach(link ->
+                rules.computeIfAbsent(link.getCaseId(), ignored -> new ArrayList<>()).add(link.getRuleId()));
+        rules.values().forEach(values -> values.sort(String::compareTo));
+        return entities.map(entity -> fromEntity(entity, false,
+                rules.getOrDefault(entity.getId(), legacyRules(entity)),
+                alarms.getOrDefault(entity.getId(), legacyAlarms(entity))));
     }
 
     public long count() {
@@ -98,9 +134,9 @@ public class CaseStore {
     }
 
     public String openCaseId(String entity) {
-        if (entity == null) return null;
-        List<CaseEntity> open = repo.findByTenantIdAndEntityAndStatusIn(tenant(), entity, OPEN_STATUSES);
-        return open.isEmpty() ? null : open.get(0).getId();
+        if (entity == null || entity.isBlank()) return null;
+        return repo.findFirstByTenantIdAndEntityAndStatusInOrderByUpdatedAtDescIdAsc(
+                tenant(), entity, OPEN_STATUSES).map(CaseEntity::getId).orElse(null);
     }
 
     /** Append one event by unique key; no JSON read-modify-write is involved. */
@@ -167,8 +203,13 @@ public class CaseStore {
     }
 
     private Case fromEntity(CaseEntity entity, boolean includeTimeline) {
-        List<String> ruleIds = readList(entity.getRuleIdsJson(), new TypeReference<>() { });
-        List<String> alarmIds = readList(entity.getAlarmIdsJson(), new TypeReference<>() { });
+        return fromEntity(entity, includeTimeline, null, null);
+    }
+
+    private Case fromEntity(CaseEntity entity, boolean includeTimeline,
+                            List<String> suppliedRules, List<String> suppliedAlarms) {
+        List<String> ruleIds = suppliedRules == null ? normalizedRules(entity) : suppliedRules;
+        List<String> alarmIds = suppliedAlarms == null ? normalizedAlarms(entity) : suppliedAlarms;
         List<TimelineEvent> timeline = List.of();
         if (includeTimeline) {
             timeline = timelineRepo == null ? null : timelineRepo
@@ -211,6 +252,71 @@ public class CaseStore {
     private static TimelineEvent fromTimelineEntity(CaseTimelineEntity entity) {
         return new TimelineEvent(entity.getTs(), entity.getType(), entity.getMessage(), entity.getSource(),
                 entity.getAlarmId(), entity.getEventKey());
+    }
+
+    private void persistAssociations(Case incident, String tenant) {
+        if (alarmLinkRepo == null || ruleLinkRepo == null) return;
+        Instant now = Instant.now();
+        for (String alarmId : incident.alarmIds()) {
+            if (alarmId == null || alarmId.isBlank()
+                    || alarmLinkRepo.findByTenantIdAndAlarmId(tenant, alarmId).isPresent()) continue;
+            AlarmCaseLinkEntity link = new AlarmCaseLinkEntity();
+            link.setId(UUID.nameUUIDFromBytes((tenant + "\u0000" + alarmId)
+                    .getBytes(StandardCharsets.UTF_8)).toString());
+            link.setTenantId(tenant);
+            link.setAlarmId(alarmId);
+            link.setCaseId(incident.id());
+            link.setCreatedAt(now);
+            alarmLinkRepo.save(link);
+        }
+        var existingRules = ruleLinkRepo.findByTenantIdAndCaseIdOrderByRuleIdAsc(tenant, incident.id()).stream()
+                .map(CaseRuleLinkEntity::getRuleId)
+                .collect(java.util.stream.Collectors.toSet());
+        for (String ruleId : incident.ruleIds()) {
+            if (ruleId == null || ruleId.isBlank() || existingRules.contains(ruleId)) continue;
+            CaseRuleLinkEntity link = new CaseRuleLinkEntity();
+            link.setId(stableLinkId(tenant, incident.id(), ruleId));
+            link.setTenantId(tenant);
+            link.setCaseId(incident.id());
+            link.setRuleId(ruleId);
+            link.setCreatedAt(now);
+            ruleLinkRepo.save(link);
+        }
+    }
+
+    private List<String> normalizedAlarms(CaseEntity entity) {
+        if (alarmLinkRepo != null) {
+            List<String> ids = alarmLinkRepo
+                    .findByTenantIdAndCaseIdOrderByAlarmIdAsc(entity.getTenantId(), entity.getId()).stream()
+                    .map(AlarmCaseLinkEntity::getAlarmId).toList();
+            if (!ids.isEmpty()) return ids;
+        }
+        return legacyAlarms(entity);
+    }
+
+    private List<String> normalizedRules(CaseEntity entity) {
+        if (ruleLinkRepo != null) {
+            List<String> ids = ruleLinkRepo
+                    .findByTenantIdAndCaseIdOrderByRuleIdAsc(entity.getTenantId(), entity.getId()).stream()
+                    .map(CaseRuleLinkEntity::getRuleId).toList();
+            if (!ids.isEmpty()) return ids;
+        }
+        return legacyRules(entity);
+    }
+
+    private static List<String> legacyAlarms(CaseEntity entity) {
+        List<String> legacy = readList(entity.getAlarmIdsJson(), new TypeReference<>() { });
+        return legacy == null ? List.of() : legacy;
+    }
+
+    private static List<String> legacyRules(CaseEntity entity) {
+        List<String> legacy = readList(entity.getRuleIdsJson(), new TypeReference<>() { });
+        return legacy == null ? List.of() : legacy;
+    }
+
+    private static String stableLinkId(String tenant, String caseId, String value) {
+        return UUID.nameUUIDFromBytes((tenant + "\u0000" + caseId + "\u0000" + value)
+                .getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     private static String writeJson(Object value) {

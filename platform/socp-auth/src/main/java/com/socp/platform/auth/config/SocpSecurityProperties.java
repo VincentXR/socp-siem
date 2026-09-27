@@ -12,7 +12,7 @@ import java.util.stream.Collectors;
  * 鉴权配置（application.yml 前缀 socp.security）。
  *
  * 三种模式，按优先级判定：
- *  1. jwk-set-uri / issuer-uri 存在 → 非对称签名（RS256/ES256），走 Keycloak JWKS 远程公钥；
+ *  1. jwk-set-uri / issuer-uri 存在 → 非对称签名（RS256/ES256），走平台或外部 IdP 的 JWKS 公钥；
  *  2. jwt-secret 存在            → 对称签名（HS256），开发/单机环境用；
  *  3. 两者都缺                    → dev-bypass 自动置 true，只校验 Bearer 非空（保留 demo-token 演示流）。
  *
@@ -22,7 +22,7 @@ import java.util.stream.Collectors;
 @ConfigurationProperties(prefix = "socp.security")
 public class SocpSecurityProperties {
 
-    /** OIDC 签发者，例如 http://localhost:8180/realms/socp；未显式配 jwk-set-uri 时按 Keycloak 约定拼 JWKS 地址 */
+    /** JWT 签发者；生产 SOCP 会话使用平台 Gateway issuer，外部 OIDC provider 在 Gateway 单独配置。 */
     private String issuerUri;
 
     /** JWKS 公钥端点；配置后优先于 issuer-uri 推导的地址 */
@@ -103,7 +103,7 @@ public class SocpSecurityProperties {
                 .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
-    /** 实际生效的 JWKS 地址：显式 jwk-set-uri 优先，否则按 Keycloak 约定从 issuer-uri 推导 */
+    /** 实际生效的 JWKS 地址：生产必须显式配置 jwk-set-uri；推导规则仅保留兼容性。 */
     public String resolveJwkSetUri() {
         if (notBlank(jwkSetUri)) {
             return jwkSetUri.trim();

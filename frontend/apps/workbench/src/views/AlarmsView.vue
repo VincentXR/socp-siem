@@ -26,7 +26,7 @@ import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { relTime } from '../lib/ui'
 import { listRuleOptions, SEVERITIES, type Alarm, type RuleOption } from '../api'
 import { useLatestRequest } from '../composables/useLatestRequest'
-import { batchUpdateAlarmDisposition } from '../api/alarms'
+import { batchUpdateAlarmDisposition, getAlarm } from '../api/alarms'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
 
@@ -47,6 +47,7 @@ const props = defineProps<{
   goSoar?: (alarmId: string) => void
   assigneeOptions?: string[]
   canWrite?: boolean
+  canAdmin?: boolean
 }>()
 
 const { t } = useI18n()
@@ -74,6 +75,9 @@ const ruleCatalogLoading = ref(false)
 const ruleCatalogError = ref('')
 const route = useRoute()
 const router = useRouter()
+const deepLinkRequests = useLatestRequest()
+const deepLinkLoading = ref(false)
+const deepLinkError = ref('')
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('alarms')
 const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
 
@@ -139,21 +143,43 @@ async function handleBatchUpdate(): Promise<void> {
   }
 }
 
-function syncAlarmFromRoute(): void {
+async function syncAlarmFromRoute(): Promise<void> {
   const id = typeof route.query.alarmId === 'string' ? route.query.alarmId : ''
   if (!id) {
+    deepLinkRequests.cancel()
+    deepLinkLoading.value = false
+    deepLinkError.value = ''
     currentAlarm.value = null
     drawerVisible.value = false
     return
   }
   const alarm = props.filteredAlarms.find(item => item.id === id)
   if (alarm) {
+    deepLinkRequests.cancel()
+    deepLinkLoading.value = false
+    deepLinkError.value = ''
     currentAlarm.value = alarm
     drawerVisible.value = true
+    return
+  }
+  if (currentAlarm.value?.id === id && drawerVisible.value) return
+  const request = deepLinkRequests.start()
+  deepLinkLoading.value = true
+  deepLinkError.value = ''
+  currentAlarm.value = null
+  try {
+    const loaded = await getAlarm(id, { signal: request.signal })
+    if (!request.isCurrent()) return
+    currentAlarm.value = loaded
+    drawerVisible.value = true
+  } catch (error) {
+    if (request.isCurrent()) deepLinkError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    if (request.isCurrent()) deepLinkLoading.value = false
   }
 }
 
-watch(() => [route.query.alarmId, props.filteredAlarms] as const, syncAlarmFromRoute, { immediate: true, deep: true })
+watch(() => [route.query.alarmId, props.filteredAlarms] as const, () => { void syncAlarmFromRoute() }, { immediate: true, deep: true })
 watch(drawerVisible, visible => {
   if (!visible && route.query.alarmId) {
     const query = { ...route.query }
@@ -227,6 +253,11 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
       <span>{{ props.error }}</span>
       <el-button size="small" @click="props.loadPage">{{ t('common.refresh') }}</el-button>
     </div>
+    <div v-if="deepLinkLoading" class="alarm-feedback" role="status">{{ t('common.loading') }}</div>
+    <div v-else-if="deepLinkError" class="alarm-feedback error" role="alert">
+      <strong>{{ t('alarms.loadFailed') }}</strong><span>{{ deepLinkError }}</span>
+      <el-button size="small" @click="syncAlarmFromRoute">{{ t('common.retry') }}</el-button>
+    </div>
 
     <el-card shadow="never" class="alarm-table-card">
       <el-table v-loading="props.loading" :data="props.filteredAlarms" class="alarm-table" height="100%" size="small" row-key="id" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="handleSortChange" @row-click="openAlarmRow" @selection-change="handleSelectionChange">
@@ -248,6 +279,6 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
 
     <PagerBar class="alarm-pagination" v-model:current-page="pageNum" v-model:page-size="pageSize" :total="props.alarmPageData.total" :page-sizes="[10, 20, 50, 100]" />
 
-    <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :go-ai="props.goAi" :go-soar="props.goSoar" :assignee-options="props.assigneeOptions" :can-write="props.canWrite" @updated="props.loadPage" />
+    <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :go-ai="props.goAi" :go-soar="props.goSoar" :assignee-options="props.assigneeOptions" :can-write="props.canWrite" :can-admin="props.canAdmin" @updated="props.loadPage" />
   </div>
 </template>

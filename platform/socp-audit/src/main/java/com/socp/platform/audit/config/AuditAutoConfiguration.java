@@ -1,14 +1,21 @@
 package com.socp.platform.audit.config;
+
+import com.socp.platform.audit.sink.AuditKafkaRuntime;
+import com.socp.platform.audit.sink.AuditOutboxPublisher;
 import com.socp.platform.audit.sink.InMemoryAuditSink;
+import com.socp.platform.audit.sink.JdbcAuditOutboxSink;
 import com.socp.platform.audit.sink.KafkaAuditSink;
 import com.socp.platform.audit.spi.AuditSink;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -17,13 +24,12 @@ import java.util.Map;
  *  - memory（默认，本地切片）：InMemoryAuditSink
  *  - kafka（Docker 环境）：KafkaAuditSink → socp-audit topic
  *
- * 【重要】spring-kafka 在本模块是 optional 依赖，本地切片运行时不在 classpath。
- * 因此 KafkaTemplate 绝不能出现在外层配置类的方法签名上——Spring 在做条件评估时会
- * 反射内省该类的全部方法，缺类会直接抛 NoClassDefFoundError 导致启动失败。
- * 正确做法：把涉及 Kafka 的 @Bean 收进嵌套静态配置类，并用 @ConditionalOnClass 守卫；
- * 该注解基于 ASM 读字节码元数据判定，不会触发类加载。
+ * 【重要】Kafka/JDBC beans live in a guarded nested configuration so the
+ * memory sink stays independent of infrastructure beans and stateless services
+ * can retain direct Kafka delivery when they have no transaction to join.
  */
 @Configuration
+@EnableScheduling
 public class AuditAutoConfiguration {
 
     @Bean
@@ -60,12 +66,31 @@ public class AuditAutoConfiguration {
         }
 
         @Bean
-        public AuditSink kafkaAuditSink(
+        public AuditKafkaRuntime auditKafkaRuntime(
+                ObjectProvider<org.springframework.jdbc.core.JdbcTemplate> jdbcProvider,
+                ObjectProvider<org.springframework.transaction.PlatformTransactionManager> transactionManagerProvider,
                 @Qualifier("auditKafkaTemplate")
                 org.springframework.kafka.core.KafkaTemplate<String, String> template,
                 @Value("${socp.audit.topic:socp-audit}") String topic,
-                @Value("${socp.audit.fail-closed:false}") boolean failClosed) {
-            return new KafkaAuditSink(template, topic, failClosed);
+                @Value("${socp.audit.fail-closed:false}") boolean failClosed,
+                @Value("${socp.audit.outbox.batch-size:100}") int batchSize,
+                @Value("${socp.audit.outbox.max-attempts:0}") int maxAttempts,
+                @Value("${socp.audit.outbox.claim-timeout:PT5M}") String claimTimeout) {
+            org.springframework.jdbc.core.JdbcTemplate jdbc = jdbcProvider.getIfAvailable();
+            org.springframework.transaction.PlatformTransactionManager transactionManager =
+                    transactionManagerProvider.getIfAvailable();
+            if (jdbc != null && transactionManager != null) {
+                JdbcAuditOutboxSink sink = new JdbcAuditOutboxSink(jdbc);
+                AuditOutboxPublisher publisher = new AuditOutboxPublisher(jdbc, transactionManager,
+                        template, topic, batchSize, maxAttempts, Duration.parse(claimTimeout));
+                return new AuditKafkaRuntime(sink, publisher);
+            }
+            return new AuditKafkaRuntime(new KafkaAuditSink(template, topic, failClosed), null);
+        }
+
+        @Bean
+        public AuditSink kafkaAuditSink(AuditKafkaRuntime runtime) {
+            return runtime.sink();
         }
     }
 }

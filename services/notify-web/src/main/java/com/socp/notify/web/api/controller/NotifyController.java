@@ -48,8 +48,11 @@ public class NotifyController {
     @GetMapping("/channels")
     public ApiResult<PageResponse<Channel>> channels(@RequestParam(defaultValue = "1") int page,
                                                      @RequestParam(defaultValue = "500") int size) {
+        if (size == 0) {
+            if (page < 1) throw ApiException.badRequest("分页参数非法：page 从 1 起，size 上限 " + maxListSize);
+            return ApiResult.ok(PageResponse.of(List.of(), channels.count(), page, size));
+        }
         requireValidRange(page, size);
-        if (size == 0) return ApiResult.ok(PageResponse.of(List.of(), channels.count(), page, size));
         var result = channels.list(page, size);
         return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(), page, size));
     }
@@ -120,14 +123,13 @@ public class NotifyController {
     public ApiResult<PageResponse<Map<String, Object>>> log(@RequestParam(defaultValue = "1") int page,
                                                             @RequestParam(defaultValue = "500") int size) {
         requireValidRange(page, size);
-        List<Map<String, Object>> all = dispatcher.log();
-        int from = (int) Math.min((long) (page - 1) * size, all.size());
-        int to = Math.min(from + size, all.size());
-        return ApiResult.ok(PageResponse.of(all.subList(from, to), all.size(), page, size));
+        var result = dispatcher.log(org.springframework.data.domain.PageRequest.of(page - 1, size));
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                page, size, result.getTotalPages()));
     }
 
     private void requireValidRange(int page, int size) {
-        if (page < 1 || size < 0 || size > maxListSize || (long) (page - 1) * size > Integer.MAX_VALUE) {
+        if (page < 1 || size < 1 || size > maxListSize || (long) (page - 1) * size > Integer.MAX_VALUE) {
             throw ApiException.badRequest("分页参数非法：page 从 1 起，size 上限 " + maxListSize);
         }
     }

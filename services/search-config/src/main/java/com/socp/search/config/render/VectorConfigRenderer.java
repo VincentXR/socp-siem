@@ -187,6 +187,14 @@ public class VectorConfigRenderer {
                 # 采集时刻：SEARCH 仅在正文解析不出时间戳时兜底
                 .ingested_at = format_timestamp!(now(), format: "%%+")
 
+                # 在 HTTP sink 的磁盘缓冲之前分配逻辑事件 ID。Vector 对响应丢失、
+                # 503 和进程重启重放的是同一条已变换事件，因此重试复用该 ID，
+                # SEARCH 的 (tenant,eventId) 唯一边界可把重投识别为 duplicate。
+                # 已携带厂商/上游 event id 的事件保持原值。
+                if !exists(.eventId) && !exists(.event.id) && !exists(.event_id) {
+                  .eventId = uuid_v4()
+                }
+
                 # SEARCH 解析标注（ingest 侧按此选择解析方式；Vector 不解析正文）
                 .source_id = "%s"
                 .collector_tag = "%s"
@@ -231,7 +239,8 @@ public class VectorConfigRenderer {
                 batch.max_events = 100
                 batch.timeout_secs = 2
 
-                # SEARCH 队列满回 503 + Retry-After，Vector 退避重投不丢数据
+                # SEARCH 队列满或响应丢失时重投；eventId 已在 buffer 前生成，
+                # 所以重投不会变成新的逻辑事件。
                 request.retry_attempts = 5
                 request.retry_backoff_secs = 2
                 request.timeout_secs = 30

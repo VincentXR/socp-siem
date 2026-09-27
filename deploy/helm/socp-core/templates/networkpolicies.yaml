@@ -54,6 +54,10 @@ spec:
           port: 8080
         - protocol: TCP
           port: 8123
+        - protocol: TCP
+          port: 7233
+        - protocol: TCP
+          port: 9000
     {{- with .Values.networkPolicy.additionalEgress }}
     {{- toYaml . | nindent 4 }}
     {{- end }}

@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -73,7 +74,7 @@ class NotificationDispatcherTest {
         Channel selected = new Channel("test", "Selected", "WEBHOOK", "http://fixture.invalid", false, "");
         var started = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);
-        given(http.postExternalOnce(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt())).willAnswer(call -> {
+        given(http.postExternalOnce(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyMap())).willAnswer(call -> {
             started.countDown();
             assertTrue(release.await(3, java.util.concurrent.TimeUnit.SECONDS));
             return ok();
@@ -94,7 +95,8 @@ class NotificationDispatcherTest {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-1", "Ops", "WEBHOOK", "http://ops", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
-        given(http.postExternalOnce(eq("http://ops"), any(), eq(SocpHttpClient.JSON), eq(3000)))
+        ArgumentCaptor<Map<String, String>> headers = ArgumentCaptor.forClass(Map.class);
+        given(http.postExternalOnce(eq("http://ops"), any(), eq(SocpHttpClient.JSON), eq(3000), headers.capture()))
                 .willReturn(ok());
         NotificationDispatcher dispatcher = dispatcher();
 
@@ -104,6 +106,10 @@ class NotificationDispatcherTest {
         verify(deliveries).claim("AL-1", "CH-1");
         verify(deliveries).finish(eq("AL-1"), eq("CH-1"), eq("token"),
                 org.mockito.ArgumentMatchers.contains("\"status\":\"sent\""), eq(true));
+        String expectedDeliveryId = UUID.nameUUIDFromBytes(
+                "tenant-a\u0000AL-1\u0000CH-1".getBytes(StandardCharsets.UTF_8)).toString();
+        assertEquals(expectedDeliveryId, headers.getValue().get("Idempotency-Key"));
+        assertEquals(expectedDeliveryId, headers.getValue().get("X-SOCP-Delivery-Id"));
     }
 
     @Test
@@ -118,7 +124,7 @@ class NotificationDispatcherTest {
         assertEquals(0, result.get("failed"));
         List<?> channelResults = (List<?>) result.get("results");
         assertEquals("logged", ((Map<?, ?>) channelResults.getFirst()).get("status"));
-        verify(http, never()).postExternalOnce(any(), any(), any(), any(Integer.class));
+        verify(http, never()).postExternalOnce(any(), any(), any(), any(Integer.class), org.mockito.ArgumentMatchers.anyMap());
         verify(deliveries).finish(any(), any(), eq("token"), any(), eq(true));
     }
 
@@ -134,7 +140,7 @@ class NotificationDispatcherTest {
 
         List<?> channelResults = (List<?>) result.get("results");
         assertTrue((Boolean) ((Map<?, ?>) channelResults.getFirst()).get("duplicate"));
-        verify(http, never()).postExternalOnce(any(), any(), any(), any(Integer.class));
+        verify(http, never()).postExternalOnce(any(), any(), any(), any(Integer.class), org.mockito.ArgumentMatchers.anyMap());
     }
 
     @Test
@@ -142,7 +148,7 @@ class NotificationDispatcherTest {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-1", "Ops", "WEBHOOK", "http://ops", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
-        given(http.postExternalOnce(eq("http://ops"), any(), eq(SocpHttpClient.JSON), eq(3000)))
+        given(http.postExternalOnce(eq("http://ops"), any(), eq(SocpHttpClient.JSON), eq(3000), org.mockito.ArgumentMatchers.anyMap()))
                 .willReturn(new ServiceCall(SocpService.NOTIFY, "http://ops", false,
                         503, "", "unavailable", 1, true, 1));
         NotificationDispatcher dispatcher = dispatcher();
@@ -166,7 +172,7 @@ class NotificationDispatcherTest {
         List<?> results = (List<?>) result.get("results");
         assertEquals("failed", ((Map<?, ?>) results.getFirst()).get("status"));
         verify(deliveries, never()).finish(any(), any(), any(), any(), eq(true));
-        verify(http, never()).postExternalOnce(any(), any(), any(), any(Integer.class));
+        verify(http, never()).postExternalOnce(any(), any(), any(), any(Integer.class), org.mockito.ArgumentMatchers.anyMap());
     }
 
     @Test
@@ -197,7 +203,7 @@ class NotificationDispatcherTest {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-NULL", "Ops", "WEBHOOK", "http://ops", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
-        given(http.postExternalOnce(eq("http://ops"), any(), eq(SocpHttpClient.JSON), eq(3000)))
+        given(http.postExternalOnce(eq("http://ops"), any(), eq(SocpHttpClient.JSON), eq(3000), org.mockito.ArgumentMatchers.anyMap()))
                 .willReturn(null);
 
         Map<String, Object> result = dispatcher().dispatch(Map.of("id", "AL-NULL"));
@@ -214,7 +220,7 @@ class NotificationDispatcherTest {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-ERR", "Ops", "WEBHOOK", "http://ops", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
-        given(http.postExternalOnce(eq("http://ops"), any(), eq(SocpHttpClient.JSON), eq(3000)))
+        given(http.postExternalOnce(eq("http://ops"), any(), eq(SocpHttpClient.JSON), eq(3000), org.mockito.ArgumentMatchers.anyMap()))
                 .willThrow(new IllegalStateException("connector down"));
 
         Map<String, Object> result = dispatcher().dispatch(Map.of("id", "AL-ERR"));
@@ -232,7 +238,7 @@ class NotificationDispatcherTest {
         Channel channel = new Channel("CH-SLACK", "Slack", "SLACK", "http://slack", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
         ArgumentCaptor<String> payload = ArgumentCaptor.forClass(String.class);
-        given(http.postExternalOnce(eq("http://slack"), payload.capture(), eq(SocpHttpClient.JSON), eq(3000)))
+        given(http.postExternalOnce(eq("http://slack"), payload.capture(), eq(SocpHttpClient.JSON), eq(3000), org.mockito.ArgumentMatchers.anyMap()))
                 .willReturn(ok());
 
         Map<String, Object> result = dispatcher().dispatch(Map.of(
@@ -252,7 +258,7 @@ class NotificationDispatcherTest {
         Channel channel = new Channel("CH-OTHER", "Other", "PAGER", "http://pager", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
         String longBody = "x".repeat(400);
-        given(http.postExternalOnce(eq("http://pager"), any(), eq(SocpHttpClient.JSON), eq(3000)))
+        given(http.postExternalOnce(eq("http://pager"), any(), eq(SocpHttpClient.JSON), eq(3000), org.mockito.ArgumentMatchers.anyMap()))
                 .willReturn(new ServiceCall(SocpService.NOTIFY, "http://pager", false,
                         500, longBody, "remote failure", 1, true, 1));
 
@@ -263,7 +269,7 @@ class NotificationDispatcherTest {
         assertTrue(String.valueOf(channelResult.get("detail")).endsWith("..."));
         verify(http).postExternalOnce(eq("http://pager"),
                 org.mockito.ArgumentMatchers.argThat(body -> body.contains("\"alarm\"")),
-                eq(SocpHttpClient.JSON), eq(3000));
+                eq(SocpHttpClient.JSON), eq(3000), org.mockito.ArgumentMatchers.anyMap());
     }
 
     @Test
@@ -312,7 +318,7 @@ class NotificationDispatcherTest {
         assertEquals(1, result.get("failed"));
         assertTrue(String.valueOf(((Map<?, ?>) ((List<?>) result.get("results")).getFirst()).get("errorCode"))
                 .contains("NOTIFY_RECEIPT_INVALID"));
-        verify(http, never()).postExternalOnce(any(), any(), any(), any(Integer.class));
+        verify(http, never()).postExternalOnce(any(), any(), any(), any(Integer.class), org.mockito.ArgumentMatchers.anyMap());
     }
 
     @Test
@@ -351,7 +357,7 @@ class NotificationDispatcherTest {
         given(channels.enabled()).willReturn(List.of(channel));
         var release = new java.util.concurrent.CountDownLatch(1);
         var finished = new java.util.concurrent.CountDownLatch(1);
-        given(http.postExternalOnce(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt())).willAnswer(call -> {
+        given(http.postExternalOnce(any(), any(), any(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyMap())).willAnswer(call -> {
             assertTrue(release.await(8, java.util.concurrent.TimeUnit.SECONDS));
             return ok();
         });

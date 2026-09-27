@@ -1,0 +1,135 @@
+# Full SOC product profile layered on values-production.yaml. The default
+# chart intentionally remains the six-workload event-path core; this profile
+# adds every gateway-advertised domain so the Workbench cannot expose routes
+# that have no production workload behind them.
+
+images:
+  soarWeb: { repository: "", digest: "", pullPolicy: IfNotPresent }
+  reportWeb: { repository: "", digest: "", pullPolicy: IfNotPresent }
+  assetWeb: { repository: "", digest: "", pullPolicy: IfNotPresent }
+  socBase: { repository: "", digest: "", pullPolicy: IfNotPresent }
+  hipsWeb: { repository: "", digest: "", pullPolicy: IfNotPresent }
+  aiAssistant: { repository: "", digest: "", pullPolicy: IfNotPresent }
+  threatWeb: { repository: "", digest: "", pullPolicy: IfNotPresent }
+  attackWeb: { repository: "", digest: "", pullPolicy: IfNotPresent }
+  notifyWeb: { repository: "", digest: "", pullPolicy: IfNotPresent }
+  incidentWeb: { repository: "", digest: "", pullPolicy: IfNotPresent }
+
+runtime:
+  config:
+    SOCP_SOAR_URI: http://soar-web:8080
+    SOCP_SFM_URI: http://report-web:8080
+    SOCP_SAM_WEB_URI: http://asset-web:8080
+    SOCP_SAM_COLLECT_URI: http://asset-web:8080
+    SOCP_SOC_URI: http://soc-base:8080
+    SOCP_HIPS_WEB_URI: http://hips-web:8080
+    SOCP_HIPS_COLLECT_URI: http://hips-web:8080
+    SOCP_AI_URI: http://ai-assistant:8080
+    SOCP_TI_URI: http://threat-web:8080
+    SOCP_ATTACK_URI: http://attack-web:8080
+    SOCP_NOTIFY_URI: http://notify-web:8080
+    SOCP_CASE_URI: http://incident-web:8080
+    SOCP_SOAR_URL: http://soar-web:8080
+    SOCP_REPORT_URL: http://report-web:8080
+    SOCP_ASSET_URL: http://asset-web:8080
+    SOCP_SOC_URL: http://soc-base:8080
+    SOCP_HIPS_URL: http://hips-web:8080
+    SOCP_AI_URL: http://ai-assistant:8080
+    SOCP_THREAT_URL: http://threat-web:8080
+    SOCP_ATTACK_URL: http://attack-web:8080
+    SOCP_NOTIFY_URL: http://notify-web:8080
+    SOCP_CASE_URL: http://incident-web:8080
+
+x-product-workload: &product-workload
+  replicas: 2
+  terminationGracePeriodSeconds: 45
+  tmpSizeLimit: 512Mi
+  secretEnv: &database-secrets
+    SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
+    SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
+    SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
+    SOCP_PG_USER: SOCP_PG_USER
+  fieldEnv: {}
+  env: {}
+  resources: &standard-resources
+    requests: { cpu: 150m, memory: 384Mi }
+    limits: { cpu: "1", memory: 1024Mi }
+  autoscaling: &standard-autoscaling
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 65
+  podDisruptionBudget: &standard-pdb
+    minAvailable: 1
+
+workloads:
+  alert-web:
+    env:
+      SOCP_ALARM_DELIVERY_DESTINATIONS: CLICKHOUSE,NOTIFY,INCIDENT,SOAR
+      SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,clickhouse=clickhouse.socp-data.svc.cluster.local:8123,notify=notify-web:8080,incident=incident-web:8080,soar=soar-web:8080
+  soar-web:
+    <<: *product-workload
+    image: soarWeb
+    runtimeDomain: response
+    health: { basePath: /soar-web/actuator/health, metricsPath: /soar-web/actuator/prometheus }
+    env:
+      SOCP_TEMPORAL_ENABLED: "true"
+      SOCP_TEMPORAL_TARGET: temporal.socp-data.svc.cluster.local:7233
+      SOCP_SOAR_SIMULATION_ENABLED: "false"
+      SOCP_SOAR_SECRET_BACKEND: kubernetes
+      SOCP_SOAR_SECRET_ALLOW_ENV_FALLBACK: "false"
+      SOCP_SOAR_ARTIFACT_BACKEND: s3
+      SOCP_SOAR_ARTIFACT_S3_ENDPOINT: https://minio.socp-data.svc.cluster.local:9000
+      SOCP_SOAR_ARTIFACT_S3_BUCKET: socp-soar-artifacts
+      SOCP_SOAR_ARTIFACT_S3_ALLOW_INSECURE: "false"
+      SOCP_HEALTH_REQUIRED_ENDPOINTS: temporal=temporal.socp-data.svc.cluster.local:7233,minio=minio.socp-data.svc.cluster.local:9000
+    secretVolume:
+      secretName: socp-soar-secrets
+      mountPath: /var/run/secrets/socp
+      items:
+        - { key: SOCP_SOAR_ARTIFACT_S3_ACCESS_KEY, path: platform/soar-artifacts/access-key }
+        - { key: SOCP_SOAR_ARTIFACT_S3_SECRET_KEY, path: platform/soar-artifacts/secret-key }
+  report-web:
+    <<: *product-workload
+    image: reportWeb
+    runtimeDomain: reporting
+    health: { basePath: /report-web/actuator/health, metricsPath: /report-web/actuator/prometheus }
+  asset-web:
+    <<: *product-workload
+    image: assetWeb
+    runtimeDomain: context
+    health: { basePath: /asset-web/actuator/health, metricsPath: /asset-web/actuator/prometheus }
+  soc-base:
+    <<: *product-workload
+    image: socBase
+    runtimeDomain: context
+    health: { basePath: /soc-base/actuator/health, metricsPath: /soc-base/actuator/prometheus }
+  hips-web:
+    <<: *product-workload
+    image: hipsWeb
+    runtimeDomain: endpoint
+    health: { basePath: /hips-web/actuator/health, metricsPath: /hips-web/actuator/prometheus }
+  ai-assistant:
+    <<: *product-workload
+    image: aiAssistant
+    runtimeDomain: investigation
+    health: { basePath: /ai-assistant/actuator/health, metricsPath: /ai-assistant/actuator/prometheus }
+  threat-web:
+    <<: *product-workload
+    image: threatWeb
+    runtimeDomain: enrichment
+    health: { basePath: /threat-web/actuator/health, metricsPath: /threat-web/actuator/prometheus }
+  attack-web:
+    <<: *product-workload
+    image: attackWeb
+    runtimeDomain: enrichment
+    health: { basePath: /attack-web/actuator/health, metricsPath: /attack-web/actuator/prometheus }
+  notify-web:
+    <<: *product-workload
+    image: notifyWeb
+    runtimeDomain: response
+    health: { basePath: /notify-web/actuator/health, metricsPath: /notify-web/actuator/prometheus }
+  incident-web:
+    <<: *product-workload
+    image: incidentWeb
+    runtimeDomain: alert-incident
+    health: { basePath: /incident-web/actuator/health, metricsPath: /incident-web/actuator/prometheus }

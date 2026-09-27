@@ -33,6 +33,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.StreamSupport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
@@ -97,6 +99,19 @@ class AlarmServiceTest {
         assertTrue(event.getValue().getPayload().contains("\"tenantId\":\"tenant-a\""));
         assertTrue(event.getValue().getCreatedAt() != null);
         verify(deliveryRegistrar).register("tenant-a", "alarm-tenant-a", event.getValue().getPayload());
+    }
+
+    @Test
+    void exactAlarmLookupReturnsTheRecordOrARealNotFoundError() {
+        Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "failed login", null);
+        given(queryService.get("alarm-1")).willReturn(alarm);
+
+        assertSame(alarm, service.get("alarm-1"));
+        com.socp.platform.error.exception.ApiException failure = assertThrows(
+                com.socp.platform.error.exception.ApiException.class,
+                () -> service.get("missing"));
+        assertEquals(404, failure.getCode());
     }
 
     @Test

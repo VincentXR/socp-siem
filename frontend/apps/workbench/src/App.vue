@@ -20,7 +20,7 @@ import { WORKBENCH_STATE } from './app/workbenchState'
 
 const { t, elLocale } = useI18n()
 const auth = useAuth()
-const { currentUser, currentRole, operatorOptions, isAuthed, userInitials } = auth
+const { currentUser, currentRole, operatorOptions, isAuthed, authReady, userInitials } = auth
 const router = useRouter()
 const route = useRoute()
 const { activeMenu, navigate } = useWorkbenchRoute()
@@ -126,7 +126,8 @@ onMounted(async () => {
     <div v-if="isOffline" class="socp-offline-banner">
       {{ t('app.offlineBanner') }}
     </div>
-    <LoginView v-if="!isAuthed" @done="onLoginDone" />
+    <div v-if="!authReady" class="auth-bootstrap" role="status">{{ t('common.loading') }}</div>
+    <LoginView v-else-if="!isAuthed" @done="onLoginDone" />
     <AppShell
       v-else
       :menu-groups="menuGroups"
@@ -144,3 +145,13 @@ onMounted(async () => {
     </AppShell>
   </el-config-provider>
 </template>
+
+<style scoped>
+.auth-bootstrap {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  color: var(--ns-text-muted);
+  background: var(--ns-bg-subtle);
+}
+</style>

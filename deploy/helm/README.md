@@ -15,6 +15,15 @@ accepted as rollout inputs. `values-dev.yaml`, `values-staging.yaml`, and
 `values-production.yaml` change capacity policy without duplicating workload
 manifests.
 
+The default release is intentionally the six-workload event-path core. For the
+Workbench-backed SOC product, layer `values-product.yaml` after
+`values-production.yaml`. That overlay adds ten domain workloads (Incident,
+Notify, SOAR, reporting, assets, endpoints, threat intelligence, ATT&CK, SOC,
+and AI) for sixteen Deployments and Services in total. It also enables every
+alert delivery destination and supplies the corresponding gateway routes;
+deploying the Workbench against the core-only profile leaves those product
+routes unavailable by design.
+
 ## Prerequisites
 
 The deployment platform must create `socp-system` using
@@ -36,6 +45,15 @@ Naming the runtime pair matters independently: `application-pg.yml` still gives
 explicit `secretKeyRef` guarantees a missing runtime credential cannot silently
 resolve to the default account instead of the operator-managed one. The Compose
 overlay enforces the same four values with `${VAR:?}` interpolation.
+
+The gateway likewise names `SOCP_AUTH_SIGNING_JWK` through `secretEnv`.
+Production uses that private RSA JWK to issue platform session tokens and
+publishes only the matching public key through its JWKS endpoint. A missing key
+therefore fails before container startup. `SOCP_AUTH_ISSUER` (the platform
+issuer), `SOCP_SECURITY_JWK_SET_URI` (the platform JWKS URL used by services),
+user credentials, and any upstream OIDC settings remain environment-owned
+values in `socp-runtime-secrets` or `runtime.extraConfig`; see
+`docs/production-readiness.md` for the exact authentication contract.
 
 `runtime.config` points `SPRING_DATA_REDIS_HOST`/`PORT` at the environment-owned
 Redis. That instance holds the service replay nonces, the revoked-session list,
@@ -94,6 +112,20 @@ helm lint deploy/helm/socp-core \
   -f deploy/helm/socp-core/values-production.yaml
 python build/verify-helm.py
 ```
+
+Render the complete product profile by adding the product overlay and all ten
+additional immutable image coordinates:
+
+```bash
+helm template socp-product deploy/helm/socp-core \
+  -f deploy/helm/socp-core/values-production.yaml \
+  -f deploy/helm/socp-core/values-product.yaml \
+  --set-string images.<artifact>.repository=<registry>/<image> \
+  --set-string images.<artifact>.digest=sha256:<digest>
+```
+
+Supply the repository/digest pair for every core and product image; the schema
+rejects an omitted or malformed digest.
 
 The `ci/test-values.yaml` file is render-only and must never be supplied to a
 cluster rollout. It supplies renderable images and nothing else: a capability
@@ -229,9 +261,10 @@ rotation once every tier lost readiness at the same time.
 
 ## Release behavior
 
-A deployment pipeline should build the four JARs once, build and scan each
-image, emit an SBOM, publish immutable images to the target registry, resolve
-their digests, and pass those exact repository/digest pairs to Helm.
+A core deployment pipeline should build the four JARs once; a product pipeline
+builds those plus the ten product service artifacts. Build and scan each image,
+emit an SBOM, publish immutable images to the target registry, resolve their
+digests, and pass those exact repository/digest pairs to Helm.
 
 Production promotion should reuse an already-published set of image digests
 for an explicit source revision instead of rebuilding artifacts. Registry,

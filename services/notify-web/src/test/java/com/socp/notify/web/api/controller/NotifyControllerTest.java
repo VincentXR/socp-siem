@@ -128,13 +128,15 @@ class NotifyControllerTest {
         Map<String, Object> result = Map.of("alarmId", "AL-2", "failed", 0);
         List<Map<String, Object>> log = List.of(Map.of("alarmId", "AL-2", "status", "sent"));
         given(dispatcher.dispatch(any())).willReturn(result);
-        given(dispatcher.log()).willReturn(log);
+        given(dispatcher.log(org.mockito.ArgumentMatchers.any())).willReturn(
+                new org.springframework.data.domain.PageImpl<>(log,
+                        org.springframework.data.domain.PageRequest.of(0, 500), 1));
 
         var response = controller().notify(request);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(log, controller().log(1, 500).data().items());
-        verify(dispatcher).log();
+        verify(dispatcher).log(org.springframework.data.domain.PageRequest.of(0, 500));
     }
 
     private NotifyController controller() {

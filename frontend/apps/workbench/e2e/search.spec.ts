@@ -27,6 +27,11 @@ async function mockInvestigation(page: Page) {
     else if (path === '/detect-web/api/v1/rules/options') data = { items: [], total: 0 }
     else if (path === '/alert-web/api/alarms/alarm-1/evidence') data = { alarmId: alarm.id, query: evidenceQuery, complete: true, total: 1, items: [{ ...event, id: 'ev-1', raw: event.msg, order: 0 }] }
     else if (path === '/alert-web/api/alarms/alarm-1/disposition') data = { status: 'OPEN', notes: [], assignee: null }
+    else if (path === '/alert-web/api/alarms/alarm-1/deliveries') data = []
+    else if (path === '/incident-web/api/v1/incidents/by-alarm') {
+      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ code: 404, message: 'Case not found', data: null }) })
+      return
+    }
     else if (path === '/incident-web/api/v1/incidents') data = { items: [], total: 0 }
     else {
       unexpected.push(`${route.request().method()} ${path}`)

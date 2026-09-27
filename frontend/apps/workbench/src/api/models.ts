@@ -252,6 +252,10 @@ export interface CaseInfo {
   ruleIds: string[]; alarmIds: string[]; timeline: TimelineEvent[]; assignee: string
   createdAt?: string; updatedAt?: string
 }
+export interface AlarmDeliveryStatus {
+  deliveryId: string; alarmId: string; destination: string; status: string; attempts: number
+  nextAttemptAt?: string | null; claimedAt?: string | null; deliveredAt?: string | null; lastError?: string
+}
 export interface ReferenceSet { id: string; name: string; description: string; entries: string[] }
 
 export interface RiskEntity {

@@ -137,8 +137,7 @@ async function loadDetail() {
   try {
     const result = await caseApi.get(id, { signal: request.signal })
     if (!request.isCurrent()) return
-    if (!result.found || !result.case.id) throw new Error(t('cases.notFound'))
-    applyDetail(result.case as CaseInfo)
+    applyDetail(result)
     void loadTimeline()
   } catch (failure) {
     if (request.isCurrent()) detailError.value = String(failure)

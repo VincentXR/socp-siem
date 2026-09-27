@@ -21,6 +21,9 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.nio.charset.StandardCharsets;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 /** Dispatches an alarm to enabled channels with per-alarm/channel idempotency. */
 @Service
@@ -180,8 +183,11 @@ public class NotificationDispatcher {
             if (!delivery.sent()) result.put("errorCode", delivery.errorCode());
             return result;
         }
+        String deliveryId = deliveryId(tenant(), text(alarm.get("id")), channel.id());
         ServiceCall call = http.postExternalOnce(channel.target(), buildPayload(channel, alarm),
-                SocpHttpClient.JSON, TIMEOUT);
+                SocpHttpClient.JSON, TIMEOUT, Map.of(
+                        "Idempotency-Key", deliveryId,
+                        "X-SOCP-Delivery-Id", deliveryId));
         if (call == null) {
             result.put("status", "failed");
             result.put("httpStatus", 0);
@@ -261,6 +267,11 @@ public class NotificationDispatcher {
                 .toList();
     }
 
+    public Page<Map<String, Object>> log(Pageable pageable) {
+        return dispatchLogs.findByTenantIdOrderByCreatedAtDesc(tenant(), pageable)
+                .map(NotificationDispatcher::fromLogEntity);
+    }
+
     private static Map<String, Object> fromLogEntity(NotificationDispatchLogEntity row) {
         try {
             Map<String, Object> out = new LinkedHashMap<>(MAPPER.readValue(row.getResultJson(), MAP_TYPE));
@@ -290,5 +301,10 @@ public class NotificationDispatcher {
     private static String truncate(String value, int max) {
         if (value == null) return "";
         return value.length() <= max ? value : value.substring(0, max) + "...";
+    }
+
+    private static String deliveryId(String tenant, String alarmId, String channelId) {
+        String key = tenant + "\u0000" + alarmId + "\u0000" + channelId;
+        return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)).toString();
     }
 }

@@ -13,6 +13,10 @@ function isAuthLoginUrl(url: URL): boolean {
   return url.origin === WORKBENCH_ORIGIN && url.pathname === '/auth/login'
 }
 
+function isAuthCapabilitiesUrl(url: URL): boolean {
+  return url.origin === WORKBENCH_ORIGIN && url.pathname === '/auth/capabilities'
+}
+
 /**
  * Register before the endpoint mocks so Playwright's newest-first route
  * matching lets explicit mocks handle known calls and this route catches any
@@ -261,7 +265,7 @@ test('case deep links retain drafts, page the full timeline and survive a failed
     if (url.pathname.endsWith('/incidents') && method === 'GET') {
       return fulfill({ items: [{ ...incident, id: 'listed-case', title: 'A different case on this page' }], total: 80 })
     }
-    if (url.pathname.endsWith('/incidents/outside-page') && method === 'GET') return fulfill({ found: true, case: incident })
+    if (url.pathname.endsWith('/incidents/outside-page') && method === 'GET') return fulfill(incident)
     if (url.pathname.endsWith('/incidents/outside-page/timeline')) {
       const currentPage = Number(url.searchParams.get('page'))
       const size = Number(url.searchParams.get('size'))
@@ -562,6 +566,10 @@ test('login creates a session-backed workbench without exposing a bearer token',
   const unexpected = await installNetworkGuard(page)
   await mockWorkbenchReads(page)
   await page.route(isAuthSessionUrl, route => route.fulfill({ status: 401, body: '{}' }))
+  await page.route(isAuthCapabilitiesUrl, route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ localPassword: true, oidc: false }),
+  }))
   await page.route(isAuthLoginUrl, async route => {
     const body = route.request().postDataJSON()
     expect(body).toEqual({ username: 'analyst', password: 'secret' })
@@ -626,7 +634,7 @@ test('case deep link loads detail and timeline outside the current page', async 
     const path = new URL(route.request().url()).pathname
     const body = path.endsWith('/timeline')
       ? { items: [{ ts: '2026-09-20T00:00:00Z', message: 'Durable case evidence', type: 'NOTE', source: 'analyst' }], total: 1 }
-      : path.endsWith('/off-page') ? { found: true, case: item }
+      : path.endsWith('/off-page') ? item
         : path.endsWith('/stats') ? { total: 1, open: 1, resolved: 0 } : { items: [], total: 0 }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
   })
@@ -634,6 +642,56 @@ test('case deep link loads detail and timeline outside the current page', async 
   await expect(page.locator('.el-drawer')).toContainText('Off-page investigation')
   await expect(page.locator('.el-drawer')).toContainText('Durable case evidence')
   await page.screenshot({ path: testInfo.outputPath('case-deep-link.png'), fullPage: true })
+})
+
+test('alarm deep links load exact detail and expose downstream delivery recovery', async ({ page }, testInfo) => {
+  const unexpected = await installNetworkGuard(page)
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  await mockSession(page, 'admin')
+  const alarm = {
+    id: 'off-page-alarm', ruleId: 'rule-42', ruleName: 'Credential abuse', title: 'Credential abuse from service account',
+    severity: 'HIGH', message: 'Repeated failed logins followed by success', entity: 'svc-payments', status: 'OPEN',
+    occurredAt: '2026-09-20T00:00:00Z',
+  }
+  const linkedCase: CaseInfo = {
+    id: 'linked-case', caseNo: 'CASE-42', title: 'Service account compromise', status: 'INVESTIGATING', entity: alarm.entity,
+    severity: 'HIGH', assignee: 'analyst', ruleIds: [alarm.ruleId], alarmIds: [alarm.id], timeline: [],
+  }
+  let requeues = 0
+  await page.route('**/alert-web/api/**', async route => {
+    const url = new URL(route.request().url())
+    const method = route.request().method()
+    const fulfill = (data: unknown) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, data }) })
+    if (url.pathname.endsWith('/alarms/off-page-alarm') && method === 'GET') return fulfill(alarm)
+    if (url.pathname.endsWith('/alarms/off-page-alarm/disposition')) return fulfill({ status: 'OPEN', assignee: 'analyst', notes: [] })
+    if (url.pathname.endsWith('/alarms/off-page-alarm/evidence')) return fulfill({ alarmId: alarm.id, query: `eventId="${alarm.id}"`, complete: true, total: 0, items: [] })
+    if (url.pathname.endsWith('/alarms/off-page-alarm/deliveries')) return fulfill([{
+      deliveryId: 'delivery-dead', alarmId: alarm.id, destination: 'INCIDENT', status: requeues ? 'PENDING' : 'DEAD',
+      attempts: 5, lastError: requeues ? null : 'incident service unavailable', nextAttemptAt: '2026-09-20T00:05:00Z',
+    }])
+    if (url.pathname.endsWith('/alarm-deliveries/delivery-dead/requeue') && method === 'POST') {
+      requeues++
+      return fulfill({ id: 'delivery-dead', status: 'PENDING', replayed: true })
+    }
+    await route.fallback()
+  })
+  await page.route('**/incident-web/api/v1/incidents/by-alarm?**', async route => {
+    const url = new URL(route.request().url())
+    expect(url.searchParams.get('alarmId')).toBe(alarm.id)
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, data: linkedCase }) })
+  })
+  await page.goto('/alarms?page=3&alarmId=off-page-alarm')
+  const drawer = page.locator('.el-drawer')
+  await expect(drawer).toContainText('Credential abuse from service account')
+  await expect(drawer).toContainText('Service account compromise')
+  await expect(drawer).toContainText('incident service unavailable')
+  await drawer.getByRole('button', { name: 'Requeue delivery', exact: true }).click()
+  await expect(drawer).toContainText('PENDING')
+  expect(requeues).toBe(1)
+  await page.reload()
+  await expect(drawer).toContainText('Credential abuse from service account')
+  await page.screenshot({ path: testInfo.outputPath('alarm-deep-link-delivery.png'), fullPage: true })
+  expect(unexpected).toEqual([])
 })
 
 test('metadata edits stay in a dialog and retain inputs across a failed save', async ({ page }, testInfo) => {

@@ -1,4 +1,6 @@
 package com.socp.platform.auth.security;
+import com.nimbusds.jose.jwk.JWK;
+import com.nimbusds.jose.jwk.RSAKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Configuration;
@@ -225,6 +227,18 @@ public class ProdGuard {
         }
 
         if ("api-gateway".equals(application)) {
+            String authIssuer = env.getProperty("socp.auth.issuer", "").trim();
+            String signingJwk = env.getProperty("socp.auth.signing-jwk", "").trim();
+            if (issuerUri.isBlank() || jwkSetUri.isBlank()) {
+                violations.add("api-gateway requires explicit platform issuer-uri and jwk-set-uri");
+            }
+            if (authIssuer.isBlank() || !authIssuer.equals(issuerUri.trim())) {
+                violations.add("socp.auth.issuer must exactly match socp.security.issuer-uri");
+            }
+            validatePlatformSigningJwk(signingJwk, violations);
+            if (!env.getProperty("socp.auth.login-secret", "").isBlank()) {
+                violations.add("socp.auth.login-secret is a development-only HMAC fallback and must be absent in production");
+            }
             if (!"true".equalsIgnoreCase(env.getProperty("socp.auth.cookie-secure", "false"))) {
                 violations.add("socp.auth.cookie-secure=false (production session cookies require HTTPS)");
             }
@@ -239,8 +253,6 @@ public class ProdGuard {
         validateConfiguredCredential(env, violations, "spring.datasource.password", List.of("", "socp"));
         validateConfiguredCredential(env, violations, "socp.ck.password", List.of("", "socp"));
         validateConfiguredCredential(env, violations, "socp.minio.secret-key", List.of("", "Socp@2026"));
-        validateConfiguredCredential(env, violations, "socp.auth.login-secret",
-                List.of("", DEMO_JWT_SECRET));
         validateConfiguredCredential(env, violations, "socp.vector.token", List.of("", DEMO_INGEST_TOKEN));
         validateConfiguredCredential(env, violations, "socp.opensearch.password", List.of("", "Socp!Sec2026xK", "admin"));
         validateConfiguredCredential(env, violations, "socp.opensearch.username", List.of("", "admin"));
@@ -274,6 +286,28 @@ public class ProdGuard {
         if (!"redis".equalsIgnoreCase(backend)) {
             violations.add(key + "=" + (backend.isBlank() ? "<blank>" : backend)
                     + " (production requires the shared redis backend)");
+        }
+    }
+
+    private static void validatePlatformSigningJwk(String encoded, List<String> violations) {
+        if (encoded.isBlank()) {
+            violations.add("api-gateway production requires socp.auth.signing-jwk");
+            return;
+        }
+        try {
+            JWK key = JWK.parse(encoded);
+            if (!(key instanceof RSAKey rsa) || !rsa.isPrivate()) {
+                violations.add("socp.auth.signing-jwk must be a private RSA JWK");
+                return;
+            }
+            if (rsa.getKeyID() == null || rsa.getKeyID().isBlank()) {
+                violations.add("socp.auth.signing-jwk must declare a non-blank kid");
+            }
+            if (rsa.size() < 2048) {
+                violations.add("socp.auth.signing-jwk RSA modulus must be at least 2048 bits");
+            }
+        } catch (Exception failure) {
+            violations.add("socp.auth.signing-jwk is not a valid private RSA JWK");
         }
     }
 

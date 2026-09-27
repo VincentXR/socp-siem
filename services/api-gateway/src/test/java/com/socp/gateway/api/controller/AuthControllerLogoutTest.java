@@ -2,6 +2,7 @@ package com.socp.gateway.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.gateway.security.AuthAttemptLimiter;
+import com.socp.gateway.security.PlatformTokenIssuer;
 import com.socp.gateway.security.TokenRevocationStore;
 import com.socp.platform.auth.config.SocpSecurityProperties;
 import com.socp.platform.auth.security.JwtValidator;
@@ -47,9 +48,8 @@ class AuthControllerLogoutTest {
             }
         };
 
-        AuthController controller = new AuthController(new PermitLimiter(), new ObjectMapper(), validator, store);
-        ReflectionTestUtils.setField(controller, "secret", SECRET);
-        ReflectionTestUtils.setField(controller, "audience", "socp-api");
+        AuthController controller = new AuthController(new PermitLimiter(), new ObjectMapper(), validator, store,
+                new PlatformTokenIssuer("", SECRET, "socp-gateway", "socp-api"));
         ReflectionTestUtils.setField(controller, "usersJson", "{}");
         ReflectionTestUtils.setField(controller, "rolesJson", "{}");
         ReflectionTestUtils.setField(controller, "localesJson", "{}");

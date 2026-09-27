@@ -42,7 +42,8 @@ public interface CaseRepository extends TenantScopedRepository<CaseEntity, Strin
 
     Optional<CaseEntity> findByTenantIdAndId(String tenantId, String id);
 
-    List<CaseEntity> findByTenantIdAndEntityAndStatusIn(String tenantId, String entity, List<String> statuses);
+    Optional<CaseEntity> findFirstByTenantIdAndEntityAndStatusInOrderByUpdatedAtDescIdAsc(
+            String tenantId, String entity, List<String> statuses);
 
     @Modifying
     @Transactional

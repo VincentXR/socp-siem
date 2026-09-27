@@ -363,6 +363,12 @@ export const enUS: LocaleMessages = {
     nextActions: 'Next actions',
     openAiInvestigation: 'Investigate with AI',
     openSoarResponse: 'Open SOAR response',
+    downstreamDelivery: 'Downstream delivery',
+    noDeliveries: 'No downstream deliveries have been registered',
+    loadDeliveriesFailed: 'Failed to load downstream delivery status',
+    deliveryAttempts: '{count} attempts',
+    requeueDelivery: 'Requeue delivery',
+    deliveryRequeued: 'Delivery requeued',
   },
   cases: {
     title: 'Case Management',
@@ -1901,6 +1907,7 @@ export const enUS: LocaleMessages = {
     analystDemo: 'Analyst demo',
     adminDemo: 'Admin admin',
     ssoLogin: 'SSO Login',
+    noMethods: 'No sign-in method is configured for this environment. Contact an administrator.',
     securityHint: 'Session 30m · Mandatory Verification · Multi-Tenant Isolated',
   },
   errors: {

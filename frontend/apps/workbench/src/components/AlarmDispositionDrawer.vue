@@ -23,9 +23,10 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, ref, watch } from 'vue'
 import SevBadge from './SevBadge.vue'
-import type { Alarm, AlarmEvidenceResponse, CaseInfo, Disposition, Ioc } from '../api'
-import { addAlarmNote, assignAlarm, getAlarmEvidence, getDisposition, setDispositionStatus } from '../api/alarms'
-import { createCaseFromAlarm, listCases as loadCases } from '../api/incidents'
+import type { Alarm, AlarmDeliveryStatus, AlarmEvidenceResponse, CaseInfo, Disposition, Ioc } from '../api'
+import { addAlarmNote, assignAlarm, getAlarmDeliveries, getAlarmEvidence, getDisposition, requeueAlarmDelivery, setDispositionStatus } from '../api/alarms'
+import { createCaseFromAlarm, getCaseByAlarm } from '../api/incidents'
+import { ApiError } from '../api/core'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
 
@@ -38,8 +39,10 @@ const props = withDefaults(defineProps<{
   goSoar?: (alarmId: string) => void
   assigneeOptions?: string[]
   canWrite?: boolean
+  canAdmin?: boolean
 }>(), {
   canWrite: true,
+  canAdmin: false,
   assigneeOptions: () => [],
 })
 
@@ -61,6 +64,9 @@ const evidence = ref<AlarmEvidenceResponse | null>(null)
 const evidenceError = ref('')
 const relatedCase = ref<CaseInfo | null>(null)
 const relatedCaseError = ref('')
+const deliveries = ref<AlarmDeliveryStatus[]>([])
+const deliveriesError = ref('')
+const requeueBusy = ref('')
 const detailsLoading = ref(false)
 const newStatus = ref('OPEN')
 const newAssignee = ref('')
@@ -113,20 +119,26 @@ async function loadDetails(alarm: Alarm) {
   evidenceError.value = ''
   relatedCase.value = null
   relatedCaseError.value = ''
+  deliveries.value = []
+  deliveriesError.value = ''
   actionError.value = ''
   newStatus.value = alarm.status || 'OPEN'
   newAssignee.value = ''
   newNote.value = ''
   noteKey = ''
-  const [disp, ev, cases] = await Promise.allSettled([getDisposition(alarm.id), getAlarmEvidence(alarm.id), loadCases()])
+  const [disp, ev, linkedCase, deliveryResult] = await Promise.allSettled([
+    getDisposition(alarm.id), getAlarmEvidence(alarm.id), getCaseByAlarm(alarm.id), getAlarmDeliveries(alarm.id),
+  ])
   if (token !== loadToken) return
   detailsLoading.value = false
   if (disp.status === 'fulfilled') disposition.value = disp.value
   else dispositionError.value = t('drawer.loadDispositionFailed')
   if (ev.status === 'fulfilled') evidence.value = ev.value
   else evidenceError.value = t('drawer.loadEvidenceFailed')
-  if (cases.status === 'fulfilled') relatedCase.value = cases.value.items.find(item => item.alarmIds.includes(alarm.id)) ?? null
-  else relatedCaseError.value = t('drawer.loadCaseFailed')
+  if (linkedCase.status === 'fulfilled') relatedCase.value = linkedCase.value
+  else if (!(linkedCase.reason instanceof ApiError && linkedCase.reason.status === 404)) relatedCaseError.value = t('drawer.loadCaseFailed')
+  if (deliveryResult.status === 'fulfilled') deliveries.value = deliveryResult.value
+  else deliveriesError.value = t('drawer.loadDeliveriesFailed')
 }
 
 function retryDetails(): void {
@@ -200,8 +212,7 @@ async function createCase(): Promise<void> {
   actionError.value = ''
   try {
     const result = await createCaseFromAlarm(props.alarm)
-    const cases = await loadCases()
-    relatedCase.value = cases.items.find(item => item.id === result.caseId || item.caseNo === result.caseNo) ?? null
+    relatedCase.value = await getCaseByAlarm(props.alarm.id)
     if (result.duplicate) ElMessage.info(t('drawer.caseAlreadyLinked'))
     else ElMessage.success(t('drawer.caseCreated'))
     emit('updated')
@@ -209,6 +220,21 @@ async function createCase(): Promise<void> {
     actionError.value = error instanceof Error ? error.message : String(error)
   } finally {
     creatingCase.value = false
+  }
+}
+
+async function requeueDelivery(delivery: AlarmDeliveryStatus): Promise<void> {
+  if (!props.canAdmin || requeueBusy.value) return
+  requeueBusy.value = delivery.deliveryId
+  actionError.value = ''
+  try {
+    await requeueAlarmDelivery(delivery.deliveryId)
+    if (props.alarm) deliveries.value = await getAlarmDeliveries(props.alarm.id)
+    ElMessage.success(t('drawer.deliveryRequeued'))
+  } catch (error) {
+    actionError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    requeueBusy.value = ''
   }
 }
 
@@ -323,6 +349,27 @@ function openEvidenceSearch() {
         <el-empty :description="t('drawer.noRelatedCase')" :image-size="50" />
         <el-button v-if="props.canWrite" type="primary" size="small" :loading="creatingCase" @click="createCase">{{ t('drawer.createCase') }}</el-button>
       </div>
+
+      <el-divider content-position="left">{{ t('drawer.downstreamDelivery') }}</el-divider>
+      <el-alert v-if="deliveriesError" :title="deliveriesError" type="error" :closable="false" show-icon>
+        <el-button size="small" type="primary" plain @click="retryDetails">{{ t('common.retry') }}</el-button>
+      </el-alert>
+      <el-empty v-else-if="!detailsLoading && !deliveries.length" :description="t('drawer.noDeliveries')" :image-size="50" />
+      <div v-else class="delivery-list">
+        <el-card v-for="delivery in deliveries" :key="delivery.deliveryId" shadow="never" class="delivery-card">
+          <div class="delivery-heading"><strong>{{ delivery.destination }}</strong><el-tag size="small" :type="delivery.status === 'DELIVERED' ? 'success' : delivery.status === 'DEAD' ? 'danger' : 'warning'">{{ delivery.status }}</el-tag></div>
+          <div class="drawer-readonly-hint">{{ t('drawer.deliveryAttempts', { count: delivery.attempts }) }} · {{ delivery.deliveredAt || delivery.nextAttemptAt || '—' }}</div>
+          <div v-if="delivery.lastError" class="delivery-error">{{ delivery.lastError }}</div>
+          <el-button v-if="props.canAdmin && delivery.status === 'DEAD'" size="small" type="warning" plain :loading="requeueBusy === delivery.deliveryId" :disabled="Boolean(requeueBusy)" @click="requeueDelivery(delivery)">{{ t('drawer.requeueDelivery') }}</el-button>
+        </el-card>
+      </div>
     </template>
   </el-drawer>
 </template>
+
+<style scoped>
+.delivery-list { display: grid; gap: 8px; }
+.delivery-card { border-color: var(--ns-border); }
+.delivery-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.delivery-error { margin: 6px 0; color: var(--el-color-danger); font-size: 12px; overflow-wrap: anywhere; }
+</style>

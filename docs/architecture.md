@@ -18,12 +18,14 @@ flowchart LR
   IX --> OS[(OpenSearch<br/>raw event search)]
   D --> DO[(Detection Alert Outbox<br/>PostgreSQL/H2)]
   DO --> A[alert-web<br/>idempotent alert create]
-  A --> AO[(Alert Outbox<br/>same DB transaction)]
+  A --> AO[(Alarm Event Outbox<br/>same DB transaction)]
+  A --> AD[(Downstream delivery receipts<br/>same DB transaction)]
   AO --> AK[(Kafka<br/>socp-alarm-events)]
-  AK --> FAN[fan-out consumer]
-  FAN --> CK[(ClickHouse)]
-  FAN --> I[incident-web]
-  FAN --> R[soar-web / notify-web]
+  AK --> REC[receipt reconciler]
+  REC --> AD
+  AD --> CK[(ClickHouse)]
+  AD --> I[incident-web]
+  AD --> R[soar-web / notify-web]
   D --> DM[(Kafka<br/>socp-alarm-original)]
   DM --> M[detect-web-worker<br/>secondary analysis]
   UI[Vue workbench] --> GW[api-gateway]
@@ -53,8 +55,11 @@ acknowledges the request, the publisher sends the optional
 `socp-alarm-original` event for the secondary analyzer hosted by
 `detect-web-worker`. The analyzer retains the former `detect_model` database,
 Flyway history, consumer group, and transaction boundary. Alert Web then
-writes its own transactional Outbox row and fans out to incident,
-notification, SOAR, and analytics consumers.
+commits the alert, the Kafka event Outbox row, and one idempotent database
+delivery receipt for every enabled destination in a single transaction.
+Receipt workers perform the ClickHouse/Incident/Notify/SOAR calls directly.
+The `socp-alarm-events` consumer is a reconciliation path that recreates a
+missing deterministic receipt; it is not the primary fan-out transport.
 
 ## Responsibilities and storage
 
@@ -69,10 +74,12 @@ notification, SOAR, and analytics consumers.
 | Detection alert hand-off | `t_detection_alert_outbox` | Durable Alert Web delivery and retry |
 | Entity risk | `t_entity_risk_profile`, `t_entity_risk_alert` | Shared, idempotent projection across Detection instances |
 | Alert facts | `alert-web` and PostgreSQL | Transactional lifecycle and tenant-scoped queries |
-| Alert fan-out | `outbox_event` in `alert-web` | At-least-once downstream delivery |
+| Alert event publication | `outbox_event` in `alert-web` | Durable Kafka event and receipt reconciliation |
+| Alert fan-out | `alarm_delivery` in `alert-web` | Profile-scoped, at-least-once downstream calls with operator-visible status and replay |
 | Event investigation | OpenSearch index consumer and search API | Full-text/field search stays separate from OLTP |
 | Reporting | ClickHouse alarm consumer and `report-web` | Aggregation does not compete with alert writes |
 | Response | `incident-web`, `notify-web`, `soar-web`, optional Temporal | Workflow state and compensation |
+| Audit | `t_audit_outbox` in transactional services, Kafka `socp-audit` | Successful mutations and audit intent commit atomically; failed mutations are recorded in a separate transaction |
 
 The startup scripts default to `dev,pg`. Every service that ships an
 `application-pg.yml` overlay therefore uses PostgreSQL; stateless services and
@@ -88,6 +95,9 @@ the service supports it.
 - The OpenSearch consumer commits each partition only after its complete bulk
   succeeds. Failed partitions seek back, and stable event IDs make replay an
   idempotent document overwrite.
+- Vector assigns an event ID before its disk buffer only when the producer did
+  not supply one. Normalization preserves that producer identity, so a buffer
+  retry does not create a new logical event.
 - Kafka consumers use manual offset commits, stable event IDs, database-backed
   claims, and DLQ paths.
 - Detection has a bounded queue. Queue rejection returns `503` with
@@ -96,9 +106,11 @@ the service supports it.
   Alert Web request remains `PENDING`; a publisher crash recovers stale claims.
 - Alert Web uses `(tenant_id, source_alert_id)` idempotency, so replaying a
   Detection Outbox row returns the existing alert instead of creating another.
-- Alert Web writes its alert row and downstream Outbox row in one transaction.
 - Alert creation atomically records the Kafka Outbox row and one durable,
-  idempotent delivery intent for each ClickHouse/Incident/Notify/SOAR target.
+  idempotent delivery intent for each destination enabled by the deployment
+  profile. The six-workload core profile enables ClickHouse only; the full
+  product profile enables ClickHouse, Incident, Notify, and SOAR because those
+  workloads are present there.
   Delivery workers use database claims, bounded retries, and stale-claim
   recovery; Kafka replay reconciles any missing intents.
 - Kafka and downstream delivery are at-least-once. Consumers must remain
@@ -114,11 +126,25 @@ the service supports it.
   `t_analysis_receipt` in the same transaction as its result. Kafka redelivery
   is therefore a state-preserving no-op after a committed analysis, while a
   rolled-back attempt remains retryable.
+- Incident aggregation serializes an entity into one of a bounded set of
+  tenant-scoped PostgreSQL lock rows before selecting or creating an open case.
+  Alarm and rule membership is stored in normalized link tables; legacy JSON
+  arrays are read only as a migration fallback.
+- In database-backed services, an audited successful mutation and its
+  `t_audit_outbox` row share the business transaction. Kafka acknowledgement
+  marks the audit row published; stale claims and broker failures remain
+  retryable. Stateless services retain direct Kafka audit delivery because
+  there is no local business transaction to join.
 
 ## Security and observability
 
-`socp-auth` validates HMAC or JWKS JWTs, extracts the tenant claim, and applies
-method-level `@RequireRole` checks. Side-effecting internal endpoints can also
+The Gateway issues platform session tokens from an RSA private JWK and exposes
+only the matching public key at `/.well-known/socp-jwks.json`. Business
+services validate that platform issuer and audience through JWKS; HMAC remains
+a development-only fallback. An external OIDC provider is a separate identity
+source for the Gateway and is not the platform token issuer. `socp-auth`
+extracts the tenant claim and applies method-level `@RequireRole` checks.
+Side-effecting internal endpoints can also
 require a signed `ServiceRequestSignature`; the endpoint then rejects a user
 JWT even when the caller has an otherwise valid role. Tenant isolation uses
 three layers: `TenantScopedRepository` exposes explicit tenant predicates,

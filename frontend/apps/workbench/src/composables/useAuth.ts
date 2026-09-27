@@ -10,6 +10,7 @@ export function useAuth() {
   const currentRole = ref('')
   const operatorOptions = ref<string[]>([])
   const isAuthed = ref(false)
+  const authReady = ref(false)
   const userInitials = computed(() => (currentUser.value || 'SY').slice(0, 2).toUpperCase())
   const queryClient = useQueryClient()
   const { t } = useI18n()
@@ -73,8 +74,10 @@ export function useAuth() {
       isAuthed.value = false
       operatorOptions.value = []
       return false
+    } finally {
+      authReady.value = true
     }
   }
 
-  return { currentUser, currentRole, operatorOptions, isAuthed, userInitials, onLoginDone, doLogout, initAuth }
+  return { currentUser, currentRole, operatorOptions, isAuthed, authReady, userInitials, onLoginDone, doLogout, initAuth }
 }

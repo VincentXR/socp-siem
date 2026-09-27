@@ -111,7 +111,9 @@ public class GatewayFilter implements GlobalFilter, Ordered {
         });
 
         String path = exchange.getRequest().getPath().value();
-        if (path.startsWith("/auth/login") || path.startsWith("/auth/service-token")
+        if (path.equals("/.well-known/socp-jwks.json")
+                || path.equals("/auth/capabilities")
+                || path.startsWith("/auth/login") || path.startsWith("/auth/service-token")
                 || path.startsWith("/auth/oidc/")) {
             return traced(span, exchange, chain.filter(withTrace(spanContext, exchange, traceId)));
         }

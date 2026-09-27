@@ -31,6 +31,13 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- The production audit sink persists into the owning service's
+             transaction before Kafka publication. spring-jdbc adds no
+             datasource of its own and remains inert in stateless services. -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-jdbc</artifactId>
+        </dependency>
         <!-- Kafka 审计出口（可选）：仅在本仓 Docker 环境 socp.audit.sink=kafka 时启用 -->
         <dependency>
             <groupId>org.springframework.kafka</groupId>
@@ -39,6 +46,11 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

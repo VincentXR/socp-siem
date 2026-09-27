@@ -3,16 +3,13 @@ package com.socp.gateway.api.controller;
 import com.socp.gateway.api.request.LoginRequest;
 import com.socp.gateway.api.request.ServiceTokenRequest;
 import com.socp.gateway.security.AuthAttemptLimiter;
+import com.socp.gateway.security.PlatformTokenIssuer;
 import com.socp.gateway.security.TokenRevocationStore;
 import com.socp.platform.auth.security.JwtValidationException;
 import com.socp.platform.auth.security.JwtValidator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jose.JWSHeader;
-import com.nimbusds.jose.crypto.MACSigner;
 import com.nimbusds.jwt.JWTClaimsSet;
-import com.nimbusds.jwt.SignedJWT;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -51,11 +48,10 @@ public class AuthController {
 
     @Value("${socp.auth.users:}") private String usersJson;
     @Value("${socp.auth.roles:}") private String rolesJson;
-    @Value("${socp.auth.login-secret}") private String secret;
     @Value("${socp.auth.locales:}") private String localesJson;
     @Value("${socp.auth.cookie-secure:false}") private boolean cookieSecure;
     @Value("${socp.security.service-secret:}") private String serviceSecret;
-    @Value("${socp.security.audience:socp-api}") private String audience;
+    @Value("${socp.oidc.issuer-uri:}") private String oidcIssuerUri;
 
     private Map<String, String> users = Map.of();
     private Map<String, String> roles = Map.of();
@@ -64,14 +60,17 @@ public class AuthController {
     private final ObjectMapper objectMapper;
     private final JwtValidator jwtValidator;
     private final TokenRevocationStore revocations;
+    private final PlatformTokenIssuer tokenIssuer;
 
     @org.springframework.beans.factory.annotation.Autowired
     public AuthController(AuthAttemptLimiter attemptLimiter, ObjectMapper objectMapper,
-                          JwtValidator jwtValidator, TokenRevocationStore revocations) {
+                          JwtValidator jwtValidator, TokenRevocationStore revocations,
+                          PlatformTokenIssuer tokenIssuer) {
         this.attemptLimiter = attemptLimiter;
         this.objectMapper = objectMapper;
         this.jwtValidator = jwtValidator;
         this.revocations = revocations;
+        this.tokenIssuer = tokenIssuer;
     }
 
     /** Focused unit-test constructor; Spring always uses the full constructor above. */
@@ -86,7 +85,9 @@ public class AuthController {
             public Mono<Void> reset(String kind, String clientAddress, String identity) {
                 return Mono.empty();
             }
-        }, new ObjectMapper(), null, null);
+        }, new ObjectMapper(), null, null, new PlatformTokenIssuer(
+                "", "socp-demo-jwt-secret-0123456789abcdef0123456789abcdef",
+                "socp-gateway", "socp-api"));
     }
 
     @jakarta.annotation.PostConstruct
@@ -102,6 +103,14 @@ public class AuthController {
 
     private Map<String, String> parseJson(String json) throws Exception {
         return objectMapper.readValue(json, new TypeReference<>() {});
+    }
+
+    /** Public discovery lets the login shell render only configured methods. */
+    @GetMapping("/capabilities")
+    public Map<String, Object> capabilities() {
+        return Map.of(
+                "localPassword", !users.isEmpty(),
+                "oidc", oidcIssuerUri != null && !oidcIssuerUri.isBlank());
     }
 
     @PostMapping(value = "/login", consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -259,8 +268,8 @@ public class AuthController {
             JWTClaimsSet claims = new JWTClaimsSet.Builder()
                     .subject(username)
                     .jwtID(UUID.randomUUID().toString())
-                    .issuer("socp-gateway")
-                    .audience(audiences())
+                    .issuer(tokenIssuer.issuer())
+                    .audience(tokenIssuer.audiences())
                     .claim("tenant", tenant == null || tenant.isBlank() ? "default" : tenant)
                     .claim("role", supportedRole(role))
                     .claim("permissions", com.socp.platform.auth.security.Permission
@@ -271,9 +280,7 @@ public class AuthController {
                     .issueTime(Date.from(now))
                     .expirationTime(Date.from(now.plusSeconds(EXPIRES_SECONDS)))
                     .build();
-            SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
-            jwt.sign(new MACSigner(secret.getBytes(StandardCharsets.UTF_8)));
-            return jwt.serialize();
+            return tokenIssuer.sign(claims);
         } catch (Exception failure) {
             throw new IllegalStateException("Unable to issue SOCP session", failure);
         }
@@ -297,13 +304,6 @@ public class AuthController {
             case "en", "en-us" -> "en-US";
             default -> null;
         };
-    }
-
-    private List<String> audiences() {
-        return java.util.Arrays.stream(audience == null ? new String[0] : audience.split(","))
-                .map(String::trim)
-                .filter(value -> !value.isBlank())
-                .toList();
     }
 
     public ResponseCookie sessionCookie(String token) {

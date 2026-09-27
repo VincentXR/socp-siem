@@ -1,6 +1,8 @@
 package com.socp.platform.auth.security;
 import com.socp.platform.auth.config.SocpSecurityProperties;
 import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.jwk.JWKSet;
+import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.jwk.source.JWKSourceBuilder;
@@ -52,16 +54,31 @@ public class JwtValidator {
     private final ConfigurableJWTProcessor<SecurityContext> processor;
 
     public JwtValidator(SocpSecurityProperties props) {
+        this(props, null);
+    }
+
+    /**
+     * Build a validator backed by an in-process public JWK set. This is used by
+     * the platform gateway to validate the sessions it signs without issuing a
+     * blocking HTTP request back into its own WebFlux server. Downstream
+     * services continue to use the URL-backed constructor and its cache.
+     */
+    public JwtValidator(SocpSecurityProperties props, JWKSet localJwkSet) {
         this.props = props;
-        this.devBypass = props.resolveDevBypass();
+        boolean hasLocalKeys = localJwkSet != null && !localJwkSet.getKeys().isEmpty();
+        this.devBypass = !hasLocalKeys && props.resolveDevBypass();
         if (devBypass) {
             this.processor = null;
             log.warn("【安全告警】socp-auth 运行在 dev-bypass 模式：任意非空 Bearer 令牌均放行，签名与过期均不校验。"
-                    + " 生产环境必须配置 socp.security.issuer-uri（Keycloak）或 socp.security.jwt-secret，"
+                    + " 生产环境必须配置 socp.security.issuer-uri/jwk-set-uri，"
                     + " 并显式设置 socp.security.dev-bypass=false。");
         } else {
-            this.processor = buildProcessor(props);
-            log.info("socp-auth JWT 校验已启用，模式={}", props.hasJwks() ? "JWKS:" + props.resolveJwkSetUri() : "HMAC");
+            JWKSource<SecurityContext> localSource = hasLocalKeys
+                    ? new ImmutableJWKSet<>(localJwkSet) : null;
+            this.processor = buildProcessor(props, localSource);
+            String mode = hasLocalKeys ? "LOCAL-JWKS"
+                    : (props.hasJwks() ? "JWKS:" + props.resolveJwkSetUri() : "HMAC");
+            log.info("socp-auth JWT 校验已启用，模式={}", mode);
         }
     }
 
@@ -117,10 +134,13 @@ public class JwtValidator {
         return null;
     }
 
-    private static ConfigurableJWTProcessor<SecurityContext> buildProcessor(SocpSecurityProperties props) {
+    private static ConfigurableJWTProcessor<SecurityContext> buildProcessor(
+            SocpSecurityProperties props, JWKSource<SecurityContext> localSource) {
         DefaultJWTProcessor<SecurityContext> processor = new DefaultJWTProcessor<>();
 
-        if (props.hasJwks()) {
+        if (localSource != null) {
+            processor.setJWSKeySelector(new JWSVerificationKeySelector<>(ASYMMETRIC_ALGS, localSource));
+        } else if (props.hasJwks()) {
             String uri = props.resolveJwkSetUri();
             URL url;
             try {

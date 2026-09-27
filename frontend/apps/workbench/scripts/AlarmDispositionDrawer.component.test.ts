@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
     alarmId: 'alarm-1', total: 1, complete: true, query: 'eventId:evt-1',
     items: [{ id: 'evidence-1', eventId: 'evt-1', timestamp: '2026-08-25T00:00:00Z', source: 'syslog', host: 'host-1', severity: 'HIGH', raw: 'blocked', fields: {}, order: 0 }],
   }),
+  getAlarmDeliveries: vi.fn().mockResolvedValue([]),
+  requeueAlarmDelivery: vi.fn().mockResolvedValue({ id: 'delivery-1', status: 'PENDING', replayed: true }),
   setDispositionStatus: vi.fn().mockResolvedValue(undefined),
   assignAlarm: vi.fn().mockResolvedValue(undefined),
   addAlarmNote: vi.fn().mockResolvedValue(undefined),
@@ -17,7 +19,11 @@ vi.mock('../src/api/alarms', () => ({
   ...mocks,
 }))
 vi.mock('../src/api/incidents', () => ({
-  listCases: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, size: 0, totalPages: 0 }),
+  getCaseByAlarm: vi.fn().mockResolvedValue({
+    id: 'case-1', title: 'Related case', entity: 'user:alice', severity: 'HIGH', status: 'OPEN',
+    assignee: '', ruleIds: ['rule-1'], alarmIds: ['alarm-1'], timeline: [],
+  }),
+  createCaseFromAlarm: vi.fn(),
 }))
 
 const alarm = {
@@ -34,6 +40,7 @@ describe('AlarmDispositionDrawer', () => {
 
     expect(mocks.getDisposition).toHaveBeenCalledWith('alarm-1')
     expect(mocks.getAlarmEvidence).toHaveBeenCalledWith('alarm-1')
+    expect(mocks.getAlarmDeliveries).toHaveBeenCalledWith('alarm-1')
     expect(wrapper.text()).toContain('blocked')
 
     const updateButton = wrapper.findAll('button').find(button => button.text() === '更新')

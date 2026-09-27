@@ -28,6 +28,36 @@
         },
         "alertWeb": {
           "$ref": "#/definitions/image"
+        },
+        "soarWeb": {
+          "$ref": "#/definitions/image"
+        },
+        "reportWeb": {
+          "$ref": "#/definitions/image"
+        },
+        "assetWeb": {
+          "$ref": "#/definitions/image"
+        },
+        "socBase": {
+          "$ref": "#/definitions/image"
+        },
+        "hipsWeb": {
+          "$ref": "#/definitions/image"
+        },
+        "aiAssistant": {
+          "$ref": "#/definitions/image"
+        },
+        "threatWeb": {
+          "$ref": "#/definitions/image"
+        },
+        "attackWeb": {
+          "$ref": "#/definitions/image"
+        },
+        "notifyWeb": {
+          "$ref": "#/definitions/image"
+        },
+        "incidentWeb": {
+          "$ref": "#/definitions/image"
         }
       }
     },

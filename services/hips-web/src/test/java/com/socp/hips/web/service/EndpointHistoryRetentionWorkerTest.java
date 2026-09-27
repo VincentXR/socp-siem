@@ -5,6 +5,7 @@ import com.socp.platform.tenant.context.TenantContext;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.support.StaticListableBeanFactory;
 
@@ -20,6 +21,7 @@ class EndpointHistoryRetentionWorkerTest {
     private final EndpointHistoryRetentionStore store = mock(EndpointHistoryRetentionStore.class);
     private final SimpleMeterRegistry metrics = new SimpleMeterRegistry();
 
+    @BeforeEach void prepare() { TenantContext.clear(); }
     @AfterEach void clear() { TenantContext.clear(); metrics.close(); }
 
     private EndpointHistoryRetentionWorker worker(boolean enabled, int batches, long budget) {

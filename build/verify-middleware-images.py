@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPOSE = ROOT / "infra/docker-compose.yml"
 CI = ROOT / ".github/workflows/ci.yml"
 FULL_STACK = ROOT / ".github/workflows/full-stack.yml"
+MINIO_DOCKERFILE = ROOT / "deploy/docker/minio/Dockerfile"
 
 
 def service_image(compose: str, service: str) -> str | None:
@@ -59,6 +60,7 @@ def main() -> int:
     compose = COMPOSE.read_text(encoding="utf-8")
     ci = CI.read_text(encoding="utf-8")
     full_stack = FULL_STACK.read_text(encoding="utf-8")
+    minio_dockerfile = MINIO_DOCKERFILE.read_text(encoding="utf-8")
 
     for service, key in SERVICE_IMAGE_KEYS.items():
         expected = catalog[key]
@@ -115,6 +117,13 @@ def main() -> int:
     compose_wrapper = (ROOT / "build/compose.sh").read_text(encoding="utf-8")
     if "--env-file" not in compose_wrapper or "middleware-images.env" not in compose_wrapper:
         errors.append("build/compose.sh must pass the middleware image catalog to Compose")
+
+    if "FROM scratch" not in minio_dockerfile:
+        errors.append("MinIO source build must use its self-contained scratch runtime")
+    if 'ENTRYPOINT ["/usr/bin/minio"]' not in minio_dockerfile:
+        errors.append("MinIO scratch runtime must declare the server entrypoint")
+    if "BASE_IMAGE" in minio_dockerfile or "SOCP_MINIO_BASE_IMAGE" in catalog:
+        errors.append("MinIO source build must not depend on the archived distribution image")
 
     if errors:
         print("[FAIL] Middleware image catalog contract violated:", file=sys.stderr)

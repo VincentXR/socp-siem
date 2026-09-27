@@ -21,15 +21,15 @@ class SoarMigrationTest {
                              + "'T_SOAR_PLAYBOOK', 'T_SOAR_PLAYBOOK_VERSION', 'T_SOAR_RUN', 'T_SOAR_DISPATCH_OUTBOX',"
                              + "'T_SOAR_NODE_RUN', 'T_SOAR_RUN_EVENT', 'T_SOAR_APPROVAL', 'T_SOAR_AUTOMATION_RULE',"
                              + "'T_SOAR_CONNECTOR', 'T_SOAR_TRIGGER_RECEIPT', 'T_SOAR_ACTION_ATTEMPT', 'T_SOAR_MANUAL_TASK',"
-                             + "'T_SOAR_SIGNAL_OUTBOX', 'T_SOAR_ARTIFACT', 'T_SOAR_APPROVAL_DECISION')");
+                             + "'T_SOAR_SIGNAL_OUTBOX', 'T_SOAR_ARTIFACT', 'T_SOAR_APPROVAL_DECISION', 'T_AUDIT_OUTBOX')");
              var result = statement.executeQuery()) {
             result.next();
-            assertEquals(17, result.getInt(1));
+            assertEquals(18, result.getInt(1));
             try (var migration = connection.prepareStatement(
                     "SELECT MAX(\"installed_rank\") FROM \"flyway_schema_history\"");
                  var migrationResult = migration.executeQuery()) {
                 migrationResult.next();
-                assertEquals(25, migrationResult.getInt(1));
+                assertEquals(26, migrationResult.getInt(1));
             }
             try (var recoveryIndexes = connection.prepareStatement(
                     "SELECT COUNT(*) FROM information_schema.indexes WHERE index_name IN "

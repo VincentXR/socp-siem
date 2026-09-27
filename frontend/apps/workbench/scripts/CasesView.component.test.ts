@@ -58,7 +58,7 @@ describe('case selection, drafts and timeline', () => {
     vi.resetAllMocks()
     mocks.list.mockResolvedValue({ items: [incident('listed')], total: 120 })
     mocks.stats.mockResolvedValue({ total: 120, open: 120, resolved: 0 })
-    mocks.get.mockImplementation(async id => ({ found: true, case: incident(id) }))
+    mocks.get.mockImplementation(async id => incident(id))
     mocks.timeline.mockImplementation(async id => events(`Timeline ${id}`))
     mocks.updateStatus.mockImplementation(async (id, status, assignee) => ({ case: { ...incident(id), status, assignee } }))
     mocks.create.mockResolvedValue({ case: incident('created') })
@@ -68,7 +68,7 @@ describe('case selection, drafts and timeline', () => {
 
   it('opens a case outside the list page even when the list fails, and retries a missing detail', async () => {
     mocks.list.mockRejectedValue(new Error('List unavailable'))
-    mocks.get.mockResolvedValueOnce({ found: false, case: {} })
+    mocks.get.mockRejectedValueOnce(new Error('未找到此案件'))
     await open()
     expect(mocks.get).toHaveBeenCalledWith('outside', expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(wrapper.find('.el-drawer').text()).toContain('未找到此案件')
@@ -80,14 +80,14 @@ describe('case selection, drafts and timeline', () => {
   })
 
   it('discards detail and timeline responses belonging to previous selections', async () => {
-    const oldDetail = deferred<{ found: boolean; case: CaseInfo }>()
+    const oldDetail = deferred<CaseInfo>()
     const oldTimeline = deferred<Paged<TimelineEvent>>()
     mocks.get.mockReturnValueOnce(oldDetail.promise)
     const router = await open('/cases?caseId=first')
     mocks.timeline.mockReturnValueOnce(oldTimeline.promise)
     await router.push('/cases?caseId=second'); await flushPromises()
     await router.push('/cases?caseId=third'); await flushPromises()
-    oldDetail.resolve({ found: true, case: incident('first') })
+    oldDetail.resolve(incident('first'))
     oldTimeline.reject(new Error('Obsolete timeline failure'))
     await flushPromises()
     const drawer = wrapper.find('.el-drawer')

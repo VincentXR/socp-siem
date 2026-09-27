@@ -26,7 +26,7 @@ spring:
 
 socp:
   demo-data:
-    enabled: ${SOCP_DEMO_DATA_ENABLED:true}
+    enabled: ${SOCP_DEMO_DATA_ENABLED:false}
   threat:
     ioc:
       cache-max-entries: ${SOCP_THREAT_IOC_CACHE_MAX_ENTRIES:100000}

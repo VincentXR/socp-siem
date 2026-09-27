@@ -3,6 +3,8 @@ package com.socp.incident.web.persistence;
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.domain.TimelineEvent;
 import com.socp.incident.web.persistence.store.CaseStore;
+import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
+import com.socp.incident.web.persistence.repository.CaseRuleLinkRepository;
 import com.socp.incident.web.persistence.repository.CaseTimelineRepository;
 import jakarta.persistence.EntityManagerFactory;
 import com.socp.platform.tenant.context.TenantContext;
@@ -34,6 +36,8 @@ class CaseStorePersistenceTest {
     private CaseStore store;
 
     @Autowired private CaseTimelineRepository timelineRepository;
+    @Autowired private AlarmCaseLinkRepository alarmLinkRepository;
+    @Autowired private CaseRuleLinkRepository ruleLinkRepository;
     @Autowired private EntityManagerFactory entityManagerFactory;
 
     @Test
@@ -86,5 +90,30 @@ class CaseStorePersistenceTest {
         assertThat(store.get(incident.id()).timeline())
                 .extracting(TimelineEvent::idempotencyKey)
                 .containsExactly("note-1", "note-2");
+    }
+
+    @Test
+    void persistsNormalizedAlarmAndRuleAssociationsWithoutDuplicatingThem() {
+        TenantContext.set("association-tenant");
+        TimelineEvent event = new TimelineEvent(Instant.parse("2026-09-28T00:00:00Z"),
+                "ALARM", "detected", "detection", "alarm-z");
+        Case incident = Case.create("normalized links", "host-z", "HIGH")
+                .withAdded("rule-z", "alarm-z", event);
+
+        store.save(incident);
+        store.save(incident);
+
+        assertThat(alarmLinkRepository.findByTenantIdAndCaseIdOrderByAlarmIdAsc(
+                "association-tenant", incident.id()))
+                .extracting(link -> link.getAlarmId())
+                .containsExactly("alarm-z");
+        assertThat(ruleLinkRepository.findByTenantIdAndCaseIdOrderByRuleIdAsc(
+                "association-tenant", incident.id()))
+                .extracting(link -> link.getRuleId())
+                .containsExactly("rule-z");
+        assertThat(store.get(incident.id()).alarmIds()).containsExactly("alarm-z");
+        assertThat(store.get(incident.id()).ruleIds()).containsExactly("rule-z");
+        assertThat(store.page(1, 10, "normalized", "OPEN").getContent().getFirst().alarmIds())
+                .containsExactly("alarm-z");
     }
 }

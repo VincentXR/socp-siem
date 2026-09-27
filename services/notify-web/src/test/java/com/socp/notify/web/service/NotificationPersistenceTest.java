@@ -118,7 +118,7 @@ class NotificationPersistenceTest {
         var http = mock(SocpHttpClient.class);
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
-        when(http.postExternalOnce(any(), any(), any(), anyInt())).thenAnswer(call -> {
+        when(http.postExternalOnce(any(), any(), any(), anyInt(), anyMap())).thenAnswer(call -> {
             assertFalse(TransactionSynchronizationManager.isActualTransactionActive());
             assertEquals("tenant-a", TenantContext.require());
             assertEquals(1, jdbc.queryForObject("select count(*) from t_notification_delivery where claim_token is not null", Integer.class));
@@ -136,7 +136,7 @@ class NotificationPersistenceTest {
             release.countDown();
             assertEquals(0, first.get(5, TimeUnit.SECONDS).get("failed"));
             assertEquals(0, dispatcher.dispatch(Map.of("id", "alarm")).get("failed"));
-            verify(http, times(1)).postExternalOnce(any(), any(), any(), anyInt());
+            verify(http, times(1)).postExternalOnce(any(), any(), any(), anyInt(), anyMap());
         } finally { release.countDown(); executor.close(); }
     }
 
