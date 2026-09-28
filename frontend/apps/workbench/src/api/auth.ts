@@ -7,6 +7,9 @@ export async function login(username: string, password: string): Promise<{ usern
     body: JSON.stringify({ username, password }),
   }, { auth: false, notifyUnauthorized: false })
 }
+export const authCapabilities = () => requestJson<{ localPassword: boolean; oidc: boolean }>(
+  '/auth/capabilities', {}, { unwrap: false, notifyUnauthorized: false },
+)
 
 export const currentSession = () => requestJson<{ username: string; role: string; tenant: string; locale?: string }>(
   '/auth/session', {}, { unwrap: false, notifyUnauthorized: false },

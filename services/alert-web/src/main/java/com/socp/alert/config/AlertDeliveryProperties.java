@@ -1,6 +1,10 @@
 package com.socp.alert.config;
 
+import com.socp.alert.domain.AlarmDeliveryDestination;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+
+import java.util.EnumSet;
+import java.util.Set;
 
 /** Runtime settings for durable downstream alarm delivery. */
 @ConfigurationProperties(prefix = "socp.alert.delivery")
@@ -13,6 +17,7 @@ public class AlertDeliveryProperties {
     private long maxDrainDurationMs = 2_000L;
     private int cleanupBatchSize = 1_000;
     private int cleanupMaxBatches = 10;
+    private Set<AlarmDeliveryDestination> destinations = EnumSet.allOf(AlarmDeliveryDestination.class);
 
     public int getConcurrency() { return concurrency; }
     public void setConcurrency(int concurrency) { this.concurrency = concurrency; }
@@ -28,4 +33,9 @@ public class AlertDeliveryProperties {
     public void setCleanupBatchSize(int cleanupBatchSize) { this.cleanupBatchSize = cleanupBatchSize; }
     public int getCleanupMaxBatches() { return cleanupMaxBatches; }
     public void setCleanupMaxBatches(int cleanupMaxBatches) { this.cleanupMaxBatches = cleanupMaxBatches; }
+    public Set<AlarmDeliveryDestination> getDestinations() { return Set.copyOf(destinations); }
+    public void setDestinations(Set<AlarmDeliveryDestination> destinations) {
+        this.destinations = destinations == null || destinations.isEmpty()
+                ? EnumSet.noneOf(AlarmDeliveryDestination.class) : EnumSet.copyOf(destinations);
+    }
 }

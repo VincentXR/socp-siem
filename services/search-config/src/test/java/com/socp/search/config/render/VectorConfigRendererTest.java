@@ -74,6 +74,9 @@ class VectorConfigRendererTest {
         assertTrue(toml.contains("framing.method = \"newline_delimited\""), "必须为 NDJSON");
         assertTrue(toml.contains("healthcheck.enabled = false"), "必须关健康检查");
         assertTrue(toml.contains("encoding.codec = \"json\""), "必须 json codec");
+        assertTrue(toml.contains(".eventId = uuid_v4()"),
+                "事件 ID 必须在 HTTP disk buffer 之前生成，响应丢失重投才能去重");
+        assertTrue(toml.indexOf(".eventId = uuid_v4()") < toml.indexOf("buffer.type = \"disk\""));
     }
 
     @Test

@@ -24,6 +24,14 @@ independent scaling and failure boundaries while sharing their service image.
 Detection instance identity comes from the Kubernetes pod UID, so replicas do
 not share a fixed ownership identifier.
 
+This six-workload topology is the default event-path core. The production SOC
+Workbench uses `values-production.yaml` followed by `values-product.yaml`, which
+adds ten domain workloads for Incident, Notify, SOAR, reporting, assets,
+endpoints, threat intelligence, ATT&CK, SOC, and AI. The resulting release has
+sixteen Deployments and Services and fourteen immutable image artifacts. The
+overlay also completes the gateway route map and alert delivery destinations;
+the core profile deliberately does not advertise those domains as deployable.
+
 Every Deployment carries `socp.io/runtime-domain`, validated against
 `build/runtime-topology.json`. The label describes ownership and
 observability grouping only; it is not part of the immutable Deployment
@@ -37,10 +45,13 @@ digests. Environment files control replica/HPA/PDB policy without duplicating
 the workload manifests.
 
 `socp-runtime-secrets` is external to Helm. The deployment platform must
-create it before release and rotate it independently. Non-secret dependency
-endpoints can be supplied through an environment-owned values file under
-`runtime.extraConfig`. Neither generated secrets nor environment values belong
-in source control.
+create it before release and rotate it independently. The gateway explicitly
+requires `SOCP_AUTH_SIGNING_JWK`, a private RSA JWK whose public half is exposed
+through the platform JWKS endpoint; the database workloads explicitly require
+their runtime and migration role pairs. Missing named keys fail before the
+container starts. Non-secret dependency endpoints can be supplied through an
+environment-owned values file under `runtime.extraConfig`. Neither generated
+secrets nor environment values belong in source control.
 
 Default egress is limited to cluster DNS, same-namespace service HTTP, and the
 declared data-service namespace. Gateway ingress defaults to the
@@ -65,7 +76,8 @@ External data services and ingress controllers remain platform dependencies.
 ## Rollout and rollback
 
 Deployment automation should use `helm upgrade --install --atomic --wait` and
-wait for all six Deployments. A failed upgrade rolls back automatically.
+wait for all six core Deployments or all sixteen product Deployments, according
+to the selected profile. A failed upgrade rolls back automatically.
 Operators can inspect and restore a prior successful revision with:
 
 ```bash
@@ -81,11 +93,13 @@ topology contracts.
 
 Migrations are executed by **Flyway inside the application process** on boot
 (`spring.flyway.*` in each service's `application-pg.yml`), under the dedicated
-migration role. Five workloads across four service databases carry a migration
-role (api-gateway does not); two of them (`search-config`, `detect-web`) share one
-image and one database across their `api`/`worker` pair, so the concurrent boot-time
-`migrate` on the same database is absorbed by the Flyway lock. That means the
-**new** versions of those pods self-order their schema.
+migration role. In the core profile, five workloads across four service
+databases carry a migration role (api-gateway does not); the ten product
+workloads add their own explicit runtime/migration role contract. The
+`search-config` and `detect-web` API/worker pairs each share one image and one
+database, so concurrent boot-time migration of a pair is absorbed by the
+Flyway lock. That means the **new** versions of those pods self-order their
+schema.
 
 The rollout shape is the risk, not concurrency. Because the chart uses
 `maxUnavailable: 0` / `maxSurge: 1`, a new pod and the old pod it replaces

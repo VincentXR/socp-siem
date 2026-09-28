@@ -134,8 +134,22 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            {{- with $workload.secretVolume }}
+            - name: workload-secrets
+              mountPath: {{ .mountPath }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir:
             sizeLimit: {{ $workload.tmpSizeLimit }}
+        {{- with $workload.secretVolume }}
+        - name: workload-secrets
+          secret:
+            secretName: {{ .secretName }}
+            {{- with .items }}
+            items:
+              {{- toYaml . | nindent 14 }}
+            {{- end }}
+        {{- end }}
 {{- end }}

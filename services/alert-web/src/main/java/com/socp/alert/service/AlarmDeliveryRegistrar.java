@@ -3,6 +3,7 @@ package com.socp.alert.service;
 import com.socp.alert.domain.AlarmDelivery;
 import com.socp.alert.domain.AlarmDeliveryDestination;
 import com.socp.alert.persistence.repository.AlarmDeliveryRepository;
+import com.socp.alert.config.AlertDeliveryProperties;
 
 
 import com.socp.platform.tenant.context.TenantContext;
@@ -23,9 +24,20 @@ import java.util.LinkedHashMap;
 public class AlarmDeliveryRegistrar {
 
     private final AlarmDeliveryRepository repository;
+    private final Set<AlarmDeliveryDestination> destinations;
 
     public AlarmDeliveryRegistrar(AlarmDeliveryRepository repository) {
+        this(repository, java.util.EnumSet.allOf(AlarmDeliveryDestination.class));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AlarmDeliveryRegistrar(AlarmDeliveryRepository repository, AlertDeliveryProperties properties) {
+        this(repository, properties.getDestinations());
+    }
+
+    AlarmDeliveryRegistrar(AlarmDeliveryRepository repository, Set<AlarmDeliveryDestination> destinations) {
         this.repository = repository;
+        this.destinations = Set.copyOf(destinations);
     }
 
     @Transactional
@@ -42,9 +54,11 @@ public class AlarmDeliveryRegistrar {
     }
 
     private void registerInScope(String tenantId, String alarmId, String payload) {
-        List<AlarmDelivery> candidates = java.util.Arrays.stream(AlarmDeliveryDestination.values())
+        List<AlarmDelivery> candidates = destinations.stream()
+                .sorted(java.util.Comparator.comparing(Enum::name))
                 .map(destination -> pending(tenantId, alarmId, destination, payload))
                 .toList();
+        if (candidates.isEmpty()) return;
         Set<String> existing = new HashSet<>();
         repository.findByTenantIdAndIdIn(tenantId, candidates.stream().map(AlarmDelivery::getId).toList())
                 .forEach(delivery -> existing.add(delivery.getId()));

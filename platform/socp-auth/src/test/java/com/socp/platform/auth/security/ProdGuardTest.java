@@ -1,4 +1,5 @@
 package com.socp.platform.auth.security;
+import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.env.MockEnvironment;
 
@@ -9,9 +10,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProdGuardTest {
 
+    private static final String PLATFORM_SIGNING_JWK = generatePlatformSigningJwk();
+
     @Test
     void rejectsDevelopmentFallbacks() {
         MockEnvironment env = new MockEnvironment()
+                .withProperty("spring.application.name", "api-gateway")
                 .withProperty("spring.datasource.url", "jdbc:h2:file:./data")
                 .withProperty("socp.security.jwt-secret", "socp-demo-jwt-secret-0123456789abcdef0123456789abcdef")
                 .withProperty("socp.auth.login-secret", "socp-demo-jwt-secret-0123456789abcdef0123456789abcdef")
@@ -624,11 +628,45 @@ class ProdGuardTest {
     void acceptsSharedGatewaySessionBackendsInProduction() {
         MockEnvironment env = validProductionEnvironment()
                 .withProperty("spring.application.name", "api-gateway")
+                // application.yml binds the removed HMAC fallback as an empty
+                // property. Empty is the required production value, not a
+                // missing credential, when RSA signing is configured.
+                .withProperty("socp.auth.login-secret", "")
                 .withProperty("socp.auth.cookie-secure", "true")
                 .withProperty("socp.auth.revocation.backend", "redis")
                 .withProperty("socp.oidc.state.backend", "redis");
 
         assertDoesNotThrow(() -> new ProdGuard(env));
+    }
+
+    @Test
+    void rejectsGatewayWithNonBlankLegacyLoginSecret() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "api-gateway")
+                .withProperty("socp.auth.login-secret", "legacy-hmac-secret-that-must-not-be-used")
+                .withProperty("socp.auth.cookie-secure", "true")
+                .withProperty("socp.auth.revocation.backend", "redis")
+                .withProperty("socp.oidc.state.backend", "redis");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("development-only HMAC fallback"));
+    }
+
+    @Test
+    void rejectsGatewayWhoseSessionSignerDoesNotMatchItsVerifier() {
+        MockEnvironment env = validProductionEnvironment()
+                .withProperty("spring.application.name", "api-gateway")
+                .withProperty("socp.auth.cookie-secure", "true")
+                .withProperty("socp.auth.revocation.backend", "redis")
+                .withProperty("socp.oidc.state.backend", "redis")
+                .withProperty("socp.auth.issuer", "https://wrong-issuer.example.test")
+                .withProperty("socp.auth.signing-jwk", "{}");
+
+        IllegalStateException error = assertThrows(IllegalStateException.class, () -> new ProdGuard(env));
+
+        assertTrue(error.getMessage().contains("must exactly match"));
+        assertTrue(error.getMessage().contains("private RSA JWK"));
     }
 
     @Test
@@ -646,6 +684,9 @@ class ProdGuardTest {
                 .withProperty("spring.datasource.url", "jdbc:postgresql://db.example.test/socp")
                 .withProperty("socp.tenant.rls.enabled", "true")
                 .withProperty("socp.security.jwk-set-uri", "https://id.example.test/keys")
+                .withProperty("socp.security.issuer-uri", "https://socp.example.test")
+                .withProperty("socp.auth.issuer", "https://socp.example.test")
+                .withProperty("socp.auth.signing-jwk", PLATFORM_SIGNING_JWK)
                 .withProperty("socp.security.audience", "socp-api")
                 .withProperty("socp.security.ingest-token", "production-ingest-token")
                 .withProperty("socp.security.service-secret", "production-service-secret-0123456789")
@@ -662,5 +703,13 @@ class ProdGuardTest {
                 .withProperty("socp.soar.artifacts.secret-key-ref", "k8s://platform/object-store/secret")
                 .withProperty("socp.soar.secrets.backend", "kubernetes")
                 .withProperty("socp.soar.secrets.kubernetes-mount-path", "/var/run/secrets/socp");
+    }
+
+    private static String generatePlatformSigningJwk() {
+        try {
+            return new RSAKeyGenerator(2048).keyID("prod-test-key").generate().toJSONString();
+        } catch (Exception failure) {
+            throw new ExceptionInInitializerError(failure);
+        }
     }
 }

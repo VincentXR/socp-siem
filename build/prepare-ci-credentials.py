@@ -7,6 +7,10 @@ import json
 import os
 from pathlib import Path
 import secrets
+import base64
+import re
+import subprocess
+import tempfile
 
 
 def credentials(scope):
@@ -40,7 +44,49 @@ def credentials(scope):
     values["PIPELINE_PASS"] = users["demo"]
     values["SOAR_VERIFY_PASSWORD"] = users["admin"]
     values["RULE_VERIFY_PASSWORD"] = users["admin"]
+    values["SOCP_AUTH_SIGNING_JWK"] = generate_rsa_jwk()
+    values["SOCP_AUTH_ISSUER"] = "https://ci.socp.invalid"
+    values["SOCP_SECURITY_ISSUER_URI"] = values["SOCP_AUTH_ISSUER"]
+    # Integration services validate the platform issuer while resolving keys
+    # from the gateway process started by the same job. Keeping issuer and
+    # transport location separate avoids attempting discovery against the
+    # deliberately non-routable CI issuer.
+    values["SOCP_SECURITY_JWK_SET_URI"] = (
+        "http://127.0.0.1:18092/.well-known/socp-jwks.json"
+    )
     return values
+
+
+def generate_rsa_jwk():
+    """Generate the disposable production signer without a Python crypto dependency."""
+    labels = {
+        "modulus": "n", "publicExponent": "e", "privateExponent": "d",
+        "prime1": "p", "prime2": "q", "exponent1": "dp",
+        "exponent2": "dq", "coefficient": "qi",
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        key = Path(directory) / "platform.pem"
+        subprocess.run([
+            "openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048",
+            "-out", str(key),
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        rendered = subprocess.run(
+            ["openssl", "pkey", "-in", str(key), "-text", "-noout"],
+            check=True, capture_output=True, text=True).stdout
+    values = {}
+    for label, jwk_name in labels.items():
+        match = re.search(rf"(?ms)^{label}:\s*(.*?)(?=^[A-Za-z][A-Za-z0-9]*(?:\s+[A-Za-z0-9]+)*:|\Z)", rendered)
+        if not match:
+            raise RuntimeError(f"openssl output is missing RSA component {label}")
+        component = match.group(1).strip()
+        if label == "publicExponent":
+            integer = int(component.split()[0])
+            raw = integer.to_bytes((integer.bit_length() + 7) // 8, "big")
+        else:
+            raw = bytes.fromhex(re.sub(r"[^0-9a-fA-F]", "", component)).lstrip(b"\0")
+        values[jwk_name] = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+    return json.dumps({"kty": "RSA", "use": "sig", "alg": "RS256",
+                       "kid": "ci-platform", **values}, separators=(",", ":"))
 
 
 def write_environment(values, destination):

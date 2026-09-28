@@ -3,6 +3,7 @@ package com.socp.incident.web.service;
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.persistence.store.CaseStore;
 import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
+import com.socp.incident.web.persistence.entity.AlarmCaseLinkEntity;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -41,16 +42,20 @@ class CaseServiceTest {
     @Mock
     private AlarmCaseLinkRepository alarmLinks;
 
+    @Mock
+    private IncidentAggregationLock aggregationLock;
+
     @Test
     void createsCaseForFirstAlarmOfAnEntity() {
         given(store.openCaseId("203.0.113.10")).willReturn(null);
-        CaseService service = new CaseService(store, alarmLinks);
+        CaseService service = new CaseService(store, alarmLinks, aggregationLock);
 
         Map<String, Object> result = service.fromAlarm(alarm("AL-1"));
 
         assertTrue((Boolean) result.get("created"));
         assertEquals(1, result.get("alarmCount"));
         verify(store).save(any(Case.class));
+        verify(aggregationLock).lock("203.0.113.10");
     }
 
     @Test
@@ -61,7 +66,7 @@ class CaseServiceTest {
                                 java.time.Instant.now(), "ALARM", "initial", "detection", "AL-1"));
         given(store.openCaseId("203.0.113.10")).willReturn(existing.id());
         given(store.get(existing.id())).willReturn(existing);
-        CaseService service = new CaseService(store, alarmLinks);
+        CaseService service = new CaseService(store, alarmLinks, aggregationLock);
 
         Map<String, Object> result = service.fromAlarm(alarm("AL-2"));
 
@@ -69,6 +74,7 @@ class CaseServiceTest {
         assertEquals(2, result.get("alarmCount"));
         assertTrue(!(Boolean) result.get("created"));
         verify(store).save(any(Case.class));
+        verify(aggregationLock).lock("203.0.113.10");
     }
 
     @Test
@@ -121,6 +127,29 @@ class CaseServiceTest {
     }
 
     @Test
+    void resolvesLinkedCaseByAlarmWithinTheCurrentTenant() {
+        Case incident = Case.create("existing", "203.0.113.10", "HIGH");
+        AlarmCaseLinkEntity link = new AlarmCaseLinkEntity();
+        link.setCaseId(incident.id());
+        given(alarmLinks.findByTenantIdAndAlarmId("default", "AL-9")).willReturn(java.util.Optional.of(link));
+        given(store.get(incident.id())).willReturn(incident);
+
+        Case resolved = new CaseService(store, alarmLinks).findByAlarmId(" AL-9 ");
+
+        assertEquals(incident.id(), resolved.id());
+    }
+
+    @Test
+    void missingAlarmLinkIsNotFound() {
+        given(alarmLinks.findByTenantIdAndAlarmId("default", "AL-missing"))
+                .willReturn(java.util.Optional.empty());
+
+        assertThatThrownBy(() -> new CaseService(store, alarmLinks).findByAlarmId("AL-missing"))
+                .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
+                .hasFieldOrPropertyWithValue("code", 404);
+    }
+
+    @Test
     void statusWritesRejectValuesOutsideTheDocumentedLifecycle() {
         given(store.get("case-1")).willReturn(Case.create("case-1", "10.0.0.8", "HIGH"));
         CaseService service = new CaseService(store, alarmLinks);
@@ -149,6 +178,17 @@ class CaseServiceTest {
         }
         verify(store, never()).appendTimeline(any(), any());
         verify(store, never()).save(any(Case.class));
+    }
+
+    @Test
+    @SuppressWarnings("deprecation")
+    void legacyExportDoesNotTurnStorageFailuresIntoAValidEmptyExport() {
+        given(store.page(1, 10_000, "", "")).willThrow(new IllegalStateException("database unavailable"));
+
+        assertThatThrownBy(() -> new CaseService(store, alarmLinks).exportJson())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Failed to export incidents")
+                .hasRootCauseMessage("database unavailable");
     }
 
     private static Map<String, Object> alarm(String id) {

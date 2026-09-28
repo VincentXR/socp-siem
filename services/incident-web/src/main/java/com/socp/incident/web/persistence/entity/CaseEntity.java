@@ -15,7 +15,8 @@ import java.time.Instant;
 
 /**
  * 案件持久化实体（对应架构 §IR-4 的 case 库 t_case）。
- * 嵌套结构（ruleIds / alarmIds / timeline）以 JSON 文本列存储，避免在内存态切片里引入额外的关联表。
+ * JSON columns are retained for rolling-upgrade reads; current writes keep
+ * rule/alarm/timeline collections in normalized association tables.
  * 领域模型仍是 {@link com.socp.incident.web.domain.Case} record，由 CaseStore 负责互转。
  *
  * 【为什么不继承 BaseEntity】本类的 createdAt/updatedAt 由领域模型 Case 显式带入

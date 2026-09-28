@@ -129,7 +129,7 @@ doctor() {
   local profile="${1:-full}" selected fatal=0 service_count
   selected="$(service_names "$profile")" || return 1
   service_count="$(awk '{print NF}' <<< "$selected")"
-  echo "启动配置: $profile（$service_count 个后端服务）"
+  echo "启动配置: ${profile}（${service_count} 个后端服务）"
   echo "=== 仓库根 ==="
   echo "  $ROOT"
   [ -f "$ROOT/pom.xml" ] || { echo "  ❌ 这里没有 pom.xml，脚本可能被移出仓库了"; fatal=1; }
@@ -140,7 +140,7 @@ doctor() {
     java_version="$("$j" -version 2>&1)"
     java_major="$(sed -n 's/.*version "\([0-9][0-9]*\).*/\1/p' <<< "$java_version" | head -1)"
     if [[ "$java_major" =~ ^[0-9]+$ ]] && [ "$java_major" -ge 21 ]; then
-      echo "  ✅ java  : $j（Java $java_major）"
+      echo "  ✅ java  : ${j}（Java ${java_major}）"
     else
       echo "  ❌ Java 21+ 是必需条件，当前版本: ${java_major:-无法识别}"
       fatal=1
@@ -172,7 +172,7 @@ doctor() {
     pid="$(pid_on_port "$port")"
     if [ -n "$pid" ]; then
       busy=$((busy + 1))
-      echo "  ⚠️  :$port 已被 PID=$pid 占用（$name）→ 可用 SOCP_PORT_$(printf '%s' "$name" | tr 'a-z-' 'A-Z_')=<新端口> 改开"
+      echo "  ⚠️  :$port 已被 PID=$pid 占用（${name}）→ 可用 SOCP_PORT_$(printf '%s' "$name" | tr 'a-z-' 'A-Z_')=<新端口> 改开"
     fi
   done
   [ "$busy" -eq 0 ] && echo "  ✅ $service_count 个默认部署端口均空闲"
@@ -206,7 +206,7 @@ wait_for_batch() {
     if service_ready "$name"; then
       echo "  [就绪] $name"
     else
-      echo "  [等待超时] $name（继续启动下一批，详见 .cache/$name.log）"
+      echo "  [等待超时] ${name}（继续启动下一批，详见 .cache/${name}.log）"
     fi
   done
   return 0
@@ -217,7 +217,7 @@ start_service() {
   port="$(socp_port "$name")"
   jar="$(jar_of "$name")"
   if [ ! -f "$jar" ]; then
-    echo "  [跳过] $name（jar 不存在，先跑 bash build/mvnw.sh -DskipTests package）"
+    echo "  [跳过] ${name}（jar 不存在，先跑 bash build/mvnw.sh -DskipTests package）"
     return 0
   fi
   # Never launch a partially written/skinny artifact.  On Windows a running
@@ -233,11 +233,11 @@ start_service() {
   fi
   if [ -n "$jar_tool" ]; then
     if ! "$jar_tool" tf "$jar" 2>/dev/null | grep -q '^BOOT-INF/'; then
-      echo "  [跳过] $name（不是可执行 Spring Boot fat jar；请先停止服务后重新 package）"
+      echo "  [跳过] ${name}（不是可执行 Spring Boot fat jar；请先停止服务后重新 package）"
       return 0
     fi
   elif ! jar tf "$jar" 2>/dev/null | grep -q '^BOOT-INF/'; then
-    echo "  [跳过] $name（不是可执行 Spring Boot fat jar；请先停止服务后重新 package）"
+    echo "  [跳过] ${name}（不是可执行 Spring Boot fat jar；请先停止服务后重新 package）"
     return 0
   fi
   existing="$(pid_on_port "$port")"
@@ -251,7 +251,7 @@ start_service() {
     --spring.profiles.active="$RUNTIME_PROFILES" > "$LOGDIR/$name.log" 2>&1 < /dev/null &
   started_pid=$!
   printf '%s\n' "$started_pid" > "$LOGDIR/$name.pid"
-  echo "  [启动] $name -> :$port PID=$started_pid  (JVM $service_opts；日志 .cache/$name.log)"
+  echo "  [启动] $name -> :$port PID=$started_pid  (JVM ${service_opts}；日志 .cache/$name.log)"
 }
 
 start_backend() {
@@ -259,7 +259,7 @@ start_backend() {
   java="$(socp_java)" || return 1
   local services
   services="$(service_names "$profile")" || return 1
-  echo "=== 后端 profile: $profile（批次大小 $START_BATCH_SIZE，堆参数 $JVM_OPTS） ==="
+  echo "=== 后端 profile: ${profile}（批次大小 ${START_BATCH_SIZE}，堆参数 ${JVM_OPTS}） ==="
   for name in $services; do
     start_service "$java" "$name"
     batch="$batch $name"

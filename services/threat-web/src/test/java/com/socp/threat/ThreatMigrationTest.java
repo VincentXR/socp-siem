@@ -43,10 +43,10 @@ class ThreatMigrationTest {
         Flyway flyway = Flyway.configure().dataSource(url, "sa", "")
                 .locations("classpath:db/migration").callbacks(new LegacyConfidenceTypeCallback()).load();
 
-        // V5 (confidence type replay) is the current head of the sequence.
-        assertEquals(5, flyway.migrate().migrationsExecuted);
+        // V6 adds the transactional audit outbox after the confidence replay.
+        assertEquals(6, flyway.migrate().migrationsExecuted);
         var applied = flyway.info().applied();
-        assertEquals("[1, 2, 3, 4, 5]",
+        assertEquals("[1, 2, 3, 4, 5, 6]",
                 Arrays.stream(applied).map(each -> String.valueOf(each.getVersion())).toList().toString());
         assertTrue(Arrays.stream(applied).allMatch(each -> each.getState().isApplied()),
                 "no version may fail or stay pending on an empty database");

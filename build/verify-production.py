@@ -58,8 +58,53 @@ def runtime_domain_membership() -> dict[str, str]:
     return membership
 
 
+def check_service_defaults(errors: list[str]) -> None:
+    """Demo data and TLS-trust defaults must fail closed in every service profile.
+
+    A service whose base profile can seed demo data must ship a prod profile that
+    disables it (compose/helm env overrides are not the only way a deployment is
+    built), and the OpenSearch hostname-verification escape hatch must default to
+    false so an https endpoint without an explicit decision fails closed.
+    """
+    for app_yml in sorted((ROOT / "services").glob("*/src/main/resources/application.yml")):
+        service = app_yml.parents[3].name
+        text = app_yml.read_text(encoding="utf-8")
+        prod_yml = app_yml.parent / "application-prod.yml"
+        prod_text = prod_yml.read_text(encoding="utf-8") if prod_yml.is_file() else ""
+        demo = re.search(
+            r"(?m)^\s+demo-data:\s*\n\s+enabled:\s*(\S.*?)\s*$", text
+        )
+        if demo is not None:
+            default_disabled = re.fullmatch(
+                r"false|\$\{[A-Z0-9_]+:false\}", demo.group(1)
+            )
+            if not default_disabled:
+                if not re.search(
+                    r"(?m)^\s+demo-data:\s*\n\s+enabled:\s*false\s*$", prod_text
+                ):
+                    errors.append(
+                        f"{service}: demo-data defaults enabled but application-prod.yml "
+                        "does not set socp.demo-data.enabled: false"
+                    )
+        tls = re.search(r"insecure-skip-verify:\s*(\S.*?)\s*$", text, re.MULTILINE)
+        if tls is not None and not re.fullmatch(
+            r"false|\$\{[A-Z0-9_]+:false\}", tls.group(1)
+        ):
+            prod_tls = re.search(
+                r"insecure-skip-verify:\s*(\S.*?)\s*$", prod_text, re.MULTILINE
+            )
+            if prod_tls is None or not re.fullmatch(
+                r"false|\$\{[A-Z0-9_]+:false\}", prod_tls.group(1)
+            ):
+                errors.append(
+                    f"{service}: OpenSearch insecure-skip-verify must default to false "
+                    f"in the base or production profile, found {tls.group(1)}"
+                )
+
+
 def main() -> int:
     errors: list[str] = []
+    check_service_defaults(errors)
     runtime_domains = runtime_domain_membership()
     if not DOCKERFILE.is_file():
         errors.append("missing deploy/docker/Dockerfile.jvm")
@@ -166,6 +211,13 @@ def main() -> int:
             "SOCP_DETECT_RUNTIME_ROLE: api",
             "SOCP_DETECT_RUNTIME_ROLE: worker",
             "SOCP_DETECT_INSTANCE_ID: metadata.uid",
+            "SOCP_DETECT_INPUT_TOPIC: socp-detection-routed-v2",
+            "SOCP_DETECT_OUTPUT_MODE: primary",
+            "SOCP_DETECT_ROUTING_MODE: primary",
+            "SOCP_DETECT_ROUTING_SOURCE_TOPIC: socp-events",
+            "SOCP_DETECT_ROUTING_DELIVERY_TOPIC: socp-detection-routed-v2",
+            "SOCP_DETECT_ROUTING_SOURCE_GROUP_ID: socp-detect-router-v2",
+            'SOCP_DETECT_ROUTING_PUBLISHER_ENABLED: "true"',
             "SOCP_HEALTH_REQUIRED_ENDPOINTS:",
             "SOCP_SECURITY_REQUIRE_GATEWAY: \"true\"",
             "SOCP_SSA_URI: http://alert-web:8080",

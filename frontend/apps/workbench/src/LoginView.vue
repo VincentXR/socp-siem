@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { login as apiLogin } from './api'
+import { onMounted, ref } from 'vue'
+import { authCapabilities, login as apiLogin } from './api'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { useI18n } from './composables/useI18n'
 import { normalizeLocale, setLocale } from './i18n/locale-manager'
@@ -12,6 +12,21 @@ const demoMode = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true
 const username = ref(demoMode ? 'demo' : '')
 const password = ref(demoMode ? 'demo123' : '')
 const busy = ref(false)
+const capabilities = ref({ localPassword: demoMode, oidc: false })
+const capabilitiesLoading = ref(true)
+const capabilitiesError = ref('')
+
+async function loadCapabilities() {
+  capabilitiesLoading.value = true
+  capabilitiesError.value = ''
+  try { capabilities.value = await authCapabilities() }
+  catch (error) {
+    // A production client must not invent an unavailable login method when
+    // discovery fails. The local form remains a development-only recovery.
+    capabilities.value = { localPassword: demoMode, oidc: false }
+    capabilitiesError.value = error instanceof Error ? error.message : String(error)
+  } finally { capabilitiesLoading.value = false }
+}
 
 async function doLogin() {
   if (busy.value) return
@@ -41,6 +56,7 @@ function quickFill(u: string, p: string) {
 function oidcLogin() {
   window.location.href = '/auth/oidc/login'
 }
+onMounted(loadCapabilities)
 </script>
 
 <template>
@@ -67,7 +83,9 @@ function oidcLogin() {
         <p>{{ t('login.subtitle') }}</p>
       </div>
 
-      <form class="login-form" @submit.prevent="doLogin">
+      <div v-if="capabilitiesLoading" class="login-capability-status" role="status">{{ t('common.loading') }}</div>
+      <div v-if="capabilitiesError" class="login-capability-error" role="alert">{{ capabilitiesError }}</div>
+      <form v-if="capabilities.localPassword" class="login-form" @submit.prevent="doLogin">
         <label class="field">
           <span class="field-label">{{ t('login.username') }}</span>
           <input v-model="username" class="input" :placeholder="demoMode ? 'demo / admin' : ''" autocomplete="username" />
@@ -82,13 +100,13 @@ function oidcLogin() {
         </button>
       </form>
 
-      <div v-if="demoMode" class="quick">
+      <div v-if="demoMode && capabilities.localPassword" class="quick">
         <span class="quick-label">{{ t('login.demoAccounts') }}</span>
         <button type="button" class="chip" @click="quickFill('demo', 'demo123')">{{ t('login.analystDemo') }}</button>
         <button type="button" class="chip" @click="quickFill('admin', 'admin123')">{{ t('login.adminDemo') }}</button>
       </div>
 
-      <div class="oidc-row">
+      <div v-if="capabilities.oidc" class="oidc-row">
         <button type="button" class="oidc-btn" @click="oidcLogin">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="11" width="18" height="11" rx="2" />
@@ -97,6 +115,7 @@ function oidcLogin() {
           <span>Keycloak {{ t('login.ssoLogin') }}</span>
         </button>
       </div>
+      <p v-if="!capabilitiesLoading && !capabilities.localPassword && !capabilities.oidc" class="login-capability-error">{{ t('login.noMethods') }}</p>
     </div>
 
     <div class="login-foot">JWT {{ t('login.securityHint') }}</div>
@@ -204,6 +223,8 @@ function oidcLogin() {
 .chip:hover { background: var(--ns-accent-subtle); border-color: var(--ns-accent); color: var(--ns-accent-fg); }
 
 .oidc-row { margin-top: 14px; }
+.login-capability-status { color: var(--ns-text-3); font-size: 13px; text-align: center; }
+.login-capability-error { margin: 10px 0; color: var(--el-color-danger); font-size: 12px; text-align: center; }
 .oidc-btn {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   width: 100%; height: 42px;

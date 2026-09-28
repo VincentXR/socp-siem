@@ -361,6 +361,12 @@ export const zhCN = {
     nextActions: '下一步',
     openAiInvestigation: '用 AI 研判',
     openSoarResponse: '进入 SOAR 响应',
+    downstreamDelivery: '下游投递状态',
+    noDeliveries: '尚未登记下游投递',
+    loadDeliveriesFailed: '下游投递状态加载失败，请重试',
+    deliveryAttempts: '已尝试 {count} 次',
+    requeueDelivery: '重新投递',
+    deliveryRequeued: '投递已重新入队',
   },
   cases: {
     title: '案件管理',
@@ -1899,6 +1905,7 @@ export const zhCN = {
     analystDemo: '分析师 demo',
     adminDemo: '管理员 admin',
     ssoLogin: '统一登录',
+    noMethods: '当前环境未配置可用的登录方式，请联系管理员。',
     securityHint: '会话 30 分钟 · 全链路强制验签 · 多租户隔离',
   },
   errors: {

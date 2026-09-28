@@ -1,7 +1,7 @@
 import { del, downloadFile, get, post, put, requestJson, type ApiRequestOptions } from './core'
 import type {
   Alarm, AlarmBatchDispositionResult, AlarmFeedback, AlarmFeedbackKind,
-  AlarmEvidenceResponse, AlarmPage, AlarmSortField, AlarmSortOrder, AlarmStats, Disposition,
+  AlarmDeliveryStatus, AlarmEvidenceResponse, AlarmPage, AlarmSortField, AlarmSortOrder, AlarmStats, Disposition,
 } from './models'
 import { withQuery } from '../lib/query'
 
@@ -14,8 +14,14 @@ export const listAlarmsPaged = (
   order: 'ascending' | 'descending' = 'descending', options?: ApiRequestOptions,
 ) => get<AlarmPage>(withQuery('/alert-web/api/alarms', { page, size, q, severity, status, rule, sort, order }), options)
 export const createAlarm = (a: Partial<Alarm>) => post<Alarm>('/alert-web/api/alarms', a)
+export const getAlarm = (id: string, options?: ApiRequestOptions) =>
+  get<Alarm>(`/alert-web/api/alarms/${encodeURIComponent(id)}`, options)
 export const getDisposition = (id: string) => get<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/disposition`)
 export const getAlarmEvidence = (id: string) => get<AlarmEvidenceResponse>(`/alert-web/api/alarms/${encodeURIComponent(id)}/evidence`)
+export const getAlarmDeliveries = (id: string) =>
+  get<AlarmDeliveryStatus[]>(`/alert-web/api/alarms/${encodeURIComponent(id)}/deliveries`)
+export const requeueAlarmDelivery = (deliveryId: string) =>
+  post<{ id: string; type: string; tenantId: string; status: string; requeuedAt: string }>(`/alert-web/api/admin/outbox/alarm-deliveries/${encodeURIComponent(deliveryId)}/requeue`)
 export const setDispositionStatus = (id: string, status: string) => put<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/status`, { status })
 export const assignAlarm = (id: string, assignee: string) => post<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/assign`, { assignee })
 export const addAlarmNote = (id: string, content: string, author = 'operator', idempotencyKey?: string) =>

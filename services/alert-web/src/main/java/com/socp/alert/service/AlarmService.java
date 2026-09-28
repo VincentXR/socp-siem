@@ -301,7 +301,11 @@ public class AlarmService {
     }
 
     public Alarm get(String id) {
-        return queryService.get(id);
+        Alarm alarm = queryService.get(id);
+        if (alarm == null) {
+            throw com.socp.platform.error.exception.ApiException.notFound("Alarm does not exist: " + id);
+        }
+        return alarm;
     }
 
     /**

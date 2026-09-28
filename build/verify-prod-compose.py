@@ -262,10 +262,23 @@ def check_application_services(errors: list[str], document: dict, source: str, r
             require_literal(errors, service, env, "SOCP_AUTH_COOKIE_SECURE", "true", source)
             require_literal(errors, service, env, "SOCP_AUTH_REVOCATION_BACKEND", "redis", source)
             require_literal(errors, service, env, "SOCP_OIDC_STATE_BACKEND", "redis", source)
-            require_required_secret(errors, service, env, "SOCP_LOGIN_SECRET", "SOCP_LOGIN_SECRET", source, rendered)
+            require_required_secret(errors, service, env, "SOCP_AUTH_SIGNING_JWK", "SOCP_AUTH_SIGNING_JWK", source, rendered)
+            require_required_secret(errors, service, env, "SOCP_AUTH_ISSUER", "SOCP_SECURITY_ISSUER_URI", source, rendered)
             for key in ("SOCP_SSA_URI", "SOCP_GLS_URI", "SOCP_GAS_WEB_URI", "SOCP_GAS_WORKER_URI"):
                 if not env.get(key, "").strip():
                     errors.append(f"{source}: api-gateway must route {key}")
+        if service in ("detect-web-api", "detect-web-worker"):
+            routed = {
+                "SOCP_DETECT_INPUT_TOPIC": "socp-detection-routed-v2",
+                "SOCP_DETECT_OUTPUT_MODE": "primary",
+                "SOCP_DETECT_ROUTING_MODE": "primary",
+                "SOCP_DETECT_ROUTING_SOURCE_TOPIC": "socp-events",
+                "SOCP_DETECT_ROUTING_DELIVERY_TOPIC": "socp-detection-routed-v2",
+                "SOCP_DETECT_ROUTING_SOURCE_GROUP_ID": "socp-detect-router-v2",
+                "SOCP_DETECT_ROUTING_PUBLISHER_ENABLED": "true",
+            }
+            for key, expected in routed.items():
+                require_literal(errors, service, env, key, expected, source)
 
 
 def check_kafka(errors: list[str], base: dict, overlay: dict, effective: dict) -> None:

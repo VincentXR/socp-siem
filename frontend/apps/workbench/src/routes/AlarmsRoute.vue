@@ -21,6 +21,7 @@ const alarmPageData = computed(() => query.alarmPageData.value)
 const alarmLoading = computed(() => query.loading.value)
 const alarmError = computed(() => query.error.value?.message ?? '')
 const canWrite = computed(() => ['admin', 'analyst', 'role_admin', 'role_analyst'].includes(state.currentRole.value.toLowerCase()))
+const canAdmin = computed(() => ['admin', 'role_admin'].includes(state.currentRole.value.toLowerCase()))
 const router = useRouter()
 
 function goCase(caseId?: string) {
@@ -73,5 +74,6 @@ function exportWithCurrentFilters(format: 'csv' | 'json') {
     :go-soar="goSoar"
     :assignee-options="state.operatorOptions.value"
     :can-write="canWrite"
+    :can-admin="canAdmin"
   />
 </template>

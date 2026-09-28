@@ -56,6 +56,12 @@ if is_json(.message) {
   . = merge!(., parsed)
 }
 
+# 解包后、disk buffer 前生成：先保留正文携带的 event.id/event_id；仅在上游
+# 没有逻辑 ID 时补 eventId。响应丢失/503/重启重投会复用同一缓冲事件 ID。
+if !exists(.eventId) && !exists(.event.id) && !exists(.event_id) {
+  .eventId = uuid_v4()
+}
+
 .parse_format = "auto"
 if exists(.port) { del(.port) }
 '''

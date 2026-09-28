@@ -50,8 +50,10 @@ successful workflow from an older revision is not proof for HEAD.
 
 The Compose MinIO fixture is built from upstream commit
 `9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a` (the October 2025 security release),
-using the image catalog's build/runtime bases. This replaces the unavailable
-Docker Hub community image and its September server binary, which predates
+using the image catalog's Go build image and a self-contained `scratch` runtime
+with only the static server, CA roots, and upstream license notices. This
+replaces the unavailable community distribution image and its September server
+binary, which predates
 [GHSA-jjjj-jwhf-8rgr](https://github.com/minio/minio/security/advisories/GHSA-jjjj-jwhf-8rgr).
 Compose builds this local image automatically; the first start therefore needs
 GitHub and Go module access. The source revision and original license/notice are
@@ -87,7 +89,8 @@ runtime role. `build/verify-production.py` and `build/verify-prod-compose.py`
 assert this. The remaining reference-deployment secret keys are
 `SOCP_SECURITY_SERVICE_SECRET`,
 `SOCP_SECURITY_METRICS_TOKEN`, `SOCP_SECURITY_ISSUER_URI`,
-`SOCP_SECURITY_JWK_SET_URI`, `SOCP_SECURITY_AUDIENCE`, `SOCP_LOGIN_SECRET`,
+`SOCP_SECURITY_JWK_SET_URI`, `SOCP_SECURITY_AUDIENCE`,
+`SOCP_AUTH_SIGNING_JWK`, `SOCP_AUTH_ISSUER`, `SOCP_AUTH_USERS`,
 `SOCP_OPENSEARCH_USERNAME`, `SOCP_OPENSEARCH_PASSWORD`, `SOCP_CK_USER`,
 `SOCP_CK_PASSWORD`, `SOCP_COLLECTOR_CREDENTIALS`, `SOCP_INGEST_TOKEN`, and
 `SOCP_VECTOR_TOKEN` where the corresponding service uses them. Secret keys
@@ -99,9 +102,19 @@ used only by PostgreSQL initialization. If it is omitted, the legacy
 `SOCP_PG_PASSWORD` value is used as the local fallback; production must set
 all four explicit role variables and must not reuse the bootstrap secret.
 
-In production, user JWTs are trusted by business services only when the API
-Gateway adds a short-lived, nonce-protected HMAC proof bound to the original
-HTTP method, path, tenant, and token digest. Set the same
+In production, the API Gateway signs platform session JWTs with the private
+RSA JWK in `SOCP_AUTH_SIGNING_JWK`; the configured key must include a stable
+`kid`, and only its public members are exposed by
+`/.well-known/socp-jwks.json`. `SOCP_AUTH_ISSUER` must exactly match
+`SOCP_SECURITY_ISSUER_URI`, and every service validates that issuer, the
+`socp-api` audience, and the platform JWKS URI. External OIDC configuration
+under `SOCP_OIDC_*` remains a separate upstream identity source. The production
+boot smoke verifies an actual local login token against the served public key;
+it does not permit the development HMAC fallback.
+
+Business services additionally trust a user JWT only when the API Gateway adds
+a short-lived, nonce-protected HMAC proof bound to the original HTTP method,
+path, tenant, and token digest. Set the same
 `SOCP_SECURITY_SERVICE_SECRET` on the Gateway and every protected service;
 `SOCP_SECURITY_REQUIRE_GATEWAY=true` is enabled by the production Compose and
 Kubernetes baselines. Internal service-token calls remain separately signed,
@@ -110,10 +123,17 @@ missing, expired, or replayed.
 
 ## Kubernetes rollout
 
-`deploy/helm/socp-core` is the single application release definition for the
-core event path. Four digest-addressed images render six independently
-scalable workloads. Environment values select fixed dev replicas or HPA/PDB
-capacity policy without duplicating Deployment manifests. The deployment
+`deploy/helm/socp-core` is the application release definition. Its default
+profiles are the core event path: four digest-addressed images render six
+independently scalable workloads. Layering `values-production.yaml` and
+`values-product.yaml` renders the full Workbench-backed product as sixteen
+workloads, including Incident, Notify, SOAR, reporting, assets, endpoint,
+threat, ATT&CK, SOC, and AI domains. The product profile also enables all four
+Alert delivery destinations; the core profile enables ClickHouse only so it
+does not accumulate retries for workloads it intentionally omits.
+
+Environment values select fixed dev replicas or HPA/PDB capacity policy
+without duplicating Deployment manifests. The deployment
 platform creates the restricted `socp-system` namespace from
 `deploy/k8s/namespace.yaml`; Helm owns the namespaced application resources.
 
@@ -138,6 +158,14 @@ The database, Kafka, OpenSearch, ClickHouse, Redis, identity provider, and
 object store are intentionally not bundled into this application baseline.
 They need managed services or separately reviewed operators with their own
 topology, replication, TLS, upgrade, and failure-domain policy.
+
+The full product profile requires Temporal and an S3-compatible artifact store
+for SOAR. It projects `socp-soar-secrets` read-only at
+`/var/run/secrets/socp`; the deployment owner must populate the artifact
+credentials and any connector secrets, provide a trusted TLS chain for the
+configured HTTPS endpoint, and retain the fail-closed Kubernetes secret
+backend. The chart verifies wiring, not vendor compatibility or trust-chain
+ownership.
 
 Any Redis instance the platform points at carries correctness keys — signed
 service-request replay nonces and the session revocation list — so it must be

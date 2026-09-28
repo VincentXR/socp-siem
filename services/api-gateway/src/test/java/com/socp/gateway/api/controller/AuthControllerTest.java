@@ -95,11 +95,22 @@ class AuthControllerTest {
         assertEquals("session", isolated.get("source"));
     }
 
+    @Test
+    void capabilitiesReflectOnlyConfiguredAuthenticationMethods() {
+        AuthController controller = controller();
+        assertEquals(Map.of("localPassword", false, "oidc", false), controller.capabilities());
+
+        ReflectionTestUtils.setField(controller, "usersJson", "{\"demo\":\"demo123\"}");
+        ReflectionTestUtils.setField(controller, "oidcIssuerUri", "https://id.example.test/realms/socp");
+        controller.init();
+
+        assertEquals(Map.of("localPassword", true, "oidc", true), controller.capabilities());
+    }
+
     private static AuthController controller() {
         AuthController controller = new AuthController();
-        ReflectionTestUtils.setField(controller, "secret",
-                "socp-demo-jwt-secret-0123456789abcdef0123456789abcdef");
         ReflectionTestUtils.setField(controller, "serviceSecret", "service-secret-0123456789");
+        ReflectionTestUtils.setField(controller, "oidcIssuerUri", "");
         ReflectionTestUtils.setField(controller, "usersJson", "{}");
         ReflectionTestUtils.setField(controller, "rolesJson", "{}");
         ReflectionTestUtils.setField(controller, "localesJson", "{}");

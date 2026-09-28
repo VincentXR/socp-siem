@@ -5,17 +5,12 @@ on:
     branches: [main]
     paths:
       - 'platform/**'
-      - 'services/detect-web/**'
-      - 'services/search-config/**'
-      - 'services/ai-assistant/**'
-      - 'services/api-gateway/**'
-      - 'services/threat-web/**'
+      - 'services/**'
+      - 'frontend/**'
       - 'infra/**'
-      - 'deploy/docker/minio/**'
+      - 'deploy/**'
       - '.github/workflows/full-stack.yml'
-      - 'build/prepare-ci-credentials.py'
-      - 'build/auth_client.py'
-      - 'build/demos/**'
+      - 'build/**'
   workflow_dispatch:
   schedule:
     - cron: "30 2 * * 1"
@@ -36,7 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
-      SOCP_SECURITY_ALLOW_PROD_HMAC: "true"
       SOCP_PG_USER: socp_runtime
       SOCP_PG_RUNTIME_USER: socp_runtime
       SOCP_PG_MIGRATION_USER: socp_migrator

@@ -2,6 +2,7 @@ package com.socp.alert.service;
 
 import com.socp.alert.domain.AlarmDelivery;
 import com.socp.alert.persistence.repository.AlarmDeliveryRepository;
+import com.socp.alert.domain.AlarmDeliveryDestination;
 
 
 import org.junit.jupiter.api.Test;
@@ -65,6 +66,22 @@ class AlarmDeliveryRegistrarTest {
         ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
         verify(repository).saveAll(captor.capture());
         assertEquals(3, StreamSupport.stream(captor.getValue().spliterator(), false).count());
+    }
+
+    @Test
+    void registersOnlyDestinationsThatExistInTheDeploymentProfile() {
+        given(repository.findByTenantIdAndIdIn(org.mockito.ArgumentMatchers.eq("tenant-a"), anyList()))
+                .willReturn(List.of());
+        AlarmDeliveryRegistrar registrar = new AlarmDeliveryRegistrar(repository,
+                java.util.Set.of(AlarmDeliveryDestination.CLICKHOUSE));
+
+        registrar.register("tenant-a", "AL-1", "{\"id\":\"AL-1\"}");
+
+        ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
+        verify(repository).saveAll(captor.capture());
+        List<AlarmDelivery> deliveries = StreamSupport.stream(captor.getValue().spliterator(), false).toList();
+        assertEquals(1, deliveries.size());
+        assertEquals("CLICKHOUSE", deliveries.getFirst().getDestination());
     }
 
     @Test

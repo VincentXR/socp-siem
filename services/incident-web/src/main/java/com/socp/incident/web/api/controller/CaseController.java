@@ -133,9 +133,16 @@ public class CaseController {
     }
 
     @GetMapping("/incidents/{id}")
-    public ApiResult<Map<String, Object>> get(@PathVariable String id) {
+    public ApiResult<Case> get(@PathVariable String id) {
         Case c = service.get(id);
-        return ApiResult.ok(Map.of("found", c != null, "case", c == null ? Map.of() : c));
+        if (c == null) throw ApiException.notFound("未找到案件 " + id);
+        return ApiResult.ok(c);
+    }
+
+    /** Exact alarm-to-case lookup used by triage deep links and the alarm drawer. */
+    @GetMapping("/incidents/by-alarm")
+    public ApiResult<Case> byAlarm(@RequestParam String alarmId) {
+        return ApiResult.ok(service.findByAlarmId(alarmId));
     }
 
     /** 案件时间线：page 从 1 起（存储层为 0-based，这里做换算）。 */

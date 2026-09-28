@@ -23,7 +23,7 @@ type Details = { timeline: TimelineEvent[]; detail: CaseInfo }
 it('ignores an old timeline even when the cancelled transport still resolves', async () => {
   const pending = new Map<string, (value: unknown) => void>()
   vi.mocked(caseApi.timeline).mockImplementation(id => new Promise(resolve => pending.set(id, resolve as (value: unknown) => void)))
-  vi.mocked(caseApi.get).mockImplementation(async id => ({ found: true, case: caseInfo(id) }))
+  vi.mocked(caseApi.get).mockImplementation(async id => caseInfo(id))
   query.caseId = 'A'
   const wrapper = shallowMount(CasesView)
   await flushPromises()
@@ -41,7 +41,7 @@ it('ignores an old timeline even when the cancelled transport still resolves', a
 
 it('loads a deep-linked case outside the current page', async () => {
   query.caseId = 'off-page'
-  vi.mocked(caseApi.get).mockResolvedValue({ found: true, case: caseInfo('off-page') })
+  vi.mocked(caseApi.get).mockResolvedValue(caseInfo('off-page'))
   vi.mocked(caseApi.timeline).mockResolvedValue({ items: [], total: 0 } as never)
   const wrapper = shallowMount(CasesView)
   await flushPromises()

@@ -11,4 +11,6 @@ public interface AlarmCaseLinkRepository extends TenantScopedRepository<AlarmCas
     List<AlarmCaseLinkEntity> findByTenantId(String tenantId);
     Optional<AlarmCaseLinkEntity> findByIdAndTenantId(String id, String tenantId);
     Optional<AlarmCaseLinkEntity> findByTenantIdAndAlarmId(String tenantId, String alarmId);
+    List<AlarmCaseLinkEntity> findByTenantIdAndCaseIdOrderByAlarmIdAsc(String tenantId, String caseId);
+    List<AlarmCaseLinkEntity> findByTenantIdAndCaseIdIn(String tenantId, List<String> caseIds);
 }

@@ -30,6 +30,20 @@ IMAGE_KEYS = {
     "detectWeb": "socp-detect-web",
     "alertWeb": "socp-alert-web",
 }
+PRODUCT_IMAGE_KEYS = {
+    "soarWeb": "socp-soar-web", "reportWeb": "socp-report-web",
+    "assetWeb": "socp-asset-web", "socBase": "socp-soc-base",
+    "hipsWeb": "socp-hips-web", "aiAssistant": "socp-ai-assistant",
+    "threatWeb": "socp-threat-web", "attackWeb": "socp-attack-web",
+    "notifyWeb": "socp-notify-web", "incidentWeb": "socp-incident-web",
+}
+PRODUCT_WORKLOADS = {
+    "soar-web": "socp-soar-web", "report-web": "socp-report-web",
+    "asset-web": "socp-asset-web", "soc-base": "socp-soc-base",
+    "hips-web": "socp-hips-web", "ai-assistant": "socp-ai-assistant",
+    "threat-web": "socp-threat-web", "attack-web": "socp-attack-web",
+    "notify-web": "socp-notify-web", "incident-web": "socp-incident-web",
+}
 # Workloads whose application.yml exposes the actuator metrics endpoint, and
 # the one that deliberately does not. services/api-gateway/.../application.yml
 # limits the application port to health and defers Prometheus samples to a
@@ -97,7 +111,7 @@ def require(errors: list[str], condition: bool, message: str) -> None:
         errors.append(message)
 
 
-def release_image_args() -> list[str]:
+def release_image_args(include_product: bool = False) -> list[str]:
     """Supply immutable image coordinates through the chart release interface.
 
     Real deployment automation should inject `images.<key>.repository` and
@@ -105,10 +119,56 @@ def release_image_args() -> list[str]:
     release image identity.
     """
     args: list[str] = []
-    for key, artifact in IMAGE_KEYS.items():
+    images = IMAGE_KEYS | (PRODUCT_IMAGE_KEYS if include_product else {})
+    for key, artifact in images.items():
         args += ["--set-string", f"images.{key}.repository=example.invalid/{artifact}"]
         args += ["--set-string", f"images.{key}.digest=sha256:{'0' * 64}"]
     return args
+
+
+def verify_product_profile(helm: str, errors: list[str]) -> None:
+    values = [
+        "--values", str(TEST_VALUES),
+        "--values", str(CHART / "values-production.yaml"),
+        "--values", str(CHART / "values-product.yaml"),
+        *release_image_args(include_product=True),
+    ]
+    run([helm, "lint", str(CHART), *values])
+    documents = manifest_documents(run([
+        helm, "template", "socp-product", str(CHART), "--namespace", NAMESPACE, *values,
+    ]).stdout)
+    require(errors, len([key for key in documents if key[0] == "Deployment"]) == 16,
+            "product: expected sixteen Deployments (six event-path plus ten product domains)")
+    require(errors, len([key for key in documents if key[0] == "Service"]) == 16,
+            "product: expected sixteen Services")
+    require(errors, len([key for key in documents if key[0] == "HorizontalPodAutoscaler"]) == 16,
+            "product: every workload needs an HPA")
+    for workload, artifact in PRODUCT_WORKLOADS.items():
+        deployment = documents.get(("Deployment", workload), "")
+        require(errors, bool(deployment), f"product: Deployment/{workload} is missing")
+        require(errors, re.search(
+            rf"image:\s+example\.invalid/{re.escape(artifact)}@sha256:0{{64}}\s*$",
+            deployment, re.MULTILINE) is not None,
+            f"product: Deployment/{workload} is not pinned to its product image digest")
+        for key in ("SOCP_PG_USER", "SOCP_PG_PASSWORD", "SOCP_PG_MIGRATION_USER", "SOCP_PG_MIGRATION_PASSWORD"):
+            require(errors, f"name: {key}" in deployment,
+                    f"product: Deployment/{workload} must fail early when Secret key {key} is absent")
+    alert = documents.get(("Deployment", "alert-web"), "")
+    require(errors, "CLICKHOUSE,NOTIFY,INCIDENT,SOAR" in alert,
+            "product: alert-web must register every deployed downstream destination")
+    soar = documents.get(("Deployment", "soar-web"), "")
+    require(errors, "secretName: socp-soar-secrets" in soar
+            and "mountPath: /var/run/secrets/socp" in soar,
+            "product: SOAR must mount its connector/artifact secret projection read-only")
+    runtime = documents.get(("ConfigMap", "socp-runtime"), "")
+    for route in ("SOCP_SOAR_URI", "SOCP_SFM_URI", "SOCP_SAM_WEB_URI", "SOCP_SOC_URI",
+                  "SOCP_HIPS_WEB_URI", "SOCP_AI_URI", "SOCP_TI_URI", "SOCP_ATTACK_URI",
+                  "SOCP_NOTIFY_URI", "SOCP_CASE_URI"):
+        require(errors, f"{route}:" in runtime,
+                f"product: gateway route {route} must resolve to a deployed workload")
+    policy = documents.get(("NetworkPolicy", "socp-core-egress"), "")
+    require(errors, "port: 7233" in policy and "port: 9000" in policy,
+            "product: dependency egress must admit Temporal and S3-compatible artifact storage")
 
 
 def values_workload_block(values: str, workload: str) -> str:
@@ -319,6 +379,16 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
                 f"{prefix} readiness timeoutSeconds must exceed the pinned HikariCP "
                 f"connection wait ({hikari_ms}ms) or the db contributor yields a timeout, not DOWN")
 
+    gateway = documents.get(("Deployment", "api-gateway"), "")
+    require(errors,
+            re.search(
+                r"(?ms)- name:\s*SOCP_AUTH_SIGNING_JWK\s*$.*?secretKeyRef:\s*.*?"
+                r"name:\s*socp-runtime-secrets\s*$.*?key:\s*SOCP_AUTH_SIGNING_JWK\s*$",
+                gateway,
+                re.MULTILINE,
+            ) is not None,
+            f"{profile}: Deployment/api-gateway must fail early when the RSA signing JWK is absent")
+
     for workload, role in (
         ("search-config-api", "api"),
         ("search-config-worker", "worker"),
@@ -399,6 +469,7 @@ def main() -> int:
     try:
         for profile in PROFILES:
             verify_profile(helm, profile, errors)
+        verify_product_profile(helm, errors)
     except RuntimeError as exc:
         errors.append(str(exc))
 
@@ -407,7 +478,7 @@ def main() -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print("Helm release contract passed: 3 profiles, 4 images, 6 workloads")
+    print("Helm release contract passed: 3 core profiles plus 16-workload product profile")
     return 0
 
 

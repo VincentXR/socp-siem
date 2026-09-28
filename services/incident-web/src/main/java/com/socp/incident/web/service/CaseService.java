@@ -34,6 +34,7 @@ public class CaseService {
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     private final CaseStore store;
     private final AlarmCaseLinkRepository alarmLinks;
+    private final IncidentAggregationLock aggregationLock;
 
     /** 归档导出：全部案件（含时间线）序列化为 JSON。 */
     /**
@@ -46,13 +47,20 @@ public class CaseService {
         try {
             return MAPPER.writeValueAsString(store.page(1, 10_000, "", "").getContent());
         } catch (Exception e) {
-            return "[]";
+            throw new IllegalStateException("Failed to export incidents", e);
         }
     }
 
     public CaseService(CaseStore store, AlarmCaseLinkRepository alarmLinks) {
+        this(store, alarmLinks, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public CaseService(CaseStore store, AlarmCaseLinkRepository alarmLinks,
+                       IncidentAggregationLock aggregationLock) {
         this.store = store;
         this.alarmLinks = alarmLinks;
+        this.aggregationLock = aggregationLock;
     }
 
     /** 由告警自动建案/归并。alarm 至少含 id/ruleId/ruleName/severity/entity/message/occurredAt。 */
@@ -77,6 +85,11 @@ public class CaseService {
             }
         }
 
+        // Serialize the find-or-create boundary across every service replica.
+        // Empty entities intentionally do not aggregate: there is no stable
+        // subject proving that two otherwise unrelated alarms belong together.
+        if (aggregationLock != null && !entity.isBlank()) aggregationLock.lock(entity);
+
         String existingId = store.openCaseId(entity);
         Case c;
         if (existingId != null) {
@@ -100,7 +113,6 @@ public class CaseService {
             c = c.withAdded(ruleId, alarmId, ev);
             store.save(c);
         }
-        rememberAlarm(alarmId, c.id());
         return response(c, existingId == null, false);
     }
 
@@ -155,6 +167,20 @@ public class CaseService {
 
     public Case get(String id) {
         return store.get(id);
+    }
+
+    /** Exact tenant-scoped reverse lookup; avoids scanning an arbitrary case page. */
+    public Case findByAlarmId(String alarmId) {
+        if (alarmId == null || alarmId.isBlank()) {
+            throw ApiException.badRequest("alarmId must not be blank");
+        }
+        AlarmCaseLinkEntity link = alarmLinks.findByTenantIdAndAlarmId(tenant(), alarmId.trim())
+                .orElseThrow(() -> ApiException.notFound("未找到告警 " + alarmId + " 关联的案件"));
+        Case incident = store.get(link.getCaseId());
+        if (incident == null) {
+            throw ApiException.notFound("告警 " + alarmId + " 的案件关联已失效");
+        }
+        return incident;
     }
 
     /** The documented Case lifecycle; anything else is a client error, not storage. */

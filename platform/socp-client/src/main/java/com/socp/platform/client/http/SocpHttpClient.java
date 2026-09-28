@@ -177,6 +177,13 @@ public class SocpHttpClient {
         return postExternal(absoluteUrl, body, contentType, timeoutMs, Map.of(), props.getExternalAllowedHosts(), 1);
     }
 
+    /** Irreversible external call with a stable connector-owned idempotency key. */
+    public ServiceCall postExternalOnce(String absoluteUrl, String body, String contentType, int timeoutMs,
+                                        Map<String, String> headers) {
+        return postExternal(absoluteUrl, body, contentType, timeoutMs,
+                headers == null ? Map.of() : headers, props.getExternalAllowedHosts(), 1);
+    }
+
     private ServiceCall postExternal(String absoluteUrl, String body, String contentType, int timeoutMs,
                                      Map<String, String> headers, List<String> allowedHosts, int maxAttempts) {
         // 校验通过后把解析结果钉住到当前线程：execute() 建连时的隐式 DNS 解析只会拿到
