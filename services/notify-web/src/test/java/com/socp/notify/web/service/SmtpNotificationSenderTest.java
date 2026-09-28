@@ -40,7 +40,7 @@ class SmtpNotificationSenderTest {
     }
 
     @Test @org.junit.jupiter.api.Timeout(8)
-    void silentLocalSmtpServerTimesOutWithoutExposingExceptionDetails() throws Exception {
+    void silentLocalSmtpServerProducesTerminalUnknownWithoutExposingExceptionDetails() throws Exception {
         try (var server = new java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress());
              var executor = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             var release = new java.util.concurrent.CountDownLatch(1);
@@ -62,7 +62,9 @@ class SmtpNotificationSenderTest {
             long start = System.nanoTime();
             try {
                 var result = new SmtpNotificationSender(properties, provider).send("ops@example.invalid", "test", "test");
-                assertEquals("SMTP_SEND_FAILED", result.errorCode());
+                assertEquals("unknown", result.status());
+                assertFalse(result.retryable());
+                assertEquals("SMTP_RESULT_UNKNOWN", result.errorCode());
                 assertFalse(result.detail().contains(mail.getHost()));
                 org.junit.jupiter.api.Assertions.assertTrue(java.util.concurrent.TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - start) < 3);
             } finally { release.countDown(); }

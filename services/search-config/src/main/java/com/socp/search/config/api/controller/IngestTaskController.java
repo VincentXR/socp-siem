@@ -30,8 +30,8 @@ import jakarta.validation.Valid;
  *   <li>GET  /api/v1/ingest/tasks           —— 任务列表（配置 + EPS/累计量/健康状态），
  *                                            与 /sources 同口径：1-based page、size 上限 500</li>
  *   <li>GET  /api/v1/ingest/tasks/summary   —— 全局接入摘要（计数走 SQL，不物化目录）</li>
- *   <li>POST /api/v1/ingest/tasks/{id}/start|stop —— 启停任务（等价于切换 enabled 并重渲染 Vector 配置）</li>
- *   <li>POST /api/v1/ingest/tasks/{id}/test —— 灌一条样例日志走完整管线，回显解析结果</li>
+ *   <li>POST /api/v1/ingest/tasks/{id}/start|stop —— 只切换期望配置；采集器仍需人工应用渲染配置</li>
+ *   <li>POST /api/v1/ingest/tasks/{id}/test —— 显式注入一条正式事件走完整管线，并非只读连通检查</li>
  * </ul>
  *
  * <p>未知 id 一律抛 {@link ApiException#notFound}，由 GlobalExceptionHandler 产出
@@ -98,7 +98,10 @@ public class IngestTaskController {
         return toggle(id, false);
     }
 
-    /** 接入连通性自测：灌一条样例日志走完整解析/富化/转发链路，回显管线结果 */
+    /**
+     * 完整链路注入测试。该接口会持久化正式事件，并可能触发检测、告警和下游动作；
+     * UI 的普通“解析预览”使用独立的无副作用 preview API。
+     */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/ingest/tasks/{id}/test")
     public ApiResult<Map<String, Object>> test(@PathVariable String id,
@@ -111,6 +114,9 @@ public class IngestTaskController {
         out.put("id", id);
         out.put("collector", src.collectorTag());
         out.put("sample", sample);
+        out.put("testMode", "PIPELINE_EVENT_INJECTION");
+        out.put("writesEvent", true);
+        out.put("mayTriggerDownstreamActions", true);
         out.put("pipeline", result);
         out.put("ok", Integer.parseInt(String.valueOf(result.getOrDefault("accepted", 0))) > 0);
         return ApiResult.ok(out);
@@ -137,6 +143,7 @@ public class IngestTaskController {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", id);
         out.put("enabled", enabled);
+        out.put("applyState", enabled ? "MANUAL_APPLY_REQUIRED" : "DISABLED");
         out.put("task", toTask(updated));
         return ApiResult.ok(out);
     }
@@ -153,6 +160,8 @@ public class IngestTaskController {
         m.put("type", s.type() == null ? null : s.type().name());
         m.put("format", s.format() == null ? null : s.format().name());
         m.put("enabled", s.enabled());
+        m.put("desiredState", s.enabled() ? "ENABLED" : "DISABLED");
+        m.put("applyState", s.enabled() ? "MANUAL_APPLY_REQUIRED" : "DISABLED");
         m.put("collector", s.collectorTag());
         m.put("target", target(s));
         m.put("env", s.env());
@@ -161,8 +170,21 @@ public class IngestTaskController {
         m.put("sinkTargetId", s.sinkTargetId());
         m.put("parseRuleIds", s.parseRuleIds());
         m.put("createdAt", s.createdAt() == null ? null : s.createdAt().toString());
-        m.put("runtime", monitor.runtime(s.collectorTag(), s.enabled()));
+        Map<String, Object> runtime = monitor.runtime(s.collectorTag(), s.enabled());
+        m.put("collectionState", collectionState(runtime, s.enabled()));
+        m.put("runtime", runtime);
         return m;
+    }
+
+    private static String collectionState(Map<String, Object> runtime, boolean enabled) {
+        if (!enabled) return "DISABLED";
+        return switch (String.valueOf(runtime.getOrDefault("health", "IDLE"))) {
+            case "HEALTHY" -> "RECEIVING";
+            case "ERROR" -> "ERROR";
+            case "STALE" -> "STALE";
+            case "DEGRADED" -> "DEGRADED";
+            default -> "NO_DATA";
+        };
     }
 
     /** 任务列表里给运维一眼能看懂的"从哪儿收"，避免让人回头翻配置详情 */

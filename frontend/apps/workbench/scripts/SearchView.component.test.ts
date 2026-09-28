@@ -33,7 +33,7 @@ function button(label: string) {
 
 beforeEach(() => {
   setLocale('en-US')
-  localStorage.clear()
+  window.localStorage.clear()
   api.listFields.mockResolvedValue([])
   api.listAlarmsByEvent.mockResolvedValue([])
   api.splSearch.mockResolvedValue(result('first', 'cursor-2'))

@@ -27,12 +27,18 @@ routes unavailable by design.
 ## Prerequisites
 
 The deployment platform must create `socp-system` using
-`deploy/k8s/namespace.yaml`. It must then create the external
-`socp-runtime-secrets` Secret. The chart never creates secret values and
-application service accounts receive no external cloud permissions by default.
+`deploy/k8s/namespace.yaml`. It must then create the external workload,
+gateway-signing, and metrics Secrets named by the values files. The chart never
+creates secret values and application service accounts receive no external
+cloud permissions by default.
 
-Every Deployment imports that Secret with `envFrom`, which accepts any subset of
-its keys. That is not good enough for the PostgreSQL role pair, because
+Deployments do not import Secrets with `envFrom`. Each workload names its own
+Secret and the exact keys it is allowed to receive through `secretEnv`; this
+prevents an unrelated key added to a shared Secret from silently reaching every
+process. The legacy `runtime.existingSecret` remains only as an explicit
+compatibility fallback for environment-owned workload additions. The built-in
+workloads use `socp-<workload>-secrets`, while metrics scraping uses
+`runtime.metricsSecret`. This is also necessary for the PostgreSQL role pair, because
 `application-pg.yml` binds Flyway's account to `${SOCP_PG_MIGRATION_USER}` /
 `${SOCP_PG_MIGRATION_PASSWORD}` with no default: a Secret missing those keys
 makes placeholder resolution fail and the application refuses to start
@@ -46,14 +52,32 @@ explicit `secretKeyRef` guarantees a missing runtime credential cannot silently
 resolve to the default account instead of the operator-managed one. The Compose
 overlay enforces the same four values with `${VAR:?}` interpolation.
 
-The gateway likewise names `SOCP_AUTH_SIGNING_JWK` through `secretEnv`.
-Production uses that private RSA JWK to issue platform session tokens and
-publishes only the matching public key through its JWKS endpoint. A missing key
-therefore fails before container startup. `SOCP_AUTH_ISSUER` (the platform
+The gateway alone names `SOCP_AUTH_SIGNING_JWK` from the dedicated
+`runtime.gatewaySigningSecret` (default `socp-gateway-signing`). Production
+uses that private RSA JWK to issue platform session tokens and publishes only
+the matching public key through its JWKS endpoint. A missing key therefore
+fails before container startup. No Deployment uses Secret `envFrom`, and
+non-gateway workloads never reference the gateway signing Secret.
+`SOCP_AUTH_ISSUER` (the platform
 issuer), `SOCP_SECURITY_JWK_SET_URI` (the platform JWKS URL used by services),
-user credentials, and any upstream OIDC settings remain environment-owned
-values in `socp-runtime-secrets` or `runtime.extraConfig`; see
+and the public audience belong in environment-owned `runtime.extraConfig`;
+user credentials and any upstream OIDC credentials belong only in the gateway
+workload Secret; see
 `docs/production-readiness.md` for the exact authentication contract.
+
+For an existing release, first create every workload Secret with only the keys
+listed in that workload's `secretEnv`, plus `socp-metrics-secrets`. To separate
+access without changing the active key, copy the current private JWK into
+`socp-gateway-signing`, roll out the chart, verify that only Gateway pods
+reference it, and then remove `SOCP_AUTH_SIGNING_JWK` from
+`socp-runtime-secrets`. Because ordinary pods may already have observed that
+key, schedule a rotation immediately afterwards. The current Gateway publishes
+one active public key, so rotation is a coordinated cutover: generate a fresh
+RSA JWK with a new `kid`, replace the dedicated Secret, restart Gateway, and
+invalidate existing sessions (or wait for the configured maximum token TTL
+during a maintenance window) before relying solely on the new JWKS response.
+Do not claim an old/new overlap window unless a future release implements a
+multi-key verification set.
 
 `runtime.config` points `SPRING_DATA_REDIS_HOST`/`PORT` at the environment-owned
 Redis. That instance holds the service replay nonces, the revoked-session list,
@@ -62,9 +86,10 @@ Eviction is invisible to the application: an evicted nonce makes `SETNX` succeed
 again, so the replay is accepted, and an evicted revocation entry re-activates a
 logged-out session until its token expires. A full instance under `noeviction`
 fails writes instead, and every consumer turns that exception into an explicit
-refusal. When the instance requires authentication, add
-`SPRING_DATA_REDIS_PASSWORD` to `socp-runtime-secrets`; the chart does not pin it
-because a private-network or mTLS-protected managed Redis is a legitimate shape.
+refusal. When the instance requires authentication, explicitly map
+`SPRING_DATA_REDIS_PASSWORD` from each consuming workload Secret; the chart does
+not require it because a private-network or mTLS-protected managed Redis is a
+legitimate shape.
 
 Dependency endpoints default to the `socp-data` namespace. Override
 `runtime.extraConfig` through an environment-owned values file when using
@@ -178,7 +203,7 @@ helm upgrade --install socp-core deploy/helm/socp-core \
   --set monitoring.serviceMonitor.enabled=true
 ```
 
-Prometheus authenticates with the metrics token from `socp-runtime-secrets`
+Prometheus authenticates with the metrics token from `socp-metrics-secrets`
 (`SOCP_SECURITY_METRICS_TOKEN`). The platform accepts it as
 `Authorization: Bearer <token>` and restricts that credential to the actuator
 metrics endpoints, so Prometheus needs neither a user JWT nor a gateway
@@ -211,7 +236,7 @@ path/port, so the chart declares no `health.metricsPath` for it. The verifier
 rejects a `ServiceMonitor` for that workload and rejects any `metricsPath` that
 does not match the workload's health path.
 
-The `ServiceMonitor` resolves its bearer token from `socp-runtime-secrets` in
+The `ServiceMonitor` resolves its bearer token from `runtime.metricsSecret` in
 the release namespace, so the Prometheus instance must be able to read Secrets
 there. A Prometheus that runs elsewhere or lacks that permission loses the
 credential silently and every scrape returns 401. Confirm credential
@@ -253,11 +278,13 @@ signal rather than a probe timeout. Raising the probe timeout without lowering
 the pool wait leaves the same ambiguity, and the dependency indicator itself
 costs 500ms per configured endpoint, serially.
 
-`SOCP_HEALTH_REQUIRED_ENDPOINTS` lists only what the workload calls
-synchronously. Detection's API role, for example, lists Kafka but not
-`alert-web`: its alert client lives on the worker role, and a transitive hop
-would let one ClickHouse outage pull the northernmost ingest entry out of
-rotation once every tier lost readiness at the same time.
+`SOCP_HEALTH_REQUIRED_ENDPOINTS` remains visible on aggregate health and
+metrics. API readiness includes only the process and PostgreSQL durability
+boundary; asynchronous Kafka, OpenSearch, ClickHouse, Notify, Incident, and
+SOAR failures surface as dependency health and outbox/backlog alerts without
+removing all accepting replicas. Worker-only Deployments may add
+`socpDependencies` to their readiness group because they do not serve the
+interactive API.
 
 ## Release behavior
 

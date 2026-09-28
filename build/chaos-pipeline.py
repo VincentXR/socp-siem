@@ -506,6 +506,22 @@ def list_alerts(token):
     return data if isinstance(data, list) else []
 
 
+def alerts_triggered_by(alerts, source_event_ids, rule_ids):
+    """Return only alerts produced by the current scenario's source events.
+
+    Entity values are intentionally reused by several long-running chaos
+    scenarios.  They are therefore not a safe run boundary: an earlier run
+    can leave a valid alert for the same entity in Alert Web.  The trigger
+    event identity is stable end-to-end and uniquely scopes the oracle without
+    hiding an extra alert produced from one of this scenario's events.
+    """
+    sources = set(source_event_ids)
+    rules = set(rule_ids)
+    return [item for item in alerts
+            if item.get("ruleId") in rules
+            and item.get("triggerEventId") in sources]
+
+
 def java_name_uuid(value):
     """Match java.util.UUID.nameUUIDFromBytes used by Alert.stableId."""
     digest = bytearray(hashlib.md5(value.encode("utf-8")).digest())
@@ -805,11 +821,14 @@ def scenario_opensearch_outage(token):
             return values if len(values) == 1 else None
 
         alarms = wait_for(matching, timeout=180, interval=2) or []
-        # Dependency failure must remove readiness without killing the
-        # process. Aggregate health intentionally includes OpenSearch.
+        # The API can still durably accept into PostgreSQL/outbox while the
+        # asynchronous indexer is unavailable. Readiness therefore stays UP;
+        # aggregate health must still expose the downstream degradation.
         alive_status, _ = request(health_url("search-config") + "/liveness",
                                   headers=auth_headers(token), timeout=4)
         readiness_status, _ = request(health_url("search-config") + "/readiness",
+                                      headers=auth_headers(token), timeout=4)
+        aggregate_status, _ = request(health_url("search-config"),
                                       headers=auth_headers(token), timeout=4)
         search_alive = alive_status == 200
         docker_container("start", "socp-opensearch")
@@ -842,10 +861,12 @@ def scenario_opensearch_outage(token):
             "matchingAlertsWhileDown": len(alarms),
             "searchConfigAliveWhileDown": search_alive,
             "searchConfigReadinessStatusWhileDown": readiness_status,
+            "searchConfigAggregateStatusWhileDown": aggregate_status,
             "openSearchRecovered": bool(os_ready),
             "acceptedAfterRecovery": recovery,
             "recoveryEventIndexed": bool(indexed_after_recovery),
-            "pass": len(alarms) == 1 and search_alive and readiness_status == 503 and bool(os_ready)
+            "pass": len(alarms) == 1 and search_alive and readiness_status == 200
+                    and aggregate_status == 503 and bool(os_ready)
                     and bool(indexed_after_recovery),
         }
     finally:
@@ -968,7 +989,6 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
     def threshold_batch(prefix, ip_start):
         events = []
         expected = []
-        entities = set()
         for group in range(group_count):
             last_octet = 1 + ((ip_start + group) % 253)
             src_ip = f"{dataset.get('sourceIpPrefix', '10.240')}.{run_octets[1]}.{last_octet}"
@@ -984,10 +1004,9 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             } for i, event_id in enumerate(ids))
             expected.append(expected_alert_id(
                 dataset.get("ruleId", "LATERAL-RDP"), src_ip, ids, default_tenant))
-            entities.add(src_ip)
-        return events, expected, entities
+        return events, expected
 
-    events, expected_initial, oracle_rdp_entities = threshold_batch("initial", 220)
+    events, expected_initial = threshold_batch("initial", 220)
 
     # Independent cross-dimension oracle: both records share only tenant+user.
     # Host and source IP intentionally differ, so a canonical single-dimension
@@ -1076,15 +1095,10 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
     }
 
     def oracle_alerts():
-        values = []
-        for item in list_alerts(token):
-            rule = item.get("ruleId")
-            entity = item.get("entity")
-            if rule == dataset.get("ruleId", "LATERAL-RDP") and entity in oracle_rdp_entities:
-                values.append(item)
-            elif rule == "CORR-FAIL-SUDO" and entity == cross_user:
-                values.append(item)
-        return values
+        return alerts_triggered_by(
+            list_alerts(token),
+            source_event_ids,
+            {dataset.get("ruleId", "LATERAL-RDP"), "CORR-FAIL-SUDO"})
 
     def observed_oracle(expected_ids):
         values = oracle_alerts()
@@ -1129,12 +1143,11 @@ def scenario_multi_instance(token, count, rebalance_cycles=1):
             after_stop_partitions = (after_stop or {}).get("assignedPartitions", [])
             rebalance_ok = sum(len(item) for item in after_stop_partitions) == baseline["partitions"]
 
-            post_events, expected_post, post_entities = threshold_batch(
+            post_events, expected_post = threshold_batch(
                 f"post-rebalance-{cycle + 1}", 20 + cycle * 20)
             post_ingest = ingest(token, post_events)
             source_event_ids.update(item["eventId"] for item in post_events)
             expected_all.extend(expected_post)
-            oracle_rdp_entities.update(post_entities)
 
             matching_all = wait_for(
                 lambda: observed_oracle(expected_all), timeout=180, interval=2) or oracle_alerts()

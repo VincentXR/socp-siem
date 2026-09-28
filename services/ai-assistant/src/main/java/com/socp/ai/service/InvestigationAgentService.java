@@ -66,25 +66,56 @@ public class InvestigationAgentService {
 
     /** Persist before acknowledging acceptance; concurrent submissions never overwrite a receipt. */
     public InvestigationEntity enqueue(String alertId) {
+        return enqueue(alertId, false, null);
+    }
+
+    public InvestigationEntity enqueue(String alertId, boolean newVersion) {
+        return enqueue(alertId, newVersion, null);
+    }
+
+    public InvestigationEntity enqueue(String alertId, boolean newVersion, Integer baseRevision) {
         String tenant = TenantContext.require();
         String normalizedAlertId = normalizeAlertId(alertId);
-        String investigationId = idFor(tenant, normalizedAlertId);
-        InvestigationEntity existing = repository.findByTenantIdAndAlertId(tenant, normalizedAlertId)
-                .orElse(null);
+        InvestigationEntity existing = repository
+                .findFirstByTenantIdAndAlertIdOrderByRevisionDesc(tenant, normalizedAlertId).orElse(null);
+        boolean terminal = existing != null && List.of("COMPLETED", "PARTIAL", "FAILED")
+                .contains(existing.getStatus());
+        int revision = existing == null ? 1 : existing.getRevision();
+        if (newVersion) {
+            if (baseRevision == null || baseRevision < 1) {
+                throw ApiException.badRequest("baseRevision is required for a new investigation version");
+            }
+            if (existing == null || existing.getRevision() < baseRevision) {
+                throw ApiException.of(409, "Investigation revision is no longer current");
+            }
+            if (existing.getRevision() > baseRevision) {
+                // Same command retried after its insert was accepted: return the
+                // already-created successor instead of manufacturing revision N+2.
+                return existing;
+            }
+            if (terminal) {
+                revision++;
+                existing = null;
+            }
+        }
+        String investigationId = idFor(tenant, normalizedAlertId, revision);
         if (existing == null) {
             InvestigationEntity receipt = new InvestigationEntity();
             receipt.setId(investigationId);
             receipt.setTenantId(tenant);
             receipt.setAlertId(normalizedAlertId);
+            receipt.setRevision(revision);
             receipt.setStatus("NEW");
             receipt.setResultJson("{}");
             receipt.setCreatedAt(Instant.now());
             receipt.setUpdatedAt(Instant.now());
             try {
-                repository.insertReceipt(investigationId, tenant, normalizedAlertId, receipt.getCreatedAt());
+                repository.insertReceiptRevision(investigationId, tenant, normalizedAlertId,
+                        revision, receipt.getCreatedAt());
                 existing = receipt;
             } catch (DataIntegrityViolationException race) {
-                existing = repository.findByTenantIdAndAlertId(tenant, normalizedAlertId).orElse(null);
+                existing = repository.findFirstByTenantIdAndAlertIdOrderByRevisionDesc(
+                        tenant, normalizedAlertId).orElse(null);
                 if (existing == null) throw race;
             }
             if (existing == null) existing = receipt;
@@ -97,8 +128,23 @@ public class InvestigationAgentService {
 
     /** The deterministic receipt ID makes repeated clicks return one result. */
     public Map<String, Object> investigate(String alertId) {
+        return investigate(enqueue(alertId));
+    }
+
+    public Map<String, Object> reanalyze(String alertId, int baseRevision) {
+        return investigate(enqueue(alertId, true, baseRevision));
+    }
+
+    public Map<String, Object> investigateReceipt(String investigationId) {
         String tenant = TenantContext.require();
-        InvestigationEntity existing = enqueue(alertId);
+        InvestigationEntity existing = repository.findByIdAndTenantId(investigationId, tenant)
+                .orElseThrow(() -> ApiException.notFound(
+                        "Investigation does not exist: " + investigationId));
+        return investigate(existing);
+    }
+
+    private Map<String, Object> investigate(InvestigationEntity existing) {
+        String tenant = TenantContext.require();
         String normalizedAlertId = existing.getAlertId();
         String investigationId = existing.getId();
         if ("COMPLETED".equals(existing.getStatus()) || "PARTIAL".equals(existing.getStatus())) {
@@ -112,7 +158,7 @@ public class InvestigationAgentService {
         int claimed = repository.claim(investigationId, tenant, claimOwner, now,
                 now.plusMillis(Math.max(properties.getClaimLeaseMs(), properties.getTimeoutMs() + 5_000L)));
         if (claimed != 1) {
-            InvestigationEntity current = repository.findByTenantIdAndAlertId(tenant, normalizedAlertId)
+            InvestigationEntity current = repository.findByIdAndTenantId(investigationId, tenant)
                     .orElse(null);
             if (current != null && ("COMPLETED".equals(current.getStatus())
                     || "PARTIAL".equals(current.getStatus()))) {
@@ -146,12 +192,10 @@ public class InvestigationAgentService {
                     relatedEvents = new ArrayList<>(relatedEvents.subList(0, properties.getMaxRelatedEvents()));
                 }
 
-                List<Map<String, Object>> incidents = optionalList(normalizedAlertId, "incident.related",
-                        () -> incidentClient.list(), toolCalls, deadline, degraded);
-                List<Map<String, Object>> relatedIncidents = incidents.stream()
-                        .filter(item -> containsAlarm(item, normalizedAlertId))
-                        .limit(20)
-                        .toList();
+                Map<String, Object> relatedIncident = optionalIncidentByAlarm(
+                        normalizedAlertId, toolCalls, deadline, degraded);
+                List<Map<String, Object>> relatedIncidents = relatedIncident.isEmpty()
+                        ? List.of() : List.of(relatedIncident);
 
                 List<String> iocValues = InvestigationEvidenceComposer.iocValues(alert, evidence);
                 Map<String, Object> iocResponse = iocValues.isEmpty() ? Map.of()
@@ -174,6 +218,7 @@ public class InvestigationAgentService {
 
                 Map<String, Object> result = new LinkedHashMap<>();
                 result.put("investigationId", investigationId);
+                result.put("revision", existing.getRevision());
                 result.put("alertId", normalizedAlertId);
                 result.put("status", degraded.isEmpty() ? "COMPLETED" : "PARTIAL");
                 result.put("generatedAt", Instant.now().toString());
@@ -222,6 +267,7 @@ public class InvestigationAgentService {
         result.putIfAbsent("investigationId", entity.getId());
         result.putIfAbsent("alertId", entity.getAlertId());
         result.put("status", entity.getStatus());
+        result.put("revision", entity.getRevision());
         return result;
     }
 
@@ -336,6 +382,23 @@ public class InvestigationAgentService {
         } catch (Exception failure) {
             degraded.add(tool);
             return List.of();
+        }
+    }
+
+    private Map<String, Object> optionalIncidentByAlarm(String alertId,
+                                                        List<Map<String, Object>> calls,
+                                                        long deadline,
+                                                        List<String> degraded) {
+        try {
+            checkBudget(calls, deadline);
+            ServiceCall result = invoke(alertId, "incident.related",
+                    () -> incidentClient.byAlarm(alertId), calls);
+            if (result != null && result.status() == 404) return Map.of();
+            if (result == null || !result.ok()) throw new IllegalStateException("tool failed");
+            return parseBody(result);
+        } catch (RuntimeException failure) {
+            degraded.add("incident.related");
+            return Map.of();
         }
     }
 
@@ -465,8 +528,9 @@ public class InvestigationAgentService {
         return normalized;
     }
 
-    private static String idFor(String tenant, String alertId) {
-        return UUID.nameUUIDFromBytes((tenant + "\u0000investigation\u0000" + alertId)
+    private static String idFor(String tenant, String alertId, int revision) {
+        return UUID.nameUUIDFromBytes((tenant + "\u0000investigation\u0000" + alertId
+                + "\u0000" + revision)
                 .getBytes(StandardCharsets.UTF_8)).toString();
     }
 

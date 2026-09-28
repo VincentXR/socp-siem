@@ -266,6 +266,12 @@ test('case deep links retain drafts, page the full timeline and survive a failed
       return fulfill({ items: [{ ...incident, id: 'listed-case', title: 'A different case on this page' }], total: 80 })
     }
     if (url.pathname.endsWith('/incidents/outside-page') && method === 'GET') return fulfill(incident)
+    if (url.pathname.endsWith('/incidents/outside-page/alarms') && method === 'GET') {
+      return fulfill({ items: ['alarm-one'], total: 1 })
+    }
+    if (url.pathname.endsWith('/incidents/outside-page/rules') && method === 'GET') {
+      return fulfill({ items: ['rule-one'], total: 1 })
+    }
     if (url.pathname.endsWith('/incidents/outside-page/timeline')) {
       const currentPage = Number(url.searchParams.get('page'))
       const size = Number(url.searchParams.get('size'))
@@ -302,7 +308,7 @@ test('case deep links retain drafts, page the full timeline and survive a failed
   await expect(drawer).toBeVisible()
   expect(writes).toBe(1)
   releaseFirst()
-  await expect(drawer.getByRole('alert')).toContainText('Case write unavailable')
+  await expect(drawer.getByRole('alert').filter({ hasText: 'Case write unavailable' })).toBeVisible()
   await expect(drawer.locator('.case-status-row input')).toBeEnabled()
   await expect(page.locator('.el-message')).not.toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('case-failed-status.png'), fullPage: true })
@@ -555,7 +561,7 @@ test('rule revision history compares and restores the reviewed version', async (
   await expect(confirmation).toContainText('resume live detection')
   await expect(confirmation).toContainText('unsaved editor draft')
   await confirmation.getByRole('button', { name: 'Confirm', exact: true }).click()
-  await expect(history.getByRole('status')).toContainText('restored as a new revision')
+  await expect(history.getByText('Revision #1 was restored as a new revision.', { exact: true })).toBeVisible()
   await expect(history.getByRole('row').filter({ hasText: '#3' })).toBeVisible()
   await expect(name).toHaveValue('Historical active rule')
   expect(restored).toBe(true)

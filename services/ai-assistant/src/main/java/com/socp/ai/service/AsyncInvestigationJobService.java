@@ -41,8 +41,17 @@ public class AsyncInvestigationJobService {
     }
 
     public Map<String, Object> submit(String alertId) {
-        var receipt = agent.enqueue(alertId);
+        return submit(alertId, false);
+    }
+
+    public Map<String, Object> submit(String alertId, boolean newVersion) {
+        return submit(alertId, newVersion, null);
+    }
+
+    public Map<String, Object> submit(String alertId, boolean newVersion, Integer baseRevision) {
+        var receipt = agent.enqueue(alertId, newVersion, baseRevision);
         return Map.of("jobId", receipt.getId(), "status", "ACCEPTED", "alertId", receipt.getAlertId(),
+                "revision", receipt.getRevision(),
                 "poll", "/api/v1/ai/investigations/" + receipt.getId());
     }
 
@@ -57,7 +66,8 @@ public class AsyncInvestigationJobService {
             try {
                 executor.execute(() -> {
                     try {
-                        TenantContext.runWith(receipt.getTenantId(), () -> agent.investigate(receipt.getAlertId()));
+                        TenantContext.runWith(receipt.getTenantId(), () ->
+                                agent.investigateReceipt(receipt.getId()));
                     } catch (RuntimeException failure) {
                         log.warn("Investigation attempt failed id={} type={}", receipt.getId(),
                                 failure.getClass().getSimpleName());

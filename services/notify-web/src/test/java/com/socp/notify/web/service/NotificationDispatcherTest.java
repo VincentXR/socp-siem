@@ -160,7 +160,7 @@ class NotificationDispatcherTest {
     }
 
     @Test
-    void unsupportedEmailChannelIsFailedAndNeverReceiptedAsDelivered() {
+    void unavailableEmailConnectorIsDurablyRecordedAsTerminalFailure() {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-EMAIL", "Mail", "EMAIL", "soc@example.com", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
@@ -171,7 +171,8 @@ class NotificationDispatcherTest {
         assertEquals(1, result.get("failed"));
         List<?> results = (List<?>) result.get("results");
         assertEquals("failed", ((Map<?, ?>) results.getFirst()).get("status"));
-        verify(deliveries, never()).finish(any(), any(), any(), any(), eq(true));
+        verify(deliveries).finish(eq("AL-1"), eq("CH-EMAIL"), eq("token"),
+                org.mockito.ArgumentMatchers.contains("SMTP_CONNECTOR_UNAVAILABLE"), eq(true));
         verify(http, never()).postExternalOnce(any(), any(), any(), any(Integer.class), org.mockito.ArgumentMatchers.anyMap());
     }
 
@@ -199,7 +200,7 @@ class NotificationDispatcherTest {
     }
 
     @Test
-    void nullHttpResponseIsReportedAsFailedAndCanBeRetried() {
+    void nullHttpResponseIsDurablyRecordedAsUnknownToPreventBlindReplay() {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-NULL", "Ops", "WEBHOOK", "http://ops", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
@@ -210,13 +211,16 @@ class NotificationDispatcherTest {
 
         assertEquals(1, result.get("failed"));
         Map<?, ?> channelResult = (Map<?, ?>) ((List<?>) result.get("results")).getFirst();
-        assertEquals("failed", channelResult.get("status"));
+        assertEquals("unknown", channelResult.get("status"));
+        assertEquals("NOTIFY_RESULT_UNKNOWN", channelResult.get("errorCode"));
+        assertEquals(false, channelResult.get("retryable"));
         assertEquals(0, channelResult.get("httpStatus"));
-        verify(deliveries, never()).finish(any(), any(), any(), any(), eq(true));
+        verify(deliveries).finish(eq("AL-NULL"), eq("CH-NULL"), eq("token"),
+                org.mockito.ArgumentMatchers.contains("NOTIFY_RESULT_UNKNOWN"), eq(true));
     }
 
     @Test
-    void connectorExceptionIsContainedToTheChannelResult() {
+    void connectorExceptionIsDurablyRecordedAsUnknownInsteadOfBlindlyRetried() {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-ERR", "Ops", "WEBHOOK", "http://ops", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
@@ -227,9 +231,11 @@ class NotificationDispatcherTest {
 
         assertEquals(1, result.get("failed"));
         Map<?, ?> channelResult = (Map<?, ?>) ((List<?>) result.get("results")).getFirst();
-        assertEquals("failed", channelResult.get("status"));
-        assertEquals("NOTIFY_CONNECTOR_FAILED", channelResult.get("errorCode"));
-        verify(deliveries, never()).finish(any(), any(), any(), any(), eq(true));
+        assertEquals("unknown", channelResult.get("status"));
+        assertEquals("NOTIFY_RESULT_UNKNOWN", channelResult.get("errorCode"));
+        assertEquals(false, channelResult.get("retryable"));
+        verify(deliveries).finish(eq("AL-ERR"), eq("CH-ERR"), eq("token"),
+                org.mockito.ArgumentMatchers.contains("NOTIFY_RESULT_UNKNOWN"), eq(true));
     }
 
     @Test
@@ -253,23 +259,20 @@ class NotificationDispatcherTest {
     }
 
     @Test
-    void unknownConnectorTypeUsesGenericPayloadAndTruncatesLongFailure() {
+    void unknownConnectorTypeIsRejectedWithoutPerformingAnExternalAction() {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-OTHER", "Other", "PAGER", "http://pager", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
-        String longBody = "x".repeat(400);
-        given(http.postExternalOnce(eq("http://pager"), any(), eq(SocpHttpClient.JSON), eq(3000), org.mockito.ArgumentMatchers.anyMap()))
-                .willReturn(new ServiceCall(SocpService.NOTIFY, "http://pager", false,
-                        500, longBody, "remote failure", 1, true, 1));
-
         Map<String, Object> result = dispatcher().dispatch(Map.of("id", "AL-PAGER"));
 
         Map<?, ?> channelResult = (Map<?, ?>) ((List<?>) result.get("results")).getFirst();
         assertEquals("failed", channelResult.get("status"));
-        assertTrue(String.valueOf(channelResult.get("detail")).endsWith("..."));
-        verify(http).postExternalOnce(eq("http://pager"),
-                org.mockito.ArgumentMatchers.argThat(body -> body.contains("\"alarm\"")),
-                eq(SocpHttpClient.JSON), eq(3000), org.mockito.ArgumentMatchers.anyMap());
+        assertEquals("NOTIFY_CHANNEL_UNSUPPORTED", channelResult.get("errorCode"));
+        assertEquals(false, channelResult.get("retryable"));
+        verify(http, never()).postExternalOnce(any(), any(), any(), any(Integer.class),
+                org.mockito.ArgumentMatchers.anyMap());
+        verify(deliveries).finish(eq("AL-PAGER"), eq("CH-OTHER"), eq("token"),
+                org.mockito.ArgumentMatchers.contains("NOTIFY_CHANNEL_UNSUPPORTED"), eq(true));
     }
 
     @Test
@@ -278,7 +281,7 @@ class NotificationDispatcherTest {
         Channel channel = new Channel("CH-MAIL", "Mail", "EMAIL", " soc@example.com ", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
         given(smtpSender.send(eq(" soc@example.com "), eq("SOCP security alarm: AL-MAIL"), any()))
-                .willReturn(new SmtpNotificationSender.DeliveryResult(true, null, "accepted"));
+                .willReturn(new SmtpNotificationSender.DeliveryResult("sent", false, null, "accepted"));
 
         Map<String, Object> result = dispatcher(smtpSender).dispatch(Map.of(
                 "id", "AL-MAIL", "severity", "HIGH", "message", "suspicious"));
@@ -291,19 +294,99 @@ class NotificationDispatcherTest {
     }
 
     @Test
-    void smtpFailureIncludesConnectorErrorAndIsNotReceipted() {
+    void smtpBusinessFailureIsDurablyRecordedAndNotReportedAsSent() {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-MAIL", "Mail", "EMAIL", "soc@example.com", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
         given(smtpSender.send(any(), any(), any()))
-                .willReturn(new SmtpNotificationSender.DeliveryResult(false, "SMTP_SEND_FAILED", "rejected"));
+                .willReturn(new SmtpNotificationSender.DeliveryResult(
+                        "failed", false, "SMTP_SEND_FAILED", "rejected"));
 
         Map<String, Object> result = dispatcher(smtpSender).dispatch(Map.of("id", "AL-MAIL-FAIL"));
 
         Map<?, ?> channelResult = (Map<?, ?>) ((List<?>) result.get("results")).getFirst();
         assertEquals(1, result.get("failed"));
         assertEquals("SMTP_SEND_FAILED", channelResult.get("errorCode"));
-        verify(deliveries, never()).finish(any(), any(), any(), any(), eq(true));
+        verify(deliveries).finish(eq("AL-MAIL-FAIL"), eq("CH-MAIL"), eq("token"),
+                org.mockito.ArgumentMatchers.contains("SMTP_SEND_FAILED"), eq(true));
+    }
+
+    @Test
+    void smtpUnknownResultIsTerminallyReceiptedAndNotReportedAsSent() {
+        TenantContext.set("tenant-a");
+        Channel channel = new Channel("CH-MAIL", "Mail", "EMAIL", "soc@example.com", true, "");
+        given(channels.enabled()).willReturn(List.of(channel));
+        given(smtpSender.send(any(), any(), any()))
+                .willReturn(new SmtpNotificationSender.DeliveryResult(
+                        "unknown", false, "SMTP_RESULT_UNKNOWN", "acceptance unknown"));
+
+        Map<String, Object> result = dispatcher(smtpSender).dispatch(Map.of("id", "AL-MAIL-UNKNOWN"));
+
+        Map<?, ?> channelResult = (Map<?, ?>) ((List<?>) result.get("results")).getFirst();
+        assertEquals(1, result.get("failed"));
+        assertEquals("unknown", channelResult.get("status"));
+        assertEquals(false, channelResult.get("retryable"));
+        verify(deliveries).finish(eq("AL-MAIL-UNKNOWN"), eq("CH-MAIL"), eq("token"),
+                org.mockito.ArgumentMatchers.contains("SMTP_RESULT_UNKNOWN"), eq(true));
+    }
+
+    @Test
+    void dingtalkHttp200BusinessFailureIsNotMarkedAsSent() {
+        TenantContext.set("tenant-a");
+        Channel channel = new Channel("CH-DING", "DingTalk", "DINGTALK", "http://ding", true, "");
+        given(channels.enabled()).willReturn(List.of(channel));
+        ArgumentCaptor<String> payload = ArgumentCaptor.forClass(String.class);
+        given(http.postExternalOnce(eq("http://ding"), payload.capture(), eq(SocpHttpClient.JSON), eq(3000),
+                org.mockito.ArgumentMatchers.anyMap())).willReturn(new ServiceCall(
+                SocpService.NOTIFY, "http://ding", true, 200,
+                "{\"errcode\":310000,\"errmsg\":\"invalid token\"}", null, 1, false, 1));
+
+        Map<String, Object> result = dispatcher().dispatch(Map.of("id", "AL-DING", "message", "test"));
+
+        Map<?, ?> channelResult = (Map<?, ?>) ((List<?>) result.get("results")).getFirst();
+        assertEquals(1, result.get("failed"));
+        assertEquals("failed", channelResult.get("status"));
+        assertEquals("DINGTALK_BUSINESS_REJECTED", channelResult.get("errorCode"));
+        assertEquals(false, channelResult.get("retryable"));
+        assertTrue(payload.getValue().contains("\"msgtype\":\"text\""));
+        assertTrue(payload.getValue().contains("\"content\""));
+        verify(deliveries).finish(eq("AL-DING"), eq("CH-DING"), eq("token"),
+                org.mockito.ArgumentMatchers.contains("DINGTALK_BUSINESS_REJECTED"), eq(true));
+    }
+
+    @Test
+    void wecomRateLimitFailureRemainsRetryableAndIsNotTerminallyReceipted() {
+        TenantContext.set("tenant-a");
+        Channel channel = new Channel("CH-WECOM", "WeCom", "WECOM", "http://wecom", true, "");
+        given(channels.enabled()).willReturn(List.of(channel));
+        given(http.postExternalOnce(eq("http://wecom"), any(), eq(SocpHttpClient.JSON), eq(3000),
+                org.mockito.ArgumentMatchers.anyMap())).willReturn(new ServiceCall(
+                SocpService.NOTIFY, "http://wecom", true, 200,
+                "{\"errcode\":45009,\"errmsg\":\"rate limit\"}", null, 1, false, 1));
+
+        Map<String, Object> result = dispatcher().dispatch(Map.of("id", "AL-WECOM"));
+
+        Map<?, ?> channelResult = (Map<?, ?>) ((List<?>) result.get("results")).getFirst();
+        assertEquals(1, result.get("failed"));
+        assertEquals(true, channelResult.get("retryable"));
+        verify(deliveries).finish(eq("AL-WECOM"), eq("CH-WECOM"), eq("token"), any(), eq(false));
+    }
+
+    @Test
+    void slackHttp200WithUnexpectedBodyIsBusinessFailure() {
+        TenantContext.set("tenant-a");
+        Channel channel = new Channel("CH-SLACK", "Slack", "SLACK", "http://slack", true, "");
+        given(channels.enabled()).willReturn(List.of(channel));
+        given(http.postExternalOnce(eq("http://slack"), any(), eq(SocpHttpClient.JSON), eq(3000),
+                org.mockito.ArgumentMatchers.anyMap())).willReturn(new ServiceCall(
+                SocpService.NOTIFY, "http://slack", true, 200, "invalid_payload", null, 1, false, 1));
+
+        Map<String, Object> result = dispatcher().dispatch(Map.of("id", "AL-SLACK-FAIL"));
+
+        Map<?, ?> channelResult = (Map<?, ?>) ((List<?>) result.get("results")).getFirst();
+        assertEquals(1, result.get("failed"));
+        assertEquals("SLACK_BUSINESS_REJECTED", channelResult.get("errorCode"));
+        verify(deliveries).finish(eq("AL-SLACK-FAIL"), eq("CH-SLACK"), eq("token"), any(), eq(true));
     }
 
     @Test
@@ -345,6 +428,8 @@ class NotificationDispatcherTest {
         var first = dispatcher().dispatch(Map.of("id", "alarm"));
         assertEquals(1, first.get("failed"));
         assertEquals("NOTIFY_RECEIPT_UNCONFIRMED", ((Map<?, ?>) ((List<?>) first.get("results")).getFirst()).get("errorCode"));
+        assertEquals("unknown", ((Map<?, ?>) ((List<?>) first.get("results")).getFirst()).get("status"));
+        assertEquals(false, ((Map<?, ?>) ((List<?>) first.get("results")).getFirst()).get("retryable"));
         var second = dispatcher().dispatch(Map.of("id", "alarm"));
         assertEquals(1, second.get("failed"));
         assertEquals("NOTIFY_CLAIM_LOST", ((Map<?, ?>) ((List<?>) second.get("results")).getFirst()).get("errorCode"));

@@ -512,8 +512,8 @@ public interface SoarConnector {
 | Connector | 动作 | 备注 |
 |---|---|---|
 | `socp.alert` | get、add-note、assign、set-status、add-tag | 类型化 Alert client |
-| `socp.incident` | get/create、append-timeline、assign、set-status、add-task/complete-task | 类型化 Incident client |
-| `socp.search` | search-events、get-event | 只读，限制时间窗和返回条数 |
+| `socp.incident` | get/create、append-timeline、assign、set-status | 类型化 Incident client；任务模型尚未实现，因此不发布 add-task/complete-task |
+| `socp.search` | search-events | 只读，限制时间窗和返回条数；当前没有精确 event-id API，因此不发布 get-event |
 | `socp.asset` | find-by-entity、get-asset | 只读富化 |
 | `socp.threat-intel` | lookup-ioc | 只读富化 |
 | `socp.notify` | send-channel | 显式 channelId 和 delivery receipt |

@@ -3,6 +3,7 @@ package com.socp.search.config.service;
 import com.socp.platform.client.service.DetectClient;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.search.config.domain.SearchEvent;
+import com.socp.search.config.config.IngestRuntimeProperties;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
@@ -94,7 +95,7 @@ class IngestPipelineTest {
         Map<String, Object> result = pipeline.process("one\ntwo\n", "collector-1");
 
         verify(commit).commit(List.of(first, second));
-        verify(monitor).record(eq("collector-1"), eq(2), eq(0), eq(0), anyLong());
+        verify(monitor).record(eq("collector-1"), eq(2), eq(0), eq(0), eq(0), eq(0), anyLong());
         assertEquals(2, result.get("accepted"));
         assertEquals(0, result.get("skipped"));
     }
@@ -129,7 +130,7 @@ class IngestPipelineTest {
 
         assertEquals(503, failure.getCode());
         verify(commit, times(2)).commit(anyList());
-        verify(monitor).record(eq("collector-1"), eq(200), eq(0), eq(0), anyLong());
+        verify(monitor).record(eq("collector-1"), eq(0), eq(0), eq(0), eq(0), eq(0), anyLong());
     }
 
     @Test
@@ -147,25 +148,115 @@ class IngestPipelineTest {
                 () -> pipeline.process("event", "collector-1"));
 
         assertEquals(503, failure.getCode());
-        verify(monitor).record(eq("collector-1"), eq(0), eq(0), eq(0), anyLong());
+        verify(monitor).record(eq("collector-1"), eq(0), eq(0), eq(0), eq(0), eq(0), anyLong());
     }
 
     @Test
-    void expectedLineBudgetFailureIsCountedAsAParseSkip() {
+    void expectedLineBudgetFailureIsDurablyQuarantinedAndAcknowledged() {
         IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
         IngestionCommitService commit = mock(IngestionCommitService.class);
         IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
         when(normalizer.normalize(eq("event"), eq("collector-1"), any(), any()))
                 .thenThrow(new IngestParseException("event contains too many fields"));
         when(monitor.runtime("collector-1", true)).thenReturn(Map.of("eps1m", 0.0));
+        IngestParseFailureService failures = mock(IngestParseFailureService.class);
+        when(normalizer.parserVersion("event", "collector-1")).thenReturn("rules:7");
+        when(failures.record(eq("event"), eq("collector-1"), eq("rules:7"), anyString(), any()))
+                .thenReturn(new com.socp.search.config.persistence.entity.IngestParseFailureEntity());
         IngestPipeline pipeline = new IngestPipeline(normalizer, commit, monitor,
-                mock(DetectClient.class), new SimpleMeterRegistry());
+                mock(DetectClient.class), new SimpleMeterRegistry(), new IngestRuntimeProperties(), failures);
 
         Map<String, Object> result = pipeline.process("event", "collector-1");
 
         assertEquals(0, result.get("accepted"));
-        assertEquals(1, result.get("skipped"));
-        verify(monitor).record(eq("collector-1"), eq(0), eq(1), eq(0), anyLong());
+        assertEquals(0, result.get("skipped"));
+        assertEquals(1, result.get("parseFailed"));
+        assertEquals(1, result.get("quarantined"));
+        assertEquals(1, result.get("acknowledged"));
+        verify(monitor).record(eq("collector-1"), eq(0), eq(0), eq(1), eq(1), eq(0), anyLong());
+    }
+
+    @Test
+    void mixedBatchAcknowledgesBothCommittedEventsAndDurableParseFailures() {
+        IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
+        IngestionCommitService commit = mock(IngestionCommitService.class);
+        IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
+        IngestParseFailureService failures = mock(IngestParseFailureService.class);
+        SearchEvent first = event("event-1");
+        SearchEvent third = event("event-3");
+        when(normalizer.normalize(eq("valid-1"), eq("collector-1"), any(), any()))
+                .thenReturn(new IngestEventNormalizer.NormalizedEvent(first, Map.of(), "collector-1"));
+        when(normalizer.normalize(eq("invalid"), eq("collector-1"), any(), any()))
+                .thenThrow(new IngestParseException("bad payload"));
+        when(normalizer.normalize(eq("valid-2"), eq("collector-1"), any(), any()))
+                .thenReturn(new IngestEventNormalizer.NormalizedEvent(third, Map.of(), "collector-1"));
+        when(normalizer.parserVersion("invalid", "collector-1")).thenReturn("rules:8");
+        when(failures.record(eq("invalid"), eq("collector-1"), eq("rules:8"),
+                eq("bad payload"), anyString()))
+                .thenReturn(new com.socp.search.config.persistence.entity.IngestParseFailureEntity());
+        when(commit.commit(List.of(first, third)))
+                .thenReturn(new IngestionCommitService.CommitResult(2, 2, 0, 0));
+        when(monitor.runtime("collector-1", true)).thenReturn(Map.of("eps1m", 2.0));
+        IngestPipeline pipeline = new IngestPipeline(normalizer, commit, monitor,
+                mock(DetectClient.class), new SimpleMeterRegistry(), new IngestRuntimeProperties(), failures);
+
+        Map<String, Object> result = pipeline.process(
+                "valid-1\ninvalid\nvalid-2", "collector-1", "request-1");
+
+        assertEquals(2, result.get("accepted"));
+        assertEquals(1, result.get("parseFailed"));
+        assertEquals(1, result.get("quarantined"));
+        assertEquals(3, result.get("acknowledged"));
+        verify(commit).commit(List.of(first, third));
+        verify(failures).record(eq("invalid"), eq("collector-1"), eq("rules:8"),
+                eq("bad payload"), anyString());
+        verify(monitor).record(eq("collector-1"), eq(2), eq(0), eq(1), eq(1), eq(0), anyLong());
+    }
+
+    @Test
+    void clientRetryUsesSameQuarantineIdentityButIndependentLogsDoNot() {
+        IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
+        when(normalizer.normalize(eq("invalid"), eq("collector-1"), any(), any()))
+                .thenThrow(new IngestParseException("bad payload"));
+        when(normalizer.parserVersion("invalid", "collector-1")).thenReturn("rules:8");
+        IngestParseFailureService failures = mock(IngestParseFailureService.class);
+        when(failures.record(anyString(), anyString(), anyString(), anyString(), any()))
+                .thenReturn(new com.socp.search.config.persistence.entity.IngestParseFailureEntity());
+        IngestPipeline pipeline = new IngestPipeline(normalizer, mock(IngestionCommitService.class),
+                mock(IngestTaskMonitor.class), mock(DetectClient.class), new SimpleMeterRegistry(),
+                new IngestRuntimeProperties(), failures);
+
+        pipeline.process("invalid", "collector-1", "request-1");
+        pipeline.process("invalid", "collector-1", "request-1");
+        pipeline.process("invalid", "collector-1");
+        pipeline.process("invalid", "collector-1");
+
+        var identities = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(failures, times(4)).record(eq("invalid"), eq("collector-1"), eq("rules:8"),
+                eq("bad payload"), identities.capture());
+        assertEquals(identities.getAllValues().get(0), identities.getAllValues().get(1));
+        assertEquals(null, identities.getAllValues().get(2));
+        assertEquals(null, identities.getAllValues().get(3));
+    }
+
+    @Test
+    void quarantineWriteFailureReturnsRetryableServiceErrorWithoutAcknowledgingTheLine() {
+        IngestEventNormalizer normalizer = mock(IngestEventNormalizer.class);
+        when(normalizer.normalize(eq("event"), eq("collector-1"), any(), any()))
+                .thenThrow(new IngestParseException("bad payload"));
+        when(normalizer.parserVersion("event", "collector-1")).thenReturn("rules:7");
+        IngestParseFailureService failures = mock(IngestParseFailureService.class);
+        when(failures.record(anyString(), anyString(), anyString(), anyString(), any()))
+                .thenThrow(new IllegalStateException("database unavailable"));
+        IngestionCommitService commits = mock(IngestionCommitService.class);
+        IngestPipeline pipeline = new IngestPipeline(normalizer, commits, mock(IngestTaskMonitor.class),
+                mock(DetectClient.class), new SimpleMeterRegistry(), new IngestRuntimeProperties(), failures);
+
+        ApiException error = assertThrows(ApiException.class,
+                () -> pipeline.process("event", "collector-1", "request-1"));
+
+        assertEquals(503, error.getCode());
+        verify(commits, org.mockito.Mockito.never()).commit(anyList());
     }
 
     @Test

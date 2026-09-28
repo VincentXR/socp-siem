@@ -10,7 +10,7 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
-import { aiAsk, appendInvestigationToIncident, investigateAlert, type AiResult, type InvestigationResult } from '../api'
+import { aiAsk, appendInvestigationToIncident, investigateAlert, reanalyzeAlert, type AiResult, type InvestigationResult } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { useLatestRequest } from '../composables/useLatestRequest'
 import { tOr } from '../utils/i18nLabel'
@@ -117,6 +117,25 @@ async function investigate() {
   }
 }
 
+async function reanalyze() {
+  const id = alertId.value.trim()
+  const baseRevision = investigation.value?.revision
+  if (!id || !baseRevision || investigationLoading.value) return
+  resetInvestigation()
+  investigationLoading.value = true
+  const request = investigationRequest.start()
+  try {
+    const response = await reanalyzeAlert(id, baseRevision, { signal: request.signal })
+    if (!request.isCurrent()) return
+    if (response.alertId !== id) throw new Error(t('ai.investigation.contextMismatch'))
+    investigation.value = response
+  } catch (error) {
+    if (request.isCurrent()) investigationError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    if (request.isCurrent()) investigationLoading.value = false
+  }
+}
+
 function openAlarm(): void {
   if (!contextAlarmId.value.trim()) return
   void router.push({ name: 'alarms', query: { alarmId: contextAlarmId.value.trim() } })
@@ -218,6 +237,7 @@ watch(contextAlarmId, id => {
       <div class="ai-ask-row">
         <el-input v-model="alertId" clearable :placeholder="t('ai.investigation.alertId')" @keyup.enter="investigate" />
         <el-button type="primary" :loading="investigationLoading" @click="investigate">{{ t('ai.investigation.investigate') }}</el-button>
+        <el-button v-if="investigation" :disabled="investigationLoading" @click="reanalyze">{{ t('ai.investigation.reanalyze') }}</el-button>
       </div>
       <div v-if="appendLoading && appendTarget !== investigation?.investigationId" role="status" class="ai-muted">{{ t('ai.investigation.previousAppendPending') }}</div>
       <div v-if="investigationError" role="alert" class="ai-error">{{ investigationError }}</div>
@@ -225,6 +245,7 @@ watch(contextAlarmId, id => {
         <div class="ai-investigation-meta">
           <el-tag size="small" :type="investigation.status === 'COMPLETED' ? 'success' : 'warning'">{{ investigation.status }}</el-tag>
           <span class="ai-muted">{{ investigation.investigationId }}</span>
+          <el-tag size="small" effect="plain">{{ t('ai.investigation.revision', { revision: investigation.revision }) }}</el-tag>
           <el-tag v-if="investigation.duplicate" size="small" effect="plain">{{ t('ai.investigation.replayedReceipt') }}</el-tag>
         </div>
         <div class="ai-analysis">{{ investigation.analysis }}</div>

@@ -62,12 +62,24 @@ const detailError = ref('')
 const detailLoading = ref(false)
 const latestDetail = useLatestRequest()
 const latestTimeline = useLatestRequest()
+const latestAlarms = useLatestRequest()
+const latestRules = useLatestRequest()
 const timeline = ref<TimelineEvent[]>([])
 const timelineError = ref('')
 const timelineLoading = ref(false)
 const timelinePage = ref(1)
 const timelineSize = ref(20)
 const timelineTotal = ref(0)
+const associatedAlarms = ref<string[]>([])
+const associatedAlarmPage = ref(1)
+const associatedAlarmPageSize = ref(50)
+const associatedAlarmTotal = ref(0)
+const associatedAlarmError = ref('')
+const associatedRules = ref<string[]>([])
+const associatedRulePage = ref(1)
+const associatedRulePageSize = ref(50)
+const associatedRuleTotal = ref(0)
+const associatedRuleError = ref('')
 const drawerVisible = ref(false)
 const createDialogVisible = ref(false)
 const caseForm = ref({ title: '', entity: '', severity: 'HIGH', assignee: '' })
@@ -123,12 +135,15 @@ async function loadCases() {
 async function loadDetail() {
   const request = latestDetail.start()
   latestTimeline.cancel()
+  latestAlarms.cancel(); latestRules.cancel()
   const id = selectedId.value
   detail.value = null
   newStatus.value = ''; detailAssignee.value = ''
   detailGuard.markSaved()
   timeline.value = []; timelineError.value = ''; timelineLoading.value = false
   timelinePage.value = 1; timelineTotal.value = 0
+  associatedAlarms.value = []; associatedAlarmPage.value = 1; associatedAlarmTotal.value = 0; associatedAlarmError.value = ''
+  associatedRules.value = []; associatedRulePage.value = 1; associatedRuleTotal.value = 0; associatedRuleError.value = ''
   detailError.value = ''; actionError.value = ''
   createDialogVisible.value = false
   drawerVisible.value = Boolean(id)
@@ -138,11 +153,39 @@ async function loadDetail() {
     const result = await caseApi.get(id, { signal: request.signal })
     if (!request.isCurrent()) return
     applyDetail(result)
-    void loadTimeline()
+    void Promise.all([loadTimeline(), loadAlarms(), loadRules()])
   } catch (failure) {
     if (request.isCurrent()) detailError.value = String(failure)
   } finally {
     if (request.isCurrent()) detailLoading.value = false
+  }
+}
+
+async function loadAlarms() {
+  if (!detail.value) return
+  const request = latestAlarms.start()
+  const id = detail.value.id
+  associatedAlarmError.value = ''
+  try {
+    const result = await caseApi.alarms(id, associatedAlarmPage.value, associatedAlarmPageSize.value, { signal: request.signal })
+    if (!request.isCurrent()) return
+    associatedAlarms.value = result.items; associatedAlarmTotal.value = result.total
+  } catch (failure) {
+    if (request.isCurrent()) associatedAlarmError.value = String(failure)
+  }
+}
+
+async function loadRules() {
+  if (!detail.value) return
+  const request = latestRules.start()
+  const id = detail.value.id
+  associatedRuleError.value = ''
+  try {
+    const result = await caseApi.rules(id, associatedRulePage.value, associatedRulePageSize.value, { signal: request.signal })
+    if (!request.isCurrent()) return
+    associatedRules.value = result.items; associatedRuleTotal.value = result.total
+  } catch (failure) {
+    if (request.isCurrent()) associatedRuleError.value = String(failure)
   }
 }
 
@@ -251,6 +294,8 @@ useDebouncedWatch([keyword, statusFilter], () => {
 })
 watch(selectedId, () => { void loadDetail() }, { immediate: true })
 watch([timelinePage, timelineSize], () => { void loadTimeline() })
+watch([associatedAlarmPage, associatedAlarmPageSize], () => { void loadAlarms() })
+watch([associatedRulePage, associatedRulePageSize], () => { void loadRules() })
 watch([() => route.query.page, () => route.query.q, () => route.query.status], () => {
   const before = { page: page.value, keyword: keyword.value.trim(), status: statusFilter.value }
   listQuery.applyRouteQuery()
@@ -290,7 +335,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status], (
         <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity', 130)" show-overflow-tooltip />
         <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 90)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
         <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 120)"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ tOr(t, 'statuses.' + row.status, row.status) }}</el-tag></template></el-table-column>
-        <el-table-column prop="alarmCount" column-key="alarmCount" :label="t('cases.associatedAlarms')" :width="columnWidth('alarmCount', 90)"><template #default="{ row }">{{ row.alarmIds.length }}</template></el-table-column>
+        <el-table-column prop="alarmCount" column-key="alarmCount" :label="t('cases.associatedAlarms')" :width="columnWidth('alarmCount', 90)"><template #default="{ row }">{{ row.alarmCount ?? row.alarmIds.length }}</template></el-table-column>
         <el-table-column :label="t('common.actions')" width="100" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" :disabled="actionBusy" @click.stop="openCaseRow(row)">{{ t('cases.detailsTimeline') }}</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>
@@ -339,12 +384,16 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status], (
             <span v-else>{{ detail.assignee || '—' }}</span>
           </el-descriptions-item>
           <el-descriptions-item :label="t('cases.linkedRules')" :span="2">
-            <div v-if="detail.ruleIds.length" class="case-object-list"><button v-for="ruleId in detail.ruleIds" :key="ruleId" type="button" class="case-object-link mono" @click="openRule(ruleId)">{{ ruleId }}</button></div>
+            <ActionFeedback :error="associatedRuleError" />
+            <div v-if="associatedRules.length" class="case-object-list"><button v-for="ruleId in associatedRules" :key="ruleId" type="button" class="case-object-link mono" @click="openRule(ruleId)">{{ ruleId }}</button></div>
             <span v-else>—</span>
+            <PagerBar v-if="associatedRuleTotal > associatedRulePageSize" v-model:current-page="associatedRulePage" v-model:page-size="associatedRulePageSize" :total="associatedRuleTotal" />
           </el-descriptions-item>
           <el-descriptions-item :label="t('cases.associatedAlarms')" :span="2">
-            <div v-if="detail.alarmIds.length" class="case-object-list"><button v-for="alarmId in detail.alarmIds" :key="alarmId" type="button" class="case-object-link mono" @click="openAlarm(alarmId)">{{ alarmId }}</button></div>
+            <ActionFeedback :error="associatedAlarmError" />
+            <div v-if="associatedAlarms.length" class="case-object-list"><button v-for="alarmId in associatedAlarms" :key="alarmId" type="button" class="case-object-link mono" @click="openAlarm(alarmId)">{{ alarmId }}</button></div>
             <span v-else>—</span>
+            <PagerBar v-if="associatedAlarmTotal > associatedAlarmPageSize" v-model:current-page="associatedAlarmPage" v-model:page-size="associatedAlarmPageSize" :total="associatedAlarmTotal" />
           </el-descriptions-item>
         </el-descriptions>
         <template v-if="canWrite">

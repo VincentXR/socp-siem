@@ -184,6 +184,22 @@ public class SocpHttpClient {
                 headers == null ? Map.of() : headers, props.getExternalAllowedHosts(), 1);
     }
 
+    /** Side-effect-free connectivity probe for an approved external endpoint. */
+    public ServiceCall getExternalOnce(String absoluteUrl, int timeoutMs,
+                                       Map<String, String> headers, List<String> allowedHosts) {
+        try (PinnedEndpoint pinned = externalEndpointPolicy.validatePinned(absoluteUrl, allowedHosts,
+                props.isExternalHttpsOnly(), props.isExternalAllowPrivateNetworks())) {
+            if (pinned.isRejected()) {
+                ServiceCall denied = new ServiceCall(null, absoluteUrl, false, -1, "",
+                        "External endpoint blocked: " + pinned.rejectionReason(), 0, false, 0);
+                record(denied);
+                return denied;
+            }
+            return execute("GET", null, absoluteUrl, null, null, timeoutMs,
+                    headers == null ? Map.of() : headers, 1);
+        }
+    }
+
     private ServiceCall postExternal(String absoluteUrl, String body, String contentType, int timeoutMs,
                                      Map<String, String> headers, List<String> allowedHosts, int maxAttempts) {
         // 校验通过后把解析结果钉住到当前线程：execute() 建连时的隐式 DNS 解析只会拿到

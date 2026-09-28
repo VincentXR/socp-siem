@@ -11,8 +11,8 @@ flowchart LR
   S[Vector / NDJSON / collectors] --> P[search-config<br/>parse + normalize + enrich]
   P --> IO[(Ingestion Outbox<br/>same DB transaction)]
   IO --> K[(Kafka<br/>socp-events)]
-  K --> R[Detection router<br/>durable dimension fan-out]
-  R --> RK[(Kafka<br/>socp-detection-routed-v2)]
+  K --> DR[Detection router<br/>durable dimension fan-out]
+  DR --> RK[(Kafka<br/>socp-detection-routed-v2)]
   RK --> D[detect-web-worker<br/>rule engine + UEBA]
   K --> IX[OpenSearch index consumer]
   IX --> OS[(OpenSearch<br/>raw event search)]
@@ -25,7 +25,7 @@ flowchart LR
   REC --> AD
   AD --> CK[(ClickHouse)]
   AD --> I[incident-web]
-  AD --> R[soar-web / notify-web]
+  AD --> RESP[soar-web / notify-web]
   D --> DM[(Kafka<br/>socp-alarm-original)]
   DM --> M[detect-web-worker<br/>secondary analysis]
   UI[Vue workbench] --> GW[api-gateway]
@@ -33,7 +33,7 @@ flowchart LR
   GW --> A
   GW --> OS
   GW --> I
-  GW --> R
+  GW --> RESP
 ```
 
 `search-config` is the normalization boundary. It converts vendor-specific

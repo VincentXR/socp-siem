@@ -77,8 +77,10 @@ const noteBusy = ref(false)
 const creatingCase = ref(false)
 const actionError = ref('')
 const activeTab = ref('summary')
-const actionPending = computed(() => statusBusy.value || assignBusy.value || noteBusy.value)
+const actionPending = computed(() => statusBusy.value || assignBusy.value || noteBusy.value
+  || creatingCase.value || Boolean(requeueBusy.value))
 let loadToken = 0
+let actionToken = 0
 // Retrying the same unsent note must reuse its key so the backend set-once
 // Idempotency-Key window can absorb the duplicate instead of appending twice.
 let noteKey = ''
@@ -150,94 +152,138 @@ watch(() => [props.modelValue, props.alarm?.id] as const, ([visible]) => {
   if (visible && props.alarm) void loadDetails(props.alarm)
 }, { immediate: true })
 
-watch(() => props.alarm?.id, () => { activeTab.value = 'summary' })
+watch(() => props.alarm?.id, () => {
+  activeTab.value = 'summary'
+  actionToken++
+  statusBusy.value = false
+  assignBusy.value = false
+  noteBusy.value = false
+  creatingCase.value = false
+  requeueBusy.value = ''
+})
+
+function actionStillTargets(alarmId: string, token: number): boolean {
+  return props.modelValue && props.alarm?.id === alarmId && token === actionToken
+}
+
+function beforeClose(done: () => void): void {
+  if (!actionPending.value) done()
+}
 
 async function changeStatus() {
-  if (!props.alarm || !props.canWrite || statusBusy.value) return
+  if (!props.alarm || !props.canWrite || actionPending.value) return
+  const alarmId = props.alarm.id
+  const token = ++actionToken
+  const status = newStatus.value
   statusBusy.value = true
   actionError.value = ''
   try {
-    await setDispositionStatus(props.alarm.id, newStatus.value)
-    disposition.value = await getDisposition(props.alarm.id)
+    await setDispositionStatus(alarmId, status)
+    if (!actionStillTargets(alarmId, token)) return
+    const refreshed = await getDisposition(alarmId)
+    if (!actionStillTargets(alarmId, token)) return
+    disposition.value = refreshed
     ElMessage.success(t('common.updated'))
     emit('updated')
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : String(error)
+    if (actionStillTargets(alarmId, token)) actionError.value = error instanceof Error ? error.message : String(error)
   } finally {
-    statusBusy.value = false
+    if (actionStillTargets(alarmId, token)) statusBusy.value = false
   }
 }
 
 async function doAssign() {
-  if (!props.alarm || !props.canWrite) return
+  if (!props.alarm || !props.canWrite || actionPending.value) return
   const assignee = newAssignee.value.trim()
   if (!assignee) { ElMessage.warning(t('forms.fieldRequired', { field: t('cases.assignee') })); return }
-  if (assignBusy.value) return
+  const alarmId = props.alarm.id
+  const token = ++actionToken
   assignBusy.value = true
   actionError.value = ''
   try {
-    await assignAlarm(props.alarm.id, assignee)
+    await assignAlarm(alarmId, assignee)
+    if (!actionStillTargets(alarmId, token)) return
     newAssignee.value = ''
-    disposition.value = await getDisposition(props.alarm.id)
+    const refreshed = await getDisposition(alarmId)
+    if (!actionStillTargets(alarmId, token)) return
+    disposition.value = refreshed
     ElMessage.success(t('common.updated'))
     emit('updated')
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : String(error)
+    if (actionStillTargets(alarmId, token)) actionError.value = error instanceof Error ? error.message : String(error)
   } finally {
-    assignBusy.value = false
+    if (actionStillTargets(alarmId, token)) assignBusy.value = false
   }
 }
 
 async function doAddNote() {
-  if (!props.alarm || !props.canWrite) return
+  if (!props.alarm || !props.canWrite || actionPending.value) return
   const content = newNote.value.trim()
   if (!content) { ElMessage.warning(t('forms.fieldRequired', { field: t('common.notes') })); return }
-  if (noteBusy.value) return
+  const alarmId = props.alarm.id
+  const token = ++actionToken
+  const idempotencyKey = newNoteKey()
   noteBusy.value = true
   actionError.value = ''
   try {
-    await addAlarmNote(props.alarm.id, content, 'operator', newNoteKey())
+    await addAlarmNote(alarmId, content, 'operator', idempotencyKey)
+    if (!actionStillTargets(alarmId, token)) return
     newNote.value = ''
     noteKey = ''
-    disposition.value = await getDisposition(props.alarm.id)
+    const refreshed = await getDisposition(alarmId)
+    if (!actionStillTargets(alarmId, token)) return
+    disposition.value = refreshed
     ElMessage.success(t('common.saved'))
     emit('updated')
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : String(error)
+    if (actionStillTargets(alarmId, token)) actionError.value = error instanceof Error ? error.message : String(error)
   } finally {
-    noteBusy.value = false
+    if (actionStillTargets(alarmId, token)) noteBusy.value = false
   }
 }
 
 async function createCase(): Promise<void> {
-  if (!props.alarm || !props.canWrite || creatingCase.value) return
+  if (!props.alarm || !props.canWrite || actionPending.value) return
+  const alarm = props.alarm
+  const alarmId = alarm.id
+  const token = ++actionToken
   creatingCase.value = true
   actionError.value = ''
   try {
-    const result = await createCaseFromAlarm(props.alarm)
-    relatedCase.value = await getCaseByAlarm(props.alarm.id)
+    const result = await createCaseFromAlarm(alarm)
+    if (!actionStillTargets(alarmId, token)) return
+    const linked = await getCaseByAlarm(alarmId)
+    if (!actionStillTargets(alarmId, token)) return
+    relatedCase.value = linked
     if (result.duplicate) ElMessage.info(t('drawer.caseAlreadyLinked'))
     else ElMessage.success(t('drawer.caseCreated'))
     emit('updated')
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : String(error)
+    if (actionStillTargets(alarmId, token)) actionError.value = error instanceof Error ? error.message : String(error)
   } finally {
-    creatingCase.value = false
+    if (actionStillTargets(alarmId, token)) creatingCase.value = false
   }
 }
 
 async function requeueDelivery(delivery: AlarmDeliveryStatus): Promise<void> {
-  if (!props.canAdmin || requeueBusy.value) return
-  requeueBusy.value = delivery.deliveryId
+  if (!props.canAdmin || actionPending.value) return
+  const alarmId = props.alarm?.id
+  if (!alarmId) return
+  const token = ++actionToken
+  const deliveryId = delivery.deliveryId
+  requeueBusy.value = deliveryId
   actionError.value = ''
   try {
-    await requeueAlarmDelivery(delivery.deliveryId)
-    if (props.alarm) deliveries.value = await getAlarmDeliveries(props.alarm.id)
+    await requeueAlarmDelivery(deliveryId)
+    if (!actionStillTargets(alarmId, token)) return
+    const refreshed = await getAlarmDeliveries(alarmId)
+    if (!actionStillTargets(alarmId, token)) return
+    deliveries.value = refreshed
     ElMessage.success(t('drawer.deliveryRequeued'))
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : String(error)
+    if (actionStillTargets(alarmId, token)) actionError.value = error instanceof Error ? error.message : String(error)
   } finally {
-    requeueBusy.value = ''
+    if (actionStillTargets(alarmId, token)) requeueBusy.value = ''
   }
 }
 
@@ -249,7 +295,7 @@ function openEvidenceSearch() {
 </script>
 
 <template>
-  <el-drawer v-model="drawerVisible" class="alarm-detail-drawer" :title="`${t('drawer.title')} · ${props.alarm?.title || props.alarm?.ruleName || ''}`" size="min(760px, 96vw)">
+  <el-drawer v-model="drawerVisible" class="alarm-detail-drawer" :title="`${t('drawer.title')} · ${props.alarm?.title || props.alarm?.ruleName || ''}`" size="min(760px, 96vw)" :before-close="beforeClose" :close-on-click-modal="!actionPending" :close-on-press-escape="!actionPending">
     <template v-if="props.alarm">
       <div class="alarm-action-strip">
         <div class="alarm-action-state">
@@ -258,11 +304,11 @@ function openEvidenceSearch() {
           <el-tag size="small">{{ statusLabel(disposition?.status || props.alarm.status) }}</el-tag>
         </div>
         <div class="alarm-action-buttons">
-          <el-button v-if="evidence?.query" size="small" @click="openEvidenceSearch">{{ t('drawer.openSearch') }}</el-button>
-          <el-button v-if="relatedCase" size="small" @click="drawerVisible = false; props.goCase(relatedCase.id)">{{ t('drawer.goToCase') }}</el-button>
-          <el-button v-else-if="props.canWrite && !relatedCaseError" size="small" type="primary" plain :loading="creatingCase" @click="createCase">{{ t('drawer.createCase') }}</el-button>
-          <el-button v-if="props.goAi && props.canWrite" size="small" type="primary" plain @click="props.goAi(props.alarm.id)">{{ t('drawer.openAiInvestigation') }}</el-button>
-          <el-button v-if="props.goSoar" size="small" type="warning" plain @click="props.goSoar(props.alarm.id)">{{ t('drawer.openSoarResponse') }}</el-button>
+          <el-button v-if="evidence?.query" size="small" :disabled="actionPending" @click="openEvidenceSearch">{{ t('drawer.openSearch') }}</el-button>
+          <el-button v-if="relatedCase" size="small" :disabled="actionPending" @click="drawerVisible = false; props.goCase(relatedCase.id)">{{ t('drawer.goToCase') }}</el-button>
+          <el-button v-else-if="props.canWrite && !relatedCaseError" size="small" type="primary" plain :loading="creatingCase" :disabled="actionPending" @click="createCase">{{ t('drawer.createCase') }}</el-button>
+          <el-button v-if="props.goAi && props.canWrite" size="small" type="primary" plain :disabled="actionPending" @click="props.goAi(props.alarm.id)">{{ t('drawer.openAiInvestigation') }}</el-button>
+          <el-button v-if="props.goSoar" size="small" type="warning" plain :disabled="actionPending" @click="props.goSoar(props.alarm.id)">{{ t('drawer.openSoarResponse') }}</el-button>
         </div>
       </div>
 
@@ -294,7 +340,7 @@ function openEvidenceSearch() {
             <el-card v-if="relatedCase" shadow="never" class="alarm-related-case">
               <div>
                 <strong>{{ relatedCase.title }}</strong>
-                <span>{{ relatedCase.id }} · {{ statusLabel(relatedCase.status) }} · {{ relatedCase.entity }} · {{ t('drawer.alarmCount', { count: relatedCase.alarmIds.length }) }}</span>
+                <span>{{ relatedCase.id }} · {{ statusLabel(relatedCase.status) }} · {{ relatedCase.entity }} · {{ t('drawer.alarmCount', { count: relatedCase.alarmCount ?? relatedCase.alarmIds.length }) }}</span>
               </div>
               <el-button link type="primary" size="small" @click="drawerVisible = false; props.goCase(relatedCase.id)">{{ t('drawer.goToCase') }}</el-button>
             </el-card>
@@ -304,7 +350,7 @@ function openEvidenceSearch() {
             </el-alert>
             <div v-else class="drawer-case-empty">
               <el-empty :description="t('drawer.noRelatedCase')" :image-size="50" />
-              <el-button v-if="props.canWrite" type="primary" size="small" :loading="creatingCase" @click="createCase">{{ t('drawer.createCase') }}</el-button>
+              <el-button v-if="props.canWrite" type="primary" size="small" :loading="creatingCase" :disabled="actionPending" @click="createCase">{{ t('drawer.createCase') }}</el-button>
             </div>
           </section>
         </el-tab-pane>
@@ -363,7 +409,7 @@ function openEvidenceSearch() {
                 <div class="delivery-heading"><strong>{{ delivery.destination }}</strong><el-tag size="small" :type="delivery.status === 'DELIVERED' ? 'success' : delivery.status === 'DEAD' ? 'danger' : 'warning'">{{ delivery.status }}</el-tag></div>
                 <div class="drawer-readonly-hint">{{ t('drawer.deliveryAttempts', { count: delivery.attempts }) }} · {{ delivery.deliveredAt || delivery.nextAttemptAt || '—' }}</div>
                 <div v-if="delivery.lastError" class="delivery-error">{{ delivery.lastError }}</div>
-                <el-button v-if="props.canAdmin && delivery.status === 'DEAD'" size="small" type="warning" plain :loading="requeueBusy === delivery.deliveryId" :disabled="Boolean(requeueBusy)" @click="requeueDelivery(delivery)">{{ t('drawer.requeueDelivery') }}</el-button>
+                <el-button v-if="props.canAdmin && delivery.status === 'DEAD'" size="small" type="warning" plain :loading="requeueBusy === delivery.deliveryId" :disabled="actionPending" @click="requeueDelivery(delivery)">{{ t('drawer.requeueDelivery') }}</el-button>
               </el-card>
             </div>
           </section>

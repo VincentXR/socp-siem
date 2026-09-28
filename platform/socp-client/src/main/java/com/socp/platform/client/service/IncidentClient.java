@@ -34,6 +34,19 @@ public class IncidentClient {
         return http.get(SocpService.INCIDENT, "/api/v1/incidents");
     }
 
+    public ServiceCall get(String caseId) {
+        return http.get(SocpService.INCIDENT, "/api/v1/incidents/" + encode(caseId));
+    }
+
+    /** Create an operator-style incident, without pretending it originated from an alert. */
+    public ServiceCall create(String incidentJson) {
+        return http.postJson(SocpService.INCIDENT, "/api/v1/incidents", incidentJson);
+    }
+
+    public ServiceCall byAlarm(String alarmId) {
+        return http.get(SocpService.INCIDENT, "/api/v1/incidents/by-alarm?alarmId=" + encode(alarmId));
+    }
+
     /** Append an analyst-approved investigation summary to a case timeline. */
     public ServiceCall addNote(String caseId, String author, String content) {
         return addNote(caseId, author, content, null);
@@ -53,6 +66,13 @@ public class IncidentClient {
         String query = "?status=" + encode(status);
         if (assignee != null && !assignee.isBlank()) query += "&assignee=" + encode(assignee);
         return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/" + encode(caseId) + "/status" + query, "{}");
+    }
+
+    public ServiceCall assign(String caseId, String assignee) {
+        String query = assignee == null || assignee.isBlank() ? ""
+                : "?assignee=" + encode(assignee);
+        return http.postJson(SocpService.INCIDENT,
+                "/api/v1/incidents/" + encode(caseId) + "/assignee" + query, "{}");
     }
 
     private static String encode(String value) {

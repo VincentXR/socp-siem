@@ -53,7 +53,25 @@ public class NotificationDispatcher {
     }
 
     public Map<String, Object> dispatch(Map<String, Object> alarm) {
-        String alarmId = text(alarm.get("id"));
+        String alarmId = validateAlarm(alarm);
+        String tenant = tenant();
+        List<Channel> enabledChannels = channels.enabled();
+        return dispatchToChannels(alarmId, alarm, tenant, enabledChannels);
+    }
+
+    /** Dispatch to exactly one configured channel; used by the SOAR send-channel action. */
+    public Map<String, Object> dispatchToChannel(String channelId, Map<String, Object> alarm) {
+        String alarmId = validateAlarm(alarm);
+        Channel channel = channels.get(channelId);
+        if (channel == null) throw com.socp.platform.error.exception.ApiException.notFound(
+                "Notification channel not found: " + channelId);
+        if (!channel.enabled()) throw com.socp.platform.error.exception.ApiException.of(
+                409, "Notification channel is disabled: " + channelId);
+        return dispatchToChannels(alarmId, alarm, tenant(), List.of(channel));
+    }
+
+    private static String validateAlarm(Map<String, Object> alarm) {
+        String alarmId = alarm == null ? null : text(alarm.get("id"));
         if (alarmId == null || alarmId.length() > 255) throw new IllegalArgumentException("valid alarm id is required");
         try {
             if (MAPPER.writeValueAsBytes(alarm).length > 256 * 1024) {
@@ -62,8 +80,11 @@ public class NotificationDispatcher {
         } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
             throw com.socp.platform.error.exception.ApiException.badRequest("notification payload cannot be serialized");
         }
-        String tenant = tenant();
-        List<Channel> enabledChannels = channels.enabled();
+        return alarmId;
+    }
+
+    private Map<String, Object> dispatchToChannels(String alarmId, Map<String, Object> alarm,
+                                                   String tenant, List<Channel> enabledChannels) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         List<CompletableFuture<Map<String, Object>>> futures = new ArrayList<>();
         for (Channel channel : enabledChannels) {
@@ -77,7 +98,7 @@ public class NotificationDispatcher {
         int failed = 0;
         for (int index = 0; index < futures.size(); index++) {
             var result = await(futures.get(index), enabledChannels.get(index), deadline);
-            if ("failed".equals(result.get("status"))) failed++;
+            if (!successful(result)) failed++;
             results.add(result);
         }
 
@@ -115,7 +136,10 @@ public class NotificationDispatcher {
         if (claim.receiptJson() != null) {
             try {
                 var result = new LinkedHashMap<>(MAPPER.readValue(claim.receiptJson(), MAP_TYPE));
-                if (!List.of("sent", "logged").contains(result.get("status"))) throw new IllegalStateException();
+                if (!successful(result)
+                        && !("failed".equals(result.get("status"))
+                        && Boolean.FALSE.equals(result.get("retryable")))
+                        && !"unknown".equals(result.get("status"))) throw new IllegalStateException();
                 result.put("duplicate", true);
                 return result;
             } catch (Exception corrupt) {
@@ -127,15 +151,18 @@ public class NotificationDispatcher {
         try {
             result = send(channel, alarm);
         } catch (RuntimeException connectorFailure) {
-            result = failed(channel, "NOTIFY_CONNECTOR_FAILED", "Notification connector failed; remote acceptance may be unknown");
+            result = unknown(channel, "NOTIFY_RESULT_UNKNOWN",
+                    "Notification connector failed; remote acceptance may be unknown");
         }
         try {
+            boolean terminal = successful(result) || !Boolean.TRUE.equals(result.get("retryable"));
             if (!deliveries.finish(alarmId, channel.id(), claim.token(), MAPPER.writeValueAsString(result),
-                    !"failed".equals(result.get("status")))) {
+                    terminal)) {
                 return failed(channel, "NOTIFY_CLAIM_LOST", "Delivery ownership changed; retry to read the durable result");
             }
         } catch (Exception persistenceFailure) {
-            return failed(channel, "NOTIFY_RECEIPT_UNCONFIRMED", "Notification receipt could not be confirmed; remote acceptance may be unknown");
+            return unknown(channel, "NOTIFY_RECEIPT_UNCONFIRMED",
+                    "Notification receipt could not be confirmed; remote acceptance may be unknown");
         }
         log(channel, result, alarm);
         return result;
@@ -156,15 +183,26 @@ public class NotificationDispatcher {
 
     private static Map<String, Object> failed(Channel channel, String code, String detail) {
         return Map.of("channel", channel.name(), "channelId", channel.id(), "type", channel.type(),
-                "status", "failed", "errorCode", code, "detail", detail);
+                "status", "failed", "errorCode", code, "detail", detail, "retryable", true);
+    }
+
+    private static Map<String, Object> unknown(Channel channel, String code, String detail) {
+        return Map.of("channel", channel.name(), "channelId", channel.id(), "type", channel.type(),
+                "status", "unknown", "errorCode", code, "detail", detail, "retryable", false);
+    }
+
+    private static boolean successful(Map<String, Object> result) {
+        return result != null && List.of("sent", "logged").contains(result.get("status"));
     }
 
     private Map<String, Object> send(Channel channel, Map<String, Object> alarm) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("channel", channel.name());
+        result.put("channelId", channel.id());
         result.put("type", channel.type());
         if ("LOG".equals(channel.type())) {
             result.put("status", "logged");
+            result.put("retryable", false);
             result.put("detail", "Notification recorded locally; no external connector invoked");
             return result;
         }
@@ -178,9 +216,18 @@ public class NotificationDispatcher {
             SmtpNotificationSender.DeliveryResult delivery = smtpSender.send(
                     channel.target(), "SOCP security alarm: " + alarm.getOrDefault("id", "unknown"),
                     imText(alarm));
-            result.put("status", delivery.sent() ? "sent" : "failed");
+            result.put("status", delivery.status());
+            result.put("retryable", delivery.retryable());
             result.put("detail", delivery.detail());
             if (!delivery.sent()) result.put("errorCode", delivery.errorCode());
+            return result;
+        }
+        String channelType = channel.type() == null ? "" : channel.type().toUpperCase(java.util.Locale.ROOT);
+        if (!List.of("WEBHOOK", "SLACK", "DINGTALK", "WECOM", "WECHAT").contains(channelType)) {
+            result.put("status", "failed");
+            result.put("retryable", false);
+            result.put("errorCode", "NOTIFY_CHANNEL_UNSUPPORTED");
+            result.put("detail", "Unsupported notification channel type: " + channelType);
             return result;
         }
         String deliveryId = deliveryId(tenant(), text(alarm.get("id")), channel.id());
@@ -189,17 +236,20 @@ public class NotificationDispatcher {
                         "Idempotency-Key", deliveryId,
                         "X-SOCP-Delivery-Id", deliveryId));
         if (call == null) {
-            result.put("status", "failed");
+            result.put("status", "unknown");
             result.put("httpStatus", 0);
-            result.put("detail", "HTTP client returned no result");
+            result.put("errorCode", "NOTIFY_RESULT_UNKNOWN");
+            result.put("retryable", false);
+            result.put("detail", "HTTP client returned no result; remote acceptance is unknown");
             return result;
         }
-        result.put("status", call.ok() ? "sent" : "failed");
+        ProviderReceipt receipt = parseReceipt(channel.type(), call);
+        result.put("status", receipt.status());
         result.put("httpStatus", call.status());
-        result.put("detail", call.ok()
-                ? truncate(call.body(), 300)
-                : truncate(call.failureReason() + " | " + call.body(), 300));
-        if (!call.ok()) {
+        result.put("retryable", receipt.retryable());
+        result.put("detail", truncate(receipt.detail(), 300));
+        if (receipt.errorCode() != null) result.put("errorCode", receipt.errorCode());
+        if (!"sent".equals(receipt.status())) {
             log.warn("Notification channel failed channelId={} type={} alarmId={} httpStatus={}",
                     channel.id(), channel.type(), alarm.get("id"), call.status());
         }
@@ -210,8 +260,10 @@ public class NotificationDispatcher {
         String type = channel.type() == null ? "" : channel.type().toUpperCase();
         Object payload = switch (type) {
             case "WEBHOOK" -> alarm;
-            case "SLACK", "DINGTALK", "WECOM", "WECHAT" -> Map.of("text", imText(alarm));
-            default -> Map.of("channel", channel.name(), "type", channel.type(), "alarm", alarm);
+            case "SLACK" -> Map.of("text", imText(alarm));
+            case "DINGTALK", "WECOM", "WECHAT" ->
+                    Map.of("msgtype", "text", "text", Map.of("content", imText(alarm)));
+            default -> throw new IllegalArgumentException("Unsupported notification channel type: " + type);
         };
         try {
             return MAPPER.writeValueAsString(payload);
@@ -233,6 +285,51 @@ public class NotificationDispatcher {
                 + "\nTime: " + alarm.getOrDefault("occurredAt", "-")
                 + "\nAlarm ID: " + alarm.getOrDefault("id", "-");
     }
+
+    private static ProviderReceipt parseReceipt(String channelType, ServiceCall call) {
+        if (!call.ok()) {
+            if (call.status() < 0) {
+                return new ProviderReceipt("unknown", false, "NOTIFY_RESULT_UNKNOWN",
+                        call.failureReason() == null ? "Remote acceptance is unknown" : call.failureReason());
+            }
+            return new ProviderReceipt("failed", call.retryable(), "NOTIFY_HTTP_REJECTED",
+                    (call.failureReason() == null ? "HTTP request rejected" : call.failureReason())
+                            + " | " + call.body());
+        }
+        String type = channelType == null ? "" : channelType.toUpperCase(java.util.Locale.ROOT);
+        if ("WEBHOOK".equals(type)) {
+            return new ProviderReceipt("sent", false, null,
+                    call.body() == null || call.body().isBlank() ? "HTTP endpoint accepted request" : call.body());
+        }
+        if ("SLACK".equals(type)) {
+            if ("ok".equals(call.body() == null ? "" : call.body().trim())) {
+                return new ProviderReceipt("sent", false, null, "Slack accepted message");
+            }
+            return new ProviderReceipt("failed", false, "SLACK_BUSINESS_REJECTED",
+                    "Slack returned an unexpected success body: " + call.body());
+        }
+        if (List.of("DINGTALK", "WECOM", "WECHAT").contains(type)) {
+            try {
+                Map<String, Object> body = MAPPER.readValue(call.body() == null ? "" : call.body(), MAP_TYPE);
+                Object rawCode = body.get("errcode");
+                long code = rawCode instanceof Number number
+                        ? number.longValue() : Long.parseLong(String.valueOf(rawCode));
+                if (code == 0L) {
+                    return new ProviderReceipt("sent", false, null, type + " accepted message");
+                }
+                boolean retryable = code == -1L || code == 45009L;
+                return new ProviderReceipt("failed", retryable, type + "_BUSINESS_REJECTED",
+                        "Provider errcode=" + code + ", errmsg=" + body.getOrDefault("errmsg", ""));
+            } catch (Exception invalid) {
+                return new ProviderReceipt("unknown", false, "NOTIFY_RECEIPT_INVALID",
+                        type + " returned an invalid receipt; remote acceptance is unknown");
+            }
+        }
+        return new ProviderReceipt("failed", false, "NOTIFY_CHANNEL_UNSUPPORTED",
+                "Unsupported notification channel type: " + type);
+    }
+
+    private record ProviderReceipt(String status, boolean retryable, String errorCode, String detail) { }
 
     private void log(Channel channel, Map<String, Object> result, Map<String, Object> alarm) {
         Map<String, Object> entry = new LinkedHashMap<>();

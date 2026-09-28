@@ -70,9 +70,10 @@ an explicitly owned patch/scan/rebuild policy, plus retention and restore tests.
 - Generate a CycloneDX SBOM and scan images and dependencies before publishing
   a release. Image signing and provenance attestation are deployment-policy
   gates and must not be claimed unless the release records that evidence.
-- Inject secrets through the platform (`socp-runtime-secrets` in the
-  Kubernetes baseline). Do not add a Secret manifest containing real values to
-  Git.
+- Inject secrets through the platform. The Kubernetes baseline uses one
+  explicitly mapped Secret per workload, a gateway-only signing Secret, and a
+  metrics-scraping Secret; it does not use Secret `envFrom`. Do not add a
+  Secret manifest containing real values to Git.
 
 The application pods expect `SOCP_PG_USER` and `SOCP_PG_PASSWORD` to contain
 the restricted runtime role, never the PostgreSQL bootstrap account. Flyway
@@ -88,14 +89,17 @@ migration role fails the Pod at startup instead of silently running DDL as the
 runtime role. `build/verify-production.py` and `build/verify-prod-compose.py`
 assert this. The remaining reference-deployment secret keys are
 `SOCP_SECURITY_SERVICE_SECRET`,
-`SOCP_SECURITY_METRICS_TOKEN`, `SOCP_SECURITY_ISSUER_URI`,
-`SOCP_SECURITY_JWK_SET_URI`, `SOCP_SECURITY_AUDIENCE`,
-`SOCP_AUTH_SIGNING_JWK`, `SOCP_AUTH_ISSUER`, `SOCP_AUTH_USERS`,
+`SOCP_SECURITY_METRICS_TOKEN`, `SPRING_DATA_REDIS_PASSWORD`,
+`SOCP_AUTH_SIGNING_JWK`, `SOCP_AUTH_USERS`,
 `SOCP_OPENSEARCH_USERNAME`, `SOCP_OPENSEARCH_PASSWORD`, `SOCP_CK_USER`,
 `SOCP_CK_PASSWORD`, `SOCP_COLLECTOR_CREDENTIALS`, `SOCP_INGEST_TOKEN`, and
 `SOCP_VECTOR_TOKEN` where the corresponding service uses them. Secret keys
-use these exact environment-variable names because the chart imports the
-external Secret with `envFrom`; they are intentionally not populated in Git.
+use these exact environment-variable names because each workload's
+`secretEnv` maps the external Secret key explicitly; they are intentionally
+not populated in Git. Public identity settings (`SOCP_AUTH_ISSUER`,
+`SOCP_SECURITY_ISSUER_URI`, `SOCP_SECURITY_JWK_SET_URI`, and
+`SOCP_SECURITY_AUDIENCE`) belong in the environment-owned
+`runtime.extraConfig`, not in a credential Secret.
 
 For local Compose, `SOCP_PG_BOOTSTRAP_PASSWORD` is the administrator password
 used only by PostgreSQL initialization. If it is omitted, the legacy
@@ -111,6 +115,14 @@ RSA JWK in `SOCP_AUTH_SIGNING_JWK`; the configured key must include a stable
 under `SOCP_OIDC_*` remains a separate upstream identity source. The production
 boot smoke verifies an actual local login token against the served public key;
 it does not permit the development HMAC fallback.
+
+For an existing Kubernetes release, copy the currently active signing JWK to
+the dedicated gateway Secret first, roll out the explicit mappings, verify no
+non-gateway Pod references that Secret, and remove the key from the legacy
+shared Secret. Rotate to a new `kid` afterwards because already-running Pods
+may have observed the old shared value. The current Gateway publishes one
+active key, so perform that rotation as a coordinated session-invalidating
+cutover; this release does not claim an old/new verification overlap.
 
 Business services additionally trust a user JWT only when the API Gateway adds
 a short-lived, nonce-protected HMAC proof bound to the original HTTP method,

@@ -214,6 +214,8 @@ public class AlarmDeliveryPublisher {
                     if (repository.markDelivered(delivery.getId(), Instant.now(), token) != 1) {
                         log.warn("Alarm delivery state changed before acknowledgement id={}", delivery.getId());
                     }
+                } else if (!result.retryable()) {
+                    markTerminalFailure(delivery, token, result.error());
                 } else {
                     scheduleRetry(delivery, token, result.error());
                 }
@@ -229,13 +231,14 @@ public class AlarmDeliveryPublisher {
     private DeliveryResult dispatch(AlarmDelivery delivery) {
         AlarmDeliveryDestination destination = AlarmDeliveryDestination.valueOf(delivery.getDestination());
         if (destination == AlarmDeliveryDestination.CLICKHOUSE) {
+            Map<String, Object> payload;
             try {
-                Map<String, Object> payload = AlarmPayloadCodec.read(delivery.getPayload());
-                return ckReporter.reportAlarmAndAwait(AlarmPayloadCodec.toAlarm(payload))
-                        ? DeliveryResult.success() : DeliveryResult.failure("ClickHouse rejected alarm");
+                payload = AlarmPayloadCodec.read(delivery.getPayload());
             } catch (Exception failure) {
-                return DeliveryResult.failure("invalid ClickHouse payload: " + failure.getMessage());
+                return DeliveryResult.terminalFailure("invalid ClickHouse payload: " + failure.getMessage());
             }
+            return ckReporter.reportAlarmAndAwait(AlarmPayloadCodec.toAlarm(payload))
+                    ? DeliveryResult.success() : DeliveryResult.retryableFailure("ClickHouse rejected alarm");
         }
         ServiceCall call = switch (destination) {
             case NOTIFY -> notifyClient.notifyAlert(delivery.getPayload());
@@ -243,8 +246,26 @@ public class AlarmDeliveryPublisher {
             case SOAR -> soarClient.evaluate(delivery.getPayload());
             case CLICKHOUSE -> throw new IllegalStateException("unreachable destination");
         };
-        if (call == null) return DeliveryResult.failure(destination + " returned no result");
-        return call.ok() ? DeliveryResult.success() : DeliveryResult.failure(call.failureReason());
+        if (call == null) return DeliveryResult.retryableFailure(destination + " returned no result");
+        return call.ok()
+                ? DeliveryResult.success()
+                : new DeliveryResult(false, call.retryable(), call.failureReason());
+    }
+
+    private void markTerminalFailure(AlarmDelivery delivery, String token, String error) {
+        Instant now = Instant.now();
+        String boundedError = OutboxRetryPolicy.truncate(error, MAX_ERROR_LENGTH);
+        try {
+            if (repository.markDead(delivery.getId(), boundedError, now, token) == 1) {
+                log.error("Alarm delivery rejected permanently alarmId={} destination={} reason={}",
+                        delivery.getAlarmId(), delivery.getDestination(), boundedError);
+                lifecycle("dead", 1);
+            }
+        } catch (RuntimeException stateFailure) {
+            // The claim stays PROCESSING and stale-claim recovery will safely retry the state transition.
+            log.warn("Alarm delivery terminal state update deferred id={}: {}",
+                    delivery.getId(), stateFailure.getMessage());
+        }
     }
 
     private void scheduleRetry(AlarmDelivery delivery, String token, String error) {
@@ -316,8 +337,9 @@ public class AlarmDeliveryPublisher {
         executor.close();
     }
 
-    private record DeliveryResult(boolean delivered, String error) {
-        static DeliveryResult success() { return new DeliveryResult(true, null); }
-        static DeliveryResult failure(String error) { return new DeliveryResult(false, error); }
+    private record DeliveryResult(boolean delivered, boolean retryable, String error) {
+        static DeliveryResult success() { return new DeliveryResult(true, false, null); }
+        static DeliveryResult retryableFailure(String error) { return new DeliveryResult(false, true, error); }
+        static DeliveryResult terminalFailure(String error) { return new DeliveryResult(false, false, error); }
     }
 }

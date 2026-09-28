@@ -110,12 +110,33 @@ public class NotifyController {
     public ResponseEntity<ApiResult<Map<String, Object>>> notify(@Valid @RequestBody NotifyAlarmRequest request) {
         Map<String, Object> result = dispatcher.dispatch(request.asMap());
         int failed = result.get("failed") instanceof Number number ? number.intValue() : 0;
-        // The per-channel receipt stays in data; a partial failure is also a
-        // non-zero envelope code so HTTP status and code agree.
+        boolean retryable = hasRetryableFailure(result);
+        HttpStatus status = failed == 0 ? HttpStatus.OK
+                : retryable ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.UNPROCESSABLE_ENTITY;
         ApiResult<Map<String, Object>> body = failed == 0
                 ? ApiResult.ok(result)
-                : ApiResult.of(502, "部分通知渠道投递失败，请在通知页查看渠道明细后重试", result);
-        return ResponseEntity.status(failed == 0 ? HttpStatus.OK : HttpStatus.BAD_GATEWAY).body(body);
+                : ApiResult.of(status.value(), retryable
+                        ? "部分通知渠道暂时不可用，可安全重试"
+                        : "部分通知渠道永久失败或回执未知，请检查明细后人工处理", result);
+        return ResponseEntity.status(status).body(body);
+    }
+
+    /** SOAR/native service entry point that targets one channel instead of tenant-wide fan-out. */
+    @com.socp.platform.auth.security.RequireService
+    @PostMapping("/notify/channels/{id}/alert")
+    public ResponseEntity<ApiResult<Map<String, Object>>> notifyChannel(
+            @PathVariable String id, @Valid @RequestBody NotifyAlarmRequest request) {
+        Map<String, Object> result = dispatcher.dispatchToChannel(id, request.asMap());
+        int failed = result.get("failed") instanceof Number number ? number.intValue() : 0;
+        boolean retryable = hasRetryableFailure(result);
+        HttpStatus status = failed == 0 ? HttpStatus.OK
+                : retryable ? HttpStatus.SERVICE_UNAVAILABLE : HttpStatus.UNPROCESSABLE_ENTITY;
+        ApiResult<Map<String, Object>> body = failed == 0
+                ? ApiResult.ok(result)
+                : ApiResult.of(status.value(), retryable
+                        ? "通知渠道暂时不可用，可安全重试"
+                        : "通知渠道永久失败或回执未知，请人工核对", result);
+        return ResponseEntity.status(status).body(body);
     }
 
     /** 分发日志：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */
@@ -132,6 +153,13 @@ public class NotifyController {
         if (page < 1 || size < 1 || size > maxListSize || (long) (page - 1) * size > Integer.MAX_VALUE) {
             throw ApiException.badRequest("分页参数非法：page 从 1 起，size 上限 " + maxListSize);
         }
+    }
+
+    private static boolean hasRetryableFailure(Map<String, Object> dispatch) {
+        Object values = dispatch.get("results");
+        if (!(values instanceof List<?> results)) return false;
+        return results.stream().filter(Map.class::isInstance).map(Map.class::cast)
+                .anyMatch(result -> Boolean.TRUE.equals(result.get("retryable")));
     }
 
 }

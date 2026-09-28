@@ -45,7 +45,9 @@ public class AiController {
     @AuditOperation(action = "AI_INVESTIGATION", target = "alert")
     @PostMapping("/investigations")
     public ApiResult<java.util.Map<String, Object>> investigate(@Valid @RequestBody InvestigationRequest request) {
-        return ApiResult.ok(investigation.investigate(request.alertId()));
+        return ApiResult.ok(request.newVersionOrDefault()
+                ? investigation.reanalyze(request.alertId(), request.baseRevision())
+                : investigation.investigate(request.alertId()));
     }
 
     /** Queue an investigation and return immediately; poll the durable receipt for completion. */
@@ -54,7 +56,8 @@ public class AiController {
     @PostMapping("/investigations/async")
     public ApiResult<java.util.Map<String, Object>> investigateAsync(@Valid @RequestBody InvestigationRequest request) {
         if (asyncInvestigation == null) return investigate(request);
-        return ApiResult.ok(asyncInvestigation.submit(request.alertId()));
+        return ApiResult.ok(asyncInvestigation.submit(
+                request.alertId(), request.newVersionOrDefault(), request.baseRevision()));
     }
 
     @RequireRole({"admin", "analyst"})

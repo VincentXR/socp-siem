@@ -33,7 +33,7 @@ spec:
       authorization:
         type: Bearer
         credentials:
-          name: {{ $root.Values.runtime.existingSecret }}
+          name: {{ $root.Values.runtime.metricsSecret }}
           key: {{ $root.Values.monitoring.serviceMonitor.bearerTokenSecretKey }}
 {{- end }}
 {{- end }}

@@ -23,9 +23,8 @@ serviceAccount:
   annotations: {}
 
 runtime:
-  # Each database workload below names the four PostgreSQL role keys in
-  # `secretEnv` instead of relying on the `envFrom` import alone. `envFrom`
-  # accepts any subset of keys. For the migration pair
+  # Each workload below names every allowed Secret key in `secretEnv`.
+  # Deployments deliberately never use Secret `envFrom`. For the migration pair
   # (`${SOCP_PG_MIGRATION_USER}`/`${SOCP_PG_MIGRATION_PASSWORD}`) a missing key
   # now makes Spring placeholder resolution fail and the Pod CrashLoops; the
   # explicit secretKeyRef moves that failure earlier to a visible
@@ -34,6 +33,10 @@ runtime:
   # application-pg.yml, so naming it explicitly is what guarantees a missing
   # Secret key cannot silently resolve to the default account.
   existingSecret: socp-runtime-secrets
+  # The platform signing private key is intentionally isolated from the
+  # shared runtime Secret. Only api-gateway may reference this Secret.
+  gatewaySigningSecret: socp-gateway-signing
+  metricsSecret: socp-metrics-secrets
   config:
     # The pg profile is what points spring.datasource at PostgreSQL; without
     # it the prod profile keeps the H2 file database that ProdGuard rejects,
@@ -116,10 +119,17 @@ monitoring:
     additionalLabels: {}
     interval: 30s
     scrapeTimeout: 10s
-    # Pulled from runtime.existingSecret. The platform authenticates it as
+    # Pulled from runtime.metricsSecret. The platform authenticates it as
     # `Authorization: Bearer <token>` and restricts it to the actuator metrics
     # endpoints, so Prometheus needs no JWT and no gateway signature.
     bearerTokenSecretKey: SOCP_SECURITY_METRICS_TOKEN
+
+x-platform-secret-env: &platform-secret-env
+  # Shared verification/replay credentials are copied into each workload's
+  # own Secret. They deliberately exclude the Gateway signing private key.
+  SOCP_SECURITY_SERVICE_SECRET: SOCP_SECURITY_SERVICE_SECRET
+  SOCP_SECURITY_METRICS_TOKEN: SOCP_SECURITY_METRICS_TOKEN
+  SPRING_DATA_REDIS_PASSWORD: SPRING_DATA_REDIS_PASSWORD
 
 workloads:
   api-gateway:
@@ -138,8 +148,12 @@ workloads:
     # through the gateway JWKS endpoint. Name the private key explicitly so a
     # missing production signer fails as CreateContainerConfigError rather
     # than after the container has started.
-    secretEnv:
+    isolatedSecretEnv:
       SOCP_AUTH_SIGNING_JWK: SOCP_AUTH_SIGNING_JWK
+    secretName: socp-api-gateway-secrets
+    secretEnv:
+      <<: *platform-secret-env
+      SOCP_AUTH_USERS: SOCP_AUTH_USERS
     env:
       # Declared instead of relying on the application default: these stores
       # hold replay nonces and logged-out sessions, so a process-local variant
@@ -180,14 +194,20 @@ workloads:
     health:
       basePath: /search-config/actuator/health
       metricsPath: /search-config/actuator/prometheus
+    secretName: socp-search-config-secrets
     secretEnv:
+      <<: *platform-secret-env
       SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
       SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
       SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
       SOCP_PG_USER: SOCP_PG_USER
+      SOCP_OPENSEARCH_USERNAME: SOCP_OPENSEARCH_USERNAME
+      SOCP_OPENSEARCH_PASSWORD: SOCP_OPENSEARCH_PASSWORD
+      SOCP_COLLECTOR_CREDENTIALS: SOCP_COLLECTOR_CREDENTIALS
     fieldEnv: {}
     env:
       SOCP_SEARCH_RUNTIME_ROLE: api
+      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db
       SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,opensearch=opensearch.socp-data.svc.cluster.local:9200,detect=detect-web-api:8080
     resources:
       requests:
@@ -211,14 +231,20 @@ workloads:
     health:
       basePath: /search-config/actuator/health
       metricsPath: /search-config/actuator/prometheus
+    secretName: socp-search-config-secrets
     secretEnv:
+      <<: *platform-secret-env
       SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
       SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
       SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
       SOCP_PG_USER: SOCP_PG_USER
+      SOCP_OPENSEARCH_USERNAME: SOCP_OPENSEARCH_USERNAME
+      SOCP_OPENSEARCH_PASSWORD: SOCP_OPENSEARCH_PASSWORD
+      SOCP_COLLECTOR_CREDENTIALS: SOCP_COLLECTOR_CREDENTIALS
     fieldEnv: {}
     env:
       SOCP_SEARCH_RUNTIME_ROLE: worker
+      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db,socpDependencies
       SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,opensearch=opensearch.socp-data.svc.cluster.local:9200
     resources:
       requests:
@@ -242,7 +268,9 @@ workloads:
     health:
       basePath: /detect-web/actuator/health
       metricsPath: /detect-web/actuator/prometheus
+    secretName: socp-detect-web-secrets
     secretEnv:
+      <<: *platform-secret-env
       SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
       SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
       SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
@@ -287,7 +315,9 @@ workloads:
     health:
       basePath: /detect-web/actuator/health
       metricsPath: /detect-web/actuator/prometheus
+    secretName: socp-detect-web-secrets
     secretEnv:
+      <<: *platform-secret-env
       SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
       SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
       SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
@@ -327,13 +357,18 @@ workloads:
     health:
       basePath: /alert-web/actuator/health
       metricsPath: /alert-web/actuator/prometheus
+    secretName: socp-alert-web-secrets
     secretEnv:
+      <<: *platform-secret-env
       SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
       SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
       SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
       SOCP_PG_USER: SOCP_PG_USER
+      SOCP_CK_USER: SOCP_CK_USER
+      SOCP_CK_PASSWORD: SOCP_CK_PASSWORD
     fieldEnv: {}
     env:
+      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db
       SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,clickhouse=clickhouse.socp-data.svc.cluster.local:8123
       SOCP_ALARM_DELIVERY_DESTINATIONS: CLICKHOUSE
     resources:

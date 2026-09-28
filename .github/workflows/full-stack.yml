@@ -3,14 +3,6 @@ name: Full Stack E2E
 on:
   pull_request:
     branches: [main]
-    paths:
-      - 'platform/**'
-      - 'services/**'
-      - 'frontend/**'
-      - 'infra/**'
-      - 'deploy/**'
-      - '.github/workflows/full-stack.yml'
-      - 'build/**'
   workflow_dispatch:
   schedule:
     - cron: "30 2 * * 1"
@@ -27,7 +19,36 @@ env:
   SOCP_MAVEN_SETTINGS: "none"
 
 jobs:
-  full-stack:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run_heavy: ${{ steps.scope.outputs.run_heavy }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: scope
+        name: Decide whether full-stack evidence is applicable
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "$BASE_SHA" "$HEAD_SHA" > /tmp/full-stack-changes.txt
+          run_heavy="$(python3 build/ci-scope.py --paths-file /tmp/full-stack-changes.txt)"
+          if [ "$run_heavy" = "true" ]; then
+            echo "run_heavy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_heavy=false" >> "$GITHUB_OUTPUT"
+            echo "Full-stack skipped: documentation-only change"
+          fi
+
+  full-stack-heavy:
+    needs: changes
+    if: needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 70
     env:
@@ -426,3 +447,28 @@ jobs:
           bash build/detection-cluster.sh stop || true
           bash build/run-all.sh stop || true
           bash build/compose.sh --profile extra down || true
+
+  full-stack:
+    if: always()
+    needs: [changes, full-stack-heavy]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require heavy validation when applicable
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          HEAVY_RESULT: ${{ needs.full-stack-heavy.result }}
+          RUN_HEAVY: ${{ needs.changes.outputs.run_heavy }}
+        run: |
+          if [ "$RUN_HEAVY" = "true" ]; then
+            python3 build/verify-ci-gate.py \
+              --required "changes=${CHANGES_RESULT}" \
+              --required "full-stack-heavy=${HEAVY_RESULT}"
+          elif [ "$RUN_HEAVY" = "false" ]; then
+            python3 build/verify-ci-gate.py \
+              --required "changes=${CHANGES_RESULT}" \
+              --optional "full-stack-heavy=${HEAVY_RESULT}"
+          else
+            echo "Unable to determine full-stack applicability"
+            exit 1
+          fi

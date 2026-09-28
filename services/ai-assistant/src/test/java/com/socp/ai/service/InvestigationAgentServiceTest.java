@@ -47,13 +47,15 @@ class InvestigationAgentServiceTest {
         AuditSink audit = mock(AuditSink.class);
         InvestigationProperties properties = properties();
 
-        given(repository.findByTenantIdAndAlertId("tenant-a", "AL-1")).willReturn(Optional.empty());
+        given(repository.findFirstByTenantIdAndAlertIdOrderByRevisionDesc("tenant-a", "AL-1"))
+                .willReturn(Optional.empty());
         given(repository.claim(anyString(), anyString(), anyString(), any(), any())).willReturn(1);
         given(repository.complete(anyString(), anyString(), anyString(), anyString(), anyString(), any())).willReturn(1);
         given(alerts.getAlarm("AL-1")).willReturn(ok("{\"data\":{\"id\":\"AL-1\",\"ruleId\":\"AUTH-PRIVESC\",\"entity\":\"host-1\",\"severity\":\"HIGH\",\"message\":\"sudo\",\"occurredAt\":\"2026-08-20T10:00:00Z\"}}", SocpService.ALERT));
         given(alerts.evidence("AL-1")).willReturn(ok("{\"data\":{\"items\":[{\"eventId\":\"EV-1\",\"timestamp\":\"2026-08-20T09:59:00Z\",\"raw\":\"sudo -l\",\"src_ip\":\"10.1.2.3\"}]}}", SocpService.ALERT));
         given(search.search(anyString())).willReturn(ok("{\"events\":[{\"eventId\":\"EV-1\",\"timestamp\":\"2026-08-20T09:59:00Z\",\"msg\":\"sudo -l\"}]}", SocpService.SEARCH));
-        given(incidents.list()).willReturn(ok("[]", SocpService.INCIDENT));
+        given(incidents.byAlarm("AL-1")).willReturn(ok("{\"data\":{\"id\":\"CASE-1\"}}",
+                SocpService.INCIDENT));
         given(threat.matchIocs(anyString())).willReturn(ok("{\"checked\":1,\"matched\":1,\"hits\":{\"10.1.2.3\":{\"type\":\"IP\"}}}", SocpService.THREAT));
         given(llm.isEnabled()).willReturn(false);
 
@@ -68,7 +70,7 @@ class InvestigationAgentServiceTest {
         assertThat((List<?>) result.get("citations")).extracting(Object::toString)
                 .anyMatch(value -> value.contains("evidence:EV-1"));
         assertThat(result.get("iocValues")).asString().contains("10.1.2.3");
-        verify(repository).insertReceipt(anyString(), eq("tenant-a"), eq("AL-1"), any());
+        verify(repository).insertReceiptRevision(anyString(), eq("tenant-a"), eq("AL-1"), eq(1), any());
         verify(audit, org.mockito.Mockito.atLeast(3)).publish(any());
     }
 
@@ -137,7 +139,8 @@ class InvestigationAgentServiceTest {
         running.setAlertId("AL-1");
         running.setStatus("RUNNING");
         running.setResultJson("{}");
-        given(repository.findByTenantIdAndAlertId("tenant-a", "AL-1")).willReturn(Optional.of(running));
+        given(repository.findFirstByTenantIdAndAlertIdOrderByRevisionDesc("tenant-a", "AL-1"))
+                .willReturn(Optional.of(running));
         given(repository.claim(anyString(), anyString(), anyString(), any(), any())).willReturn(0);
 
         InvestigationAgentService service = new InvestigationAgentService(
@@ -147,6 +150,52 @@ class InvestigationAgentServiceTest {
         assertThatThrownBy(() -> service.investigate("AL-1"))
                 .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
                 .extracting("code").isEqualTo(409);
+    }
+
+    @Test
+    void explicitReanalysisCreatesANewRevisionWithoutOverwritingHistory() {
+        TenantContext.set("tenant-a");
+        InvestigationRepository repository = mock(InvestigationRepository.class);
+        InvestigationEntity completed = new InvestigationEntity();
+        completed.setId("old-id");
+        completed.setTenantId("tenant-a");
+        completed.setAlertId("AL-1");
+        completed.setRevision(1);
+        completed.setStatus("COMPLETED");
+        given(repository.findFirstByTenantIdAndAlertIdOrderByRevisionDesc("tenant-a", "AL-1"))
+                .willReturn(Optional.of(completed));
+
+        InvestigationAgentService service = new InvestigationAgentService(
+                repository, mock(AlertClient.class), mock(SearchClient.class), mock(IncidentClient.class),
+                mock(ThreatClient.class), mock(LlmChatClient.class), mock(AuditSink.class), properties());
+
+        InvestigationEntity next = service.enqueue("AL-1", true, 1);
+
+        assertThat(next.getRevision()).isEqualTo(2);
+        assertThat(next.getId()).isNotEqualTo("old-id");
+        verify(repository).insertReceiptRevision(eq(next.getId()), eq("tenant-a"), eq("AL-1"), eq(2), any());
+    }
+
+    @Test
+    void retryingAReanalysisCommandReturnsItsExistingSuccessor() {
+        TenantContext.set("tenant-a");
+        InvestigationRepository repository = mock(InvestigationRepository.class);
+        InvestigationEntity second = new InvestigationEntity();
+        second.setId("revision-two");
+        second.setTenantId("tenant-a");
+        second.setAlertId("AL-1");
+        second.setRevision(2);
+        second.setStatus("NEW");
+        given(repository.findFirstByTenantIdAndAlertIdOrderByRevisionDesc("tenant-a", "AL-1"))
+                .willReturn(Optional.of(second));
+
+        InvestigationAgentService service = new InvestigationAgentService(
+                repository, mock(AlertClient.class), mock(SearchClient.class), mock(IncidentClient.class),
+                mock(ThreatClient.class), mock(LlmChatClient.class), mock(AuditSink.class), properties());
+
+        assertThat(service.enqueue("AL-1", true, 1)).isSameAs(second);
+        verify(repository, org.mockito.Mockito.never())
+                .insertReceiptRevision(anyString(), anyString(), anyString(), any(Integer.class), any());
     }
 
     private static InvestigationProperties properties() {

@@ -1,4 +1,7 @@
 {{- $runtimeConfig := deepCopy .Values.runtime.config | mergeOverwrite .Values.runtime.extraConfig }}
+{{- if hasKey $runtimeConfig "SOCP_AUTH_SIGNING_JWK" }}
+{{- fail "SOCP_AUTH_SIGNING_JWK must never be placed in runtime.config or runtime.extraConfig; use runtime.gatewaySigningSecret" }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

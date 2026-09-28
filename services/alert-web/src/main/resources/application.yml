@@ -102,4 +102,7 @@ management:
         enabled: true
       group:
         readiness:
-          include: readinessState,db,socpDependencies
+          # Alert accepts into PostgreSQL/outbox before asynchronous delivery.
+          # Downstream health remains visible on aggregate health and metrics,
+          # but must not remove every API replica from the Service.
+          include: ${MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE:readinessState,db}

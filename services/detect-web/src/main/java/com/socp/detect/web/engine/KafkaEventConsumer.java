@@ -414,6 +414,15 @@ public class KafkaEventConsumer {
                 ignored -> new AtomicLong());
         boolean overBudget = reserveBytes(partitionBytes, bytes);
         PendingWork work = new PendingWork(task, bytes, partitionBytes);
+        ArrayDeque<PendingWork> deferred = deferredWork.get(partition);
+        if (deferred != null && !deferred.isEmpty()) {
+            // A partition has one logical FIFO. Once an older record has moved
+            // to the deferred buffer, newer records must not bypass it merely
+            // because bytes or a lane slot became available between polls.
+            deferred.addLast(work);
+            backpressureBlockedPartitions.add(partition);
+            return;
+        }
         if (!overBudget && tryDispatch(partition.partition(), work)) return;
         // A poll may already contain more records than the byte budget. Keep
         // those records losslessly in the bounded deferred batch, but stop

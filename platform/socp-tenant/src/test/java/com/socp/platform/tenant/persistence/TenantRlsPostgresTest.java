@@ -10,6 +10,7 @@ import org.postgresql.ds.PGSimpleDataSource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -61,28 +62,89 @@ class TenantRlsPostgresTest {
 
     @Test
     void tenantScopeFiltersReadsAndRejectsCrossTenantWrites() {
-        TenantContext.runWith("tenant-a", () -> insert("a-1", "tenant-a"));
-        TenantContext.runWith("tenant-b", () -> insert("b-1", "tenant-b"));
+        TenantContext.runWith("tenant-a", () -> insert("tenant-test-a-1", "tenant-a"));
+        TenantContext.runWith("tenant-b", () -> insert("tenant-test-b-1", "tenant-b"));
 
-        TenantContext.runWith("tenant-a", () -> assertEquals(1, countRows()));
-        TenantContext.runWith("tenant-b", () -> assertEquals(1, countRows()));
-        assertEquals(0, countRows(), "a missing scope must fail closed");
-        TenantContext.runAsSystem(() -> assertEquals(2, countRows()));
+        TenantContext.runWith("tenant-a", () -> assertEquals(1,
+                countRows(tenantDataSource, "tenant-test-%")));
+        TenantContext.runWith("tenant-b", () -> assertEquals(1,
+                countRows(tenantDataSource, "tenant-test-%")));
+        assertEquals(0, countRows(tenantDataSource, "tenant-test-%"),
+                "a missing scope must fail closed");
+        TenantContext.runAsSystem(() -> assertEquals(2,
+                countRows(tenantDataSource, "tenant-test-%")));
 
         TenantContext.runWith("tenant-a", () -> assertThrows(SQLException.class,
                 () -> insertChecked("bad", "tenant-b")));
     }
 
-    private static void insert(String id, String tenantId) {
+    @Test
+    void pooledConnectionReassertsScopeAcrossRollbackPreparedReuseAndBatch() throws Exception {
+        PGSimpleDataSource physicalSource = new PGSimpleDataSource();
+        physicalSource.setURL(POSTGRES.getJdbcUrl());
+        physicalSource.setUser("socp_app");
+        physicalSource.setPassword("app-secret");
+        SingleConnectionDataSource onePhysicalConnection =
+                new SingleConnectionDataSource(physicalSource.getConnection(), true);
+        DataSource pooled = new TenantRlsDataSource(onePhysicalConnection);
         try {
-            insertChecked(id, tenantId);
+            TenantContext.runWith("pool-a", () -> insert(pooled, "pool-a-1", "pool-a"));
+
+            TenantContext.set("pool-a");
+            try (Connection connection = pooled.getConnection()) {
+                connection.setAutoCommit(false);
+                try (var prepared = connection.prepareStatement(
+                        "select count(*) from tenant_item where id like 'pool-%'")) {
+                    assertEquals(1, count(prepared));
+                    TenantContext.set("pool-b");
+                    assertEquals(0, count(prepared),
+                            "a prepared statement must observe the current scope at execution");
+                    connection.rollback();
+                    TenantContext.clear();
+                    assertEquals(0, count(prepared),
+                            "rollback must not restore a stale tenant into a no-scope execution");
+                }
+                // Mirror a pool's reset before the physical connection is
+                // borrowed again by a different tenant.
+                connection.setAutoCommit(true);
+            }
+
+            TenantContext.set("pool-b");
+            try (Connection connection = pooled.getConnection();
+                 var batch = connection.prepareStatement(
+                         "insert into tenant_item(id, tenant_id, value) values (?, ?, 'batch')")) {
+                batch.setString(1, "pool-b-1"); batch.setString(2, "pool-b"); batch.addBatch();
+                batch.setString(1, "pool-b-2"); batch.setString(2, "pool-b"); batch.addBatch();
+                assertEquals(2, batch.executeBatch().length);
+            }
+
+            TenantContext.runWith("pool-a", () -> assertEquals(1, countRows(pooled, "pool-%")));
+            TenantContext.runWith("pool-b", () -> assertEquals(2, countRows(pooled, "pool-%")));
+            TenantContext.clear();
+            assertEquals(0, countRows(pooled, "pool-%"));
+        } finally {
+            onePhysicalConnection.destroy();
+        }
+    }
+
+    private static void insert(String id, String tenantId) {
+        insert(tenantDataSource, id, tenantId);
+    }
+
+    private static void insert(DataSource dataSource, String id, String tenantId) {
+        try {
+            insertChecked(dataSource, id, tenantId);
         } catch (SQLException failure) {
             throw new IllegalStateException(failure);
         }
     }
 
     private static void insertChecked(String id, String tenantId) throws SQLException {
-        try (Connection connection = tenantDataSource.getConnection();
+        insertChecked(tenantDataSource, id, tenantId);
+    }
+
+    private static void insertChecked(DataSource dataSource, String id, String tenantId) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
              var statement = connection.prepareStatement(
                      "insert into tenant_item(id, tenant_id, value) values (?, ?, 'test')")) {
             statement.setString(1, id);
@@ -92,13 +154,27 @@ class TenantRlsPostgresTest {
     }
 
     private static int countRows() {
-        try (Connection connection = tenantDataSource.getConnection();
-             var statement = connection.createStatement();
-             var rows = statement.executeQuery("select count(*) from tenant_item")) {
-            rows.next();
-            return rows.getInt(1);
+        return countRows(tenantDataSource, "%");
+    }
+
+    private static int countRows(DataSource dataSource, String idPattern) {
+        try (Connection connection = dataSource.getConnection();
+             var statement = connection.prepareStatement(
+                     "select count(*) from tenant_item where id like ?")) {
+            statement.setString(1, idPattern);
+            try (var rows = statement.executeQuery()) {
+                rows.next();
+                return rows.getInt(1);
+            }
         } catch (SQLException failure) {
             throw new IllegalStateException(failure);
+        }
+    }
+
+    private static int count(java.sql.PreparedStatement statement) throws SQLException {
+        try (var rows = statement.executeQuery()) {
+            rows.next();
+            return rows.getInt(1);
         }
     }
 }

@@ -133,8 +133,9 @@ public class CaseController {
     }
 
     @GetMapping("/incidents/{id}")
-    public ApiResult<Case> get(@PathVariable String id) {
-        Case c = service.get(id);
+    public ApiResult<Case> get(@PathVariable String id,
+                               @RequestParam(defaultValue = "true") boolean includeAssociations) {
+        Case c = includeAssociations ? service.get(id) : service.getMetadata(id);
         if (c == null) throw ApiException.notFound("未找到案件 " + id);
         return ApiResult.ok(c);
     }
@@ -158,6 +159,26 @@ public class CaseController {
         return ApiResult.ok(PageResponse.of(items, total, page, size));
     }
 
+    @GetMapping("/incidents/{id}/alarms")
+    public ApiResult<PageResponse<String>> alarms(@PathVariable String id,
+                                                   @RequestParam(defaultValue = "1") int page,
+                                                   @RequestParam(defaultValue = "100") int size) {
+        requireValidRange(page, size);
+        Page<String> result = service.alarms(id, page - 1, size);
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
+    }
+
+    @GetMapping("/incidents/{id}/rules")
+    public ApiResult<PageResponse<String>> rules(@PathVariable String id,
+                                                  @RequestParam(defaultValue = "1") int page,
+                                                  @RequestParam(defaultValue = "100") int size) {
+        requireValidRange(page, size);
+        Page<String> result = service.rules(id, page - 1, size);
+        return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
+                result.getNumber() + 1, result.getSize(), result.getTotalPages()));
+    }
+
     @RequireRole({"admin", "analyst"})
     @RequirePermission("case:write")
     @AuditOperation(action = "UPDATE_INCIDENT_STATUS", target = "case")
@@ -166,6 +187,15 @@ public class CaseController {
                                                  @RequestParam String status,
                                                  @RequestParam(required = false) String assignee) {
         return ApiResult.ok(service.setStatus(id, status, assignee));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
+    @AuditOperation(action = "ASSIGN_INCIDENT", target = "case")
+    @PostMapping("/incidents/{id}/assignee")
+    public ApiResult<Map<String, Object>> assign(@PathVariable String id,
+                                                 @RequestParam(required = false) String assignee) {
+        return ApiResult.ok(service.assign(id, assignee));
     }
 
     @RequireRole({"admin", "analyst"})

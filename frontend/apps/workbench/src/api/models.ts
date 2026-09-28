@@ -99,7 +99,7 @@ export interface InvestigationHypothesis {
   hypothesis: string; supporting: string[]; contradicting: string[]; confidence: number
 }
 export interface InvestigationResult {
-  investigationId: string; alertId: string; status: string
+  investigationId: string; alertId: string; revision: number; status: string
   analysis: string; recommendedSpl: string
   timeline: InvestigationTimelineItem[]
   hypotheses: InvestigationHypothesis[]
@@ -250,7 +250,7 @@ export interface TimelineEvent { ts: string; type: string; message: string; sour
 export interface CaseInfo {
   id: string; caseNo?: string; title: string; entity: string; severity: string; status: string
   ruleIds: string[]; alarmIds: string[]; timeline: TimelineEvent[]; assignee: string
-  createdAt?: string; updatedAt?: string
+  ruleCount?: number; alarmCount?: number; createdAt?: string; updatedAt?: string
 }
 export interface AlarmDeliveryStatus {
   deliveryId: string; alarmId: string; destination: string; status: string; attempts: number
@@ -271,18 +271,25 @@ export interface WatchlistSummary { name: string; size: number }
 export interface Watchlist extends WatchlistSummary { values: string[] }
 
 export interface TaskRuntime {
-  accepted: number; skipped: number; forwarded: number; bytes: number
-  eps1m: number; eps5m: number; firstAt: string | null; lastAt: string | null
+  accepted: number; skipped: number; parseFailed: number; quarantined: number; forwarded: number; bytes: number
+  eps1m: number; eps5m: number; firstAt: string | null; lastAt: string | null; lastAcceptedAt?: string | null
   lastError: string | null; lastErrorAt?: string | null; health: string
 }
 export interface IngestTask {
   id: string; name: string; type: string | null; format: string | null
   enabled: boolean; collector: string; target: string; env: string | null
+  desiredState: 'ENABLED' | 'DISABLED'; applyState: 'MANUAL_APPLY_REQUIRED' | 'DISABLED'
+  collectionState: 'RECEIVING' | 'NO_DATA' | 'STALE' | 'ERROR' | 'DEGRADED' | 'DISABLED'
   tags: string[]; categoryId: string | null; sinkTargetId: string | null
   parseRuleIds: string[]; createdAt: string | null; runtime: TaskRuntime
 }
+export interface IngestParseFailure {
+  id: string; collectorId: string; rawPayload: string; receivedAt: string; parserVersion: string
+  failureReason: string; replayStatus: 'PENDING' | 'REPLAYED' | string; replayAttempts: number
+  replayedEventId?: string | null; replayedAt?: string | null; lastError?: string | null; duplicate?: boolean
+}
 export interface IngestSummary {
-  collectors: number; accepted: number; skipped: number; forwarded: number
+  collectors: number; accepted: number; skipped: number; parseFailed: number; quarantined: number; forwarded: number
   bytes: number; eps1m: number; byHealth: Record<string, number>
   sources: number; enabledSources: number
 }
