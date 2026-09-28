@@ -40,7 +40,7 @@ class AiControllerTest {
                 new AppendInvestigationRequest("case-1")).data()).isEqualTo(result);
 
         AsyncInvestigationJobService async = mock(AsyncInvestigationJobService.class);
-        when(async.submit("alert-1")).thenReturn(Map.of("status", "ACCEPTED"));
+        when(async.submit("alert-1", false, null)).thenReturn(Map.of("status", "ACCEPTED"));
         ReflectionTestUtils.setField(controller, "asyncInvestigation", async);
         ApiResult<Map<String, Object>> queued = controller.investigateAsync(new InvestigationRequest("alert-1"));
         assertThat(queued.data()).containsEntry("status", "ACCEPTED");

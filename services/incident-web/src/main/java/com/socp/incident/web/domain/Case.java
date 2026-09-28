@@ -28,14 +28,26 @@ public record Case(
         String assignee,
         Instant createdAt,
         Instant updatedAt,
-        long rowVersion) {
+        long rowVersion,
+        long ruleCount,
+        long alarmCount) {
+
+    /** Source-compatible constructor for callers that do not carry association counts. */
+    public Case(String id, String caseNo, String title, String entity, String severity, String status,
+                List<String> ruleIds, List<String> alarmIds, List<TimelineEvent> timeline,
+                String assignee, Instant createdAt, Instant updatedAt, long rowVersion) {
+        this(id, caseNo, title, entity, severity, status, ruleIds, alarmIds, timeline,
+                assignee, createdAt, updatedAt, rowVersion,
+                ruleIds == null ? 0 : ruleIds.size(), alarmIds == null ? 0 : alarmIds.size());
+    }
 
     /** Source-compatible constructor for callers that do not carry persistence version metadata. */
     public Case(String id, String caseNo, String title, String entity, String severity, String status,
                 List<String> ruleIds, List<String> alarmIds, List<TimelineEvent> timeline,
                 String assignee, Instant createdAt, Instant updatedAt) {
         this(id, caseNo, title, entity, severity, status, ruleIds, alarmIds, timeline,
-                assignee, createdAt, updatedAt, 0L);
+                assignee, createdAt, updatedAt, 0L,
+                ruleIds == null ? 0 : ruleIds.size(), alarmIds == null ? 0 : alarmIds.size());
     }
 
     private static final DateTimeFormatter CASE_NO_DATE = DateTimeFormatter.ofPattern("yyyyMMdd");
@@ -51,10 +63,14 @@ public record Case(
         String caseNo = "INC-" + LocalDate.now().format(CASE_NO_DATE) + "-" + suffix;
         Instant now = Instant.now();
         return new Case(uuid, caseNo, title, entity, severity, "OPEN",
-                List.of(), List.of(), List.of(), assignee, now, now, 0L);
+                List.of(), List.of(), List.of(), assignee, now, now, 0L, 0, 0);
     }
 
     public Case withAdded(String ruleId, String alarmId, TimelineEvent ev) {
+        return withAdded(ruleId, alarmId, ev, severity);
+    }
+
+    public Case withAdded(String ruleId, String alarmId, TimelineEvent ev, String incomingSeverity) {
         List<String> rules = appendDistinct(ruleIds, ruleId);
         List<String> alarms = appendDistinct(alarmIds, alarmId);
         List<TimelineEvent> tl = new java.util.ArrayList<>(timeline);
@@ -64,13 +80,17 @@ public record Case(
         if (tl.size() > 500) {
             tl = new java.util.ArrayList<>(tl.subList(tl.size() - 500, tl.size()));
         }
-        return new Case(id, caseNo, title, entity, severity, status, rules, alarms, List.copyOf(tl),
-                assignee, createdAt, Instant.now(), rowVersion);
+        return new Case(id, caseNo, title, entity, maxSeverity(severity, incomingSeverity), status,
+                rules, alarms, List.copyOf(tl),
+                assignee, createdAt, Instant.now(), rowVersion,
+                ruleCount + (rules.size() > ruleIds.size() ? 1 : 0),
+                alarmCount + (alarms.size() > alarmIds.size() ? 1 : 0));
     }
 
     public Case withStatus(String status, String assignee) {
         return new Case(id, caseNo, title, entity, severity, status,
-                ruleIds, alarmIds, timeline, assignee, createdAt, Instant.now(), rowVersion);
+                ruleIds, alarmIds, timeline, assignee, createdAt, Instant.now(), rowVersion,
+                ruleCount, alarmCount);
     }
 
     private static List<String> appendDistinct(List<String> src, String v) {
@@ -78,5 +98,16 @@ public record Case(
         List<String> out = new java.util.ArrayList<>(src);
         if (!out.contains(v)) out.add(v);
         return List.copyOf(out);
+    }
+
+    private static String maxSeverity(String current, String incoming) {
+        List<String> order = List.of("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL");
+        String left = current == null ? "INFO" : current.trim().toUpperCase(java.util.Locale.ROOT);
+        String right = incoming == null ? "INFO" : incoming.trim().toUpperCase(java.util.Locale.ROOT);
+        int leftRank = order.indexOf(left);
+        int rightRank = order.indexOf(right);
+        if (leftRank < 0) leftRank = 0;
+        if (rightRank < 0) rightRank = 0;
+        return order.get(Math.max(leftRank, rightRank));
     }
 }

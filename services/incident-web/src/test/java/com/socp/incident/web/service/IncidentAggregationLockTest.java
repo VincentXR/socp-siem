@@ -28,7 +28,7 @@ class IncidentAggregationLockTest {
                   PRIMARY KEY (tenant_id, shard_id))
                 """);
         DataSourceTransactionManager manager = new DataSourceTransactionManager(dataSource);
-        IncidentAggregationLock lock = new IncidentAggregationLock(jdbc, manager);
+        IncidentAggregationLock lock = new IncidentAggregationLock(jdbc);
         TransactionTemplate transaction = new TransactionTemplate(manager);
         CountDownLatch firstOwnsLock = new CountDownLatch(1);
         CountDownLatch releaseFirst = new CountDownLatch(1);
@@ -61,6 +61,27 @@ class IncidentAggregationLockTest {
                 .isEqualTo(IncidentAggregationLock.shard("HOST-17"));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM t_incident_merge_lock", Integer.class))
                 .isOne();
+    }
+
+    @Test
+    void multiKeyLockDeduplicatesShardsAndUsesOneTransactionConnection() {
+        JdbcDataSource dataSource = new JdbcDataSource();
+        dataSource.setURL("jdbc:h2:mem:incident-multi-lock;MODE=PostgreSQL;DB_CLOSE_DELAY=-1");
+        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        jdbc.execute("""
+                CREATE TABLE t_incident_merge_lock (
+                  tenant_id VARCHAR(64) NOT NULL, shard_id INTEGER NOT NULL,
+                  created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                  PRIMARY KEY (tenant_id, shard_id))
+                """);
+        TransactionTemplate transaction = new TransactionTemplate(new DataSourceTransactionManager(dataSource));
+        IncidentAggregationLock lock = new IncidentAggregationLock(jdbc);
+
+        TenantContext.runWith("tenant-a", () -> transaction.executeWithoutResult(status ->
+                lock.lockAll("alarm:AL-1", "entity:host-1", "alarm:AL-1")));
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM t_incident_merge_lock", Integer.class))
+                .isBetween(1, 2);
     }
 
     private static void await(CountDownLatch latch) {

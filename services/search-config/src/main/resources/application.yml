@@ -109,6 +109,12 @@ socp:
       cleanup-max-batches: ${SOCP_INGEST_OUTBOX_CLEANUP_MAX_BATCHES:10}
       cleanup-interval-ms: ${SOCP_INGEST_OUTBOX_CLEANUP_INTERVAL_MS:3600000}
       cleanup-initial-delay-ms: ${SOCP_INGEST_OUTBOX_CLEANUP_INITIAL_DELAY_MS:60000}
+    quarantine:
+      max-rows-per-tenant: ${SOCP_INGEST_QUARANTINE_MAX_ROWS_PER_TENANT:10000}
+      retention-ms: ${SOCP_INGEST_QUARANTINE_RETENTION_MS:604800000}
+      cleanup-batch-size: ${SOCP_INGEST_QUARANTINE_CLEANUP_BATCH_SIZE:1000}
+      cleanup-interval-ms: ${SOCP_INGEST_QUARANTINE_CLEANUP_INTERVAL_MS:3600000}
+      cleanup-initial-delay-ms: ${SOCP_INGEST_QUARANTINE_CLEANUP_INITIAL_DELAY_MS:60000}
   os-indexer:
     retry-backoff-ms: ${SOCP_OS_INDEXER_RETRY_BACKOFF_MS:1000}
   opensearch:
@@ -134,4 +140,6 @@ management:
         enabled: true
       group:
         readiness:
-          include: readinessState,db,socpDependencies
+          # API ingress is durable in PostgreSQL/outbox. The worker role
+          # overrides this to include asynchronous dependency reachability.
+          include: ${MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE:readinessState,db}

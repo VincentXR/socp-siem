@@ -101,4 +101,33 @@ describe('AlarmDispositionDrawer', () => {
     wrapper.unmount()
   })
 
+  it('does not let a late note response for alarm A clear alarm B draft or refresh B', async () => {
+    let finishA!: () => void
+    mocks.addAlarmNote.mockImplementationOnce(() => new Promise<void>((resolve) => { finishA = resolve }))
+    const wrapper = mount(AlarmDispositionDrawer, {
+      props: { modelValue: true, alarm, goCase: vi.fn(), goSearch: vi.fn() },
+    })
+    await flushPromises()
+    const noteInput = () => wrapper.find('input[placeholder="添加调查备注"]')
+    await noteInput().setValue('A note')
+    const addButton = wrapper.findAll('button').find(button => button.text() === '添加')
+    await addButton!.trigger('click')
+    await flushPromises()
+
+    const alarmB = { ...alarm, id: 'alarm-2', message: 'second alarm' }
+    await wrapper.setProps({ alarm: alarmB })
+    await flushPromises()
+    await noteInput().setValue('B draft must survive')
+    const dispositionCallsBeforeLateResponse = mocks.getDisposition.mock.calls.length
+
+    finishA()
+    await flushPromises()
+
+    expect(mocks.addAlarmNote).toHaveBeenCalledWith(
+      'alarm-1', 'A note', 'operator', expect.stringMatching(/^workbench-note-/),
+    )
+    expect(mocks.getDisposition.mock.calls.length).toBe(dispositionCallsBeforeLateResponse)
+    expect((noteInput().element as HTMLInputElement).value).toBe('B draft must survive')
+  })
+
 })

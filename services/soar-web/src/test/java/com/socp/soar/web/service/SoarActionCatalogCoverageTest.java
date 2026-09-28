@@ -32,6 +32,9 @@ class SoarActionCatalogCoverageTest {
         assertThat(SoarActionCatalog.isKnown("socp.notify/send")).isTrue();
         assertThat(SoarActionCatalog.isKnown("http.webhook/request")).isTrue();
         assertThat(SoarActionCatalog.isKnown("firewall/unblock-ioc")).isTrue();
+        assertThat(SoarActionCatalog.isKnown("socp.incident/add-task")).isFalse();
+        assertThat(SoarActionCatalog.isKnown("socp.incident/complete-task")).isFalse();
+        assertThat(SoarActionCatalog.isKnown("socp.search/get-event")).isFalse();
         assertThat(SoarActionCatalog.isKnown("unknown/action")).isFalse();
         assertThat(SoarActionCatalog.isKnown("custom.family/thing")).isFalse();
     }

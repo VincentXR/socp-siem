@@ -21,8 +21,7 @@ public final class SoarActionCatalog {
             "socp.alert/get", "socp.alert/add-note", "socp.alert/assign", "socp.alert/set-status",
             "socp.alert/add-tag", "socp.incident/get", "socp.incident/create",
             "socp.incident/append-timeline", "socp.incident/assign", "socp.incident/set-status",
-            "socp.incident/add-task", "socp.incident/complete-task", "socp.search/search-events",
-            "socp.search/get-event", "socp.asset/find-by-entity", "socp.asset/get-asset",
+            "socp.search/search-events", "socp.asset/find-by-entity", "socp.asset/get-asset",
             "socp.threat-intel/lookup-ioc", "socp.notify/send-channel", "http.webhook/request",
             "endpoint/isolate-host", "endpoint/release-host", "endpoint/snapshot",
             "firewall/block-ioc", "firewall/unblock-ioc", "net.firewall/block");

@@ -1,15 +1,13 @@
 package com.socp.incident.web.service;
 
 import com.socp.platform.tenant.context.TenantContext;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /**
  * Cross-replica serialization for automatic case aggregation.
@@ -24,29 +22,49 @@ public class IncidentAggregationLock {
     static final int SHARDS = 256;
 
     private final JdbcTemplate jdbc;
-    private final TransactionTemplate requiresNew;
 
-    public IncidentAggregationLock(JdbcTemplate jdbc, PlatformTransactionManager transactionManager) {
+    public IncidentAggregationLock(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
-        this.requiresNew = new TransactionTemplate(transactionManager);
-        this.requiresNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     public void lock(String entity) {
-        if (entity == null || entity.isBlank()) return;
+        lockAll(entity);
+    }
+
+    /**
+     * Acquires every requested shard in deterministic order. Automatic
+     * aggregation locks both the alarm identity and the subject identity;
+     * sorting prevents two concurrent multi-key requests from deadlocking.
+     */
+    public void lockAll(String... identities) {
+        int[] shards = Arrays.stream(identities == null ? new String[0] : identities)
+                .filter(identity -> identity != null && !identity.isBlank())
+                .mapToInt(IncidentAggregationLock::shard)
+                .distinct()
+                .sorted()
+                .toArray();
+        if (shards.length == 0) return;
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("Incident aggregation lock requires an active transaction");
         }
         String tenant = TenantContext.require();
-        int shard = shard(entity);
-        try {
-            requiresNew.executeWithoutResult(status -> jdbc.update("""
+        boolean h2 = Boolean.TRUE.equals(jdbc.execute((ConnectionCallback<Boolean>) connection ->
+                connection.getMetaData().getDatabaseProductName().startsWith("H2")));
+        for (int shard : shards) acquire(tenant, shard, h2);
+    }
+
+    private void acquire(String tenant, int shard, boolean h2) {
+        if (h2) {
+            jdbc.update("""
+                    MERGE INTO t_incident_merge_lock (tenant_id, shard_id, created_at)
+                    KEY (tenant_id, shard_id) VALUES (?, ?, CURRENT_TIMESTAMP)
+                    """, tenant, shard);
+        } else {
+            jdbc.update("""
                     INSERT INTO t_incident_merge_lock (tenant_id, shard_id, created_at)
                     VALUES (?, ?, CURRENT_TIMESTAMP)
-                    """, tenant, shard));
-        } catch (DuplicateKeyException alreadyExists) {
-            // The isolated insert transaction was rolled back. The durable row
-            // is now safe to lock in the caller's business transaction.
+                    ON CONFLICT (tenant_id, shard_id) DO NOTHING
+                    """, tenant, shard);
         }
         Integer locked = jdbc.queryForObject("""
                 SELECT shard_id FROM t_incident_merge_lock

@@ -9,11 +9,13 @@ public class IngestRuntimeProperties {
     private boolean forwardHttp;
     private final Monitor monitor = new Monitor();
     private final Outbox outbox = new Outbox();
+    private final Quarantine quarantine = new Quarantine();
 
     public boolean isForwardHttp() { return forwardHttp; }
     public void setForwardHttp(boolean forwardHttp) { this.forwardHttp = forwardHttp; }
     public Monitor getMonitor() { return monitor; }
     public Outbox getOutbox() { return outbox; }
+    public Quarantine getQuarantine() { return quarantine; }
 
     public static class Monitor {
         private long idleTtlMs = 86_400_000L;
@@ -48,5 +50,18 @@ public class IngestRuntimeProperties {
         public void setMaxDrainRounds(int maxDrainRounds) { this.maxDrainRounds = maxDrainRounds; }
         public long getMaxDrainDurationMs() { return maxDrainDurationMs; }
         public void setMaxDrainDurationMs(long maxDrainDurationMs) { this.maxDrainDurationMs = maxDrainDurationMs; }
+    }
+
+    public static class Quarantine {
+        private int maxRowsPerTenant = 10_000;
+        private long retentionMs = 604_800_000L;
+        private int cleanupBatchSize = 1_000;
+
+        public int getMaxRowsPerTenant() { return maxRowsPerTenant; }
+        public void setMaxRowsPerTenant(int maxRowsPerTenant) { this.maxRowsPerTenant = maxRowsPerTenant; }
+        public long getRetentionMs() { return retentionMs; }
+        public void setRetentionMs(long retentionMs) { this.retentionMs = retentionMs; }
+        public int getCleanupBatchSize() { return cleanupBatchSize; }
+        public void setCleanupBatchSize(int cleanupBatchSize) { this.cleanupBatchSize = cleanupBatchSize; }
     }
 }

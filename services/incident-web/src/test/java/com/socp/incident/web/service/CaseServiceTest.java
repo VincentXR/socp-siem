@@ -53,9 +53,29 @@ class CaseServiceTest {
         Map<String, Object> result = service.fromAlarm(alarm("AL-1"));
 
         assertTrue((Boolean) result.get("created"));
-        assertEquals(1, result.get("alarmCount"));
+        assertEquals(1L, result.get("alarmCount"));
         verify(store).save(any(Case.class));
-        verify(aggregationLock).lock("203.0.113.10");
+        verify(aggregationLock).lockAll("alarm:AL-1", "entity:203.0.113.10");
+    }
+
+    @Test
+    void addingCriticalAlarmRaisesSeverityWithoutChangingWorkflowState() {
+        Case existing = Case.create("existing", "203.0.113.10", "LOW")
+                .withStatus("INVESTIGATING", "alice");
+        given(store.openCaseId("203.0.113.10")).willReturn(existing.id());
+        given(store.getMetadata(existing.id())).willReturn(existing);
+        CaseService service = new CaseService(store, alarmLinks, aggregationLock);
+        Map<String, Object> critical = new java.util.HashMap<>(alarm("AL-CRITICAL"));
+        critical.put("severity", "CRITICAL");
+
+        service.fromAlarm(critical);
+
+        org.mockito.ArgumentCaptor<Case> saved = org.mockito.ArgumentCaptor.forClass(Case.class);
+        verify(store).saveAlarmDelta(saved.capture(), org.mockito.ArgumentMatchers.eq("AUTH-BRUTE"),
+                org.mockito.ArgumentMatchers.eq("AL-CRITICAL"), any());
+        org.assertj.core.api.Assertions.assertThat(saved.getValue().severity()).isEqualTo("CRITICAL");
+        org.assertj.core.api.Assertions.assertThat(saved.getValue().status()).isEqualTo("INVESTIGATING");
+        org.assertj.core.api.Assertions.assertThat(saved.getValue().assignee()).isEqualTo("alice");
     }
 
     @Test
@@ -65,16 +85,17 @@ class CaseServiceTest {
                         new com.socp.incident.web.domain.TimelineEvent(
                                 java.time.Instant.now(), "ALARM", "initial", "detection", "AL-1"));
         given(store.openCaseId("203.0.113.10")).willReturn(existing.id());
-        given(store.get(existing.id())).willReturn(existing);
+        given(store.getMetadata(existing.id())).willReturn(existing);
         CaseService service = new CaseService(store, alarmLinks, aggregationLock);
 
         Map<String, Object> result = service.fromAlarm(alarm("AL-2"));
 
         assertEquals(existing.id(), result.get("caseId"));
-        assertEquals(2, result.get("alarmCount"));
+        assertEquals(2L, result.get("alarmCount"));
         assertTrue(!(Boolean) result.get("created"));
-        verify(store).save(any(Case.class));
-        verify(aggregationLock).lock("203.0.113.10");
+        verify(store).saveAlarmDelta(any(Case.class), org.mockito.ArgumentMatchers.eq("AUTH-BRUTE"),
+                org.mockito.ArgumentMatchers.eq("AL-2"), any());
+        verify(aggregationLock).lockAll("alarm:AL-2", "entity:203.0.113.10");
     }
 
     @Test
@@ -83,14 +104,17 @@ class CaseServiceTest {
                 .withAdded("AUTH-BRUTE", "AL-1",
                         new com.socp.incident.web.domain.TimelineEvent(
                                 java.time.Instant.now(), "ALARM", "initial", "detection", "AL-1"));
-        given(store.openCaseId("203.0.113.10")).willReturn(existing.id());
-        given(store.get(existing.id())).willReturn(existing);
+        AlarmCaseLinkEntity link = new AlarmCaseLinkEntity();
+        link.setCaseId(existing.id());
+        given(alarmLinks.findByTenantIdAndAlarmId("default", "AL-1"))
+                .willReturn(java.util.Optional.of(link));
+        given(store.getMetadata(existing.id())).willReturn(existing);
         CaseService service = new CaseService(store, alarmLinks);
 
         Map<String, Object> result = service.fromAlarm(alarm("AL-1"));
 
         assertTrue((Boolean) result.get("duplicate"));
-        assertEquals(1, result.get("alarmCount"));
+        assertEquals(1L, result.get("alarmCount"));
         verify(store, never()).save(any(Case.class));
     }
 
@@ -151,7 +175,7 @@ class CaseServiceTest {
 
     @Test
     void statusWritesRejectValuesOutsideTheDocumentedLifecycle() {
-        given(store.get("case-1")).willReturn(Case.create("case-1", "10.0.0.8", "HIGH"));
+        given(store.getMetadata("case-1")).willReturn(Case.create("case-1", "10.0.0.8", "HIGH"));
         CaseService service = new CaseService(store, alarmLinks);
 
         assertThatThrownBy(() -> service.setStatus("case-1", "FIXED_LATER", null))
@@ -160,12 +184,12 @@ class CaseServiceTest {
         verify(store, never()).save(any(Case.class));
 
         service.setStatus("case-1", "CONTAINED", "analyst");
-        verify(store).save(any(Case.class));
+        verify(store).saveMetadata(any(Case.class));
     }
 
     @Test
     void missingCaseWritesFailLoudlyInsteadOfReturningErrorData() {
-        given(store.get("missing")).willReturn(null);
+        given(store.getMetadata("missing")).willReturn(null);
         CaseService service = new CaseService(store, alarmLinks);
 
         for (java.util.function.Supplier<Map<String, Object>> call : List.<java.util.function.Supplier<Map<String, Object>>>of(

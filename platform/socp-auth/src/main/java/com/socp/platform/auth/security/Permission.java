@@ -9,6 +9,8 @@ import java.util.stream.Collectors;
 public enum Permission {
     ALARM_READ("alarm:read"),
     ALARM_TRIAGE("alarm:triage"),
+    INGEST_READ("ingest:read"),
+    INGEST_WRITE("ingest:write"),
     CASE_WRITE("case:write"),
     RULE_ACTIVATE("rule:activate"),
     SOAR_VIEW("soar:view"),
@@ -49,7 +51,8 @@ public enum Permission {
             return Arrays.stream(values()).map(Permission::wireName).collect(Collectors.toUnmodifiableSet());
         }
         if ("analyst".equals(normalized)) {
-            return Set.of(ALARM_READ.wireName, ALARM_TRIAGE.wireName, CASE_WRITE.wireName,
+            return Set.of(ALARM_READ.wireName, ALARM_TRIAGE.wireName,
+                    INGEST_READ.wireName, INGEST_WRITE.wireName, CASE_WRITE.wireName,
                     SOAR_VIEW.wireName, SOAR_EDIT.wireName, SOAR_EXECUTE.wireName,
                     SOAR_TASK_COMPLETE.wireName, SOAR_CONNECTIONS_VIEW.wireName);
         }

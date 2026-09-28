@@ -40,11 +40,17 @@ runtime:
     SOCP_NOTIFY_URL: http://notify-web:8080
     SOCP_CASE_URL: http://incident-web:8080
 
+x-product-platform-secrets: &product-platform-secrets
+  SOCP_SECURITY_SERVICE_SECRET: SOCP_SECURITY_SERVICE_SECRET
+  SOCP_SECURITY_METRICS_TOKEN: SOCP_SECURITY_METRICS_TOKEN
+  SPRING_DATA_REDIS_PASSWORD: SPRING_DATA_REDIS_PASSWORD
+
 x-product-workload: &product-workload
   replicas: 2
   terminationGracePeriodSeconds: 45
   tmpSizeLimit: 512Mi
   secretEnv: &database-secrets
+    <<: *product-platform-secrets
     SOCP_PG_MIGRATION_PASSWORD: SOCP_PG_MIGRATION_PASSWORD
     SOCP_PG_MIGRATION_USER: SOCP_PG_MIGRATION_USER
     SOCP_PG_PASSWORD: SOCP_PG_PASSWORD
@@ -70,6 +76,7 @@ workloads:
     <<: *product-workload
     image: soarWeb
     runtimeDomain: response
+    secretName: socp-soar-web-secrets
     health: { basePath: /soar-web/actuator/health, metricsPath: /soar-web/actuator/prometheus }
     env:
       SOCP_TEMPORAL_ENABLED: "true"
@@ -92,44 +99,60 @@ workloads:
     <<: *product-workload
     image: reportWeb
     runtimeDomain: reporting
+    secretName: socp-report-web-secrets
+    secretEnv:
+      <<: *database-secrets
+      SOCP_CK_USER: SOCP_CK_USER
+      SOCP_CK_PASSWORD: SOCP_CK_PASSWORD
     health: { basePath: /report-web/actuator/health, metricsPath: /report-web/actuator/prometheus }
   asset-web:
     <<: *product-workload
     image: assetWeb
     runtimeDomain: context
+    secretName: socp-asset-web-secrets
     health: { basePath: /asset-web/actuator/health, metricsPath: /asset-web/actuator/prometheus }
   soc-base:
     <<: *product-workload
     image: socBase
     runtimeDomain: context
+    secretName: socp-soc-base-secrets
     health: { basePath: /soc-base/actuator/health, metricsPath: /soc-base/actuator/prometheus }
   hips-web:
     <<: *product-workload
     image: hipsWeb
     runtimeDomain: endpoint
+    secretName: socp-hips-web-secrets
+    secretEnv:
+      <<: *database-secrets
+      SOCP_COLLECTOR_CREDENTIALS: SOCP_COLLECTOR_CREDENTIALS
     health: { basePath: /hips-web/actuator/health, metricsPath: /hips-web/actuator/prometheus }
   ai-assistant:
     <<: *product-workload
     image: aiAssistant
     runtimeDomain: investigation
+    secretName: socp-ai-assistant-secrets
     health: { basePath: /ai-assistant/actuator/health, metricsPath: /ai-assistant/actuator/prometheus }
   threat-web:
     <<: *product-workload
     image: threatWeb
     runtimeDomain: enrichment
+    secretName: socp-threat-web-secrets
     health: { basePath: /threat-web/actuator/health, metricsPath: /threat-web/actuator/prometheus }
   attack-web:
     <<: *product-workload
     image: attackWeb
     runtimeDomain: enrichment
+    secretName: socp-attack-web-secrets
     health: { basePath: /attack-web/actuator/health, metricsPath: /attack-web/actuator/prometheus }
   notify-web:
     <<: *product-workload
     image: notifyWeb
     runtimeDomain: response
+    secretName: socp-notify-web-secrets
     health: { basePath: /notify-web/actuator/health, metricsPath: /notify-web/actuator/prometheus }
   incident-web:
     <<: *product-workload
     image: incidentWeb
     runtimeDomain: alert-incident
+    secretName: socp-incident-web-secrets
     health: { basePath: /incident-web/actuator/health, metricsPath: /incident-web/actuator/prometheus }

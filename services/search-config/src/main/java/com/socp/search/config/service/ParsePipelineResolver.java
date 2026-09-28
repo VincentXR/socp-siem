@@ -109,6 +109,14 @@ public class ParsePipelineResolver {
         return cache.size();
     }
 
+    /** Stable snapshot label recorded with quarantined raw input. */
+    String version(IngestSourceContext context) {
+        String tenant = TenantContext.require();
+        String source = context == null || context.sourceId() == null ? "unresolved" : context.sourceId();
+        String boundRules = context == null ? "" : String.join(",", context.parseRuleIds());
+        return source + "@r" + rules.revision(tenant) + "[" + boundRules + "]";
+    }
+
     private List<ParseRuleExecutor.CompiledRule> compileCandidates(IngestSourceContext context) {
         List<ParseRule> candidates = new ArrayList<>();
         if (context.hasExplicitRules()) {

@@ -106,18 +106,34 @@ class NotifyControllerTest {
     }
 
     @Test
-    void notifyReturnsBadGatewayWhenOneChannelFails() {
+    void notifyReturnsNonRetryableBusinessStatusForATerminalChannelFailure() {
         TenantContext.set("tenant-a");
         NotifyAlarmRequest request = new NotifyAlarmRequest();
         request.setId("AL-1");
-        Map<String, Object> result = Map.of("alarmId", "AL-1", "failed", 1);
+        Map<String, Object> result = Map.of("alarmId", "AL-1", "failed", 1,
+                "results", List.of(Map.of("status", "failed", "retryable", false)));
         given(dispatcher.dispatch(any())).willReturn(result);
 
         var response = controller().notify(request);
 
-        assertEquals(HttpStatus.BAD_GATEWAY, response.getStatusCode());
-        assertEquals(502, response.getBody().code());
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, response.getStatusCode());
+        assertEquals(422, response.getBody().code());
         assertSame(result, response.getBody().data());
+    }
+
+    @Test
+    void notifyReturnsRetryableServiceStatusOnlyForARetryableChannelFailure() {
+        TenantContext.set("tenant-a");
+        NotifyAlarmRequest request = new NotifyAlarmRequest();
+        request.setId("AL-RETRY");
+        Map<String, Object> result = Map.of("alarmId", "AL-RETRY", "failed", 1,
+                "results", List.of(Map.of("status", "failed", "retryable", true)));
+        given(dispatcher.dispatch(any())).willReturn(result);
+
+        var response = controller().notify(request);
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+        assertEquals(503, response.getBody().code());
     }
 
     @Test
@@ -137,6 +153,51 @@ class NotifyControllerTest {
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals(log, controller().log(1, 500).data().items());
         verify(dispatcher).log(org.springframework.data.domain.PageRequest.of(0, 500));
+    }
+
+    @Test
+    void exactChannelNotificationReturnsOkOnlyForBusinessAcceptance() {
+        NotifyAlarmRequest request = new NotifyAlarmRequest();
+        request.setId("AL-EXACT-OK");
+        Map<String, Object> result = Map.of("alarmId", "AL-EXACT-OK", "failed", 0,
+                "results", List.of(Map.of("channelId", "CH-1", "status", "sent")));
+        given(dispatcher.dispatchToChannel("CH-1", request.asMap())).willReturn(result);
+
+        var response = controller().notifyChannel("CH-1", request);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertEquals(0, response.getBody().code());
+        assertSame(result, response.getBody().data());
+    }
+
+    @Test
+    void exactChannelNotificationMarksOnlySafeFailuresRetryable() {
+        NotifyAlarmRequest request = new NotifyAlarmRequest();
+        request.setId("AL-EXACT-RETRY");
+        Map<String, Object> result = Map.of("alarmId", "AL-EXACT-RETRY", "failed", 1,
+                "results", List.of(Map.of("channelId", "CH-1", "status", "failed", "retryable", true)));
+        given(dispatcher.dispatchToChannel("CH-1", request.asMap())).willReturn(result);
+
+        var response = controller().notifyChannel("CH-1", request);
+
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, response.getStatusCode());
+        assertEquals(503, response.getBody().code());
+        assertSame(result, response.getBody().data());
+    }
+
+    @Test
+    void exactChannelNotificationKeepsUnknownResultsTerminal() {
+        NotifyAlarmRequest request = new NotifyAlarmRequest();
+        request.setId("AL-EXACT-UNKNOWN");
+        Map<String, Object> result = Map.of("alarmId", "AL-EXACT-UNKNOWN", "failed", 1,
+                "results", List.of(Map.of("channelId", "CH-1", "status", "unknown", "retryable", false)));
+        given(dispatcher.dispatchToChannel("CH-1", request.asMap())).willReturn(result);
+
+        var response = controller().notifyChannel("CH-1", request);
+
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, response.getStatusCode());
+        assertEquals(422, response.getBody().code());
+        assertSame(result, response.getBody().data());
     }
 
     private NotifyController controller() {

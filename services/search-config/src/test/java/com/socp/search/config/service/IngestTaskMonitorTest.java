@@ -51,6 +51,15 @@ class IngestTaskMonitorTest {
         monitor.record("degraded", 1, 4, 1, 100);
         assertEquals("DEGRADED", monitor.runtime("degraded", true).get("health"));
 
+        monitor.record("parse-failures", 0, 0, 3, 3, 0, 120);
+        Map<String, Object> parseFailures = monitor.runtime("parse-failures", true);
+        assertEquals("DEGRADED", parseFailures.get("health"));
+        assertEquals(3L, parseFailures.get("parseFailed"));
+        assertEquals(3L, parseFailures.get("quarantined"));
+        assertTrue(parseFailures.get("lastAt") instanceof String,
+                "received-but-unparseable data must not look like an idle collector");
+        assertEquals(null, parseFailures.get("lastAcceptedAt"));
+
         monitor.recordError("healthy", "broker unavailable");
         Map<String, Object> error = monitor.runtime("healthy", true);
         assertEquals("ERROR", error.get("health"));

@@ -4,8 +4,9 @@ import { translate } from '../i18n/index'
 
 export const aiAsk = (question: string, options: ApiRequestOptions = {}) =>
   post<AiResult>('/ai-assistant/api/v1/ai/ask', { question }, options)
-export async function investigateAlert(alertId: string, options: ApiRequestOptions = {}): Promise<InvestigationResult> {
-  const receipt = await post<{ jobId: string }>('/ai-assistant/api/v1/ai/investigations/async', { alertId }, options)
+export async function investigateAlert(alertId: string, options: ApiRequestOptions = {}, baseRevision?: number): Promise<InvestigationResult> {
+  const payload = baseRevision === undefined ? { alertId } : { alertId, newVersion: true, baseRevision }
+  const receipt = await post<{ jobId: string }>('/ai-assistant/api/v1/ai/investigations/async', payload, options)
   const deadline = Date.now() + 180_000
   while (Date.now() < deadline) {
     options.signal?.throwIfAborted()
@@ -17,6 +18,9 @@ export async function investigateAlert(alertId: string, options: ApiRequestOptio
   }
   throw new DOMException('Investigation is still queued or running', 'TimeoutError')
 }
+
+export const reanalyzeAlert = (alertId: string, baseRevision: number, options: ApiRequestOptions = {}) =>
+  investigateAlert(alertId, options, baseRevision)
 
 function waitForPoll(signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {

@@ -65,10 +65,20 @@
       "type": "object",
       "required": [
         "existingSecret",
+        "gatewaySigningSecret",
+        "metricsSecret",
         "config"
       ],
       "properties": {
         "existingSecret": {
+          "type": "string",
+          "minLength": 1
+        },
+        "gatewaySigningSecret": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metricsSecret": {
           "type": "string",
           "minLength": 1
         },

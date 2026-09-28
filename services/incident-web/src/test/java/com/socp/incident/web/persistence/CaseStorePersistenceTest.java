@@ -6,6 +6,7 @@ import com.socp.incident.web.persistence.store.CaseStore;
 import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
 import com.socp.incident.web.persistence.repository.CaseRuleLinkRepository;
 import com.socp.incident.web.persistence.repository.CaseTimelineRepository;
+import com.socp.incident.web.persistence.repository.CaseRepository;
 import jakarta.persistence.EntityManagerFactory;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
@@ -38,6 +39,7 @@ class CaseStorePersistenceTest {
     @Autowired private CaseTimelineRepository timelineRepository;
     @Autowired private AlarmCaseLinkRepository alarmLinkRepository;
     @Autowired private CaseRuleLinkRepository ruleLinkRepository;
+    @Autowired private CaseRepository caseRepository;
     @Autowired private EntityManagerFactory entityManagerFactory;
 
     @Test
@@ -113,7 +115,38 @@ class CaseStorePersistenceTest {
                 .containsExactly("rule-z");
         assertThat(store.get(incident.id()).alarmIds()).containsExactly("alarm-z");
         assertThat(store.get(incident.id()).ruleIds()).containsExactly("rule-z");
-        assertThat(store.page(1, 10, "normalized", "OPEN").getContent().getFirst().alarmIds())
-                .containsExactly("alarm-z");
+        Case summary = store.page(1, 10, "normalized", "OPEN").getContent().getFirst();
+        assertThat(summary.alarmIds()).isEmpty();
+        assertThat(summary.alarmCount()).isEqualTo(1);
+        assertThat(store.alarms(incident.id(), 0, 10).getContent()).containsExactly("alarm-z");
+    }
+
+    @Test
+    void incrementalAssociationsRemainMergedWithLegacyJsonUntilBackfill() {
+        TenantContext.set("legacy-association-tenant");
+        Case incident = Case.create("legacy links", "host-legacy", "LOW");
+        store.save(incident);
+        var row = caseRepository.findByTenantIdAndId("legacy-association-tenant", incident.id())
+                .orElseThrow();
+        row.setAlarmIdsJson("[\"alarm-old\"]");
+        row.setRuleIdsJson("[\"rule-old\"]");
+        caseRepository.saveAndFlush(row);
+
+        TimelineEvent event = new TimelineEvent(Instant.parse("2026-09-28T01:00:00Z"),
+                "ALARM", "new", "detection", "alarm-new");
+        store.saveAlarmDelta(incident.withAdded("rule-new", "alarm-new", event, "CRITICAL"),
+                "rule-new", "alarm-new", event);
+
+        assertThat(store.get(incident.id()).alarmIds())
+                .containsExactly("alarm-new", "alarm-old");
+        assertThat(store.get(incident.id()).ruleIds())
+                .containsExactly("rule-new", "rule-old");
+        assertThat(store.alarms(incident.id(), 0, 10).getContent())
+                .containsExactly("alarm-new", "alarm-old");
+        assertThat(store.rules(incident.id(), 0, 10).getContent())
+                .containsExactly("rule-new", "rule-old");
+        Case summary = store.page(1, 10, "legacy", "OPEN").getContent().getFirst();
+        assertThat(summary.alarmCount()).isEqualTo(2);
+        assertThat(summary.ruleCount()).isEqualTo(2);
     }
 }

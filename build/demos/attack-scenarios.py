@@ -20,6 +20,7 @@ import sys
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 
@@ -307,15 +308,17 @@ def main():
 
         # 4) Alert persistence precedes asynchronous incident fan-out. Poll for
         # this exact new alarm; a manual case cannot prove automatic delivery.
-        def related_incidents():
-            st, cases = api(tok, "/incident-web/api/v1/incidents?size=100")
-            cl = list_items(unwrap(cases)) if st == 200 else []
-            return [case for case in cl
-                    if alarm and alarm.get("id") in (case.get("alarmIds") or [])]
+        def related_incident():
+            if not alarm:
+                return None
+            alarm_id = urllib.parse.quote(str(alarm.get("id", "")), safe="")
+            st, incident = api(
+                tok, "/incident-web/api/v1/incidents/by-alarm?alarmId=" + alarm_id)
+            return unwrap(incident) if st == 200 else None
 
-        related = (wait_for(related_incidents, timeout=40) or []) if alarm else []
-        check("告警关联事件（自动建案/归并）", len(related) >= 1,
-              related[0].get("title", "")[:60] if related else "")
+        related = wait_for(related_incident, timeout=40) if alarm else None
+        check("告警关联事件（自动建案/归并）", related is not None,
+              related.get("title", "")[:60] if related else "")
         print()
 
     print("=" * 72)

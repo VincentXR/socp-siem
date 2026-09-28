@@ -718,6 +718,88 @@ class KafkaEventConsumerTest {
     }
 
     @Test
+    void newerWorkCannotBypassOlderDeferredWorkAfterBudgetIsReleased() throws Exception {
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine);
+        KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
+        TopicPartition partition = new TopicPartition("events", 8);
+        CountDownLatch firstStarted = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        CountDownLatch firstFinished = new CountDownLatch(1);
+        CountDownLatch allFinished = new CountDownLatch(2);
+        List<String> order = java.util.Collections.synchronizedList(new ArrayList<>());
+        Field trackerField = KafkaEventConsumer.class.getDeclaredField("completionTracker");
+        trackerField.setAccessible(true);
+        PartitionCompletionTracker tracker = (PartitionCompletionTracker) trackerField.get(consumer);
+        long epochA = tracker.register(partition.partition(), 10L);
+        long epochB = tracker.register(partition.partition(), 11L);
+        long epochC = tracker.register(partition.partition(), 12L);
+
+        Field budget = KafkaEventConsumer.class.getDeclaredField("partitionMaxPendingBytes");
+        budget.setAccessible(true);
+        budget.setLong(consumer, 100L);
+        Method dispatch = KafkaEventConsumer.class.getDeclaredMethod(
+                "dispatchOrDefer", KafkaConsumer.class, TopicPartition.class, Runnable.class, long.class);
+        dispatch.setAccessible(true);
+
+        dispatch.invoke(consumer, kafka, partition, (Runnable) () -> {
+            order.add("A");
+            firstStarted.countDown();
+            try {
+                assertTrue(releaseFirst.await(2, TimeUnit.SECONDS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError(interrupted);
+            } finally {
+                tracker.complete(partition.partition(), 10L, epochA);
+                firstFinished.countDown();
+            }
+        }, 80L);
+        assertTrue(firstStarted.await(1, TimeUnit.SECONDS));
+
+        dispatch.invoke(consumer, kafka, partition, (Runnable) () -> {
+            order.add("B");
+            tracker.complete(partition.partition(), 11L, epochB);
+            allFinished.countDown();
+        }, 30L);
+
+        releaseFirst.countDown();
+        assertTrue(firstFinished.await(1, TimeUnit.SECONDS));
+        Field pendingBytesField = KafkaEventConsumer.class.getDeclaredField("pendingBytes");
+        pendingBytesField.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        Map<TopicPartition, AtomicLong> bytesByPartition =
+                (Map<TopicPartition, AtomicLong>) pendingBytesField.get(consumer);
+        long releaseDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+        while (bytesByPartition.get(partition).get() != 30L && System.nanoTime() < releaseDeadline) {
+            Thread.yield();
+        }
+        assertEquals(30L, bytesByPartition.get(partition).get());
+
+        dispatch.invoke(consumer, kafka, partition, (Runnable) () -> {
+            order.add("C");
+            tracker.complete(partition.partition(), 12L, epochC);
+            allFinished.countDown();
+        }, 20L);
+
+        Method drain = KafkaEventConsumer.class.getDeclaredMethod("drainDeferred", KafkaConsumer.class);
+        drain.setAccessible(true);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (allFinished.getCount() > 0 && System.nanoTime() < deadline) {
+            drain.invoke(consumer, kafka);
+            Thread.yield();
+        }
+
+        assertTrue(allFinished.await(1, TimeUnit.SECONDS));
+        assertEquals(List.of("A", "B", "C"), order);
+        Map<TopicPartition, OffsetAndMetadata> firstCommit = tracker.ready("events");
+        assertEquals(11L, firstCommit.get(partition).offset());
+        tracker.acknowledge(firstCommit);
+        Map<TopicPartition, OffsetAndMetadata> secondCommit = tracker.ready("events");
+        assertEquals(13L, secondCommit.get(partition).offset());
+        consumer.stop();
+    }
+
+    @Test
     void estimatesAndReleasesQueuedWorkWithoutLeakingTheByteBudget() throws Exception {
         Method recordBytes = KafkaEventConsumer.class.getDeclaredMethod(
                 "estimateRecordBytes", org.apache.kafka.clients.consumer.ConsumerRecord.class);

@@ -51,16 +51,13 @@ public class SoarConnectorRegistry {
                 (ref, request) -> executeAlert(alert, ref, request)));
         values.put("socp.incident", service("socp.incident", "SOCP Incident", true,
                 List.of(action("get", "Get incident", "READ_ONLY", "NONE", "NONE", false),
-                        action("create", "Create incident", "MEDIUM", "IRREVERSIBLE", "NATIVE", false),
+                        action("create", "Create incident", "MEDIUM", "IRREVERSIBLE", "NONE", false),
                         action("append-timeline", "Append timeline", "LOW", "IRREVERSIBLE", "NATIVE", false),
                         action("assign", "Assign incident", "MEDIUM", "REVERSIBLE", "NATIVE", false),
-                        action("set-status", "Set incident status", "MEDIUM", "REVERSIBLE", "NATIVE", false),
-                        action("add-task", "Add case task", "LOW", "IRREVERSIBLE", "NATIVE", false),
-                        action("complete-task", "Complete case task", "LOW", "REVERSIBLE", "NATIVE", false)),
+                        action("set-status", "Set incident status", "MEDIUM", "REVERSIBLE", "NATIVE", false)),
                 (ref, request) -> executeIncident(incident, ref, request)));
         values.put("socp.search", service("socp.search", "SOCP Search", true,
-                List.of(action("search-events", "Search events", "READ_ONLY", "NONE", "NONE", false),
-                        action("get-event", "Get event", "READ_ONLY", "NONE", "NONE", false)),
+                List.of(action("search-events", "Search events", "READ_ONLY", "NONE", "NONE", false)),
                 (ref, request) -> executeSearch(search, ref, request)));
         values.put("socp.asset", service("socp.asset", "SOCP Asset", true,
                 List.of(action("find-by-entity", "Find asset by entity", "READ_ONLY", "NONE", "NONE", false),
@@ -202,7 +199,7 @@ public class SoarConnectorRegistry {
         return new SoarConnector() {
             @Override public ConnectorDescriptor descriptor() { return descriptor; }
             @Override public ConnectionTestResult test(ConnectionContext connection) {
-                return ConnectionTestResult.ok(0, Map.of("connector", id));
+                return ConnectionTestResult.notProbed(id);
             }
             @Override public ActionResult execute(ActionRequest request) {
                 String[] parsed = parseRef(request.actionRef());
@@ -280,13 +277,10 @@ public class SoarConnectorRegistry {
             }
             case "create" -> {
                 properties.put("title", Map.of("type", "string", "maxLength", 512));
-                properties.put("description", Map.of("type", "string", "maxLength", 16_384));
-                properties.put("alertId", Map.of("type", "string"));
-            }
-            case "add-task", "complete-task" -> {
-                properties.put("incidentId", Map.of("type", "string"));
-                properties.put("taskId", Map.of("type", "string"));
-                properties.put("content", Map.of("type", "string", "maxLength", 16_384));
+                properties.put("entity", Map.of("type", "string", "maxLength", 256));
+                properties.put("severity", Map.of("type", "string", "enum",
+                        List.of("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")));
+                properties.put("assignee", Map.of("type", "string", "maxLength", 128));
             }
             case "search-events" -> {
                 properties.put("query", Map.of("type", "string", "maxLength", 4_096));
@@ -336,22 +330,38 @@ public class SoarConnectorRegistry {
 
     private static ActionResult executeIncident(IncidentClient client, String action, ActionRequest request) {
         String id = text(request.parameters(), "incidentId", text(request.target(), "id", ""));
+        if ("create".equals(action)) {
+            String title = text(request.parameters(), "title", "").trim();
+            if (title.isBlank()) {
+                return ActionResult.failed("SOAR_INPUT_INVALID", "title is required", false);
+            }
+            Map<String, Object> create = new LinkedHashMap<>();
+            create.put("title", title);
+            create.put("entity", text(request.parameters(), "entity", ""));
+            create.put("severity", text(request.parameters(), "severity", "HIGH"));
+            String assignee = text(request.parameters(), "assignee", "").trim();
+            if (!assignee.isBlank()) create.put("assignee", assignee);
+            return fromCall(client.create(json(create)), action, true);
+        }
         ServiceCall call = switch (action) {
-            case "get" -> client.list();
+            case "get" -> client.get(id);
             case "append-timeline" -> client.addNote(id, "soar", text(request.parameters(), "content", "SOAR timeline update"), request.idempotencyKey());
-            case "create" -> client.createFromAlarm(json(request.parameters()), request.idempotencyKey());
-            case "assign" -> client.setStatus(id, "INVESTIGATING", text(request.parameters(), "assignee", "soar"));
+            case "assign" -> client.assign(id, text(request.parameters(), "assignee", "soar"));
             case "set-status" -> client.setStatus(id, text(request.parameters(), "status", "INVESTIGATING"),
                     text(request.parameters(), "assignee", ""));
-            case "add-task", "complete-task" -> client.addNote(id, "soar",
-                    text(request.parameters(), "content", "SOAR case task: " + action), request.idempotencyKey());
             default -> null;
         };
         if (call == null) return ActionResult.failed("SOAR_ACTION_NOT_FOUND", "unsupported incident action", false);
-        return fromCall(call, action, "get".equals(action));
+        // Every incident action, including a read, has a typed response body.
+        // Mutations must not turn an empty HTTP 2xx into an unverified success.
+        return fromCall(call, action, true);
     }
 
     private static ActionResult executeSearch(SearchClient client, String action, ActionRequest request) {
+        if (!"search-events".equals(action)) {
+            return ActionResult.failed("SOAR_ACTION_NOT_FOUND",
+                    "Exact event retrieval is not supported by search-config", false);
+        }
         String query = text(request.parameters(), "query", text(request.parameters(), "expression", ""));
         return fromCall(client.search(query), action, false);
     }
@@ -362,17 +372,47 @@ public class SoarConnectorRegistry {
     }
 
     private static ActionResult executeNotify(NotifyClient client, ActionRequest request) {
-        return fromCall(client.notifyAlert(json(request.parameters()), request.idempotencyKey()), "send-channel", true);
+        String channelId = text(request.parameters(), "channelId", "");
+        if (channelId.isBlank()) {
+            return ActionResult.failed("SOAR_INPUT_INVALID", "channelId is required", false);
+        }
+        String message = text(request.parameters(), "message",
+                text(request.parameters(), "content", "SOAR notification"));
+        String stableKey = request.idempotencyKey() == null || request.idempotencyKey().isBlank()
+                ? request.runId() + ":" + request.nodeRunId() : request.idempotencyKey();
+        String alarmId = "soar-" + java.util.UUID.nameUUIDFromBytes(
+                (request.tenantId() + "\u0000" + stableKey).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Map<String, Object> notification = new LinkedHashMap<>();
+        notification.put("id", alarmId);
+        notification.put("ruleId", "soar");
+        notification.put("title", "SOAR notification");
+        notification.put("severity", "INFO");
+        notification.put("message", message);
+        notification.put("occurredAt", Instant.now().toString());
+        return fromCall(client.notifyChannel(channelId, json(notification), stableKey),
+                "send-channel", true);
     }
 
     private static ActionResult executeAsset(SocpHttpClient http, ObjectMapper mapper,
                                              String action, ActionRequest request) {
-        // asset-web intentionally exposes a tenant-scoped collection endpoint,
-        // not the guessed /find/by/entity and /get/asset paths used by the old
-        // shell implementation.  Fetch the authoritative collection once and
-        // perform the selector locally so the action has deterministic,
-        // auditable read semantics without inventing an API that does not exist.
-        ServiceCall call = http.get(SocpService.ASSET, "/api/v1/assets");
+        String selector = "get-asset".equals(action)
+                ? text(request.parameters(), "assetId", text(request.target(), "id", ""))
+                : text(request.parameters(), "entity", text(request.target(), "entity", ""));
+        if (selector.isBlank()) {
+            return ActionResult.failed("INVALID_ACTION_INPUT", "assetId or entity is required", false);
+        }
+        if ("get-asset".equals(action)) {
+            // asset-web has an exact tenant-scoped resource route; never scan
+            // a bounded list page for an object identity.
+            return fromExactAssetCall(http.get(SocpService.ASSET,
+                    "/api/v1/assets/" + urlEncode(selector)), action, selector, mapper);
+        }
+        // The related endpoint performs exact, indexed IP/name matching. Send
+        // the selector in both fields because SOAR's generic entity can be a
+        // host name or an address. The response exposes totalPages when more
+        // than the bounded action result is available.
+        ServiceCall call = http.get(SocpService.ASSET, "/api/v1/assets/related?ip="
+                + urlEncode(selector) + "&name=" + urlEncode(selector) + "&page=1&size=500");
         if (call == null) return ActionResult.failed("SERVICE_NO_RESULT", "service returned no result", true);
         if (!call.ok()) return ActionResult.failed("SERVICE_CALL_FAILED", safe(call.failureReason()), call.retryable());
         try {
@@ -390,22 +430,20 @@ public class SoarConnectorRegistry {
             if (items == null || !items.isArray()) {
                 return ActionResult.failed("MISSING_CONNECTOR_RECEIPT", "asset service returned no collection", false);
             }
-            String selector = text(request.parameters(), "assetId",
-                    text(request.target(), "id", text(request.parameters(), "entity",
-                            text(request.target(), "entity", ""))));
             List<Map<String, Object>> matches = new ArrayList<>();
             int inspected = 0;
             for (JsonNode item : items) {
-                if (item == null || !item.isObject() || inspected++ >= 2000) break;
+                if (item == null || !item.isObject() || inspected++ >= 500) break;
                 Map<String, Object> candidate = mapper.convertValue(item, new TypeReference<>() { });
-                if (selector.isBlank() || matchesAsset(action, selector, candidate)) matches.add(candidate);
-                if ("get-asset".equals(action) && !matches.isEmpty()) break;
+                matches.add(candidate);
             }
             Map<String, Object> output = new LinkedHashMap<>();
             output.put("matches", matches);
-            output.put("count", matches.size());
-            output.put("inspected", Math.min(inspected, 2000));
-            output.put("truncated", inspected >= 2000);
+            long total = payload != null && payload.path("total").isNumber()
+                    ? payload.path("total").asLong() : matches.size();
+            output.put("count", total);
+            output.put("inspected", Math.min(inspected, 500));
+            output.put("truncated", total > matches.size());
             return ActionResult.success(matches.size() == 1 ? text(matches.get(0), "id", "") : "",
                     output, Map.of("action", action, "httpStatus", call.status(), "count", matches.size()));
         } catch (Exception failure) {
@@ -413,16 +451,43 @@ public class SoarConnectorRegistry {
         }
     }
 
-    private static boolean matchesAsset(String action, String selector, Map<String, Object> asset) {
-        if ("get-asset".equals(action)) {
-            return selector.equals(String.valueOf(asset.getOrDefault("id", "")));
+    private static String urlEncode(String value) {
+        return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8)
+                .replace("+", "%20");
+    }
+
+    private static ActionResult fromExactAssetCall(ServiceCall call, String action,
+                                                   String expectedId, ObjectMapper mapper) {
+        if (call == null) return ActionResult.failed("SERVICE_NO_RESULT", "service returned no result", true);
+        if (!call.ok()) return ActionResult.failed("SERVICE_CALL_FAILED", safe(call.failureReason()), call.retryable());
+        try {
+            JsonNode root = mapper.readTree(call.body() == null ? "" : call.body());
+            if (root == null || !root.isObject()) {
+                return ActionResult.failed("SERVICE_RESPONSE_INVALID", "asset service returned invalid JSON", false);
+            }
+            JsonNode payload = root;
+            if (root.has("code") && root.get("code").isNumber()) {
+                if (root.get("code").asInt() != 0) {
+                    return ActionResult.failed("SERVICE_CALL_FAILED",
+                            safe(root.path("message").asText(null)), call.retryable());
+                }
+                payload = root.path("data");
+            }
+            if (!payload.isObject() || payload.path("id").asText("").isBlank()) {
+                return ActionResult.failed("MISSING_CONNECTOR_RECEIPT",
+                        "asset response did not contain the requested object identity", false);
+            }
+            String actualId = payload.path("id").asText();
+            if (!expectedId.equals(actualId)) {
+                return ActionResult.failed("TARGET_ID_MISMATCH",
+                        "asset response identity did not match the requested target", false);
+            }
+            Map<String, Object> output = mapper.convertValue(payload, new TypeReference<>() { });
+            return ActionResult.success(actualId, output,
+                    Map.of("action", action, "httpStatus", call.status()));
+        } catch (Exception invalid) {
+            return ActionResult.failed("SERVICE_RESPONSE_INVALID", safe(invalid.getMessage()), false);
         }
-        String expected = selector.trim().toLowerCase(Locale.ROOT);
-        for (String field : List.of("id", "name", "ip", "owner", "type", "os")) {
-            Object value = asset.get(field);
-            if (value != null && expected.equals(String.valueOf(value).trim().toLowerCase(Locale.ROOT))) return true;
-        }
-        return false;
     }
 
     private static ActionResult fromCall(ServiceCall call, String action, boolean requireBody) {
@@ -441,6 +506,10 @@ public class SoarConnectorRegistry {
                     "response did not contain a verifiable receipt", false);
         }
         String operation = text(body, "operationId", text(body, "id", null));
+        if ((operation == null || operation.isBlank()) && body.get("case") instanceof Map<?, ?> incident) {
+            Object caseId = incident.get("id");
+            if (caseId != null) operation = String.valueOf(caseId);
+        }
         return ActionResult.success(operation, body, Map.of("action", action, "httpStatus", call.status()));
     }
 
@@ -488,8 +557,11 @@ public class SoarConnectorRegistry {
             long start = System.nanoTime();
             if (connection == null || connection.endpoint() == null || connection.endpoint().isBlank())
                 return ConnectionTestResult.failed("SOAR_CONNECTION_UNAVAILABLE", "endpoint is required", 0);
-            ServiceCall call = http.postExternal(connection.endpoint(), "{}", SocpHttpClient.JSON,
-                    (int) Math.min(30_000, connection.timeout().toMillis()), authHeaders(connection), connection.allowedHosts());
+            ServiceCall call = http.getExternalOnce(connection.endpoint(),
+                    (int) Math.min(30_000, connection.timeout().toMillis()),
+                    authHeaders(connection), connection.allowedHosts());
+            if (call == null) return ConnectionTestResult.failed(
+                    "SOAR_PROBE_NO_RESULT", "probe returned no result", elapsed(start));
             return call.ok() ? ConnectionTestResult.ok(elapsed(start), Map.of("status", call.status()))
                     : ConnectionTestResult.failed("SOAR_EGRESS_DENIED", safe(call.failureReason()), elapsed(start));
         }
@@ -519,8 +591,11 @@ public class SoarConnectorRegistry {
             if (connection == null || connection.endpoint() == null || connection.endpoint().isBlank())
                 return ConnectionTestResult.failed("SOAR_CONNECTION_UNAVAILABLE", "endpoint is required", 0);
             long start = System.nanoTime();
-            ServiceCall call = http.postExternal(connection.endpoint(), "{}", SocpHttpClient.JSON,
-                    (int) Math.min(30_000, connection.timeout().toMillis()), authHeaders(connection), connection.allowedHosts());
+            ServiceCall call = http.getExternalOnce(connection.endpoint(),
+                    (int) Math.min(30_000, connection.timeout().toMillis()),
+                    authHeaders(connection), connection.allowedHosts());
+            if (call == null) return ConnectionTestResult.failed(
+                    "SOAR_PROBE_NO_RESULT", "probe returned no result", elapsed(start));
             return call.ok() ? ConnectionTestResult.ok(elapsed(start), Map.of("status", call.status()))
                     : ConnectionTestResult.failed("SOAR_EGRESS_DENIED", safe(call.failureReason()), elapsed(start));
         }

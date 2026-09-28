@@ -167,10 +167,11 @@ class SoarConnectorRegistryCoverageTest {
 
     @Test
     void executeDispatchesToIncidentSearchThreatAndNotify() {
-        given(incident.list()).willReturn(call(200, "{\"items\":[]}"));
+        given(incident.get("ALM-1")).willReturn(call(200, "{\"id\":\"ALM-1\"}"));
         given(search.search("tenant-a")).willReturn(call(200, "{\"total\":2}"));
         given(threat.matchIocs("[\"1.2.3.4\",\"evil.com\"]")).willReturn(call(200, "{\"operationId\":\"IOC-1\"}"));
-        given(notify.notifyAlert(anyString(), eq("idem-1"))).willReturn(call(200, "{\"operationId\":\"NOTIFY-1\"}"));
+        given(notify.notifyChannel(eq("channel-1"), anyString(), eq("idem-1")))
+                .willReturn(call(200, "{\"operationId\":\"NOTIFY-1\"}"));
 
         assertThat(registry.execute(request("socp.incident/get")).status()).isEqualTo("SUCCEEDED");
         assertThat(registry.execute(request("socp.search/search-events", Map.of("query", "tenant-a"))).status())
@@ -178,37 +179,37 @@ class SoarConnectorRegistryCoverageTest {
         ActionResult lookup = registry.execute(request("socp.threat-intel/lookup-ioc",
                 Map.of("ioc", List.of("1.2.3.4", "evil.com"))));
         assertThat(lookup.operationId()).isEqualTo("IOC-1");
-        assertThat(registry.execute(request("socp.notify/send-channel", Map.of("message", "hi"))).operationId())
+        assertThat(registry.execute(request("socp.notify/send-channel",
+                Map.of("channelId", "channel-1", "message", "hi"))).operationId())
                 .isEqualTo("NOTIFY-1");
-        assertThat(registry.execute(request("socp.notify/send", Map.of("message", "hi"))).operationId())
+        assertThat(registry.execute(request("socp.notify/send",
+                Map.of("channelId", "channel-1", "message", "hi"))).operationId())
                 .isEqualTo("NOTIFY-1");
     }
 
     @Test
     void executeDispatchesToAssetCollection() {
-        given(http.get(SocpService.ASSET, "/api/v1/assets"))
+        given(http.get(SocpService.ASSET, "/api/v1/assets/related?ip=web-1&name=web-1&page=1&size=500"))
                 .willReturn(call(200, "{\"code\":0,\"message\":\"ok\",\"data\":{\"items\":"
-                        + "[{\"id\":\"asset-1\",\"name\":\"web-1\",\"ip\":\"10.0.0.5\"}]}}"));
+                        + "[{\"id\":\"asset-1\",\"name\":\"web-1\",\"ip\":\"10.0.0.5\"}],\"total\":1}}"));
 
-        // target.id takes priority over parameters.entity in the selector, so
-        // this request uses an empty target to exercise the entity selector
+        // The entity selector is sent to asset-web's exact related endpoint.
         ActionResult found = registry.execute(new ActionRequest("tenant-a", "run-1", "node-1", 1,
                 "socp.asset/find-by-entity", "idem-1", Map.of("entity", "web-1"), Map.of(), null));
         assertThat(found.status()).isEqualTo("SUCCEEDED");
         assertThat(found.operationId()).isEqualTo("asset-1");
-        assertThat(found.output()).containsEntry("count", 1).containsEntry("inspected", 1)
+        assertThat(found.output()).containsEntry("count", 1L).containsEntry("inspected", 1)
                 .containsEntry("truncated", false);
 
-        given(http.get(SocpService.ASSET, "/api/v1/assets"))
-                .willReturn(call(200, "{\"code\":0,\"message\":\"ok\",\"data\":{\"items\":"
-                        + "[{\"id\":\"asset-1\"},{\"id\":\"asset-2\"}]}}"));
+        given(http.get(SocpService.ASSET, "/api/v1/assets/asset-2"))
+                .willReturn(call(200, "{\"code\":0,\"message\":\"ok\",\"data\":{\"id\":\"asset-2\"}}"));
         ActionResult byId = registry.execute(request("socp.asset/get-asset", Map.of("assetId", "asset-2")));
         assertThat(byId.operationId()).isEqualTo("asset-2");
     }
 
     @Test
     void executeMapsAssetFailures() {
-        given(http.get(SocpService.ASSET, "/api/v1/assets")).willReturn(null);
+        given(http.get(SocpService.ASSET, "/api/v1/assets/ALM-1")).willReturn(null);
         assertThat(registry.execute(request("socp.asset/get-asset")))
                 .satisfies(result -> {
                     assertThat(result.status()).isEqualTo("FAILED");
@@ -216,26 +217,26 @@ class SoarConnectorRegistryCoverageTest {
                     assertThat(result.retryable()).isTrue();
                 });
 
-        given(http.get(SocpService.ASSET, "/api/v1/assets"))
+        given(http.get(SocpService.ASSET, "/api/v1/assets/ALM-1"))
                 .willReturn(new ServiceCall(null, "url", false, 503, "", "upstream down", 5L, true, 1));
         ActionResult failed = registry.execute(request("socp.asset/get-asset"));
         assertThat(failed.errorCode()).isEqualTo("SERVICE_CALL_FAILED");
         assertThat(failed.errorMessage()).isEqualTo("upstream down");
         assertThat(failed.retryable()).isTrue();
 
-        given(http.get(SocpService.ASSET, "/api/v1/assets"))
+        given(http.get(SocpService.ASSET, "/api/v1/assets/ALM-1"))
                 .willReturn(call(200, "{\"code\":0,\"message\":\"ok\",\"data\":{\"items\":\"nope\"}}"));
         assertThat(registry.execute(request("socp.asset/get-asset")).errorCode())
                 .isEqualTo("MISSING_CONNECTOR_RECEIPT");
 
-        given(http.get(SocpService.ASSET, "/api/v1/assets"))
+        given(http.get(SocpService.ASSET, "/api/v1/assets/ALM-1"))
                 .willReturn(call(200, "{\"code\":403,\"message\":\"forbidden\",\"data\":null}"));
         ActionResult businessFailure = registry.execute(request("socp.asset/get-asset"));
         assertThat(businessFailure.errorCode()).isEqualTo("SERVICE_CALL_FAILED");
         assertThat(businessFailure.errorMessage()).isEqualTo("forbidden");
         assertThat(businessFailure.retryable()).isFalse();
 
-        given(http.get(SocpService.ASSET, "/api/v1/assets")).willReturn(call(200, "not-json"));
+        given(http.get(SocpService.ASSET, "/api/v1/assets/ALM-1")).willReturn(call(200, "not-json"));
         assertThat(registry.execute(request("socp.asset/get-asset")).errorCode())
                 .isEqualTo("SERVICE_RESPONSE_INVALID");
     }
@@ -262,9 +263,10 @@ class SoarConnectorRegistryCoverageTest {
 
     @Test
     void executeMapsConnectorFailures() {
-        given(notify.notifyAlert(anyString(), anyString()))
+        given(notify.notifyChannel(anyString(), anyString(), anyString()))
                 .willThrow(new IllegalStateException("SOAR_SECRET_RESOLUTION_FAILED: auth"));
-        ActionResult secret = registry.execute(request("socp.notify/send-channel"));
+        ActionResult secret = registry.execute(request("socp.notify/send-channel",
+                Map.of("channelId", "channel-1")));
         assertThat(secret.status()).isEqualTo("FAILED");
         assertThat(secret.errorCode()).isEqualTo("SOAR_SECRET_RESOLUTION_FAILED");
         assertThat(secret.retryable()).isTrue();
@@ -276,7 +278,7 @@ class SoarConnectorRegistryCoverageTest {
         assertThat(generic.retryable()).isTrue();
         assertThat(generic.status()).isEqualTo("FAILED");
 
-        given(incident.list()).willThrow(new IllegalStateException());
+        given(incident.get("ALM-1")).willThrow(new IllegalStateException());
         assertThat(registry.execute(request("socp.incident/get")).errorMessage())
                 .isEqualTo("connector call failed");
     }
@@ -345,11 +347,11 @@ class SoarConnectorRegistryCoverageTest {
     @Test
     void testReportsHealthAndFailures() {
         ConnectionTestResult healthy = registry.test("socp.alert", null);
-        assertThat(healthy.healthy()).isTrue();
-        assertThat(healthy.status()).isEqualTo("HEALTHY");
-        assertThat(healthy.errorCode()).isNull();
-        assertThat(healthy.details()).containsEntry("connector", "socp.alert");
-        assertThat(healthy.testedAt()).isNotNull();
+        assertThat(healthy.healthy()).isFalse();
+        assertThat(healthy.status()).isEqualTo("NOT_PROBED");
+        assertThat(healthy.errorCode()).isEqualTo("SOAR_READ_ONLY_PROBE_UNAVAILABLE");
+        assertThat(healthy.details()).containsEntry("connector", "socp.alert")
+                .containsEntry("configurationValid", true);
 
         ConnectionTestResult unknown = registry.test("vendor.unknown", null);
         assertThat(unknown.healthy()).isFalse();
@@ -359,13 +361,13 @@ class SoarConnectorRegistryCoverageTest {
 
         assertThat(registry.test("net.firewall", null).errorCode()).isEqualTo("SOAR_CONNECTION_UNAVAILABLE");
 
-        given(http.postExternal(anyString(), anyString(), anyString(), anyInt(), anyMap(), anyList()))
+        given(http.getExternalOnce(anyString(), anyInt(), anyMap(), anyList()))
                 .willReturn(call(204, ""));
         ConnectionTestResult external = registry.test("endpoint", connection("https://edr.example.com/api"));
         assertThat(external.healthy()).isTrue();
         assertThat(external.details()).containsEntry("status", 204);
 
-        given(http.postExternal(anyString(), anyString(), anyString(), anyInt(), anyMap(), anyList()))
+        given(http.getExternalOnce(anyString(), anyInt(), anyMap(), anyList()))
                 .willReturn(new ServiceCall(null, "https://edr.example.com/api", false, 502, "", "blocked", 3L, true, 1));
         ConnectionTestResult unhealthy = registry.test("endpoint", connection("https://edr.example.com/api"));
         assertThat(unhealthy.healthy()).isFalse();
@@ -375,7 +377,7 @@ class SoarConnectorRegistryCoverageTest {
 
     @Test
     void testMapsConnectorExceptionsWithoutLeaking() {
-        given(http.postExternal(anyString(), anyString(), anyString(), anyInt(), anyMap(), anyList()))
+        given(http.getExternalOnce(anyString(), anyInt(), anyMap(), anyList()))
                 .willThrow(new IllegalStateException("SOAR_SECRET_RESOLUTION_FAILED: auth"));
 
         ConnectionTestResult result = registry.test("endpoint", connection("https://edr.example.com/api"));

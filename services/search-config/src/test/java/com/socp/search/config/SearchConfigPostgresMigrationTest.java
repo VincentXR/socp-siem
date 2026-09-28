@@ -2,6 +2,7 @@ package com.socp.search.config;
 
 import com.socp.platform.test.MiddlewareImages;
 import com.socp.search.config.persistence.repository.SearchEventRepository;
+import com.socp.search.config.persistence.repository.IngestParseFailureRepository;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
@@ -10,12 +11,14 @@ import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.utility.DockerImageName;
 
 import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.time.Duration;
 import org.springframework.data.jpa.repository.Query;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** PostgreSQL evidence for upgrading a populated pre-outbox-lifecycle database. */
 @EnabledIfEnvironmentVariable(named = "SOCP_TESTCONTAINERS", matches = "true")
@@ -98,6 +101,49 @@ class SearchConfigPostgresMigrationTest {
                         """)) {
                     rows.next();
                     assertEquals(99_750, rows.getInt(1));
+                }
+
+                statement.executeUpdate("""
+                        INSERT INTO t_ingest_parse_failure
+                            (id, tenant_id, failure_key, collector_id, raw_payload,
+                             received_at, parser_version, failure_reason, replay_status,
+                             replay_attempts, created_at, updated_at)
+                        VALUES
+                            ('failure-old', 'tenant-a', 'same-key', 'collector-a', 'raw-old',
+                             CURRENT_TIMESTAMP - INTERVAL '8 days', 'rules:1', 'invalid',
+                             'PENDING', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                            ('failure-new', 'tenant-a', 'new-key', 'collector-a', 'raw-new',
+                             CURRENT_TIMESTAMP, 'rules:2', 'invalid',
+                             'PENDING', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
+                            ('failure-other-tenant', 'tenant-b', 'same-key', 'collector-b', 'raw-b',
+                             CURRENT_TIMESTAMP, 'rules:1', 'invalid',
+                             'PENDING', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        """);
+                assertThrows(SQLException.class, () -> statement.executeUpdate("""
+                        INSERT INTO t_ingest_parse_failure
+                            (id, tenant_id, failure_key, collector_id, raw_payload,
+                             received_at, parser_version, failure_reason, replay_status,
+                             replay_attempts)
+                        VALUES ('failure-duplicate', 'tenant-a', 'same-key', 'collector-a',
+                                'must-not-replace-raw', CURRENT_TIMESTAMP, 'rules:2',
+                                'invalid', 'PENDING', 0)
+                        """), "request identity must be unique only inside its tenant");
+
+                String quarantineCleanup = IngestParseFailureRepository.class
+                        .getMethod("deleteRetainedBatchBefore", java.time.Instant.class, int.class)
+                        .getAnnotation(Query.class)
+                        .value()
+                        .replace(":cutoff", "CURRENT_TIMESTAMP - INTERVAL '7 days'")
+                        .replace(":batchSize", "1");
+                assertEquals(1, statement.executeUpdate(quarantineCleanup));
+                try (var rows = statement.executeQuery("""
+                        SELECT count(*), min(raw_payload) FROM t_ingest_parse_failure
+                        WHERE tenant_id = 'tenant-a'
+                        """)) {
+                    rows.next();
+                    assertEquals(1, rows.getInt(1));
+                    assertEquals("raw-new", rows.getString(2),
+                            "retention must preserve the newer original payload");
                 }
             }
         }

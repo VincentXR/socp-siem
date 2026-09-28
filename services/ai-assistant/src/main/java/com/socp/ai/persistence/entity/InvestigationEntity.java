@@ -11,7 +11,8 @@ import java.time.Instant;
 /** Durable investigation receipt. A completed result is safe to return on replay. */
 @Entity
 @Table(name = "t_ai_investigation", uniqueConstraints = @UniqueConstraint(
-        name = "uq_ai_investigation_tenant_alert", columnNames = {"tenant_id", "alert_id"}))
+        name = "uq_ai_investigation_tenant_alert_revision",
+        columnNames = {"tenant_id", "alert_id", "revision"}))
 public class InvestigationEntity {
 
     @Id
@@ -23,6 +24,9 @@ public class InvestigationEntity {
 
     @Column(name = "alert_id", nullable = false, length = 128)
     private String alertId;
+
+    @Column(nullable = false)
+    private int revision = 1;
 
     @Column(nullable = false, length = 16)
     private String status;
@@ -54,6 +58,8 @@ public class InvestigationEntity {
     public void setTenantId(String tenantId) { this.tenantId = tenantId; }
     public String getAlertId() { return alertId; }
     public void setAlertId(String alertId) { this.alertId = alertId; }
+    public int getRevision() { return revision; }
+    public void setRevision(int revision) { this.revision = revision; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
     public String getResultJson() { return resultJson; }

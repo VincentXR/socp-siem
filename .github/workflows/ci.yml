@@ -40,18 +40,6 @@ jobs:
           java-version: 21
           cache: maven
 
-      - name: Set up pnpm (matches package.json packageManager)
-        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
-        with:
-          version: 10.34.5
-
-      - name: Set up Node 22
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
-
       - name: Set up Helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
@@ -68,7 +56,9 @@ jobs:
           python3 build/verify-changed-coverage.py
 
       - name: Verify repository contracts and versioned content
-        run: python3 build/verify-repository.py --evidence-dir .cache/evidence
+        run: |
+          python3 -m unittest build/tests/test_verify_ci_gate.py build/tests/test_ci_scope.py
+          python3 build/verify-repository.py --evidence-dir .cache/evidence
 
       - name: Validate GitHub Actions workflows
         run: |
@@ -93,10 +83,6 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
 
-      - name: Install frontend deps (pnpm frozen lockfile)
-        run: pnpm install --frozen-lockfile
-        working-directory: frontend
-
       - name: Verify generated SOAR OpenAPI SDK
         run: python3 build/verify-openapi-sdk.py --output .cache/evidence/openapi-sdk
 
@@ -108,40 +94,6 @@ jobs:
           path: .cache/evidence/openapi-sdk/
           include-hidden-files: true
           if-no-files-found: ignore
-
-      - name: Test frontend API contracts
-        run: pnpm test
-        working-directory: frontend/apps/workbench
-
-      - name: Lint frontend sources
-        run: pnpm lint
-        working-directory: frontend/apps/workbench
-
-      - name: Check frontend formatting
-        run: pnpm format:check
-        working-directory: frontend/apps/workbench
-
-      - name: Install Playwright browser
-        run: pnpm exec playwright install --with-deps chromium
-        working-directory: frontend/apps/workbench
-
-      - name: Run workbench browser flows
-        run: pnpm test:e2e
-        working-directory: frontend/apps/workbench
-
-      - name: Upload workbench browser evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: workbench-playwright-report
-          path: |
-            frontend/apps/workbench/playwright-report/
-            frontend/apps/workbench/test-results/
-          if-no-files-found: ignore
-
-      - name: Verify frontend (typecheck, build, and artifact)
-        run: pnpm verify
-        working-directory: frontend/apps/workbench
 
       - name: Package backend JARs for E2E jobs
         run: |
@@ -164,6 +116,52 @@ jobs:
         with:
           name: backend-pipeline-extra-jars
           path: backend-pipeline-extra-jars.tgz
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up pnpm (matches package.json packageManager)
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.34.5
+      - name: Set up Node 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install frontend deps (pnpm frozen lockfile)
+        run: pnpm install --frozen-lockfile
+        working-directory: frontend
+      - name: Test frontend API contracts and components
+        run: pnpm test
+        working-directory: frontend/apps/workbench
+      - name: Lint frontend sources
+        run: pnpm lint
+        working-directory: frontend/apps/workbench
+      - name: Check frontend formatting
+        run: pnpm format:check
+        working-directory: frontend/apps/workbench
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: frontend/apps/workbench
+      - name: Run workbench browser flows
+        run: pnpm test:e2e
+        working-directory: frontend/apps/workbench
+      - name: Upload workbench browser evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: workbench-playwright-report
+          path: |
+            frontend/apps/workbench/playwright-report/
+            frontend/apps/workbench/test-results/
+          if-no-files-found: ignore
+      - name: Verify frontend typecheck, build, and artifact
+        run: pnpm verify
+        working-directory: frontend/apps/workbench
 
   dependency-review:
     if: github.event_name == 'pull_request'
@@ -607,3 +605,30 @@ jobs:
       - name: Stop pipeline middleware
         if: always()
         run: bash build/compose.sh down -v
+
+  change-gate:
+    if: always()
+    needs: [build, frontend, dependency-review, e2e, e2e-pipeline]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require every applicable change check
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          DEPENDENCY_RESULT: ${{ needs.dependency-review.result }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+          PIPELINE_RESULT: ${{ needs.e2e-pipeline.result }}
+        run: |
+          args=(
+            --required "build=${BUILD_RESULT}"
+            --required "frontend=${FRONTEND_RESULT}"
+            --required "e2e=${E2E_RESULT}"
+            --required "e2e-pipeline=${PIPELINE_RESULT}"
+          )
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            args+=(--required "dependency-review=${DEPENDENCY_RESULT}")
+          else
+            args+=(--optional "dependency-review=${DEPENDENCY_RESULT}")
+          fi
+          python3 build/verify-ci-gate.py "${args[@]}"

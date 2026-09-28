@@ -247,7 +247,10 @@ public class SoarConnectorService {
         // vendor URL/body fragment. Keep the durable record under the same
         // redaction policy as run events and attempt errors.
         row.setLastTestError(redactFreeText(result.errorMessage(), 2048));
-        row.setStatus(result.healthy() ? "HEALTHY" : "UNHEALTHY");
+        // NOT_PROBED is an explicit, useful outcome: configuration validation
+        // succeeded but the connector deliberately has no safe read-only
+        // probe. Do not misreport that as an unhealthy dependency.
+        row.setStatus(result.status());
         row.setUpdatedAt(Instant.now());
         connectors.save(row);
         Map<String, Object> view = view(row);

@@ -52,8 +52,9 @@ import {
   createOutput, createSource, deleteOutput, deleteParseRule, deleteSource, updateSource,
   ingestSummary, listCategories, listIngestTasks, listOutputs, listParseRulesPage, resolveParseRules, listSourcesPage,
   previewParse, renderConfig, startIngestTask, stopIngestTask,
+  listIngestParseFailures, replayIngestParseFailure,
   SOURCE_TYPES, PARSE_FORMATS,
-  type IngestTask, type IngestSummary, type LogCategory, type LogSource, type LogSourceInput, type ParseRule, type SinkTarget,
+  type IngestParseFailure, type IngestTask, type IngestSummary, type LogCategory, type LogSource, type LogSourceInput, type ParseRule, type SinkTarget,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { fmtBytes, fmtTime } from '../lib/ui'
@@ -88,7 +89,7 @@ const newOutput = ref({ name: '', type: 'GLS_INGEST', uri: '', authToken: '', en
 const sourceErrors = ref<Record<string, string>>({})
 const outputErrors = ref<Record<string, string>>({})
 /** Background list refresh, the dialogs, and page actions keep separate errors. */
-type LoadKey = 'sources' | 'outputs' | 'rules' | 'ruleOptions' | 'selectedRules' | 'tasks' | 'summary' | 'categories'
+type LoadKey = 'sources' | 'outputs' | 'rules' | 'ruleOptions' | 'selectedRules' | 'tasks' | 'summary' | 'categories' | 'quarantine'
 const loadErrors = ref<Partial<Record<LoadKey, string>>>({})
 const loadError = computed(() => Object.values(loadErrors.value).filter(Boolean).join(' · '))
 const readControllers = new Map<LoadKey, AbortController>()
@@ -114,6 +115,11 @@ type ParsePreviewWithFields = ParsePreviewAttempt & { fields: Record<string, str
 type ParsePreviewResult = { ok: boolean; matched: boolean; sample: string; rule?: string; format?: string; fields: Record<string, string>; attempts?: ParsePreviewAttempt[]; error?: string }
 const testResult = ref<ParsePreviewResult | null>(null)
 const testLoading = ref(false)
+const parseFailures = ref<IngestParseFailure[]>([])
+const parseFailurePage = ref(1)
+const parseFailureSize = ref(50)
+const parseFailureTotal = ref(0)
+const replayingFailure = ref('')
 let previewGeneration = 0
 let previewController: AbortController | null = null
 
@@ -228,6 +234,23 @@ const loadTasks = () => Promise.all([
   loadList('tasks', signal => listIngestTasks({ signal }), value => { tasks.value = value }),
   loadList('summary', signal => ingestSummary({ signal }), value => { taskSummary.value = value }),
 ])
+const loadParseFailures = () => loadList('quarantine', signal =>
+  listIngestParseFailures(parseFailurePage.value, parseFailureSize.value, { signal }), value => {
+  parseFailures.value = value.items
+  parseFailureTotal.value = value.total
+})
+async function replayParseFailure(row: IngestParseFailure) {
+  if (!canWrite.value || replayingFailure.value) return
+  replayingFailure.value = row.id
+  try {
+    await replayIngestParseFailure(row.id)
+    await loadParseFailures()
+  } catch (failure) {
+    loadErrors.value = { ...loadErrors.value, quarantine: String(failure) }
+  } finally {
+    replayingFailure.value = ''
+  }
+}
 function onIngestTab(key: string | number) {
   const tab = String(key)
   ingestTab.value = tab
@@ -235,6 +258,7 @@ function onIngestTab(key: string | number) {
   if (tab === 'outputs') loadOutputs()
   if (tab === 'rules') loadParseRules()
   if (tab === 'tasks') loadTasks()
+  if (tab === 'quarantine') loadParseFailures()
 }
 
 const EMPTY_SOURCE = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true }
@@ -490,6 +514,9 @@ async function refreshAll() {
 }
 onMounted(() => { void refreshAll() })
 watch(testDialog, open => { if (!open) cancelPreview() })
+watch([parseFailurePage, parseFailureSize], () => {
+  if (ingestTab.value === 'quarantine') void loadParseFailures()
+})
 watch(showSourceDialog, open => {
   if (open) return
   if (sourceRuleSearchTimer !== null) { window.clearTimeout(sourceRuleSearchTimer); sourceRuleSearchTimer = null }
@@ -520,7 +547,7 @@ onUnmounted(() => {
     <el-tabs v-model="ingestTab" @tab-change="onIngestTab">
       <el-tab-pane :label="t('ingest.tasks')" name="tasks">
         <el-row class="metrics-row" :gutter="12" style="margin-bottom:14px">
-          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary ? `${taskSummary.enabledSources}/${taskSummary.sources}` : t('time.notAvailable') }}</div><div class="label">{{ t('ingest.runningTotal') }}</div></div></el-card></el-col>
+          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary ? `${taskSummary.enabledSources}/${taskSummary.sources}` : t('time.notAvailable') }}</div><div class="label">{{ t('ingest.enabledTotal') }}</div></div></el-card></el-col>
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ taskSummary?.eps1m ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.eps') }}</div></div></el-card></el-col>
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-success)">{{ taskSummary?.accepted ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.accepted') }}</div></div></el-card></el-col>
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary?.forwarded ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.forwarded') }}</div></div></el-card></el-col>
@@ -530,15 +557,15 @@ onUnmounted(() => {
         <el-card shadow="never">
           <template #header><div style="display:flex;align-items:center;gap:10px"><span>{{ t('ingest.taskConfigMetrics') }}</span><el-tag v-for="(count, health) in (taskSummary?.byHealth ?? {})" :key="health" size="small" :type="healthMeta(String(health)).type" style="margin-left:2px">{{ healthMeta(String(health)).text }} {{ count }}</el-tag><el-button size="small" style="margin-left:auto" @click="loadTasks">{{ t('common.refresh') }}</el-button></div></template>
           <el-table :data="tasks" size="small" border>
-            <el-table-column :label="t('ingest.status')" width="92"><template #default="{ row }"><el-tag :type="healthMeta(row.runtime.health).type" size="small" effect="dark">{{ healthMeta(row.runtime.health).text }}</el-tag></template></el-table-column>
+            <el-table-column :label="t('ingest.status')" width="150"><template #default="{ row }"><el-tag :type="healthMeta(row.runtime.health).type" size="small" effect="dark">{{ healthMeta(row.runtime.health).text }}</el-tag><div class="mono" style="margin-top:3px;font-size:10px;color:var(--ns-text-3)">{{ row.applyState === 'MANUAL_APPLY_REQUIRED' ? t('ingest.pendingManualApply') : t('ingest.configDisabled') }}</div></template></el-table-column>
             <el-table-column :label="t('ingest.task')" min-width="150" show-overflow-tooltip><template #default="{ row }"><div style="font-weight:600">{{ row.name }}</div><div class="mono" style="font-size:11px;color:var(--ns-text-3)">{{ row.collector }}</div></template></el-table-column>
             <el-table-column prop="type" :label="t('ingest.ingestMethod')" width="110" />
             <el-table-column prop="format" :label="t('ingest.parseFormat')" width="90" />
             <el-table-column :label="t('ingest.target')" min-width="180" show-overflow-tooltip><template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.target }}</span></template></el-table-column>
             <el-table-column :label="t('ingest.epsWindow')" width="110"><template #default="{ row }"><span :style="{ color: row.runtime.eps1m > 0 ? 'var(--ns-success)' : 'var(--ns-text-3)', fontWeight: 600 }">{{ row.runtime.eps1m }}</span><span style="color:var(--ns-text-3)"> / {{ row.runtime.eps5m }}</span></template></el-table-column>
-            <el-table-column :label="t('ingest.receivedForwardedSkipped')" width="150"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.runtime.accepted }} / {{ row.runtime.forwarded }} / <span :style="{ color: row.runtime.skipped > 0 ? 'var(--ns-warning)' : 'inherit' }">{{ row.runtime.skipped }}</span></span></template></el-table-column>
+            <el-table-column :label="t('ingest.receivedForwardedSkipped')" width="180"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.runtime.accepted }} / {{ row.runtime.forwarded }} / <span :style="{ color: row.runtime.parseFailed > 0 ? 'var(--ns-warning)' : 'inherit' }">{{ row.runtime.parseFailed }}</span></span></template></el-table-column>
             <el-table-column :label="t('ingest.recentData')" width="150"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ fmtTime(row.runtime.lastAt) }}</span></template></el-table-column>
-            <el-table-column :label="t('ingest.actions')" width="170"><template #default="{ row }"><el-button v-if="canWrite" link :type="row.enabled ? 'warning' : 'success'" size="small" :loading="taskBusy[row.id]" @click="toggleTaskRow(row)">{{ row.enabled ? t('ingest.stop') : t('ingest.start') }}</el-button><el-button v-if="canWrite" link type="primary" size="small" @click="openTestRow(row)">{{ t('ingest.parsePreview') }}</el-button></template></el-table-column>
+            <el-table-column :label="t('ingest.actions')" width="210"><template #default="{ row }"><el-button v-if="canWrite" link :type="row.enabled ? 'warning' : 'success'" size="small" :loading="taskBusy[row.id]" @click="toggleTaskRow(row)">{{ row.enabled ? t('ingest.disableConfig') : t('ingest.enableConfig') }}</el-button><el-button v-if="canWrite" link type="primary" size="small" @click="openTestRow(row)">{{ t('ingest.parsePreview') }}</el-button></template></el-table-column>
             <el-table-column type="expand"><template #default="{ row }"><div style="padding:8px 20px;font-size:12px;color:var(--ns-text-2)"><div>{{ t('ingest.environmentDetail', { value: row.env || t('time.notAvailable') }) }} · {{ t('ingest.categoryDetail', { value: row.categoryId || t('time.notAvailable') }) }} · {{ t('ingest.outputDetail', { value: outputLabel(row.sinkTargetId) }) }} · {{ t('ingest.createdDetail', { value: fmtTime(row.createdAt) }) }}</div><div style="margin-top:4px">{{ t('ingest.boundRules') }}<el-tag v-for="p in row.parseRuleIds" :key="p" size="small" style="margin-right:4px">{{ p }}</el-tag><span v-if="!row.parseRuleIds?.length" style="color:var(--ns-text-3)">{{ t('ingest.autoDetect') }}</span></div><div v-if="row.runtime.lastError" style="margin-top:4px;color:var(--ns-danger)">{{ t('ingest.recentError', { time: fmtTime(row.runtime.lastErrorAt ?? null) }) }}{{ row.runtime.lastError }}</div></div></template></el-table-column>
           </el-table>
         </el-card>
@@ -619,6 +646,23 @@ onUnmounted(() => {
           <template #footer><el-button @click="showSourceDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="saveSource">{{ editingSourceId ? t('common.save') : t('ingest.addSource') }}</el-button></template>
         </el-drawer>
         <el-card shadow="never"><el-table :data="sources" size="small" border><el-table-column prop="name" :label="t('common.name')" width="130" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="110" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="80" /><el-table-column :label="t('ingest.target')" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.path || row.address || row.topic || t('time.notAvailable') }}</template></el-table-column><el-table-column :label="t('ingest.protocol')" width="70"><template #default="{ row }">{{ row.protocol || t('time.notAvailable') }}</template></el-table-column><el-table-column prop="env" :label="t('ingest.environment')" width="65" /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="120"><template #default="{ row }"><el-button link type="primary" size="small" @click="openEditSource(row as LogSource)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeSource(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="sourcePage" v-model:page-size="sourceSize" :total="sourceTotal" :page-sizes="[20, 50, 100]" /></el-card>
+      </el-tab-pane>
+
+      <el-tab-pane :label="t('ingest.parseFailureTab')" name="quarantine">
+        <div class="add-bar"><el-button @click="loadParseFailures">{{ t('common.refresh') }}</el-button><span class="hint">{{ t('ingest.parseFailureHint') }}</span></div>
+        <ActionFeedback :error="loadErrors.quarantine" />
+        <el-card shadow="never">
+          <el-table :data="parseFailures" size="small" border>
+            <el-table-column prop="receivedAt" :label="t('ingest.receivedAt')" width="170"><template #default="{ row }">{{ fmtTime(row.receivedAt) }}</template></el-table-column>
+            <el-table-column prop="collectorId" :label="t('ingest.collector')" width="150" show-overflow-tooltip />
+            <el-table-column prop="rawPayload" :label="t('ingest.rawPayload')" min-width="240" show-overflow-tooltip />
+            <el-table-column prop="failureReason" :label="t('ingest.failureReason')" min-width="220" show-overflow-tooltip />
+            <el-table-column prop="parserVersion" :label="t('ingest.parserVersion')" width="130" show-overflow-tooltip />
+            <el-table-column prop="replayStatus" :label="t('common.status')" width="105"><template #default="{ row }"><el-tag :type="row.replayStatus === 'REPLAYED' ? 'success' : 'warning'" size="small">{{ row.replayStatus }}</el-tag></template></el-table-column>
+            <el-table-column v-if="canWrite" :label="t('common.actions')" width="100"><template #default="{ row }"><el-button link type="primary" size="small" :loading="replayingFailure === row.id" :disabled="row.replayStatus === 'REPLAYED' || !!replayingFailure" @click="replayParseFailure(row as IngestParseFailure)">{{ t('ingest.replay') }}</el-button></template></el-table-column>
+          </el-table>
+          <PagerBar v-model:current-page="parseFailurePage" v-model:page-size="parseFailureSize" :total="parseFailureTotal" :page-sizes="[20, 50, 100]" />
+        </el-card>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.outputTab')" name="outputs">

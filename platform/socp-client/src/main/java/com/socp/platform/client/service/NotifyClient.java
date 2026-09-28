@@ -28,4 +28,17 @@ public class NotifyClient {
                 ? Map.of() : Map.of("Idempotency-Key", idempotencyKey);
         return http.postJson(SocpService.NOTIFY, "/api/v1/notify/alert", alarmJson, headers);
     }
+
+    /** Deliver through exactly one configured channel. */
+    public ServiceCall notifyChannel(String channelId, String alarmJson, String idempotencyKey) {
+        Map<String, String> headers = idempotencyKey == null || idempotencyKey.isBlank()
+                ? Map.of() : Map.of("Idempotency-Key", idempotencyKey);
+        return http.postJson(SocpService.NOTIFY, "/api/v1/notify/channels/"
+                + encode(channelId) + "/alert", alarmJson, headers);
+    }
+
+    private static String encode(String value) {
+        return java.net.URLEncoder.encode(value == null ? "" : value,
+                java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");
+    }
 }

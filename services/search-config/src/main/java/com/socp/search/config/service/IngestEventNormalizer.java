@@ -198,6 +198,11 @@ public class IngestEventNormalizer {
         return new NormalizedEvent(event, payload, collector(fields, collectorHint));
     }
 
+    String parserVersion(String line, String collectorHint) {
+        if (sourceResolver == null || pipelineResolver == null) return "builtin";
+        return pipelineResolver.version(sourceResolver.resolve(line, collectorHint));
+    }
+
     private static String stableEventId(String fallbackEventId) {
         String value = fallbackEventId.trim();
         if (value.length() > 512) value = value.substring(0, 512);

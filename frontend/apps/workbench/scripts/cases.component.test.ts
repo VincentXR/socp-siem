@@ -13,6 +13,8 @@ vi.mock('vue-router', () => ({
 vi.mock('../src/api/domains', () => ({ caseApi: {
   list: vi.fn(async () => ({ items: [], total: 0 })), stats: vi.fn(async () => ({ total: 0, open: 0, resolved: 0 })),
   get: vi.fn(), timeline: vi.fn(),
+  alarms: vi.fn(async () => ({ items: [], total: 0 })),
+  rules: vi.fn(async () => ({ items: [], total: 0 })),
 } }))
 
 afterEach(() => { delete query.caseId; vi.clearAllMocks() })

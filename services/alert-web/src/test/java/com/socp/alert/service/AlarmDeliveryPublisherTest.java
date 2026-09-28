@@ -142,6 +142,39 @@ class AlarmDeliveryPublisherTest {
     }
 
     @Test
+    void permanentNotificationFailureIsDeadLetteredWithoutRetry() {
+        AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
+        given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
+        given(notifyClient.notifyAlert(delivery.getPayload())).willReturn(new ServiceCall(
+                SocpService.NOTIFY, "http://notify", false, 422, "", "invalid channel credentials", 1, false, 1));
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient);
+
+        publisher.publish();
+
+        verify(repository).markDead(eq(delivery.getId()), eq("invalid channel credentials"),
+                any(Instant.class), anyString());
+        verify(repository, never()).scheduleRetry(eq(delivery.getId()), any(), any(), any(), anyString());
+    }
+
+    @Test
+    void invalidClickHousePayloadIsDeadLetteredWithoutCallingReporter() {
+        AlarmDelivery delivery = delivery(AlarmDeliveryDestination.CLICKHOUSE);
+        delivery.setPayload("not-json");
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
+        given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient);
+
+        publisher.publish();
+
+        verify(ckReporter, never()).reportAlarmAndAwait(any());
+        verify(repository).markDead(eq(delivery.getId()), anyString(), any(Instant.class), anyString());
+        verify(repository, never()).scheduleRetry(eq(delivery.getId()), any(), any(), any(), anyString());
+    }
+
+    @Test
     void retryLimitMovesFailedDeliveryToDead() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(

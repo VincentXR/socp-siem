@@ -44,12 +44,15 @@ only `repository@sha256:...`. Its JSON schema rejects missing or malformed
 digests. Environment files control replica/HPA/PDB policy without duplicating
 the workload manifests.
 
-`socp-runtime-secrets` is external to Helm. The deployment platform must
-create it before release and rotate it independently. The gateway explicitly
-requires `SOCP_AUTH_SIGNING_JWK`, a private RSA JWK whose public half is exposed
-through the platform JWKS endpoint; the database workloads explicitly require
-their runtime and migration role pairs. Missing named keys fail before the
-container starts. Non-secret dependency endpoints can be supplied through an
+Secrets are external to Helm. Each built-in workload receives only explicitly
+mapped keys from its `socp-<workload>-secrets`; Deployments do not use Secret
+`envFrom`. The gateway exclusively requires `SOCP_AUTH_SIGNING_JWK` from
+`runtime.gatewaySigningSecret` (default `socp-gateway-signing`), a private RSA
+JWK whose public half is exposed through the platform JWKS endpoint. No
+non-gateway Deployment references that Secret. Metrics scraping uses the
+separate `runtime.metricsSecret`. Database workloads explicitly require their
+runtime and migration role pairs, so missing named keys fail before container
+startup. Non-secret dependency endpoints can be supplied through an
 environment-owned values file under `runtime.extraConfig`. Neither generated
 secrets nor environment values belong in source control.
 

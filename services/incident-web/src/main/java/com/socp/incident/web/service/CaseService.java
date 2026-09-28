@@ -19,7 +19,6 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
 /**
@@ -80,29 +79,38 @@ public class CaseService {
         if (!alarmId.isBlank()) {
             var existingLink = alarmLinks.findByTenantIdAndAlarmId(TenantContext.require(), alarmId);
             if (existingLink.isPresent()) {
-                Case linked = store.get(existingLink.get().getCaseId());
+                Case linked = store.getMetadata(existingLink.get().getCaseId());
                 if (linked != null) return response(linked, false, true);
             }
         }
 
         // Serialize the find-or-create boundary across every service replica.
+        // Alarm identity is locked as well as entity identity so the same
+        // alarm cannot race into two cases when callers disagree on entity.
         // Empty entities intentionally do not aggregate: there is no stable
         // subject proving that two otherwise unrelated alarms belong together.
-        if (aggregationLock != null && !entity.isBlank()) aggregationLock.lock(entity);
+        if (aggregationLock != null) {
+            aggregationLock.lockAll(
+                    alarmId.isBlank() ? null : "alarm:" + alarmId,
+                    entity.isBlank() ? null : "entity:" + entity);
+        }
+        if (!alarmId.isBlank()) {
+            var linkedAfterLock = alarmLinks.findByTenantIdAndAlarmId(TenantContext.require(), alarmId);
+            if (linkedAfterLock.isPresent()) {
+                Case linked = store.getMetadata(linkedAfterLock.get().getCaseId());
+                if (linked != null) return response(linked, false, true);
+            }
+        }
 
         String existingId = store.openCaseId(entity);
         Case c;
         if (existingId != null) {
-            Case open = store.get(existingId);
+            Case open = store.getMetadata(existingId);
             // 幂等：同一告警可能被 alert-web 与 SOAR 剧本重复推送，已归并过则原样返回，避免时间线重复
-            if (!alarmId.isBlank() && open.alarmIds().contains(alarmId)) {
-                rememberAlarm(alarmId, open.id());
-                return response(open, false, true);
-            }
             TimelineEvent ev = new TimelineEvent(ts, "ALARM",
                     ruleId + (mitre.isEmpty() ? "" : " [" + mitre + "]") + ": " + message, "detection", alarmId);
-            c = open.withAdded(ruleId, alarmId, ev);
-            store.save(c);
+            c = open.withAdded(ruleId, alarmId, ev, severity);
+            store.saveAlarmDelta(c, ruleId, alarmId, ev);
         } else {
             String t = (entity == null || entity.isBlank())
                     ? ("事件: " + (title.isEmpty() ? alarmId : title))
@@ -116,26 +124,14 @@ public class CaseService {
         return response(c, existingId == null, false);
     }
 
-    private void rememberAlarm(String alarmId, String caseId) {
-        if (alarmId == null || alarmId.isBlank()) return;
-        String tenant = tenant();
-        AlarmCaseLinkEntity link = new AlarmCaseLinkEntity();
-        link.setId(UUID.nameUUIDFromBytes((tenant + "\u0000" + alarmId).getBytes(StandardCharsets.UTF_8)).toString());
-        link.setTenantId(tenant);
-        link.setAlarmId(alarmId);
-        link.setCaseId(caseId);
-        link.setCreatedAt(Instant.now());
-        alarmLinks.save(link);
-    }
-
-    private static Map<String, Object> response(Case incident, boolean created, boolean duplicate) {
+    private Map<String, Object> response(Case incident, boolean created, boolean duplicate) {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("caseId", incident.id());
         out.put("caseNo", incident.caseNo());
         out.put("title", incident.title());
         out.put("entity", incident.entity());
         out.put("status", incident.status());
-        out.put("alarmCount", incident.alarmIds().size());
+        out.put("alarmCount", incident.alarmCount());
         out.put("created", created);
         if (duplicate) out.put("duplicate", true);
         return out;
@@ -169,6 +165,10 @@ public class CaseService {
         return store.get(id);
     }
 
+    public Case getMetadata(String id) {
+        return store.getMetadata(id);
+    }
+
     /** Exact tenant-scoped reverse lookup; avoids scanning an arbitrary case page. */
     public Case findByAlarmId(String alarmId) {
         if (alarmId == null || alarmId.isBlank()) {
@@ -188,13 +188,22 @@ public class CaseService {
             java.util.Set.of("OPEN", "INVESTIGATING", "CONTAINED", "RESOLVED", "CLOSED");
 
     public Map<String, Object> setStatus(String id, String status, String assignee) {
-        Case c = store.get(id);
+        Case c = store.getMetadata(id);
         if (c == null) throw ApiException.notFound("未找到案件 " + id);
         if (status == null || !ALLOWED_STATUSES.contains(status)) {
             throw ApiException.badRequest("非法案件状态 " + status + "; 允许: " + ALLOWED_STATUSES);
         }
         Case updated = c.withStatus(status, assignee);
-        store.save(updated);
+        store.saveMetadata(updated);
+        return Map.of("case", updated);
+    }
+
+    public Map<String, Object> assign(String id, String assignee) {
+        Case current = store.getMetadata(id);
+        if (current == null) throw ApiException.notFound("未找到案件 " + id);
+        Case updated = current.withStatus(current.status(),
+                assignee == null || assignee.isBlank() ? null : assignee.trim());
+        store.saveMetadata(updated);
         return Map.of("case", updated);
     }
 
@@ -204,13 +213,13 @@ public class CaseService {
 
     /** Appends by a stable key when supplied; Investigation Agent supplies investigationId. */
     public Map<String, Object> addNote(String id, String author, String content, String idempotencyKey) {
-        if (store.get(id) == null) throw ApiException.notFound("未找到案件 " + id);
+        if (store.getMetadata(id) == null) throw ApiException.notFound("未找到案件 " + id);
         String eventKey = idempotencyKey == null || idempotencyKey.isBlank()
                 ? "note:" + UUID.randomUUID() : "note:" + idempotencyKey.trim();
         TimelineEvent event = new TimelineEvent(Instant.now(), "NOTE", author + ": " + content,
                 "analyst", null, eventKey);
         boolean appended = store.appendTimeline(id, event);
-        Case updated = store.get(id);
+        Case updated = store.getMetadata(id);
         if (updated == null) throw ApiException.notFound("未找到案件 " + id);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("case", updated);
@@ -220,13 +229,23 @@ public class CaseService {
 
     /** Timeline page for one case; a missing case is a 404, not an empty success page. */
     public Map<String, Object> timeline(String id, int page, int size) {
-        if (store.get(id) == null) throw ApiException.notFound("未找到案件 " + id);
+        if (store.getMetadata(id) == null) throw ApiException.notFound("未找到案件 " + id);
         var result = store.timeline(id, page, size);
         List<TimelineEvent> items = result.getContent().stream()
                 .map(CaseService::timelineEvent)
                 .toList();
         return Map.of("caseId", id, "page", result.getNumber(), "size", result.getSize(),
                 "total", result.getTotalElements(), "timeline", items);
+    }
+
+    public Page<String> alarms(String id, int page, int size) {
+        if (store.getMetadata(id) == null) throw ApiException.notFound("未找到案件 " + id);
+        return store.alarms(id, page, size);
+    }
+
+    public Page<String> rules(String id, int page, int size) {
+        if (store.getMetadata(id) == null) throw ApiException.notFound("未找到案件 " + id);
+        return store.rules(id, page, size);
     }
 
     public Map<String, Object> stats() {

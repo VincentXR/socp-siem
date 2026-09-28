@@ -51,10 +51,13 @@ public class IngestTaskMonitor {
     private static final class Stat {
         long accepted;
         long skipped;
+        long parseFailed;
+        long quarantined;
         long forwarded;
         long bytes;
         Instant firstAt;
         Instant lastAt;
+        Instant lastAcceptedAt;
         String lastError;
         Instant lastErrorAt;
         volatile long lastTouchedMillis = System.currentTimeMillis();
@@ -64,6 +67,11 @@ public class IngestTaskMonitor {
 
     /** 记录一批投递的处理结果 */
     public void record(String collector, int accepted, int skipped, int forwarded, long bytes) {
+        record(collector, accepted, skipped, 0, 0, forwarded, bytes);
+    }
+
+    public void record(String collector, int accepted, int skipped, int parseFailed,
+                       int quarantined, int forwarded, long bytes) {
         String key = key(collector);
         Stat s = stats.computeIfAbsent(key, k -> new Stat());
         Instant now = Instant.now();
@@ -72,9 +80,12 @@ public class IngestTaskMonitor {
             if (s.firstAt == null) s.firstAt = now;
             s.accepted += accepted;
             s.skipped += skipped;
+            s.parseFailed += parseFailed;
+            s.quarantined += quarantined;
             s.forwarded += forwarded;
             s.bytes += bytes;
-            if (accepted > 0) s.lastAt = now;
+            if (accepted + skipped + parseFailed > 0) s.lastAt = now;
+            if (accepted > 0) s.lastAcceptedAt = now;
 
             long sec = now.getEpochSecond();
             long[] tail = s.buckets.peekLast();
@@ -121,12 +132,15 @@ public class IngestTaskMonitor {
         if (s == null) {
             m.put("accepted", 0L);
             m.put("skipped", 0L);
+            m.put("parseFailed", 0L);
+            m.put("quarantined", 0L);
             m.put("forwarded", 0L);
             m.put("bytes", 0L);
             m.put("eps1m", 0.0);
             m.put("eps5m", 0.0);
             m.put("firstAt", null);
             m.put("lastAt", null);
+            m.put("lastAcceptedAt", null);
             m.put("lastError", null);
             m.put("health", enabled ? "IDLE" : "DISABLED");
             return m;
@@ -135,12 +149,15 @@ public class IngestTaskMonitor {
             long now = Instant.now().getEpochSecond();
             m.put("accepted", s.accepted);
             m.put("skipped", s.skipped);
+            m.put("parseFailed", s.parseFailed);
+            m.put("quarantined", s.quarantined);
             m.put("forwarded", s.forwarded);
             m.put("bytes", s.bytes);
             m.put("eps1m", eps(s, now, 60));
             m.put("eps5m", eps(s, now, 300));
             m.put("firstAt", s.firstAt == null ? null : s.firstAt.toString());
             m.put("lastAt", s.lastAt == null ? null : s.lastAt.toString());
+            m.put("lastAcceptedAt", s.lastAcceptedAt == null ? null : s.lastAcceptedAt.toString());
             m.put("lastError", s.lastError);
             m.put("lastErrorAt", s.lastErrorAt == null ? null : s.lastErrorAt.toString());
             m.put("health", health(s, enabled, now));
@@ -161,13 +178,15 @@ public class IngestTaskMonitor {
         if (s.lastAt == null) return "IDLE";
         if (s.lastErrorAt != null && s.lastErrorAt.getEpochSecond() > now - 60) return "ERROR";
         if (s.lastAt.getEpochSecond() < now - STALE_SECONDS) return "STALE";
-        if (s.skipped > 0 && s.skipped > s.accepted) return "DEGRADED";
+        if (s.skipped + s.parseFailed > 0 && s.skipped + s.parseFailed > s.accepted) {
+            return "DEGRADED";
+        }
         return "HEALTHY";
     }
 
     /** 全局摘要：总接入量 + 总速率 + 各健康状态的采集器数量 */
     public Map<String, Object> summary(List<String> enabledCollectors) {
-        long accepted = 0, skipped = 0, forwarded = 0, bytes = 0;
+        long accepted = 0, skipped = 0, parseFailed = 0, quarantined = 0, forwarded = 0, bytes = 0;
         double eps = 0;
         long now = Instant.now().getEpochSecond();
         Map<String, Integer> byHealth = new LinkedHashMap<>();
@@ -183,6 +202,8 @@ public class IngestTaskMonitor {
             synchronized (s) {
                 accepted += s.accepted;
                 skipped += s.skipped;
+                parseFailed += s.parseFailed;
+                quarantined += s.quarantined;
                 forwarded += s.forwarded;
                 bytes += s.bytes;
                 eps += eps(s, now, 60);
@@ -193,6 +214,8 @@ public class IngestTaskMonitor {
         m.put("collectors", collectors);
         m.put("accepted", accepted);
         m.put("skipped", skipped);
+        m.put("parseFailed", parseFailed);
+        m.put("quarantined", quarantined);
         m.put("forwarded", forwarded);
         m.put("bytes", bytes);
         m.put("eps1m", Math.round(eps * 100) / 100.0);

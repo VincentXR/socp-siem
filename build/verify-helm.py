@@ -360,8 +360,10 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
         # and the db contributor, so a Kafka/ClickHouse/OpenSearch outage would
         # keep a brand-new container from ever passing startup and kubelet would
         # restart-loop it, churning the shared consumer group serving traffic.
-        # Waiting on dependencies stays a readiness concern. Mirrors the parity
-        # check kept in build/verify-prod-compose.py; both gates hold the line.
+        # Readiness is role-specific: APIs include only dependencies required
+        # for the current durable request; workers may include asynchronous
+        # sinks so Kubernetes can stop assigning worker duties during outage.
+        # Mirrors the parity check kept in build/verify-prod-compose.py.
         for probe in ("startup", "liveness"):
             path = re.search(
                 rf"(?ms){probe}Probe:\s+httpGet:\s+(?:#.*\n\s*)*path:\s*(\S+)", document
@@ -383,11 +385,23 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
     require(errors,
             re.search(
                 r"(?ms)- name:\s*SOCP_AUTH_SIGNING_JWK\s*$.*?secretKeyRef:\s*.*?"
-                r"name:\s*socp-runtime-secrets\s*$.*?key:\s*SOCP_AUTH_SIGNING_JWK\s*$",
+                r"name:\s*socp-gateway-signing\s*$.*?key:\s*SOCP_AUTH_SIGNING_JWK\s*$",
                 gateway,
                 re.MULTILINE,
             ) is not None,
             f"{profile}: Deployment/api-gateway must fail early when the RSA signing JWK is absent")
+    for (kind, name), document in documents.items():
+        if kind != "Deployment":
+            continue
+        require(errors, re.search(r"(?ms)envFrom:.*?secretRef:", document) is None,
+                f"{profile}: Deployment/{name} must name approved Secret keys explicitly; "
+                "Secret envFrom can leak the gateway signer and unrelated workload credentials")
+        if name == "api-gateway":
+            continue
+        require(errors, "SOCP_AUTH_SIGNING_JWK" not in document,
+                f"{profile}: Deployment/{name} must not receive the RSA signing JWK")
+        require(errors, "socp-gateway-signing" not in document,
+                f"{profile}: Deployment/{name} must not reference the gateway signing Secret")
 
     for workload, role in (
         ("search-config-api", "api"),
@@ -401,6 +415,18 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
                 re.search(rf'(?ms)- name:\s*{variable}\s*$.*?value:\s*["\']?{role}["\']?\s*$',
                           document, re.MULTILINE) is not None,
                 f"{profile}: Deployment/{workload} must set {variable}={role}")
+
+    for workload in ("alert-web", "search-config-api"):
+        document = documents.get(("Deployment", workload), "")
+        require(errors,
+                "MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE" in document
+                and "readinessState,db" in document
+                and "readinessState,db,socpDependencies" not in document,
+                f"{profile}: Deployment/{workload} API readiness must exclude asynchronous downstreams")
+    search_worker = documents.get(("Deployment", "search-config-worker"), "")
+    require(errors,
+            "readinessState,db,socpDependencies" in search_worker,
+            f"{profile}: Deployment/search-config-worker must expose asynchronous dependency readiness")
 
     for workload in ("detect-web-api", "detect-web-worker"):
         document = documents.get(("Deployment", workload), "")

@@ -25,9 +25,17 @@ class SearchConfigMigrationTest {
                              + "('IDX_INGESTION_OUTBOX_DUE_V2',"
                              + "'IDX_INGESTION_OUTBOX_TENANT_DUE',"
                              + "'IDX_SEARCH_EVENT_RETENTION')");
-             var result = statement.executeQuery()) {
+            var result = statement.executeQuery()) {
             result.next();
             assertEquals(3, result.getInt(1));
+
+            try (var quarantine = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
+                            + "WHERE TABLE_NAME = 'T_INGEST_PARSE_FAILURE'");
+                 var tables = quarantine.executeQuery()) {
+                tables.next();
+                assertEquals(1, tables.getInt(1));
+            }
 
             String largeValue = "x".repeat(5_000);
             try (var insert = connection.prepareStatement(

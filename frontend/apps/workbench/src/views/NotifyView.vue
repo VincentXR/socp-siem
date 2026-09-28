@@ -45,7 +45,7 @@ const { t, d } = useI18n()
 const latestRead = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('notify-channels')
 
-const channelTypes = ['SLACK', 'WEBHOOK', 'DINGTALK', 'WECOM', 'WECHAT', 'EMAIL', 'LOG'] as const
+const channelTypes = ['SLACK', 'WEBHOOK', 'DINGTALK', 'WECOM', 'EMAIL', 'LOG'] as const
 const channels = ref<Channel[]>([])
 const editingId = ref('')
 const keyword = ref('')

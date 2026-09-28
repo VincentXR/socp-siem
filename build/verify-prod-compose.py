@@ -399,9 +399,9 @@ def check_helm_parity(errors: list[str]) -> None:
         # application-pg.yml binds Flyway's pair without defaults
         # (${SOCP_PG_MIGRATION_USER}), so a missing key CrashLoops the app; the
         # runtime pair still carries ${SOCP_PG_USER:socp}-style fallbacks.
-        # envFrom accepts any subset of Secret keys, so only an explicit
-        # secretKeyRef fails the Pod at CreateContainerConfigError before the
-        # container starts with the intended, operator-managed credentials.
+        # Explicit secretKeyRef fails the Pod at CreateContainerConfigError
+        # before the container starts with incomplete operator-managed
+        # credentials. The chart intentionally has no Secret envFrom.
         for key in ("SOCP_PG_USER", "SOCP_PG_PASSWORD", "SOCP_PG_MIGRATION_USER", "SOCP_PG_MIGRATION_PASSWORD"):
             if re.search(rf"(?m)^\s+{key}:\s*{key}\s*$", block.group(0)) is None:
                 errors.append(f"Helm workload {workload} must pin {key} through secretEnv")

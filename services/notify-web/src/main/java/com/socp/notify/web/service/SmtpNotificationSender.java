@@ -2,6 +2,9 @@ package com.socp.notify.web.service;
 
 import com.socp.notify.web.config.NotifySmtpProperties;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.mail.MailAuthenticationException;
+import org.springframework.mail.MailPreparationException;
+import org.springframework.mail.MailSendException;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.stereotype.Component;
@@ -47,8 +50,20 @@ public class SmtpNotificationSender {
         try {
             sender.send(message);
             return DeliveryResult.success();
+        } catch (MailAuthenticationException failure) {
+            return DeliveryResult.failure("SMTP_AUTHENTICATION_FAILED",
+                    "SMTP authentication was rejected", false);
+        } catch (MailPreparationException failure) {
+            return DeliveryResult.failure("SMTP_MESSAGE_INVALID",
+                    "SMTP message could not be prepared", false);
+        } catch (MailSendException failure) {
+            // JavaMail can report a failure after DATA was submitted, including
+            // partial recipient acceptance. Retrying such a result blindly can
+            // send the same alarm twice.
+            return DeliveryResult.unknown("SMTP_RESULT_UNKNOWN",
+                    "SMTP delivery failed after submission; remote acceptance may be unknown");
         } catch (RuntimeException failure) {
-            return DeliveryResult.failure("SMTP_SEND_FAILED", "SMTP delivery failed; remote acceptance may be unknown");
+            return DeliveryResult.failure("SMTP_UNAVAILABLE", "SMTP connection failed; retry later", true);
         }
     }
 
@@ -66,13 +81,26 @@ public class SmtpNotificationSender {
         return true;
     }
 
-    public record DeliveryResult(boolean sent, String errorCode, String detail) {
+    public record DeliveryResult(String status, boolean retryable, String errorCode, String detail) {
+        public boolean sent() {
+            return "sent".equals(status);
+        }
+
         static DeliveryResult success() {
-            return new DeliveryResult(true, null, "SMTP message accepted by the configured mail sender");
+            return new DeliveryResult("sent", false, null,
+                    "SMTP message accepted by the configured mail sender");
         }
 
         static DeliveryResult failure(String code, String detail) {
-            return new DeliveryResult(false, code, detail);
+            return failure(code, detail, false);
+        }
+
+        static DeliveryResult failure(String code, String detail, boolean retryable) {
+            return new DeliveryResult("failed", retryable, code, detail);
+        }
+
+        static DeliveryResult unknown(String code, String detail) {
+            return new DeliveryResult("unknown", false, code, detail);
         }
     }
 }

@@ -6,7 +6,7 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import AiAssistantView from '../src/views/AiAssistantView.vue'
 import type { AiResult, InvestigationResult } from '../src/api'
 
-const mocks = vi.hoisted(() => ({ aiAsk: vi.fn(), investigateAlert: vi.fn(), appendInvestigationToIncident: vi.fn(),
+const mocks = vi.hoisted(() => ({ aiAsk: vi.fn(), investigateAlert: vi.fn(), reanalyzeAlert: vi.fn(), appendInvestigationToIncident: vi.fn(),
   route: { query: {} as Record<string, string | undefined> }, replace: vi.fn(), push: vi.fn() }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...mocks }))
 vi.mock('vue-router', () => ({ useRoute: () => mocks.route, useRouter: () => ({ push: mocks.push, replace: mocks.replace }) }))
@@ -63,7 +63,7 @@ describe('AI answer request ownership', () => {
 
 
 const investigation = (alertId: string): InvestigationResult => ({ investigationId: `job-${alertId}`, alertId,
-  status: 'COMPLETED', analysis: `analysis ${alertId}`, recommendedSpl: '', timeline: [], hypotheses: [],
+  revision: 1, status: 'COMPLETED', analysis: `analysis ${alertId}`, recommendedSpl: '', timeline: [], hypotheses: [],
   citations: [], nextActions: [], degradedSources: [] })
 const setupInvestigation = () => shallowMount(AiAssistantView, { global: { renderStubDefaultSlot: true } })
 
@@ -132,6 +132,21 @@ describe('AI investigation context', () => {
     expect(wrapper.find('.ai-analysis').exists()).toBe(false)
     expect(wrapper.find('[role="alert"]').exists()).toBe(true)
     expect(mocks.appendInvestigationToIncident).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('pins reanalysis to the displayed revision so a retried command is idempotent', async () => {
+    mocks.route.query = { alarmId: 'a' }
+    mocks.investigateAlert.mockResolvedValue({ ...investigation('a'), revision: 4 })
+    mocks.reanalyzeAlert.mockResolvedValue({ ...investigation('a'), revision: 5 })
+    const wrapper = setupInvestigation(); await flushPromises()
+
+    const reanalyze = wrapper.find('.ai-investigation-panel').findAllComponents(ElButton)
+      .find(button => !button.props('type') && !button.props('link'))!
+    reanalyze.vm.$emit('click'); await flushPromises()
+
+    expect(mocks.reanalyzeAlert).toHaveBeenCalledWith('a', 4, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(wrapper.find('.ai-analysis').text()).toBe('analysis a')
     wrapper.unmount()
   })
 })

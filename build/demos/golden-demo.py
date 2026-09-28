@@ -624,13 +624,12 @@ def main():
 
     def incident_for_alert():
         try:
-            status, result, _ = request("incident", "/api/v1/incidents", token=token)
+            alarm_id = urllib.parse.quote(str(compromise.get("id", "")), safe="")
+            status, result, _ = request(
+                "incident", f"/api/v1/incidents/by-alarm?alarmId={alarm_id}", token=token)
         except RuntimeError:
             return None
-        incidents = page_items(result)
-        return next(
-            (item for item in incidents if compromise.get("id") in str(item.get("alarmIds", []))), None
-        )
+        return unwrap(result) if status == 200 else None
 
     incident = wait_for("incident fan-out", incident_for_alert)
     if not check("Outbox fan-out created incident", bool(incident), incident):

@@ -15,6 +15,7 @@ import sys
 import time
 import random
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
@@ -292,11 +293,13 @@ if new_alarm:
           [d for d in mine if d.get("type") == "WEBHOOK"])
 
     def my_case():
-        st_, cases_ = call(U["incident-web"] + "/incident-web/api/v1/incidents")
-        cases_ = unwrap(cases_) if st_ == 200 else []
-        if st_ != 200:
-            return None
-        return next((c for c in cases_ if aid in c.get("alarmIds", [])), None)
+        # Incident summaries intentionally expose bounded association counts,
+        # not every historical alarm ID. Prove the exact persisted reverse
+        # link instead of scanning an arbitrary list page.
+        st_, incident_ = call(
+            U["incident-web"] + "/incident-web/api/v1/incidents/by-alarm?alarmId="
+            + urllib.parse.quote(aid, safe=""))
+        return incident_ if st_ == 200 and incident_.get("id") else None
 
     mycase = wait_for(my_case)
     check("告警自动归并为案件", mycase is not None, mycase.get("id") if mycase else "未建案")

@@ -30,6 +30,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 /** Branch coverage for built-in connector dispatch, egress, and error mapping. */
 @ExtendWith(MockitoExtension.class)
@@ -82,55 +83,54 @@ class SoarConnectorRegistryBranchCoverageTest {
     }
 
     @Test
-    void incidentActionsCoverTimelineCreateAssignStatusAndTasks() {
+    void incidentActionsUseExactAssignmentAndDoNotAdvertiseFakeTasks() {
         given(incident.addNote(eq("c1"), eq("soar"), eq("timeline entry"), eq("idem-1")))
                 .willReturn(ok("{\"operationId\":\"op-t\"}"));
-        given(incident.createFromAlarm(anyString(), eq("idem-1")))
-                .willReturn(ok("{\"operationId\":\"op-c\"}"));
-        given(incident.setStatus(eq("c1"), eq("INVESTIGATING"), eq("alice")))
+        given(incident.create(anyString()))
+                .willReturn(ok("{\"code\":0,\"data\":{\"case\":{\"id\":\"op-c\"}}}"));
+        given(incident.assign(eq("c1"), eq("alice")))
                 .willReturn(ok("{\"operationId\":\"op-a\"}"));
         given(incident.setStatus(eq("c1"), eq("CLOSED"), eq("")))
                 .willReturn(ok("{\"operationId\":\"op-s\"}"));
-        given(incident.addNote(eq("c1"), eq("soar"), eq("SOAR case task: add-task"), eq("idem-1")))
-                .willReturn(ok("{\"operationId\":\"op-1\"}"));
-        given(incident.addNote(eq("c1"), eq("soar"), eq("SOAR case task: complete-task"), eq("idem-1")))
-                .willReturn(ok("{\"operationId\":\"op-2\"}"));
 
         assertThat(registry.execute(request("socp.incident/append-timeline",
                 "incidentId", "c1", "content", "timeline entry")).operationId()).isEqualTo("op-t");
         assertThat(registry.execute(request("socp.incident/create",
                 "title", "case")).operationId()).isEqualTo("op-c");
+        org.mockito.ArgumentCaptor<String> payload = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(incident).create(payload.capture());
+        assertThat(payload.getValue()).contains("\"title\":\"case\"")
+                .contains("\"severity\":\"HIGH\"")
+                .doesNotContain("alertId");
         assertThat(registry.execute(request("socp.incident/assign",
                 "incidentId", "c1", "assignee", "alice")).operationId()).isEqualTo("op-a");
         assertThat(registry.execute(request("socp.incident/set-status",
                 "incidentId", "c1", "status", "CLOSED")).operationId()).isEqualTo("op-s");
-        assertThat(registry.execute(request("socp.incident/add-task",
-                "incidentId", "c1")).operationId()).isEqualTo("op-1");
-        assertThat(registry.execute(request("socp.incident/complete-task",
-                "incidentId", "c1")).operationId()).isEqualTo("op-2");
+        assertThat(registry.actionDescriptor("socp.incident/add-task")).isEmpty();
+        assertThat(registry.actionDescriptor("socp.incident/complete-task")).isEmpty();
     }
 
     @Test
     void assetSelectorWithoutMatchReturnsEmptyCollection() {
-        given(http.get(eq(SocpService.ASSET), eq("/api/v1/assets")))
+        given(http.get(eq(SocpService.ASSET), eq("/api/v1/assets/related?ip=no-such-host&name=no-such-host&page=1&size=500")))
                 .willReturn(ok("{\"code\":0,\"message\":\"ok\",\"data\":{\"items\":"
-                        + "[{\"id\":\"a1\",\"name\":\"web\",\"ip\":\"1.2.3.4\","
-                        + "\"owner\":\"bob\",\"type\":\"server\",\"os\":\"linux\"}]}}"));
+                        + "[],\"total\":0}}"));
 
         ActionResult result = registry.execute(request("socp.asset/find-by-entity",
                 "entity", "no-such-host"));
 
         assertThat(result.status()).isEqualTo("SUCCEEDED");
-        assertThat(result.output()).containsEntry("count", 0).containsEntry("matches", List.of());
+        assertThat(result.output()).containsEntry("count", 0L).containsEntry("matches", List.of());
     }
 
     @Test
     void notifyChannelWithBlankBodyReportsMissingReceipt() {
-        given(notify.notifyAlert(anyString(), eq("idem-1")))
+        given(notify.notifyChannel(eq("channel-1"), anyString(), eq("idem-1")))
                 .willReturn(new ServiceCall(SocpService.NOTIFY, "http://notify", true, 200, null,
                         null, 3, false, 1));
 
-        ActionResult result = registry.execute(request("socp.notify/send-channel"));
+        ActionResult result = registry.execute(request("socp.notify/send-channel",
+                "channelId", "channel-1"));
 
         assertThat(result.status()).isEqualTo("FAILED");
         assertThat(result.errorCode()).isEqualTo("MISSING_CONNECTOR_RECEIPT");
@@ -198,8 +198,8 @@ class SoarConnectorRegistryBranchCoverageTest {
                 "https://hooks.example.test/x", Map.of(), Map.of("auth", "vault://token"), secrets,
                 Duration.ofSeconds(5));
         given(secrets.resolve("vault://token")).willReturn(Optional.of("tok"));
-        given(http.postExternal(eq("https://hooks.example.test/x"), eq("{}"), eq(SocpHttpClient.JSON),
-                anyInt(), eq(Map.of("Authorization", "Bearer tok")), any()))
+        given(http.getExternalOnce(eq("https://hooks.example.test/x"), anyInt(),
+                eq(Map.of("Authorization", "Bearer tok")), any()))
                 .willReturn(ok("{}"));
 
         ConnectionTestResult result = registry.test("http.webhook", context);

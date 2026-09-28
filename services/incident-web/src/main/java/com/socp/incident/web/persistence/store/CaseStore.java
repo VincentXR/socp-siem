@@ -20,10 +20,10 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.annotation.Propagation;
+import org.springframework.jdbc.core.ConnectionCallback;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -41,6 +41,7 @@ public class CaseStore {
     private final CaseTimelineRepository timelineRepo;
     private final AlarmCaseLinkRepository alarmLinkRepo;
     private final CaseRuleLinkRepository ruleLinkRepo;
+    private final boolean postgres;
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -48,20 +49,30 @@ public class CaseStore {
 
     /** Compatibility constructor for focused unit tests without JPA timeline wiring. */
     public CaseStore(CaseRepository repo) {
-        this(repo, null, null, null);
+        this(repo, null, null, null, true);
     }
 
     public CaseStore(CaseRepository repo, CaseTimelineRepository timelineRepo) {
-        this(repo, timelineRepo, null, null);
+        this(repo, timelineRepo, null, null, true);
     }
 
     @Autowired
     public CaseStore(CaseRepository repo, CaseTimelineRepository timelineRepo,
-                     AlarmCaseLinkRepository alarmLinkRepo, CaseRuleLinkRepository ruleLinkRepo) {
+                     AlarmCaseLinkRepository alarmLinkRepo, CaseRuleLinkRepository ruleLinkRepo,
+                     JdbcTemplate jdbc) {
+        this(repo, timelineRepo, alarmLinkRepo, ruleLinkRepo,
+                "PostgreSQL".equals(jdbc.execute((ConnectionCallback<String>) connection ->
+                        connection.getMetaData().getDatabaseProductName())));
+    }
+
+    CaseStore(CaseRepository repo, CaseTimelineRepository timelineRepo,
+              AlarmCaseLinkRepository alarmLinkRepo, CaseRuleLinkRepository ruleLinkRepo,
+              boolean postgres) {
         this.repo = repo;
         this.timelineRepo = timelineRepo;
         this.alarmLinkRepo = alarmLinkRepo;
         this.ruleLinkRepo = ruleLinkRepo;
+        this.postgres = postgres;
     }
 
     @Transactional
@@ -108,17 +119,13 @@ public class CaseStore {
             return entities.map(entity -> fromEntity(entity, false));
         }
         List<String> ids = entities.getContent().stream().map(CaseEntity::getId).toList();
-        Map<String, List<String>> alarms = new LinkedHashMap<>();
-        alarmLinkRepo.findByTenantIdAndCaseIdIn(tenant, ids).forEach(link ->
-                alarms.computeIfAbsent(link.getCaseId(), ignored -> new ArrayList<>()).add(link.getAlarmId()));
-        alarms.values().forEach(values -> values.sort(String::compareTo));
-        Map<String, List<String>> rules = new LinkedHashMap<>();
-        ruleLinkRepo.findByTenantIdAndCaseIdIn(tenant, ids).forEach(link ->
-                rules.computeIfAbsent(link.getCaseId(), ignored -> new ArrayList<>()).add(link.getRuleId()));
-        rules.values().forEach(values -> values.sort(String::compareTo));
-        return entities.map(entity -> fromEntity(entity, false,
-                rules.getOrDefault(entity.getId(), legacyRules(entity)),
-                alarms.getOrDefault(entity.getId(), legacyAlarms(entity))));
+        Map<String, Long> alarmCounts = groupedCounts(alarmLinkRepo.countByCaseIds(tenant, ids));
+        Map<String, Long> ruleCounts = groupedCounts(ruleLinkRepo.countByCaseIds(tenant, ids));
+        return entities.map(entity -> fromEntitySummary(entity,
+                associationCount(ruleCounts.get(entity.getId()), legacyRules(entity),
+                        () -> normalizedRuleIds(entity)),
+                associationCount(alarmCounts.get(entity.getId()), legacyAlarms(entity),
+                        () -> normalizedAlarmIds(entity))));
     }
 
     public long count() {
@@ -133,6 +140,21 @@ public class CaseStore {
         return repo.findByTenantIdAndId(tenant(), id).map(this::fromEntity).orElse(null);
     }
 
+    /** Metadata and counts only; mutation paths must not hydrate unbounded associations/timeline. */
+    @Transactional(readOnly = true)
+    public Case getMetadata(String id) {
+        String tenant = tenant();
+        return repo.findByTenantIdAndId(tenant, id)
+                .map(entity -> fromEntitySummary(entity,
+                        associationCount(ruleLinkRepo == null ? null
+                                        : ruleLinkRepo.countByTenantIdAndCaseId(tenant, id),
+                                legacyRules(entity), () -> normalizedRuleIds(entity)),
+                        associationCount(alarmLinkRepo == null ? null
+                                        : alarmLinkRepo.countByTenantIdAndCaseId(tenant, id),
+                                legacyAlarms(entity), () -> normalizedAlarmIds(entity))))
+                .orElse(null);
+    }
+
     public String openCaseId(String entity) {
         if (entity == null || entity.isBlank()) return null;
         return repo.findFirstByTenantIdAndEntityAndStatusInOrderByUpdatedAtDescIdAsc(
@@ -140,7 +162,7 @@ public class CaseStore {
     }
 
     /** Append one event by unique key; no JSON read-modify-write is involved. */
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     public boolean appendTimeline(String caseId, TimelineEvent event) {
         String tenant = tenant();
         if (repo.findByTenantIdAndId(tenant, caseId).isEmpty()) return false;
@@ -155,18 +177,58 @@ public class CaseStore {
             return true;
         }
         CaseTimelineEntity row = toTimelineEntity(caseId, event, tenant);
-        if (timelineRepo.findByTenantIdAndCaseIdAndEventKey(tenant, caseId, row.getEventKey()).isPresent()) {
-            return false;
+        int inserted;
+        if (postgres) {
+            inserted = timelineRepo.insertIfAbsent(row.getId(), row.getTenantId(), row.getCaseId(),
+                    row.getEventKey(), row.getTs(), row.getType(), row.getMessage(), row.getSource(),
+                    row.getAlarmId(), row.getCreatedAt());
+        } else if (timelineRepo.findByTenantIdAndCaseIdAndEventKey(
+                tenant, caseId, row.getEventKey()).isEmpty()) {
+            timelineRepo.save(row);
+            inserted = 1;
+        } else {
+            inserted = 0;
         }
-        try {
-            timelineRepo.saveAndFlush(row);
+        if (inserted == 1) {
             repo.touchUpdatedAt(tenant, caseId, Instant.now());
             return true;
-        } catch (DataIntegrityViolationException duplicate) {
-            // The unique tenant/case/event key is the concurrency oracle. A
-            // competing request already appended the same logical event.
-            return false;
         }
+        // PostgreSQL's conflict-safe insert is the concurrency oracle. Unlike
+        // catching a uniqueness exception, it does not mark the shared
+        // business/audit transaction rollback-only.
+        return false;
+    }
+
+    /** Update mutable case metadata without traversing every historical association. */
+    @Transactional
+    public Case saveMetadata(Case incident) {
+        String tenant = tenant();
+        CaseEntity entity = repo.findByTenantIdAndId(tenant, incident.id())
+                .orElseThrow(() -> new IllegalStateException("Case disappeared during update"));
+        entity.setTitle(incident.title());
+        entity.setEntity(incident.entity());
+        entity.setSeverity(incident.severity());
+        entity.setStatus(incident.status());
+        entity.setAssignee(incident.assignee());
+        entity.setUpdatedAt(incident.updatedAt());
+        repo.save(entity);
+        return incident;
+    }
+
+    /** Persist only the one association delta represented by an incoming alarm. */
+    @Transactional
+    public Case saveAlarmDelta(Case incident, String ruleId, String alarmId, TimelineEvent event) {
+        Case saved = saveMetadata(incident);
+        String tenant = tenant();
+        Instant now = Instant.now();
+        if (alarmLinkRepo != null && alarmId != null && !alarmId.isBlank()) {
+            insertAlarmLink(tenant, incident.id(), alarmId, now);
+        }
+        if (ruleLinkRepo != null && ruleId != null && !ruleId.isBlank()) {
+            insertRuleLink(tenant, incident.id(), ruleId, now);
+        }
+        appendTimeline(incident.id(), event);
+        return saved;
     }
 
     public Page<CaseTimelineEntity> timeline(String caseId, int page, int size) {
@@ -174,6 +236,34 @@ public class CaseStore {
         if (timelineRepo == null) return Page.empty(PageRequest.of(Math.max(0, page), Math.max(1, size)));
         return timelineRepo.findByTenantIdAndCaseIdOrderByTsAsc(tenant, caseId,
                 PageRequest.of(Math.max(0, page), Math.max(1, Math.min(500, size)), Sort.by("id")));
+    }
+
+    public Page<String> alarms(String caseId, int page, int size) {
+        String tenant = tenant();
+        PageRequest request = PageRequest.of(Math.max(0, page), Math.max(1, Math.min(500, size)));
+        if (alarmLinkRepo == null) return legacyPage(get(caseId), true, request);
+        CaseEntity entity = repo.findByTenantIdAndId(tenant, caseId).orElse(null);
+        if (entity == null) return Page.empty(request);
+        List<String> legacy = legacyAlarms(entity);
+        if (!legacy.isEmpty()) return pageOf(mergeDistinct(normalizedAlarmIds(entity), legacy), request);
+        Page<String> normalized = alarmLinkRepo
+                .findByTenantIdAndCaseIdOrderByAlarmIdAsc(tenant, caseId, request)
+                .map(AlarmCaseLinkEntity::getAlarmId);
+        return normalized;
+    }
+
+    public Page<String> rules(String caseId, int page, int size) {
+        String tenant = tenant();
+        PageRequest request = PageRequest.of(Math.max(0, page), Math.max(1, Math.min(500, size)));
+        if (ruleLinkRepo == null) return legacyPage(get(caseId), false, request);
+        CaseEntity entity = repo.findByTenantIdAndId(tenant, caseId).orElse(null);
+        if (entity == null) return Page.empty(request);
+        List<String> legacy = legacyRules(entity);
+        if (!legacy.isEmpty()) return pageOf(mergeDistinct(normalizedRuleIds(entity), legacy), request);
+        Page<String> normalized = ruleLinkRepo
+                .findByTenantIdAndCaseIdOrderByRuleIdAsc(tenant, caseId, request)
+                .map(CaseRuleLinkEntity::getRuleId);
+        return normalized;
     }
 
     private static String tenant() {
@@ -225,7 +315,15 @@ public class CaseStore {
                 ruleIds == null ? List.of() : ruleIds,
                 alarmIds == null ? List.of() : alarmIds,
                 timeline == null ? List.of() : timeline,
-                entity.getAssignee(), entity.getCreatedAt(), entity.getUpdatedAt(), entity.getRowVersion());
+                entity.getAssignee(), entity.getCreatedAt(), entity.getUpdatedAt(), entity.getRowVersion(),
+                ruleIds == null ? 0 : ruleIds.size(), alarmIds == null ? 0 : alarmIds.size());
+    }
+
+    private Case fromEntitySummary(CaseEntity entity, long ruleCount, long alarmCount) {
+        return new Case(entity.getId(), entity.getCaseNo(), entity.getTitle(), entity.getEntity(),
+                entity.getSeverity(), entity.getStatus(), List.of(), List.of(), List.of(),
+                entity.getAssignee(), entity.getCreatedAt(), entity.getUpdatedAt(), entity.getRowVersion(),
+                ruleCount, alarmCount);
     }
 
     private static CaseTimelineEntity toTimelineEntity(String caseId, TimelineEvent event, String tenant) {
@@ -258,50 +356,99 @@ public class CaseStore {
         if (alarmLinkRepo == null || ruleLinkRepo == null) return;
         Instant now = Instant.now();
         for (String alarmId : incident.alarmIds()) {
-            if (alarmId == null || alarmId.isBlank()
-                    || alarmLinkRepo.findByTenantIdAndAlarmId(tenant, alarmId).isPresent()) continue;
-            AlarmCaseLinkEntity link = new AlarmCaseLinkEntity();
-            link.setId(UUID.nameUUIDFromBytes((tenant + "\u0000" + alarmId)
-                    .getBytes(StandardCharsets.UTF_8)).toString());
-            link.setTenantId(tenant);
-            link.setAlarmId(alarmId);
-            link.setCaseId(incident.id());
-            link.setCreatedAt(now);
-            alarmLinkRepo.save(link);
+            if (alarmId == null || alarmId.isBlank()) continue;
+            insertAlarmLink(tenant, incident.id(), alarmId, now);
         }
-        var existingRules = ruleLinkRepo.findByTenantIdAndCaseIdOrderByRuleIdAsc(tenant, incident.id()).stream()
-                .map(CaseRuleLinkEntity::getRuleId)
-                .collect(java.util.stream.Collectors.toSet());
         for (String ruleId : incident.ruleIds()) {
-            if (ruleId == null || ruleId.isBlank() || existingRules.contains(ruleId)) continue;
-            CaseRuleLinkEntity link = new CaseRuleLinkEntity();
-            link.setId(stableLinkId(tenant, incident.id(), ruleId));
-            link.setTenantId(tenant);
-            link.setCaseId(incident.id());
-            link.setRuleId(ruleId);
-            link.setCreatedAt(now);
-            ruleLinkRepo.save(link);
+            if (ruleId == null || ruleId.isBlank()) continue;
+            insertRuleLink(tenant, incident.id(), ruleId, now);
         }
+    }
+
+    private void insertAlarmLink(String tenant, String caseId, String alarmId, Instant now) {
+        String id = UUID.nameUUIDFromBytes((tenant + "\u0000" + alarmId)
+                .getBytes(StandardCharsets.UTF_8)).toString();
+        if (postgres) {
+            alarmLinkRepo.insertIfAbsent(id, tenant, alarmId, caseId, now);
+            return;
+        }
+        if (alarmLinkRepo.findByTenantIdAndAlarmId(tenant, alarmId).isPresent()) return;
+        AlarmCaseLinkEntity link = new AlarmCaseLinkEntity();
+        link.setId(id); link.setTenantId(tenant); link.setAlarmId(alarmId);
+        link.setCaseId(caseId); link.setCreatedAt(now);
+        alarmLinkRepo.save(link);
+    }
+
+    private void insertRuleLink(String tenant, String caseId, String ruleId, Instant now) {
+        if (postgres) {
+            ruleLinkRepo.insertIfAbsent(stableLinkId(tenant, caseId, ruleId), tenant, caseId, ruleId, now);
+            return;
+        }
+        if (ruleLinkRepo.existsByTenantIdAndCaseIdAndRuleId(tenant, caseId, ruleId)) return;
+        CaseRuleLinkEntity link = new CaseRuleLinkEntity();
+        link.setId(stableLinkId(tenant, caseId, ruleId)); link.setTenantId(tenant);
+        link.setCaseId(caseId); link.setRuleId(ruleId); link.setCreatedAt(now);
+        ruleLinkRepo.save(link);
+    }
+
+    private static Map<String, Long> groupedCounts(List<Object[]> rows) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        if (rows == null) return counts;
+        for (Object[] row : rows) {
+            if (row != null && row.length >= 2 && row[0] != null && row[1] instanceof Number value) {
+                counts.put(String.valueOf(row[0]), value.longValue());
+            }
+        }
+        return counts;
+    }
+
+    private static long associationCount(Long normalized, List<String> legacy,
+                                         java.util.function.Supplier<List<String>> normalizedIds) {
+        long count = normalized == null ? 0 : normalized;
+        if (legacy == null || legacy.isEmpty()) return count;
+        if (count == 0) return legacy.size();
+        return mergeDistinct(normalizedIds.get(), legacy).size();
+    }
+
+    private static Page<String> legacyPage(Case incident, boolean alarms, PageRequest request) {
+        if (incident == null) return Page.empty(request);
+        return pageOf(alarms ? incident.alarmIds() : incident.ruleIds(), request);
+    }
+
+    private static Page<String> pageOf(List<String> values, PageRequest request) {
+        List<String> safe = values == null ? List.of() : values;
+        int start = Math.min((int) request.getOffset(), safe.size());
+        int end = Math.min(start + request.getPageSize(), safe.size());
+        return new org.springframework.data.domain.PageImpl<>(safe.subList(start, end), request, safe.size());
     }
 
     private List<String> normalizedAlarms(CaseEntity entity) {
-        if (alarmLinkRepo != null) {
-            List<String> ids = alarmLinkRepo
-                    .findByTenantIdAndCaseIdOrderByAlarmIdAsc(entity.getTenantId(), entity.getId()).stream()
-                    .map(AlarmCaseLinkEntity::getAlarmId).toList();
-            if (!ids.isEmpty()) return ids;
-        }
-        return legacyAlarms(entity);
+        return mergeDistinct(normalizedAlarmIds(entity), legacyAlarms(entity));
     }
 
     private List<String> normalizedRules(CaseEntity entity) {
-        if (ruleLinkRepo != null) {
-            List<String> ids = ruleLinkRepo
-                    .findByTenantIdAndCaseIdOrderByRuleIdAsc(entity.getTenantId(), entity.getId()).stream()
-                    .map(CaseRuleLinkEntity::getRuleId).toList();
-            if (!ids.isEmpty()) return ids;
-        }
-        return legacyRules(entity);
+        return mergeDistinct(normalizedRuleIds(entity), legacyRules(entity));
+    }
+
+    private List<String> normalizedAlarmIds(CaseEntity entity) {
+        if (alarmLinkRepo == null) return List.of();
+        return alarmLinkRepo.findByTenantIdAndCaseIdOrderByAlarmIdAsc(
+                        entity.getTenantId(), entity.getId()).stream()
+                .map(AlarmCaseLinkEntity::getAlarmId).toList();
+    }
+
+    private List<String> normalizedRuleIds(CaseEntity entity) {
+        if (ruleLinkRepo == null) return List.of();
+        return ruleLinkRepo.findByTenantIdAndCaseIdOrderByRuleIdAsc(
+                        entity.getTenantId(), entity.getId()).stream()
+                .map(CaseRuleLinkEntity::getRuleId).toList();
+    }
+
+    private static List<String> mergeDistinct(List<String> normalized, List<String> legacy) {
+        java.util.TreeSet<String> merged = new java.util.TreeSet<>();
+        if (normalized != null) merged.addAll(normalized);
+        if (legacy != null) merged.addAll(legacy);
+        return List.copyOf(merged);
     }
 
     private static List<String> legacyAlarms(CaseEntity entity) {

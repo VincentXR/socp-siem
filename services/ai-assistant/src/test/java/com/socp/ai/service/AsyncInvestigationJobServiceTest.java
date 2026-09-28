@@ -26,14 +26,14 @@ class AsyncInvestigationJobServiceTest {
             started.countDown();
             assertTrue(release.await(3, TimeUnit.SECONDS));
             return java.util.Map.of();
-        }).when(agent).investigate("alert");
+        }).when(agent).investigateReceipt("job");
         var service = new AsyncInvestigationJobService(agent, repository, 1);
         try {
             service.dispatch();
             assertTrue(started.await(3, TimeUnit.SECONDS));
             service.dispatch();
             verify(repository, times(1)).findRecoverable(any(), any());
-            verify(agent, times(1)).investigate("alert");
+            verify(agent, times(1)).investigateReceipt("job");
         } finally {
             release.countDown();
             service.close();

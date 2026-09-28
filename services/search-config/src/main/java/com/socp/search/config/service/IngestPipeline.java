@@ -14,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -22,6 +23,8 @@ import java.util.Map;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.atomic.AtomicReference;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /** Batches normalized ingest events into the durable search/Kafka commit boundary. */
 @Service
@@ -36,8 +39,11 @@ public class IngestPipeline {
     private final IngestionCommitService commitService;
     private final IngestTaskMonitor monitor;
     private final DetectClient detectClient;
+    private final IngestParseFailureService parseFailures;
     private final Counter acceptedCounter;
     private final Counter skippedCounter;
+    private final Counter parseFailedCounter;
+    private final Counter quarantinedCounter;
     private final Counter forwardedCounter;
     private final AtomicReference<Double> eps = new AtomicReference<>(0.0);
 
@@ -46,16 +52,22 @@ public class IngestPipeline {
     @Autowired
     public IngestPipeline(IngestEventNormalizer normalizer, IngestionCommitService commitService,
                           IngestTaskMonitor monitor, DetectClient detectClient,
-                          MeterRegistry meterRegistry, IngestRuntimeProperties properties) {
+                          MeterRegistry meterRegistry, IngestRuntimeProperties properties,
+                          IngestParseFailureService parseFailures) {
         this.normalizer = normalizer;
         this.commitService = commitService;
         this.monitor = monitor;
         this.detectClient = detectClient;
+        this.parseFailures = parseFailures;
         this.forwardHttp = properties.isForwardHttp();
         this.acceptedCounter = Counter.builder("socp_ingest_events_total")
                 .tag("outcome", "accepted").register(meterRegistry);
         this.skippedCounter = Counter.builder("socp_ingest_events_total")
                 .tag("outcome", "skipped").register(meterRegistry);
+        this.parseFailedCounter = Counter.builder("socp_ingest_events_total")
+                .tag("outcome", "parse_failed").register(meterRegistry);
+        this.quarantinedCounter = Counter.builder("socp_ingest_events_total")
+                .tag("outcome", "quarantined").register(meterRegistry);
         this.forwardedCounter = Counter.builder("socp_ingest_events_total")
                 .tag("outcome", "forwarded").register(meterRegistry);
         io.micrometer.core.instrument.Gauge.builder("socp_ingest_eps", eps, AtomicReference::get)
@@ -66,13 +78,15 @@ public class IngestPipeline {
                           IngestTaskMonitor monitor, DetectClient detectClient,
                           MeterRegistry meterRegistry) {
         this(normalizer, commitService, monitor, detectClient, meterRegistry,
-                new IngestRuntimeProperties());
+                new IngestRuntimeProperties(), null);
     }
 
+    @Transactional
     public Map<String, Object> process(String body) {
         return process(body, null);
     }
 
+    @Transactional
     public Map<String, Object> process(String body, String defaultCollector) {
         return process(body, defaultCollector, null);
     }
@@ -85,6 +99,7 @@ public class IngestPipeline {
      * not hide a real event. Genuine duplicate logs without a key remain
      * separate events.
      */
+    @Transactional
     public Map<String, Object> process(String body, String defaultCollector, String idempotencyKey) {
         if (idempotencyKey != null) {
             idempotencyKey = idempotencyKey.trim();
@@ -98,6 +113,8 @@ public class IngestPipeline {
         int created = 0;
         int duplicates = 0;
         int skipped = 0;
+        int parseFailed = 0;
+        int quarantined = 0;
         int forwarded = 0;
         Map<String, long[]> perCollector = new LinkedHashMap<>();
         List<IngestEventNormalizer.NormalizedEvent> pending = new ArrayList<>(BATCH_SIZE);
@@ -120,20 +137,39 @@ public class IngestPipeline {
                 if (raw.isEmpty()) {
                     continue;
                 }
-                long bytes = raw.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+                long bytes = line.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
                 // Bytes are received as soon as a line is parsed. Accepted is
                 // credited only after the durable commit boundary succeeds;
                 // this also keeps dependency failures visible in collector
                 // resource metrics without classifying them as parse skips.
-                bump(perCollector, defaultCollector, 0, 0, 0, bytes);
+                bump(perCollector, defaultCollector, 0, 0, 0, bytes, 0, 0);
                 IngestEventNormalizer.NormalizedEvent normalized;
                 try {
                     String stableId = idempotencyKey == null ? null
                             : stableBatchIdentity(idempotencyKey, currentLine, raw, defaultCollector);
                     normalized = normalizer.normalize(raw, defaultCollector, stableId, lookups);
                 } catch (IngestParseException invalidLine) {
-                    skipped++;
-                    bump(perCollector, defaultCollector, 0, 1, 0, bytes);
+                    parseFailed++;
+                    try {
+                        if (parseFailures == null) {
+                            throw new IllegalStateException("parse-failure quarantine is unavailable");
+                        }
+                        String failureIdentity = idempotencyKey == null ? null
+                                : "parse:" + stableBatchIdentity(
+                                idempotencyKey, currentLine, raw, defaultCollector);
+                        // Persist the original line, including leading and
+                        // trailing whitespace, so a repaired parser can be
+                        // replayed against the bytes the collector sent.
+                        parseFailures.record(line, defaultCollector,
+                                normalizer.parserVersion(raw, defaultCollector),
+                                invalidLine.getMessage(), failureIdentity);
+                        quarantined++;
+                    } catch (RuntimeException quarantineFailure) {
+                        throw new PersistenceFailure(quarantineFailure);
+                    }
+                    // Bytes were credited when the line was received; do not
+                    // count them again when classification fails.
+                    bump(perCollector, defaultCollector, 0, 0, 0, 0, 1, 1);
                     log.debug("Ingest line rejected collector={} reason={}",
                             defaultCollector, invalidLine.toString());
                     continue;
@@ -161,16 +197,17 @@ public class IngestPipeline {
             duplicates += flushed.duplicates();
             forwarded += flushed.forwarded();
         } catch (IngestionIdentityConflictException conflict) {
-            recordMetrics(accepted, skipped, forwarded, perCollector);
+            recordRolledBackMetrics(skipped, parseFailed, perCollector);
             throw new ApiException(409, conflict.getMessage(), conflict);
         } catch (PersistenceFailure failure) {
-            recordMetrics(accepted, skipped, forwarded, perCollector);
+            recordRolledBackMetrics(skipped, parseFailed, perCollector);
             throw new ApiException(503,
                     "Ingest persistence is unavailable; retry the uncommitted batch",
                     failure.getCause());
         }
-        recordMetrics(accepted, skipped, forwarded, perCollector);
-        return result(accepted, created, duplicates, skipped, forwarded, perCollector, defaultCollector);
+        recordMetricsAfterCommit(accepted, skipped, parseFailed, quarantined, forwarded, perCollector);
+        return result(accepted, created, duplicates, skipped, parseFailed, quarantined,
+                forwarded, perCollector, defaultCollector);
     }
 
     private static String stableBatchIdentity(String key, int lineNumber, String raw, String collector) {
@@ -209,12 +246,12 @@ public class IngestPipeline {
         }
         int accepted = committed.acknowledged();
         for (IngestEventNormalizer.NormalizedEvent event : batch) {
-            bump(perCollector, event.collector(), 1, 0, 0, 0);
+            bump(perCollector, event.collector(), 1, 0, 0, 0, 0, 0);
         }
         int forwarded = forwardHttp ? forwardForDebug(batch) : 0;
         int credited = Math.min(forwarded, batch.size());
         for (int index = 0; index < credited; index++) {
-            bump(perCollector, batch.get(index).collector(), 0, 0, 1, 0);
+            bump(perCollector, batch.get(index).collector(), 0, 0, 1, 0, 0, 0);
         }
         batch.clear();
         return new FlushResult(accepted, committed.created(), committed.duplicates(), forwarded);
@@ -254,19 +291,24 @@ public class IngestPipeline {
         }
     }
 
-    private Map<String, Object> result(int accepted, int created, int duplicates, int skipped, int forwarded,
+    private Map<String, Object> result(int accepted, int created, int duplicates, int skipped,
+                                       int parseFailed, int quarantined, int forwarded,
                                        Map<String, long[]> perCollector, String defaultCollector) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("accepted", accepted);
         result.put("created", created);
         result.put("duplicates", duplicates);
         result.put("skipped", skipped);
+        result.put("parseFailed", parseFailed);
+        result.put("quarantined", quarantined);
+        result.put("persisted", accepted);
         result.put("forwarded", forwarded);
-        result.put("acknowledged", accepted);
-        result.put("queueLoad", 0.0);
-        double total = accepted + skipped;
+        result.put("acknowledged", accepted + quarantined);
+        result.put("queueLoad", null);
+        result.put("queueLoadMeasured", false);
+        double total = accepted + skipped + parseFailed;
         result.put("parseFailureRate", total == 0 ? 0.0
-                : Math.round(skipped * 1000.0 / total) / 10.0);
+                : Math.round(parseFailed * 1000.0 / total) / 10.0);
         if (defaultCollector != null) {
             Object rate = monitor.runtime(defaultCollector, true).get("eps1m");
             if (rate instanceof Number number) {
@@ -285,27 +327,64 @@ public class IngestPipeline {
                 "duplicates", 0,
                 "acknowledged", 0,
                 "skipped", 0,
+                "parseFailed", 0,
+                "quarantined", 0,
+                "persisted", 0,
+                "queueLoadMeasured", false,
                 "forwarded", 0
         );
     }
 
     private static void bump(Map<String, long[]> counters, String collector,
-                             long accepted, long skipped, long forwarded, long bytes) {
+                             long accepted, long skipped, long forwarded, long bytes,
+                             long parseFailed, long quarantined) {
         String key = collector == null || collector.isBlank() ? "unknown" : collector;
-        long[] values = counters.computeIfAbsent(key, ignored -> new long[4]);
+        long[] values = counters.computeIfAbsent(key, ignored -> new long[6]);
         values[0] += accepted;
         values[1] += skipped;
         values[2] += forwarded;
         values[3] += bytes;
+        values[4] += parseFailed;
+        values[5] += quarantined;
     }
 
-    private void recordMetrics(int accepted, int skipped, int forwarded,
+    private void recordMetrics(int accepted, int skipped, int parseFailed, int quarantined, int forwarded,
                                Map<String, long[]> perCollector) {
         perCollector.forEach((collector, values) -> monitor.record(
-                collector, (int) values[0], (int) values[1], (int) values[2], values[3]));
+                collector, (int) values[0], (int) values[1], (int) values[4],
+                (int) values[5], (int) values[2], values[3]));
         acceptedCounter.increment(accepted);
         skippedCounter.increment(skipped);
+        parseFailedCounter.increment(parseFailed);
+        quarantinedCounter.increment(quarantined);
         forwardedCounter.increment(forwarded);
+    }
+
+    private void recordMetricsAfterCommit(int accepted, int skipped, int parseFailed, int quarantined,
+                                          int forwarded, Map<String, long[]> perCollector) {
+        Map<String, long[]> snapshot = new LinkedHashMap<>();
+        perCollector.forEach((collector, values) -> snapshot.put(collector, values.clone()));
+        Runnable record = () -> recordMetrics(accepted, skipped, parseFailed, quarantined,
+                forwarded, snapshot);
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    record.run();
+                }
+            });
+        } else {
+            record.run();
+        }
+    }
+
+    /** A failed request did not durably accept or quarantine any row. */
+    private void recordRolledBackMetrics(int skipped, int parseFailed,
+                                         Map<String, long[]> perCollector) {
+        Map<String, long[]> rejected = new LinkedHashMap<>();
+        perCollector.forEach((collector, values) -> rejected.put(collector,
+                new long[]{0, values[1], 0, values[3], values[4], 0}));
+        recordMetrics(0, skipped, parseFailed, 0, 0, rejected);
     }
 
     private record FlushResult(int accepted, int created, int duplicates, int forwarded) {

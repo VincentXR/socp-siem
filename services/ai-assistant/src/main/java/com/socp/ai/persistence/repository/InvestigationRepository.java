@@ -14,7 +14,8 @@ import java.util.Optional;
 public interface InvestigationRepository extends TenantScopedRepository<InvestigationEntity, String> {
     List<InvestigationEntity> findByTenantId(String tenantId);
     Optional<InvestigationEntity> findByIdAndTenantId(String id, String tenantId);
-    Optional<InvestigationEntity> findByTenantIdAndAlertId(String tenantId, String alertId);
+    Optional<InvestigationEntity> findFirstByTenantIdAndAlertIdOrderByRevisionDesc(
+            String tenantId, String alertId);
 
     @Modifying
     @Transactional
@@ -23,6 +24,15 @@ public interface InvestigationRepository extends TenantScopedRepository<Investig
             + "values (:id, :tenant, :alert, 'NEW', '{}', :now, :now)", nativeQuery = true)
     int insertReceipt(@Param("id") String id, @Param("tenant") String tenant,
                       @Param("alert") String alert, @Param("now") Instant now);
+
+    @Modifying
+    @Transactional
+    @Query(value = "insert into t_ai_investigation "
+            + "(id, tenant_id, alert_id, revision, status, result_json, created_at, updated_at) "
+            + "values (:id, :tenant, :alert, :revision, 'NEW', '{}', :now, :now)", nativeQuery = true)
+    int insertReceiptRevision(@Param("id") String id, @Param("tenant") String tenant,
+                              @Param("alert") String alert, @Param("revision") int revision,
+                              @Param("now") Instant now);
 
     @Modifying
     @Transactional

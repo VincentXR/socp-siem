@@ -384,20 +384,20 @@ class SoarConnectorCoverageTest {
     // ---------------------------------------------------------------- test
 
     @Test
-    void testRecordsHealthyOutcome() {
+    void nativeConnectorTestRecordsNotProbedWithoutClaimingHealthy() {
         SoarConnectorEntity row = row("conn-1", false);
         row.setConnectorType("socp.alert");
         given(connectors.findByTenantIdAndId("tenant-a", "conn-1")).willReturn(Optional.of(row));
 
         Map<String, Object> view = service.test("conn-1");
 
-        assertThat(row.getLastTestStatus()).isEqualTo("HEALTHY");
+        assertThat(row.getLastTestStatus()).isEqualTo("NOT_PROBED");
         assertThat(row.getLastTestAt()).isNotNull();
-        assertThat(row.getLastTestError()).isNull();
-        assertThat(row.getStatus()).isEqualTo("HEALTHY");
+        assertThat(row.getLastTestError()).contains("no side-effect-free runtime probe");
+        assertThat(row.getStatus()).isEqualTo("NOT_PROBED");
         assertThat(view.get("test")).isInstanceOf(Map.class);
-        assertThat(asMap(view.get("test"))).containsEntry("healthy", true)
-                .containsEntry("status", "HEALTHY");
+        assertThat(asMap(view.get("test"))).containsEntry("healthy", false)
+                .containsEntry("status", "NOT_PROBED");
         verify(connectors).save(row);
     }
 
@@ -410,7 +410,7 @@ class SoarConnectorCoverageTest {
         row.setAuthSecretRef(null);
         row.setSecretRefsJson("{}");
         given(connectors.findByTenantIdAndId("tenant-a", "conn-1")).willReturn(Optional.of(row));
-        given(http.postExternal(anyString(), anyString(), anyString(), anyInt(), anyMap(), anyList()))
+        given(http.getExternalOnce(anyString(), anyInt(), anyMap(), anyList()))
                 .willReturn(new ServiceCall(null, "https://edr.example.com/api", false, 502, "",
                         "connect failed for Bearer abc123XYZ", 4L, true, 1));
 

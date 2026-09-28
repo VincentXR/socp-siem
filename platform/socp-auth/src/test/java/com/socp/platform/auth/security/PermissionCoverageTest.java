@@ -16,6 +16,8 @@ class PermissionCoverageTest {
     void wireNamesUseColonsAndMatchTheDesignVocabulary() {
         assertThat(Permission.ALARM_READ.wireName()).isEqualTo("alarm:read");
         assertThat(Permission.ALARM_TRIAGE.wireName()).isEqualTo("alarm:triage");
+        assertThat(Permission.INGEST_READ.wireName()).isEqualTo("ingest:read");
+        assertThat(Permission.INGEST_WRITE.wireName()).isEqualTo("ingest:write");
         assertThat(Permission.CASE_WRITE.wireName()).isEqualTo("case:write");
         assertThat(Permission.RULE_ACTIVATE.wireName()).isEqualTo("rule:activate");
         assertThat(Permission.SOAR_VIEW.wireName()).isEqualTo("soar:view");
@@ -55,7 +57,8 @@ class PermissionCoverageTest {
     @Test
     void analystCanTriageAndExecuteButNotPublishOrManageConnections() {
         assertThat(Permission.roleDefaults("analyst")).containsExactlyInAnyOrder(
-                "alarm:read", "alarm:triage", "case:write", "soar:view", "soar:edit",
+                "alarm:read", "alarm:triage", "ingest:read", "ingest:write", "case:write",
+                "soar:view", "soar:edit",
                 "soar:execute", "soar:task:complete", "soar:connections:view");
         assertThat(Permission.roleDefaults("analyst"))
                 .doesNotContain("soar:publish", "soar:operations", "soar:connections:manage");

@@ -47,7 +47,8 @@ class PermissionEdgeCoverageTest {
     @Test
     void analystRoleKeepsTriageAndExecutionWithoutPublishRights() {
         Set<String> analyst = Permission.roleDefaults("ANALYST");
-        assertThat(analyst).contains("alarm:read", "alarm:triage", "case:write", "soar:view",
+        assertThat(analyst).contains("alarm:read", "alarm:triage", "ingest:read", "ingest:write",
+                "case:write", "soar:view",
                 "soar:edit", "soar:execute", "soar:task:complete", "soar:connections:view");
         assertThat(analyst).doesNotContain("soar:publish", "soar:approve", "soar:connections:manage",
                 "soar:operations", "tenant:admin");

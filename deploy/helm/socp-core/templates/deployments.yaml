@@ -1,5 +1,11 @@
 {{- $root := . }}
 {{- range $name, $workload := .Values.workloads }}
+{{- if and (ne $name "api-gateway") (or (hasKey ($workload.env | default dict) "SOCP_AUTH_SIGNING_JWK") (hasKey ($workload.secretEnv | default dict) "SOCP_AUTH_SIGNING_JWK") (hasKey ($workload.isolatedSecretEnv | default dict) "SOCP_AUTH_SIGNING_JWK")) }}
+{{- fail (printf "workload %s must not receive SOCP_AUTH_SIGNING_JWK" $name) }}
+{{- end }}
+{{- if and (ne $name "api-gateway") $workload.secretVolume (eq $workload.secretVolume.secretName $root.Values.runtime.gatewaySigningSecret) }}
+{{- fail (printf "workload %s must not mount runtime.gatewaySigningSecret" $name) }}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -68,9 +74,7 @@ spec:
           envFrom:
             - configMapRef:
                 name: socp-runtime
-            - secretRef:
-                name: {{ $root.Values.runtime.existingSecret }}
-          {{- if or $workload.env $workload.secretEnv $workload.fieldEnv }}
+          {{- if or $workload.env $workload.secretEnv $workload.isolatedSecretEnv $workload.fieldEnv }}
           env:
             {{- range $key := keys $workload.env | sortAlpha }}
             - name: {{ $key }}
@@ -80,8 +84,15 @@ spec:
             - name: {{ $key }}
               valueFrom:
                 secretKeyRef:
-                  name: {{ $root.Values.runtime.existingSecret }}
+                  name: {{ $workload.secretName | default $root.Values.runtime.existingSecret }}
                   key: {{ index $workload.secretEnv $key }}
+            {{- end }}
+            {{- range $key := keys ($workload.isolatedSecretEnv | default dict) | sortAlpha }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $root.Values.runtime.gatewaySigningSecret }}
+                  key: {{ index $workload.isolatedSecretEnv $key }}
             {{- end }}
             {{- range $key := keys $workload.fieldEnv | sortAlpha }}
             - name: {{ $key }}
@@ -118,8 +129,9 @@ spec:
               # a brand-new container from ever passing startup and kubelet
               # would restart it on a fixed cycle. That restart churns the
               # shared consumer group the running replicas depend on. Waiting
-              # for dependencies stays a readiness concern, where the cost is
-              # removing one replica from traffic.
+              # API readiness includes only dependencies required to accept or
+              # serve the current request. Asynchronous downstream failures
+              # remain visible through worker readiness, backlog and alerts.
               path: {{ $workload.health.basePath }}/liveness
               port: http
             periodSeconds: 5
