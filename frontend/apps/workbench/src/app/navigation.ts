@@ -7,6 +7,8 @@ export interface MenuItem {
 export interface MenuGroup {
   group: string
   items: MenuItem[]
+  defaultCollapsed?: boolean
+  secondary?: boolean
 }
 
 import { normalizeRole } from './roles.ts'
@@ -29,19 +31,13 @@ export function getVisibleMenuGroups(role = 'viewer', t: (key: string) => string
       : MENU_VIEWER_HIDDEN
   const groups: MenuGroup[] = [
     {
-      group: t('menuGroup.overview'),
+      group: t('menuGroup.operations'),
       items: [
         { key: 'overview', label: t('menu.overview'), icon: 'dashboard' },
-        { key: 'situation', label: t('menu.situation'), icon: 'radar' },
-      ],
-    },
-    {
-      group: t('menuGroup.alarmsAndEvents'),
-      items: [
         { key: 'alarms', label: t('menu.alarms'), icon: 'alarm' },
         { key: 'case', label: t('menu.case'), icon: 'case' },
         { key: 'search', label: t('menu.search'), icon: 'search' },
-        { key: 'notify', label: t('menu.notify'), icon: 'notify' },
+        { key: 'situation', label: t('menu.situation'), icon: 'radar' },
       ],
     },
     {
@@ -50,31 +46,29 @@ export function getVisibleMenuGroups(role = 'viewer', t: (key: string) => string
         { key: 'detect', label: t('menu.detect'), icon: 'detect' },
         { key: 'ueba', label: t('menu.ueba'), icon: 'ueba' },
         { key: 'soar', label: t('menu.soar'), icon: 'soar' },
+        { key: 'ai', label: t('menu.ai'), icon: 'ai' },
+      ],
+    },
+    {
+      group: t('menuGroup.context'),
+      items: [
+        { key: 'assets', label: t('menu.assets'), icon: 'assets' },
+        { key: 'threat-intel', label: t('menu.threat'), icon: 'threat' },
         { key: 'attack', label: t('menu.attack'), icon: 'attack' },
       ],
     },
     {
-      group: t('menuGroup.assetsAndIntel'),
+      group: t('menuGroup.platform'),
+      defaultCollapsed: true,
+      secondary: true,
       items: [
-        { key: 'assets', label: t('menu.assets'), icon: 'assets' },
         { key: 'endpoints', label: t('menu.endpoints'), icon: 'endpoints' },
-        { key: 'threat-intel', label: t('menu.threat'), icon: 'threat' },
         { key: 'refset', label: t('menu.refset'), icon: 'refset' },
-      ],
-    },
-    {
-      group: t('menuGroup.ingestAndConfig'),
-      items: [
         { key: 'ingest', label: t('menu.ingest'), icon: 'ingest' },
         { key: 'meta', label: t('menu.meta'), icon: 'meta' },
+        { key: 'notify', label: t('menu.notify'), icon: 'notify' },
         { key: 'compliance', label: t('menu.compliance'), icon: 'compliance' },
-      ],
-    },
-    {
-      group: t('menuGroup.analyticsAndAi'),
-      items: [
         { key: 'report', label: t('menu.report'), icon: 'report' },
-        { key: 'ai', label: t('menu.ai'), icon: 'ai' },
       ],
     },
   ]

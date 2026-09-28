@@ -39,6 +39,7 @@ test('overview freshness advances only when every source has a successful refres
   await expect(freshness).not.toHaveText(original!)
   await expect(page.getByRole('alert')).toHaveCount(0)
   await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('#socp-primary-navigation')).not.toBeInViewport()
   await page.screenshot({ path: testInfo.outputPath('overview-refresh-mobile.png'), fullPage: true })
   expect(unexpected).toEqual([]); expect(errors).toEqual([])
 })
