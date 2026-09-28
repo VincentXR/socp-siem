@@ -2,7 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import LoginView from '../src/LoginView.vue'
 
-const login = vi.hoisted(() => vi.fn())
+const { login, authCapabilities } = vi.hoisted(() => ({ login: vi.fn(), authCapabilities: vi.fn() }))
 const storage = new Map<string, string>()
 
 const localStorageMock = {
@@ -12,11 +12,13 @@ const localStorageMock = {
   clear: () => { storage.clear() },
 }
 
-vi.mock('../src/api', () => ({ login }))
+vi.mock('../src/api', () => ({ login, authCapabilities }))
 
 describe('LoginView', () => {
   beforeEach(() => {
     login.mockReset()
+    authCapabilities.mockReset()
+    authCapabilities.mockResolvedValue({ localPassword: true, oidc: false })
     vi.stubGlobal('localStorage', localStorageMock)
     localStorageMock.clear()
   })

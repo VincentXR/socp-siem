@@ -126,7 +126,11 @@ onMounted(async () => {
     <div v-if="isOffline" class="socp-offline-banner">
       {{ t('app.offlineBanner') }}
     </div>
-    <div v-if="!authReady" class="auth-bootstrap" role="status">{{ t('common.loading') }}</div>
+    <div v-if="!authReady" class="auth-bootstrap" role="status">
+      <span class="auth-bootstrap-mark" aria-hidden="true"><i /><i /><i /></span>
+      <strong>SOCP</strong>
+      <span>{{ t('common.loading') }}</span>
+    </div>
     <LoginView v-else-if="!isAuthed" @done="onLoginDone" />
     <AppShell
       v-else
@@ -149,9 +153,20 @@ onMounted(async () => {
 <style scoped>
 .auth-bootstrap {
   min-height: 100dvh;
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 9px;
   color: var(--ns-text-muted);
   background: var(--ns-bg-subtle);
 }
+.auth-bootstrap strong { color: var(--ns-text); font-size: 14px; letter-spacing: .12em; }
+.auth-bootstrap > span:last-child { color: var(--ns-text-3); font-size: 11px; }
+.auth-bootstrap-mark { display: flex; align-items: flex-end; gap: 3px; width: 34px; height: 34px; padding: 8px; border: 1px solid var(--ns-border); border-radius: 9px; background: var(--ns-surface); }
+.auth-bootstrap-mark i { width: 4px; border-radius: 2px; background: var(--ns-accent); animation: bootstrap-pulse 1s ease-in-out infinite alternate; }
+.auth-bootstrap-mark i:nth-child(1) { height: 8px; }
+.auth-bootstrap-mark i:nth-child(2) { height: 17px; animation-delay: .16s; }
+.auth-bootstrap-mark i:nth-child(3) { height: 12px; animation-delay: .32s; }
+@keyframes bootstrap-pulse { to { opacity: .35; transform: scaleY(.72); } }
 </style>

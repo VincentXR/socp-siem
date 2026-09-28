@@ -47,11 +47,17 @@ test('unknown roles fail closed like viewers', () => {
 })
 
 test('admin navigation exposes the same operator pages', () => {
-  const keys = getVisibleMenuGroups('admin').flatMap(group => group.items.map(item => item.key))
+  const groups = getVisibleMenuGroups('admin')
+  const keys = groups.flatMap(group => group.items.map(item => item.key))
 
   assert.ok(keys.includes('ingest'))
   assert.ok(keys.includes('detect'))
   assert.ok(keys.includes('ai'))
+  assert.deepEqual(groups[0]?.items.map(item => item.key), ['overview', 'alarms', 'case', 'search', 'situation'])
+  assert.deepEqual(groups[1]?.items.map(item => item.key), ['detect', 'ueba', 'soar', 'ai'])
+  assert.deepEqual(groups[2]?.items.map(item => item.key), ['assets', 'threat-intel', 'attack'])
+  assert.equal(groups[3]?.defaultCollapsed, true)
+  assert.equal(groups[3]?.secondary, true)
 })
 
 test('navigation removes groups that have no visible items', () => {
