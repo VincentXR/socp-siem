@@ -75,10 +75,40 @@ public interface InvestigationRepository extends TenantScopedRepository<Investig
 
     @Modifying
     @Transactional
+    @Query("update InvestigationEntity i set i.appendClaimToken = :token, i.appendClaimUntil = :claimUntil, "
+            + "i.incidentId = coalesce(i.incidentId, :incidentId), i.updatedAt = :now "
+            + "where i.id = :id and i.tenantId = :tenant and i.appendedAt is null "
+            + "and (i.appendClaimUntil is null or i.appendClaimUntil < :now) "
+            + "and (:incidentId is null or i.incidentId is null or i.incidentId = :incidentId)")
+    int claimAppend(@Param("id") String id, @Param("tenant") String tenant,
+                    @Param("incidentId") String incidentId, @Param("token") String token,
+                    @Param("now") Instant now, @Param("claimUntil") Instant claimUntil);
+
+    @Modifying
+    @Transactional
+    @Query("update InvestigationEntity i set i.incidentId = :incidentId, i.updatedAt = :now "
+            + "where i.id = :id and i.tenantId = :tenant and i.appendClaimToken = :token "
+            + "and i.appendedAt is null and (i.incidentId is null or i.incidentId = :incidentId)")
+    int bindAppendTarget(@Param("id") String id, @Param("tenant") String tenant,
+                         @Param("token") String token, @Param("incidentId") String incidentId,
+                         @Param("now") Instant now);
+
+    @Modifying
+    @Transactional
     @Query("update InvestigationEntity i set i.incidentId = :incidentId, i.appendedAt = :appendedAt, "
-            + "i.resultJson = :resultJson, i.updatedAt = :now "
-            + "where i.id = :id and i.tenantId = :tenant and i.appendedAt is null")
+            + "i.resultJson = :resultJson, i.appendClaimToken = null, i.appendClaimUntil = null, "
+            + "i.updatedAt = :now where i.id = :id and i.tenantId = :tenant "
+            + "and i.appendedAt is null and i.appendClaimToken = :token and i.incidentId = :incidentId")
     int markAppended(@Param("id") String id, @Param("tenant") String tenant,
-                     @Param("incidentId") String incidentId, @Param("appendedAt") Instant appendedAt,
+                     @Param("token") String token, @Param("incidentId") String incidentId,
+                     @Param("appendedAt") Instant appendedAt,
                      @Param("resultJson") String resultJson, @Param("now") Instant now);
+
+    @Modifying
+    @Transactional
+    @Query("update InvestigationEntity i set i.appendClaimToken = null, i.appendClaimUntil = null, i.updatedAt = :now "
+            + "where i.id = :id and i.tenantId = :tenant and i.appendClaimToken = :token "
+            + "and i.appendedAt is null")
+    int releaseAppendClaim(@Param("id") String id, @Param("tenant") String tenant,
+                           @Param("token") String token, @Param("now") Instant now);
 }

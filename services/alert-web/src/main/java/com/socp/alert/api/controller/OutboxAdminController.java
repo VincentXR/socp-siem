@@ -2,6 +2,7 @@ package com.socp.alert.api.controller;
 
 import com.socp.alert.domain.OutboxReplayResult;
 import com.socp.alert.api.request.OutboxDiscardRequest;
+import com.socp.alert.api.request.OutboxReplayRequest;
 import com.socp.alert.service.OutboxReplayService;
 
 import com.socp.platform.audit.api.AuditOperation;
@@ -55,8 +56,12 @@ public class OutboxAdminController {
     @AuditOperation(action = "REQUEUE_DEAD_ALARM_DELIVERY", target = "alarm_delivery")
     @RateLimit(permits = 5, seconds = 60)
     @PostMapping("/alarm-deliveries/{id}/requeue")
-    public ApiResult<OutboxReplayResult> requeueAlarmDelivery(@PathVariable String id) {
-        return ApiResult.ok(replayService.requeueAlarmDelivery(id));
+    public ApiResult<OutboxReplayResult> requeueAlarmDelivery(
+            @PathVariable String id,
+            @Valid @RequestBody(required = false) OutboxReplayRequest request) {
+        return ApiResult.ok(replayService.requeueAlarmDelivery(id,
+                request == null ? null : request.reason(),
+                request != null && request.confirmUnknown()));
     }
 
     @RequireRole({"admin"})

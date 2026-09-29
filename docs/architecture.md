@@ -92,9 +92,14 @@ the service supports it.
 - Producers use `acks=all` and idempotence where configured.
 - Canonical ingestion returns only after the event and Ingestion Outbox intent
   commit together; broker outages leave retryable `PENDING` rows.
-- The OpenSearch consumer commits each partition only after its complete bulk
-  succeeds. Failed partitions seek back, and stable event IDs make replay an
-  idempotent document overwrite.
+- The OpenSearch consumer classifies every bulk item and advances each
+  partition only through its contiguous safe prefix. Successful items advance
+  immediately; a permanently invalid item advances only after its diagnostic
+  DLQ record is durably acknowledged. A retryable failure, a missing item
+  acknowledgement, or a failed DLQ write stops the prefix at that offset and
+  seeks the partition back there. Later successes in the same bulk therefore
+  cannot skip an unresolved earlier record, and stable event IDs make replay
+  an idempotent document overwrite.
 - Vector assigns an event ID before its disk buffer only when the producer did
   not supply one. Normalization preserves that producer identity, so a buffer
   retry does not create a new logical event.

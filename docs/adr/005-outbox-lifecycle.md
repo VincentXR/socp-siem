@@ -102,11 +102,16 @@ admin-only API for the owning service:
 | Alert event | `GET /api/admin/outbox/alarm-events/dead` | `POST /api/admin/outbox/alarm-events/{id}/requeue` or `/{id}/discard` |
 | Alert delivery | `GET /api/admin/outbox/alarm-deliveries/dead` | `POST /api/admin/outbox/alarm-deliveries/{id}/requeue` or `/{id}/discard` |
 
-Discard requests require `{"reason":"..."}`. Both requeue and discard are
-rate-limited and audit-logged. Inspection deliberately returns failure metadata
-without the event payload. Explicitly discarded rows preserve the operator
-reason and previous failure for 30 days before cleanup; published/successful
-retention remains independent.
+Discard requests require `{"reason":"..."}`. Requeueing an Alert delivery to
+`NOTIFY` also requires a reason and an explicit `confirmUnknown` decision. The
+Alert service first asks Notify to reopen only its terminal failed/unknown
+receipts; unknown receipts are rejected unless confirmed because replay can
+duplicate an externally accepted notification. Alert's own row remains `DEAD`
+if that recovery call fails. Requeue and discard are rate-limited and
+audit-logged. Inspection deliberately returns failure metadata without the
+event payload. Explicitly discarded rows preserve the operator reason and
+previous failure for 30 days before cleanup; published/successful retention
+remains independent.
 
 The primary Prometheus gauges are emitted with the service namespace and an
 `outbox` tag. The canonical alert names are

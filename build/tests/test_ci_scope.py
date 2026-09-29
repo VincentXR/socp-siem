@@ -27,6 +27,8 @@ class CiScopeTest(unittest.TestCase):
             "vector/remap.vrl",
             "build/verify-full.py",
             "config/dependency-check-suppressions.xml",
+            "schemas/canonical-event-1.0.json",
+            "schemas/detection-delivery-2.0.json",
             ".github/workflows/ci.yml",
             ".mvn/wrapper/maven-wrapper.properties",
             "pom.xml",
@@ -35,6 +37,16 @@ class CiScopeTest(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 self.assertTrue(MODULE.requires_full_stack([path]))
+
+    def test_unknown_root_fails_closed_instead_of_bypassing_full_stack(self):
+        self.assertTrue(MODULE.requires_full_stack([
+            "packaging/runtime/bootstrap.conf",
+        ]))
+
+    def test_known_repository_metadata_can_still_skip_heavy_job(self):
+        self.assertFalse(MODULE.requires_full_stack([
+            "AGENTS.md", ".gitignore", "LICENSE",
+        ]))
 
     def test_one_runtime_file_makes_a_mixed_change_applicable(self):
         self.assertTrue(MODULE.requires_full_stack([

@@ -17,10 +17,15 @@ RUNTIME_PREFIXES = (
     "vector/",
     "build/",
     "config/",
+    "schemas/",
     ".github/workflows/",
     ".mvn/",
 )
 RUNTIME_FILES = {"pom.xml", "mvnw", "mvnw.cmd", "docker-compose.yml"}
+NON_RUNTIME_PREFIXES = ("docs/",)
+NON_RUNTIME_FILES = {
+    "README.md", "SECURITY.md", "LICENSE", "AGENTS.md", ".gitignore", ".gitattributes",
+}
 
 
 def requires_full_stack(paths: list[str]) -> bool:
@@ -33,6 +38,11 @@ def requires_full_stack(paths: list[str]) -> bool:
         if path in RUNTIME_FILES or path.startswith("docker-compose"):
             return True
         if path.startswith(RUNTIME_PREFIXES):
+            return True
+        # The full-stack job is expensive, but an unknown root is not proof
+        # that a file is documentation-only. Fail closed so newly added
+        # executable resources cannot silently bypass integration evidence.
+        if path not in NON_RUNTIME_FILES and not path.startswith(NON_RUNTIME_PREFIXES):
             return True
     return False
 

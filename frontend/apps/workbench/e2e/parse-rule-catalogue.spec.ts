@@ -47,6 +47,8 @@ test('rule 501 remains manageable and selectable from a source', async ({ page }
     else if (path === '/search-config/api/v1/ingest/tasks') data = []
     else if (path === '/search-config/api/v1/ingest/tasks/summary') data = { collectors: 0, accepted: 0,
       skipped: 0, forwarded: 0, bytes: 0, eps1m: 0, byHealth: {}, sources: 1, enabledSources: 1 }
+    else if (path === '/search-config/api/v1/ingest/parse-failures') data = { items: [], total: 0,
+      page: 1, size: Number(url.searchParams.get('size')), totalPages: 0 }
     else { unexpected.push(`${route.request().method()} ${path}`); await route.abort(); return }
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 0, data }) })
   })

@@ -17,6 +17,7 @@ import random
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
@@ -231,6 +232,13 @@ st, fixture_channel = call(U["notify-web"] + "/notify-web/api/v1/channels", "POS
 check("Webhook verification fixture is ready",
       st == 200 and fixture_channel.get("enabled") is True,
       fixture_channel if st == 200 else st)
+st, recovery_channel = call(U["notify-web"] + "/notify-web/api/v1/channels", "POST", {
+    "name": "Full-stack recovery probe", "type": "WEBHOOK",
+    "target": "http://127.0.0.1:1/unreachable",
+    "enabled": True, "description": "Terminal receipt recovery verification fixture"})
+check("通知恢复探针以不可达目标启动",
+      st == 200 and recovery_channel.get("enabled") is True,
+      recovery_channel if st == 200 else st)
 
 # ---------------------------------------------------------------- 5. 全链路
 print("\n=== 5. 端到端：采集→检测→告警→富化→通知→建案→SOAR ===")
@@ -292,6 +300,75 @@ if new_alarm:
           any(d.get("type") == "WEBHOOK" and d.get("status") == "sent" for d in mine),
           [d for d in mine if d.get("type") == "WEBHOOK"])
 
+    # A non-retryable/unknown Notify receipt must be explicitly reopened before
+    # Alert can replay its durable delivery. Merely resetting alarm_delivery
+    # would otherwise return the cached terminal receipt without a network call.
+    def notify_dead_delivery():
+        status_, deliveries_ = call(
+            U["alert-web"] + "/alert-web/api/alarms/%s/deliveries" % aid)
+        if status_ != 200 or not isinstance(deliveries_, list):
+            return None
+        return next((delivery for delivery in deliveries_
+                     if delivery.get("destination") == "NOTIFY"
+                     and delivery.get("status") == "DEAD"), None)
+
+    dead_notify = wait_for(notify_dead_delivery)
+    check("通知永久失败会形成可管理的 DEAD 投递",
+          dead_notify is not None,
+          dead_notify if dead_notify else "未观察到 NOTIFY DEAD 回执")
+    recovery_channel_id = recovery_channel.get("id") if isinstance(recovery_channel, dict) else None
+    if dead_notify and recovery_channel_id:
+        st_fix, fixed_channel = call(
+            U["notify-web"] + "/notify-web/api/v1/channels/" + recovery_channel_id,
+            "PUT", {
+                "name": recovery_channel["name"], "type": recovery_channel["type"],
+                "target": _WEBHOOK_TARGET, "enabled": True,
+                "description": recovery_channel.get("description")})
+        check("管理员可修正失败渠道配置",
+              st_fix == 200 and fixed_channel.get("target") == _WEBHOOK_TARGET,
+              fixed_channel if st_fix == 200 else st_fix)
+        st_requeue, replayed_delivery = call(
+            U["alert-web"] + "/alert-web/api/admin/outbox/alarm-deliveries/%s/requeue"
+            % dead_notify["deliveryId"], "POST", {
+                "reason": "full-stack fixture corrected", "confirmUnknown": True},
+            auth_token=_SOAR_FIXTURE.get("token"))
+        check("Alert 重投先重开 Notify 终态再重置本地投递",
+              st_requeue == 200 and replayed_delivery.get("status") == "PENDING",
+              replayed_delivery if st_requeue == 200 else st_requeue)
+
+        def notify_delivered():
+            status_, deliveries_ = call(
+                U["alert-web"] + "/alert-web/api/alarms/%s/deliveries" % aid)
+            if status_ != 200 or not isinstance(deliveries_, list):
+                return None
+            return next((delivery for delivery in deliveries_
+                         if delivery.get("destination") == "NOTIFY"
+                         and delivery.get("status") == "DELIVERED"), None)
+
+        recovered_delivery = wait_for(notify_delivered)
+        check("修正配置后历史失败通知发生真实重发并完成",
+              recovered_delivery is not None,
+              recovered_delivery if recovered_delivery else "NOTIFY 未恢复为 DELIVERED")
+
+        st_log, recovery_log = call(
+            U["notify-web"] + "/notify-web/api/v1/dispatch-log?page=1&size=500")
+        recovery_log = unwrap(recovery_log) if st_log == 200 else []
+        channel_log = [entry for entry in recovery_log
+                       if entry.get("alarmId") == aid
+                       and entry.get("channelId") == recovery_channel_id]
+        delivery_ids = {entry.get("deliveryId") for entry in channel_log
+                        if entry.get("deliveryId")}
+        check("恢复历史保留失败、人工重开与新投递诊断",
+              any(entry.get("status") in ("failed", "unknown") for entry in channel_log)
+              and any(entry.get("status") == "requeued" for entry in channel_log)
+              and any(entry.get("status") == "sent" for entry in channel_log)
+              and len(delivery_ids) >= 2,
+              [{key: entry.get(key) for key in
+                ("status", "deliveryId", "httpStatus", "errorCode", "retryable")}
+               for entry in channel_log])
+        call(U["notify-web"] + "/notify-web/api/v1/channels/" + recovery_channel_id,
+             "DELETE")
+
     def my_case():
         # Incident summaries intentionally expose bounded association counts,
         # not every historical alarm ID. Prove the exact persisted reverse
@@ -317,6 +394,66 @@ if new_alarm:
         check("案件时间线含 ATT&CK 标注",
               any("[T" in str(e.get("message", "")) for e in alarm_evs),
               alarm_evs[0].get("message", "")[:100] if alarm_evs else "")
+
+    # One investigation result has exactly one case target. Competing analyst
+    # requests for different cases must produce one side effect and one 409,
+    # with the receipt agreeing with the persisted target.
+    st_inv, investigation = call(
+        U["ai-assistant"] + "/ai-assistant/api/v1/ai/investigations", "POST",
+        {"alertId": aid})
+    investigation_id = investigation.get("investigationId") if st_inv == 200 else None
+    check("真实告警可生成持久化 AI 研判",
+          st_inv == 200 and investigation_id
+          and investigation.get("status") in ("COMPLETED", "PARTIAL"),
+          investigation if st_inv == 200 else st_inv)
+    if investigation_id:
+        incident_ids = []
+        for suffix in ("A", "B"):
+            st_case, created_case = call(
+                U["incident-web"] + "/incident-web/api/v1/incidents", "POST", {
+                    "title": "AI append race %s %s" % (suffix, time.time_ns()),
+                    "entity": IOC_IP, "severity": "HIGH", "assignee": "admin"})
+            case_id = (created_case.get("case") or {}).get("id") if st_case == 200 else None
+            if case_id:
+                incident_ids.append(case_id)
+        check("AI 并发入案验收已准备两个真实案件", len(incident_ids) == 2, incident_ids)
+        if len(incident_ids) == 2:
+            def append_to_case(case_id):
+                return call(
+                    U["ai-assistant"]
+                    + "/ai-assistant/api/v1/ai/investigations/%s/append-to-incident"
+                    % investigation_id, "POST", {"incidentId": case_id})
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                append_results = list(pool.map(append_to_case, incident_ids))
+            successful = [(status_, body_) for status_, body_ in append_results if status_ == 200]
+            conflicts = [(status_, body_) for status_, body_ in append_results if status_ == 409]
+            st_saved, saved_investigation = call(
+                U["ai-assistant"]
+                + "/ai-assistant/api/v1/ai/investigations/" + investigation_id)
+            target_id = successful[0][1].get("incidentId") if successful else None
+            check("不同目标的并发 AI 入案只有一个成功且另一请求冲突",
+                  len(successful) == 1 and len(conflicts) == 1,
+                  [(status_, body_.get("message") if isinstance(body_, dict) else body_)
+                   for status_, body_ in append_results])
+            check("AI 入案回执目标与数据库最终目标一致",
+                  st_saved == 200 and target_id in incident_ids
+                  and saved_investigation.get("incidentId") == target_id,
+                  {"response": target_id,
+                   "persisted": saved_investigation.get("incidentId") if st_saved == 200 else st_saved})
+            note_counts = {}
+            for case_id in incident_ids:
+                timeline_status, timeline_body = call(
+                    U["incident-web"]
+                    + "/incident-web/api/v1/incidents/%s/timeline?page=1&size=100" % case_id)
+                timeline = unwrap(timeline_body) if timeline_status == 200 else []
+                note_counts[case_id] = len([
+                    event for event in timeline
+                    if event.get("idempotencyKey") == "note:" + investigation_id])
+            check("AI 摘要只写入最终目标且重复副作用被稳定身份约束",
+                  note_counts.get(target_id) == 1
+                  and sum(note_counts.values()) == 1,
+                  note_counts)
 
     last_soar_runs = []
 
@@ -425,6 +562,77 @@ if st == 200 and astats.get("topRisk"):
 
 # ---------------------------------------------------------------- 8. 接入任务
 print("\n=== 8. 接入任务配置与运行监控 ===")
+# Treat source editing as a complete replacement contract and prove that an
+# unchanged optional field survives a real create -> edit -> refresh -> query.
+source_probe = "full-stack-source-%s" % time.time_ns()
+source_payload = {
+    "name": source_probe, "type": "FILE", "format": "AUTO",
+    "path": "/var/log/%s.log" % source_probe, "address": None, "topic": None,
+    "env": "verify", "enabled": False, "readFrom": "beginning",
+    "multiline": None, "sinkTargetId": None, "parseRuleIds": [],
+    "description": "preserve this description", "protocol": "tcp",
+    "charset": "utf-8", "timeField": "event.created", "timezone": "UTC",
+    "tags": ["full-stack", "source-edit"], "frequency": 7,
+    "categoryId": None, "groupId": None,
+}
+st_source, created_source = call(
+    U["search-config"] + "/search-config/api/v1/sources", "POST", source_payload)
+source_id = created_source.get("id") if st_source == 200 else None
+check("真实 API 新增日志源并持久化完整字段",
+      st_source == 200 and source_id
+      and created_source.get("description") == source_payload["description"]
+      and created_source.get("timeField") == source_payload["timeField"],
+      created_source if st_source == 200 else st_source)
+if source_id:
+    edited_payload = dict(source_payload)
+    edited_payload["name"] = source_probe + "-renamed"
+    st_edit, edited_source = call(
+        U["search-config"] + "/search-config/api/v1/sources/" + source_id,
+        "PUT", edited_payload)
+    edited_source = edited_source.get("source", {}) if st_edit == 200 else edited_source
+    st_get, fetched_source = call(
+        U["search-config"] + "/search-config/api/v1/sources/" + source_id)
+    fetched_source = fetched_source.get("source", {}) if st_get == 200 else fetched_source
+    st_list, source_page = call(
+        U["search-config"] + "/search-config/api/v1/sources?page=1&size=20&q="
+        + urllib.parse.quote(edited_payload["name"], safe=""))
+    source_items = unwrap(source_page) if st_list == 200 else []
+    check("编辑名称后未修改的描述、时间字段和采集配置完整保留",
+          st_edit == 200 and st_get == 200
+          and fetched_source.get("description") == source_payload["description"]
+          and fetched_source.get("timeField") == source_payload["timeField"]
+          and fetched_source.get("path") == source_payload["path"]
+          and fetched_source.get("tags") == source_payload["tags"],
+          fetched_source)
+    check("保存后列表刷新和重新查询返回同一持久化日志源",
+          st_list == 200 and len(source_items) == 1
+          and source_items[0].get("id") == source_id,
+          source_items)
+    call(U["search-config"] + "/search-config/api/v1/sources/" + source_id, "DELETE")
+
+# A rejected save followed by a corrected retry must not leave a partial row
+# or create duplicates under the same user task.
+retry_name = "full-stack-retry-%s" % time.time_ns()
+invalid_source = dict(source_payload)
+invalid_source.update(name=retry_name, description="x" * 2001)
+st_invalid, _ = call(
+    U["search-config"] + "/search-config/api/v1/sources", "POST", invalid_source)
+valid_source = dict(invalid_source)
+valid_source["description"] = "corrected after validation failure"
+st_retry, retried_source = call(
+    U["search-config"] + "/search-config/api/v1/sources", "POST", valid_source)
+st_retry_list, retry_page = call(
+    U["search-config"] + "/search-config/api/v1/sources?page=1&size=20&q="
+    + urllib.parse.quote(retry_name, safe=""))
+retry_items = unwrap(retry_page) if st_retry_list == 200 else []
+check("日志源保存失败后修正重试最终只落一条记录",
+      st_invalid == 400 and st_retry == 200 and len(retry_items) == 1
+      and retry_items[0].get("id") == retried_source.get("id"),
+      {"invalid": st_invalid, "retry": st_retry, "matches": len(retry_items)})
+if st_retry == 200 and retried_source.get("id"):
+    call(U["search-config"] + "/search-config/api/v1/sources/"
+         + retried_source["id"], "DELETE")
+
 st, tasks = call(U["search-config"] + "/search-config/api/v1/ingest/tasks")
 tasks = unwrap(tasks)
 check("接入任务列表可用", st == 200 and len(tasks) > 0, len(tasks) if st == 200 else st)

@@ -10,4 +10,4 @@ export const testIngestTask = (id: string, sample?: string) => post<IngestTestRe
 export const listIngestParseFailures = (page = 1, size = 50, options?: ApiRequestOptions) =>
   get<Paged<IngestParseFailure>>(withQuery('/search-config/api/v1/ingest/parse-failures', { page, size }), options)
 export const replayIngestParseFailure = (id: string) =>
-  post<IngestParseFailure>(`/search-config/api/v1/ingest/parse-failures/${encodeURIComponent(id)}/replay`)
+  post<IngestParseFailure & { replayed?: boolean; created?: number; duplicates?: number }>(`/search-config/api/v1/ingest/parse-failures/${encodeURIComponent(id)}/replay`)

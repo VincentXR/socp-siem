@@ -7,7 +7,15 @@ export const listSourcesPage = (page: number, size: number, q = '', options?: Ap
   get<Paged<LogSource>>(withQuery('/search-config/api/v1/sources', { page, size, q: q.trim() || undefined }), options)
 export const getSource = (id: string, options?: ApiRequestOptions) =>
   get<{ source: LogSource }>(`/search-config/api/v1/sources/${encodeURIComponent(id)}`, options)
-export type LogSourceInput = Partial<Omit<LogSource, 'id' | 'createdAt'>> & Pick<LogSource, 'name' | 'type' | 'format' | 'enabled'>
+/** Complete PUT/POST replacement contract. Optional domain values are explicit nulls, never omitted by accident. */
+export interface LogSourceInput {
+  name: string; type: string; format: string; enabled: boolean
+  path: string | null; address: string | null; topic: string | null; env: string | null
+  readFrom: string | null; multiline: string | null; sinkTargetId: string | null
+  parseRuleIds: string[]; description: string | null; protocol: string | null
+  charset: string | null; timeField: string | null; timezone: string | null
+  tags: string[]; frequency: number | null; categoryId: string | null; groupId: string | null
+}
 export const createSource = (source: LogSourceInput) => post<LogSource>('/search-config/api/v1/sources', source)
 export const updateSource = (id: string, source: LogSourceInput) => put<{ source: LogSource }>(`/search-config/api/v1/sources/${encodeURIComponent(id)}`, source)
 export const deleteSource = (id: string) => del(`/search-config/api/v1/sources/${encodeURIComponent(id)}`)

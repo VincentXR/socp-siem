@@ -147,4 +147,20 @@ describe('notification configuration and test delivery', () => {
     expect(mocks.success).toHaveBeenCalledWith('测试已记录到本地，未发送外部通知')
     expect(mocks.createChannel).toHaveBeenCalledTimes(1)
   })
+
+  it('exposes provider receipt diagnostics in dispatch history', async () => {
+    mocks.dispatchLog.mockResolvedValue({ items: [{
+      ts: '2026-09-29T00:00:00Z', channel: 'Ops', type: 'WECOM', ruleId: 'rule-a', alarmId: 'alarm-a',
+      status: 'failed', deliveryId: 'delivery-a', httpStatus: 200, errorCode: 'WECOM_BUSINESS_REJECTED',
+      detail: 'Provider errcode=40014, errmsg=invalid credential', retryable: false,
+    }], total: 1 })
+    await open()
+    expect(wrapper.text()).toContain('WECOM_BUSINESS_REJECTED')
+    const logTable = wrapper.findAll('.el-table')[1]
+    await logTable.find('.el-table__expand-icon').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('Provider errcode=40014')
+    expect(wrapper.text()).toContain('delivery-a')
+    expect(wrapper.text()).toContain('需人工处理')
+  })
 })

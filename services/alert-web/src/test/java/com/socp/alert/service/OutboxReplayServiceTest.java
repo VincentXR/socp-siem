@@ -10,6 +10,9 @@ import com.socp.alert.persistence.repository.OutboxRepository;
 
 
 import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.client.service.NotifyClient;
+import com.socp.platform.client.service.SocpService;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -26,6 +29,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 
 @ExtendWith(MockitoExtension.class)
 class OutboxReplayServiceTest {
@@ -33,6 +37,7 @@ class OutboxReplayServiceTest {
     @Mock private OutboxRepository eventRepository;
     @Mock private AlarmDeliveryRepository deliveryRepository;
     @Mock private AlarmRepository alarmRepository;
+    @Mock private NotifyClient notifyClient;
 
     @AfterEach
     void clearTenant() {
@@ -88,13 +93,61 @@ class OutboxReplayServiceTest {
         delivery.setStatus("DELIVERED");
         given(deliveryRepository.findByIdAndTenantId("delivery-1", "tenant-a"))
                 .willReturn(Optional.of(delivery));
-        given(deliveryRepository.requeueDead(eq("delivery-1"), eq("tenant-a"), any(Instant.class)))
-                .willReturn(0);
-
         ApiException failure = assertThrows(ApiException.class,
                 () -> service().requeueAlarmDelivery("delivery-1"));
 
         assertEquals(400, failure.getCode());
+    }
+
+    @Test
+    void notificationReplayReopensRemoteReceiptBeforeTheLocalPublisherCanRaceIt() {
+        TenantContext.set("tenant-a");
+        AlarmDelivery delivery = new AlarmDelivery();
+        delivery.setId("delivery-notify");
+        delivery.setTenantId("tenant-a");
+        delivery.setAlarmId("alarm-1");
+        delivery.setDestination("NOTIFY");
+        delivery.setStatus("DEAD");
+        given(deliveryRepository.findByIdAndTenantId("delivery-notify", "tenant-a"))
+                .willReturn(Optional.of(delivery));
+        given(notifyClient.recoverAlarmDeliveries(any(String.class))).willReturn(new ServiceCall(
+                SocpService.NOTIFY, "notify recovery", true, 200, "{}", null, 1, false, 1));
+        given(deliveryRepository.requeueDead(eq("delivery-notify"), eq("tenant-a"), any(Instant.class)))
+                .willReturn(1);
+        OutboxReplayService service = new OutboxReplayService(
+                eventRepository, deliveryRepository, alarmRepository, null, notifyClient);
+
+        service.requeueAlarmDelivery("delivery-notify", "credentials rotated", true);
+
+        var order = org.mockito.Mockito.inOrder(notifyClient, deliveryRepository);
+        order.verify(notifyClient).recoverAlarmDeliveries(org.mockito.ArgumentMatchers.argThat(json ->
+                json.contains("\"alarmId\":\"alarm-1\"")
+                        && json.contains("\"confirmUnknown\":true")
+                        && json.contains("credentials rotated")));
+        order.verify(deliveryRepository).requeueDead(eq("delivery-notify"), eq("tenant-a"), any(Instant.class));
+    }
+
+    @Test
+    void notificationRecoveryFailureLeavesTheLocalDeliveryDead() {
+        TenantContext.set("tenant-a");
+        AlarmDelivery delivery = new AlarmDelivery();
+        delivery.setId("delivery-notify");
+        delivery.setTenantId("tenant-a");
+        delivery.setAlarmId("alarm-1");
+        delivery.setDestination("NOTIFY");
+        delivery.setStatus("DEAD");
+        given(deliveryRepository.findByIdAndTenantId("delivery-notify", "tenant-a"))
+                .willReturn(Optional.of(delivery));
+        given(notifyClient.recoverAlarmDeliveries(any(String.class))).willReturn(new ServiceCall(
+                SocpService.NOTIFY, "notify recovery", false, 409, "{}", "confirmation required", 1, false, 1));
+        OutboxReplayService service = new OutboxReplayService(
+                eventRepository, deliveryRepository, alarmRepository, null, notifyClient);
+
+        ApiException failure = assertThrows(ApiException.class,
+                () -> service.requeueAlarmDelivery("delivery-notify", "not verified", false));
+
+        assertEquals(409, failure.getCode());
+        verify(deliveryRepository, never()).requeueDead(any(), any(), any());
     }
 
     @Test

@@ -14,6 +14,10 @@ const mocks = vi.hoisted(() => ({
   assignAlarm: vi.fn().mockResolvedValue(undefined),
   addAlarmNote: vi.fn().mockResolvedValue(undefined),
 }))
+const confirmation = vi.hoisted(() => ({
+  confirmDanger: vi.fn().mockResolvedValue(true),
+  promptInput: vi.fn().mockResolvedValue('channel credentials corrected; destination checked'),
+}))
 
 vi.mock('../src/api/alarms', () => ({
   ...mocks,
@@ -25,6 +29,7 @@ vi.mock('../src/api/incidents', () => ({
   }),
   createCaseFromAlarm: vi.fn(),
 }))
+vi.mock('../src/composables/useConfirm', () => ({ useConfirm: () => confirmation }))
 
 const alarm = {
   id: 'alarm-1', ruleId: 'rule-1', ruleName: 'Suspicious login', severity: 'HIGH',
@@ -128,6 +133,26 @@ describe('AlarmDispositionDrawer', () => {
     )
     expect(mocks.getDisposition.mock.calls.length).toBe(dispositionCallsBeforeLateResponse)
     expect((noteInput().element as HTMLInputElement).value).toBe('B draft must survive')
+  })
+
+  it('requires an operator verification record before requeueing a notification delivery', async () => {
+    const delivery = { deliveryId: 'notify-dead', alarmId: 'alarm-1', destination: 'NOTIFY',
+      status: 'DEAD', attempts: 1, lastError: 'result unknown' }
+    mocks.getAlarmDeliveries.mockResolvedValueOnce([delivery]).mockResolvedValueOnce([{ ...delivery, status: 'PENDING' }])
+    const wrapper = mount(AlarmDispositionDrawer, {
+      props: { modelValue: true, alarm, goCase: vi.fn(), goSearch: vi.fn(), canAdmin: true },
+    })
+    await flushPromises()
+
+    await (wrapper.vm as unknown as { requeueDelivery: (value: typeof delivery) => Promise<void> }).requeueDelivery(delivery)
+    await flushPromises()
+
+    expect(confirmation.confirmDanger).toHaveBeenCalledOnce()
+    expect(confirmation.promptInput).toHaveBeenCalledOnce()
+    expect(mocks.requeueAlarmDelivery).toHaveBeenCalledWith('notify-dead', {
+      reason: 'channel credentials corrected; destination checked', confirmUnknown: true,
+    })
+    wrapper.unmount()
   })
 
 })

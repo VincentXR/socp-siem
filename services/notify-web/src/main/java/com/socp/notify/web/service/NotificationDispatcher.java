@@ -118,7 +118,8 @@ public class NotificationDispatcher {
         String tenant = tenant();
         try {
             var result = await(executor.submit(TenantContext.wrap(tenant, () -> {
-                var testResult = send(channel, sample);
+                var testResult = send(channel, sample,
+                        deliveryId(tenant, String.valueOf(sample.get("id")), channel.id(), 0));
                 log(channel, testResult, sample);
                 return testResult;
             })), channel, System.nanoTime() + TimeUnit.SECONDS.toNanos(5));
@@ -147,12 +148,14 @@ public class NotificationDispatcher {
             }
         }
         if (claim.token() == null) return failed(channel, "NOTIFY_PENDING", "Delivery is in progress or awaiting retry");
+        String currentDeliveryId = deliveryId(tenant(), alarmId, channel.id(), claim.recoveryGeneration());
         Map<String, Object> result;
         try {
-            result = send(channel, alarm);
+            result = send(channel, alarm, currentDeliveryId);
         } catch (RuntimeException connectorFailure) {
-            result = unknown(channel, "NOTIFY_RESULT_UNKNOWN",
-                    "Notification connector failed; remote acceptance may be unknown");
+            result = new LinkedHashMap<>(unknown(channel, "NOTIFY_RESULT_UNKNOWN",
+                    "Notification connector failed; remote acceptance may be unknown"));
+            result.put("deliveryId", currentDeliveryId);
         }
         try {
             boolean terminal = successful(result) || !Boolean.TRUE.equals(result.get("retryable"));
@@ -161,8 +164,12 @@ public class NotificationDispatcher {
                 return failed(channel, "NOTIFY_CLAIM_LOST", "Delivery ownership changed; retry to read the durable result");
             }
         } catch (Exception persistenceFailure) {
-            return unknown(channel, "NOTIFY_RECEIPT_UNCONFIRMED",
-                    "Notification receipt could not be confirmed; remote acceptance may be unknown");
+            Map<String, Object> unconfirmed = new LinkedHashMap<>(unknown(channel,
+                    "NOTIFY_RECEIPT_UNCONFIRMED",
+                    "Notification receipt could not be confirmed; remote acceptance may be unknown"));
+            unconfirmed.put("deliveryId", currentDeliveryId);
+            log(channel, unconfirmed, alarm);
+            return unconfirmed;
         }
         log(channel, result, alarm);
         return result;
@@ -195,11 +202,12 @@ public class NotificationDispatcher {
         return result != null && List.of("sent", "logged").contains(result.get("status"));
     }
 
-    private Map<String, Object> send(Channel channel, Map<String, Object> alarm) {
+    private Map<String, Object> send(Channel channel, Map<String, Object> alarm, String deliveryId) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("channel", channel.name());
         result.put("channelId", channel.id());
         result.put("type", channel.type());
+        result.put("deliveryId", deliveryId);
         if ("LOG".equals(channel.type())) {
             result.put("status", "logged");
             result.put("retryable", false);
@@ -230,7 +238,6 @@ public class NotificationDispatcher {
             result.put("detail", "Unsupported notification channel type: " + channelType);
             return result;
         }
-        String deliveryId = deliveryId(tenant(), text(alarm.get("id")), channel.id());
         ServiceCall call = http.postExternalOnce(channel.target(), buildPayload(channel, alarm),
                 SocpHttpClient.JSON, TIMEOUT, Map.of(
                         "Idempotency-Key", deliveryId,
@@ -340,6 +347,15 @@ public class NotificationDispatcher {
         entry.put("ruleId", alarm.get("ruleId"));
         entry.put("status", result.get("status"));
         entry.put("tenantId", tenant());
+        copyIfPresent(result, entry, "channelId");
+        copyIfPresent(result, entry, "deliveryId");
+        copyIfPresent(result, entry, "httpStatus");
+        copyIfPresent(result, entry, "errorCode");
+        copyIfPresent(result, entry, "detail");
+        copyIfPresent(result, entry, "retryable");
+        copyIfPresent(result, entry, "duplicate");
+        copyIfPresent(result, entry, "previousStatus");
+        copyIfPresent(result, entry, "recoveryGeneration");
         try {
             NotificationDispatchLogEntity row = new NotificationDispatchLogEntity();
             row.setId(UUID.randomUUID().toString());
@@ -355,6 +371,35 @@ public class NotificationDispatcher {
             log.warn("notification dispatch log persistence failed alarmId={}: {}",
                     alarm.get("id"), persistenceFailure.getMessage());
         }
+    }
+
+    /** Reset terminal receipts only after alert-web records an operator recovery decision. */
+    public Map<String, Object> recover(String alarmId, String reason, boolean confirmUnknown) {
+        String tenant = tenant();
+        NotificationDeliveryState.Recovery recovery = deliveries.recover(alarmId, reason, confirmUnknown);
+        for (NotificationDeliveryState.RecoveryItem item : recovery.reset()) {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("status", "requeued");
+            result.put("channelId", item.channelId());
+            result.put("deliveryId", deliveryId(tenant, alarmId, item.channelId(), item.recoveryGeneration()));
+            result.put("errorCode", item.errorCode());
+            result.put("detail", "Operator replay: " + recovery.reason());
+            result.put("retryable", true);
+            result.put("previousStatus", item.previousStatus());
+            result.put("recoveryGeneration", item.recoveryGeneration());
+            Channel channel = channels.get(item.channelId());
+            if (channel == null) {
+                channel = new Channel(item.channelId(), item.channelName(), item.channelType(), "", false,
+                        "Historical channel snapshot used for recovery audit");
+            }
+            log(channel, result, Map.of("id", alarmId, "ruleId", "operator-recovery"));
+        }
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("alarmId", alarmId);
+        response.put("reset", recovery.reset().size());
+        response.put("alreadyPending", recovery.alreadyPending());
+        response.put("channels", recovery.reset().stream().map(NotificationDeliveryState.RecoveryItem::channelId).toList());
+        return response;
     }
 
     public List<Map<String, Object>> log() {
@@ -400,8 +445,13 @@ public class NotificationDispatcher {
         return value.length() <= max ? value : value.substring(0, max) + "...";
     }
 
-    private static String deliveryId(String tenant, String alarmId, String channelId) {
-        String key = tenant + "\u0000" + alarmId + "\u0000" + channelId;
+    private static void copyIfPresent(Map<String, Object> source, Map<String, Object> target, String key) {
+        if (source.containsKey(key) && source.get(key) != null) target.put(key, source.get(key));
+    }
+
+    private static String deliveryId(String tenant, String alarmId, String channelId, int recoveryGeneration) {
+        String key = tenant + "\u0000" + alarmId + "\u0000" + channelId
+                + (recoveryGeneration == 0 ? "" : "\u0000recovery-" + recoveryGeneration);
         return UUID.nameUUIDFromBytes(key.getBytes(StandardCharsets.UTF_8)).toString();
     }
 }
