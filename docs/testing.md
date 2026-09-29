@@ -699,16 +699,21 @@ manually. It builds the Java reactor, enables the Testcontainers contract
 suite, verifies the workbench, and runs a minimal service slice plus the Kafka
 pipeline E2E job. Every Change CI trigger runs deterministic duplicate-delivery
 and Detection Outbox replay evidence. Compose-dependent process/database/
-OpenSearch outage checks are intentionally kept in the weekly full-stack job,
+OpenSearch outage checks are intentionally kept in the Full Stack heavy job,
 where the named services and volumes exist. Repository-level Python contracts
 come from `build/verify-repository.py`, the same manifest used by both local
 quality-gate wrappers.
 
-`.github/workflows/full-stack.yml` runs manually and on the weekly schedule.
-It starts the extended Compose profile and fixed three-instance Detection
-cluster, runs full API and pipeline checks, the dependency-outage matrix, the
-multi-instance/rebalance oracle, attack scenarios, and recovery demos, then
-uploads diagnostic logs plus structured JSON evidence.
+`.github/workflows/full-stack.yml` always emits a final `full-stack` conclusion
+for pull requests, and also runs manually and on the weekly schedule. On a pull
+request, `build/ci-scope.py` runs the heavy job for runtime-affecting paths and
+fails closed for unknown repository roots. Only known documentation and
+repository-metadata changes may skip the heavy job; the aggregate gate still
+records that skip explicitly. The heavy job starts the extended Compose profile
+and fixed three-instance Detection cluster, runs full API and pipeline checks,
+the dependency-outage matrix, the multi-instance/rebalance and routed
+migration/rollback oracles, attack scenarios, and recovery demos, then uploads
+diagnostic logs plus structured JSON evidence.
 
 `.github/workflows/dependency-audit.yml` runs weekly or manually. It applies
 OWASP Dependency-Check to the Java reactor and `pnpm audit` to the workbench;

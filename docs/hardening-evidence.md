@@ -65,12 +65,15 @@ escape hatch.
 
 ## Continuous evidence
 
-Pull requests keep deterministic replay checks small. The nightly CI job runs
-duplicate-delivery and Detection-outbox replay. The weekly Compose workflow
-runs process, PostgreSQL, OpenSearch, and multi-instance rebalance scenarios
-and uploads the JSON result, service logs, Kafka lag snapshots, and outbox
-state. A failed scenario is evidence of a broken invariant, not a reason to
-claim exactly-once behavior.
+Change CI runs deterministic duplicate-delivery and Detection-outbox replay on
+pushes and pull requests. Runtime-affecting pull requests also run the heavy
+Full Stack workflow; known documentation-only changes may skip the heavy job
+but still receive an explicit aggregate conclusion. Manual and weekly Full
+Stack runs always execute the Compose process, PostgreSQL, OpenSearch,
+multi-instance rebalance, and routed migration/rollback scenarios and upload
+the JSON result, service logs, Kafka lag snapshots, and outbox state. A failed
+scenario is evidence of a broken invariant, not a reason to claim exactly-once
+behavior.
 
 Coverage remains a floor and is not a substitute for these invariants. The
 repository keeps aggregate/module floors and also checks executable Java lines

@@ -121,11 +121,14 @@ addresses, tokens, passwords, or machine-specific screenshots.
 
 ## CI ownership
 
-Push and pull-request CI runs the Java suite, opt-in Testcontainers contracts,
-frontend contracts/build, the minimal service slice, and the Kafka pipeline.
-PRs run duplicate-delivery and Detection Outbox replay Chaos; manual Change CI
-can repeat those deterministic invariants. The full-stack workflow is
-manual/weekly, starts the fixed three-instance cluster, and runs full API,
+Push and pull-request Change CI runs the Java suite, opt-in Testcontainers
+contracts, frontend contracts/build, the minimal service slice, and the Kafka
+pipeline. PRs run duplicate-delivery and Detection Outbox replay Chaos; manual
+Change CI can repeat those deterministic invariants. Every PR also receives an
+explicit `full-stack` conclusion: runtime-affecting and unknown-root changes run
+the heavy job, while only known documentation/repository-metadata changes may
+record a legal heavy-job skip. Manual and weekly Full Stack runs always execute
+the heavy job. It starts the fixed three-instance cluster and runs full API,
 pipeline, process/database/OpenSearch outage, Golden Demo, Detection recovery,
-multi-instance/rebalance, attack scenarios, and dependency failure checks with
-logs and JSON evidence uploaded as artifacts.
+multi-instance/rebalance, routed migration/rollback, attack scenarios, and
+dependency failure checks with logs and JSON evidence uploaded as artifacts.
