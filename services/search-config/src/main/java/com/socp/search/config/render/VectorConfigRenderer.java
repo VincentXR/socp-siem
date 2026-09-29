@@ -58,6 +58,10 @@ public class VectorConfigRenderer {
         Map<String, List<String>> groups = new LinkedHashMap<>();
         for (LogSource src : active) {
             String id = "src_" + src.id().replace('-', '_');
+            if (!isVectorNative(src)) {
+                sb.append(emitSource(src, id));
+                continue;
+            }
             String tName = "t_" + src.id().replace('-', '_');
             SinkTarget target = select(src, sinks);
             targets.put(target.id(), target);
@@ -72,6 +76,13 @@ public class VectorConfigRenderer {
         }
         sb.append(footer());
         return sb.toString();
+    }
+
+    private static boolean isVectorNative(LogSource source) {
+        return switch (source.type()) {
+            case FILE, SOCKET, SYSLOG, KAFKA -> true;
+            case WINDOWS_EVENT, AGENT, HTTP_API, DATABASE, CLOUD -> false;
+        };
     }
 
     /** 单个源的 sink 名称保持稳定：第一组沿用历史契约名 gls_ingest，多目标时按序号区分。 */
@@ -111,7 +122,12 @@ public class VectorConfigRenderer {
                 b.append("include = [\"").append(s.path() == null ? "demo/sample.log" : s.path()).append("\"]\n");
                 b.append("read_from = \"").append(s.readFrom() == null ? "beginning" : s.readFrom()).append("\"\n");
                 b.append("data_dir = \".cache/vector\"\n");
-                b.append("ignore_older_secs = ").append(s.frequency() == null ? 1 : Math.max(1, s.frequency())).append("\n");
+                long frequencySeconds = s.frequency() == null ? 1L : Math.max(1L, s.frequency());
+                b.append("glob_minimum_cooldown_ms = ")
+                        .append(Math.min(Integer.MAX_VALUE, frequencySeconds * 1_000L)).append("\n");
+                if (s.ignoreOlderSeconds() != null) {
+                    b.append("ignore_older_secs = ").append(Math.max(1, s.ignoreOlderSeconds())).append("\n");
+                }
                 if (s.multiline() != null && !s.multiline().isBlank()) {
                     b.append("multiline = ").append(s.multiline()).append("\n");
                 }

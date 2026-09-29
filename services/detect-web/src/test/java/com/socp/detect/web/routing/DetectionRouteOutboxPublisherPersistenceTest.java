@@ -16,6 +16,9 @@ import java.time.Instant;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DataJpaTest
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
@@ -121,6 +124,81 @@ class DetectionRouteOutboxPublisherPersistenceTest {
 
         assertEquals("PENDING", load(row).getStatus());
         assertEquals(100, load(row).getAttempts());
+    }
+
+    @Test
+    void olderUnresolvedRouteFencesTheSameKeyButNotOtherKeys() {
+        DetectionRouteOutboxEntity first = pending("same-key");
+        DetectionRouteOutboxEntity second = pending("same-key");
+        DetectionRouteOutboxEntity other = pending("other-key");
+
+        var heads = repository.findDueKeyHeads(Instant.now().plusSeconds(1)).stream()
+                .filter(row -> "route-test".equals(row.getTenantId()))
+                .toList();
+        assertEquals(2, heads.size());
+        assertTrue(heads.stream().anyMatch(row -> row.getDeliveryId().equals(first.getDeliveryId())));
+        assertTrue(heads.stream().anyMatch(row -> row.getDeliveryId().equals(other.getDeliveryId())));
+        assertEquals(0, repository.claim(second.getDeliveryId(), Instant.now().plusSeconds(1), 0, 2));
+
+        assertEquals(1, repository.claim(first.getDeliveryId(), Instant.now().plusSeconds(1), 0, 2));
+        DetectionRouteOutboxEntity claimed = load(first);
+        publisher.markFailed(claimed, new IllegalStateException("retry"));
+        assertEquals(0, repository.claim(second.getDeliveryId(), Instant.now().plusSeconds(1), 0, 2));
+        DetectionRouteOutboxEntity retry = load(first);
+        assertEquals(1, repository.claim(first.getDeliveryId(), retry.getNextAttemptAt(), 1, 2));
+        claimed = load(first);
+        publisher.markFailed(claimed, new IllegalStateException("exhausted"));
+        assertEquals("DEAD", load(first).getStatus());
+        assertEquals(1, repository.claim(second.getDeliveryId(), Instant.now().plusSeconds(60), 0, 2));
+    }
+
+    @Test
+    void anInFlightKeyFencesAnOlderSequenceThatBecomesVisibleLater() {
+        DetectionRouteOutboxEntity inFlight = pending("commit-race");
+        long inFlightSequence = jdbc.queryForObject(
+                "select sequence_no from t_detection_route_outbox where delivery_id = ?",
+                Long.class, inFlight.getDeliveryId());
+        Instant due = Instant.now().plusSeconds(1);
+        assertEquals(1, repository.claim(inFlight.getDeliveryId(), due, 0, 2));
+
+        DetectionRouteOutboxEntity newlyVisibleOlder = pending("commit-race");
+        jdbc.update("update t_detection_route_outbox set sequence_no = ? where delivery_id = ?",
+                inFlightSequence - 1, newlyVisibleOlder.getDeliveryId());
+
+        assertEquals(0, repository.claim(newlyVisibleOlder.getDeliveryId(), due, 0, 2));
+        assertTrue(repository.findDueKeyHeads(due).stream()
+                .noneMatch(row -> newlyVisibleOlder.getDeliveryId().equals(row.getDeliveryId())));
+        publisher.markPublished(load(inFlight), 0, 1);
+        assertEquals(1, repository.claim(newlyVisibleOlder.getDeliveryId(), due, 0, 2));
+    }
+
+    @Test
+    void theDatabaseLeaseAllowsOnlyOneProcessingRowPerTenantAndKey() {
+        DetectionRouteOutboxEntity first = pending("leased");
+        DetectionRouteOutboxEntity second = pending("leased");
+        Instant due = Instant.now().plusSeconds(1);
+        assertEquals(1, repository.claim(first.getDeliveryId(), due, 0, 2));
+        String lease = jdbc.queryForObject(
+                "select processing_key from t_detection_route_outbox where delivery_id = ?",
+                String.class, first.getDeliveryId());
+        assertEquals("route-test:leased", lease);
+
+        assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
+                () -> jdbc.update("update t_detection_route_outbox "
+                                + "set status = 'PROCESSING', processing_key = ? where delivery_id = ?",
+                        lease, second.getDeliveryId()));
+        publisher.markPublished(load(first), 0, 1);
+        assertNull(jdbc.queryForObject(
+                "select processing_key from t_detection_route_outbox where delivery_id = ?",
+                String.class, first.getDeliveryId()));
+    }
+
+    private DetectionRouteOutboxEntity pending(String routingKey) {
+        Instant now = Instant.now();
+        return repository.saveAndFlush(new DetectionRouteOutboxEntity(
+                UUID.randomUUID().toString(), "route-test", UUID.randomUUID().toString(), "v2", "plan-1",
+                "STATELESS", "event", "event-1", routingKey, "socp-events", 0, 1,
+                "socp-detection-routed-v2", "{}", now));
     }
 
     protected DetectionRouteOutboxEntity processing(int attempts) {

@@ -138,7 +138,8 @@ public class IngestTaskController {
         LogSource updated = new LogSource(s.id(), s.name(), s.type(), s.format(), s.path(), s.address(),
                 s.topic(), s.env(), enabled, s.readFrom(), s.multiline(), s.sinkTargetId(),
                 s.parseRuleIds(), s.description(), s.protocol(), s.charset(), s.timeField(),
-                s.timezone(), s.tags(), s.frequency(), s.categoryId(), s.groupId(), s.createdAt());
+                s.timezone(), s.tags(), s.frequency(), s.ignoreOlderSeconds(), s.categoryId(),
+                s.groupId(), s.createdAt());
         store.save(updated);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", id);

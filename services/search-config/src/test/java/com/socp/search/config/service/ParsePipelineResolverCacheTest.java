@@ -36,14 +36,14 @@ class ParsePipelineResolverCacheTest {
 
         for (int index = 0; index < 4096; index++) {
             var context = new IngestSourceContext("collector", "source-" + index,
-                    ParseFormat.AUTO, List.of(), true);
+                    ParseFormat.AUTO, List.of(), null, null, true);
             resolver.apply(context, "line", "line", true);
             assertTrue(resolver.cachedPipelines() <= 2048);
         }
 
         assertEquals(2048, resolver.cachedPipelines());
         var latest = new IngestSourceContext("collector", "source-4095",
-                ParseFormat.AUTO, List.of(), true);
+                ParseFormat.AUTO, List.of(), null, null, true);
         resolver.apply(latest, "line", "line", true);
         assertEquals(2048, resolver.cachedPipelines());
     }
@@ -64,7 +64,7 @@ class ParsePipelineResolverCacheTest {
                         for (int index = 0; index < 512; index++) {
                             var context = new IngestSourceContext("collector",
                                     "source-" + group + "-" + index,
-                                    ParseFormat.AUTO, List.of(), true);
+                                    ParseFormat.AUTO, List.of(), null, null, true);
                             resolver.apply(context, "line", "line", true);
                         }
                     } finally {
@@ -92,7 +92,7 @@ class ParsePipelineResolverCacheTest {
         ParsePipelineResolver resolver = new ParsePipelineResolver(
                 rules, new ParseRuleExecutor(new ParserRegistry()));
         var context = new IngestSourceContext("collector", "source-a",
-                ParseFormat.AUTO, List.of(), true);
+                ParseFormat.AUTO, List.of(), null, null, true);
         try (var worker = Executors.newSingleThreadExecutor()) {
             var inFlight = worker.submit(() -> {
                 TenantContext.set("tenant-a");

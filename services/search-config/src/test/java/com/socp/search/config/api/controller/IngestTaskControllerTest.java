@@ -163,6 +163,6 @@ class IngestTaskControllerTest {
         return LogSource.createFull(name, type, ParseFormat.SYSLOG, path, address, topic,
                 "prod", enabled, "beginning", null, null, List.of(), "description",
                 type == SourceType.SOCKET ? "tcp" : null, "utf-8", "event_time", "UTC",
-                List.of("team=security"), 5, "AUTH", "group-1");
+                List.of("team=security"), 5, null, "AUTH", "group-1");
     }
 }

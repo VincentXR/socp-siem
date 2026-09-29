@@ -15,6 +15,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -168,13 +169,12 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
             }
             while (rounds < maxDrainRounds && System.nanoTime() - started < maxDrainDurationNanos) {
                 now = Instant.now();
-                List<IngestionOutboxEvent> pending =
-                        repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                                "PENDING", now);
+                List<IngestionOutboxEvent> pending = repository.findDueKeyHeads(now);
                 lastBatchSize = pending.size();
                 if (pending.isEmpty()) break;
                 rounds++;
-                executor.deliver(pending, started + maxDrainDurationNanos,
+                executor.deliverKeyed(pending, started + maxDrainDurationNanos,
+                        event -> event.getTenantId() + "\u0000" + event.getRoutingKey(),
                         event -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)));
                 if (pending.size() < 200) break;
             }
@@ -221,7 +221,14 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         String token = java.util.UUID.randomUUID().toString();
         boolean claimed = false;
         try {
-            if (repository.claim(event.getId(), Instant.now(), maxAttempts, event.getAttempts(), token) != 1) return;
+            try {
+                if (repository.claim(event.getId(), Instant.now(), maxAttempts,
+                        event.getAttempts(), token) != 1) return;
+            } catch (DataIntegrityViolationException competingKeyOwner) {
+                // A concurrent replica won the unique processing-key lease after this
+                // scan's snapshot. Leave this row pending for the next polling cycle.
+                return;
+            }
             claimed = true;
             if (!producer.sendAndAwait(event.getRoutingKey(), event.getPayload(), event.getTraceparent())) {
                 scheduleRetry(event, token, "Kafka broker did not acknowledge the event");

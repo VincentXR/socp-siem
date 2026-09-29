@@ -54,6 +54,8 @@ public record LogSource(
         @Size(max = 100) List<@Size(max = 128) String> tags,
         /** FILE 轮询间隔（秒） */
         @Min(1) @Max(86400) Integer frequency,
+        /** FILE 源：忽略最后修改时间早于该秒数的文件；空值表示不按文件年龄过滤。 */
+        @Min(1) @Max(315360000) Integer ignoreOlderSeconds,
         /** 日志类别 ID（元数据管理 LogCategory） */
         @Size(max = 128) String categoryId,
         /** KAFKA 消费组 */
@@ -64,7 +66,7 @@ public record LogSource(
                                    String path, String address, String topic, String env, boolean enabled) {
         return createFull(name, type, format, path, address, topic, env, enabled,
                 "beginning", null, null, List.of(), null,
-                null, "utf-8", "event_time", null, List.of(), 1, null, null);
+                null, "utf-8", "event_time", null, List.of(), 1, null, null, null);
     }
 
     public static LogSource createFull(String name, SourceType type, ParseFormat format,
@@ -72,13 +74,14 @@ public record LogSource(
                                        String readFrom, String multiline, String sinkTargetId,
                                        List<String> parseRuleIds, String description,
                                        String protocol, String charset, String timeField, String timezone,
-                                       List<String> tags, Integer frequency, String categoryId, String groupId) {
+                                       List<String> tags, Integer frequency, Integer ignoreOlderSeconds,
+                                       String categoryId, String groupId) {
         return new LogSource(UUID.randomUUID().toString(), name, type, format,
                 path, address, topic, env, enabled, readFrom, multiline, sinkTargetId,
                 parseRuleIds == null ? List.of() : List.copyOf(parseRuleIds), description,
                 protocol, charset, timeField, timezone,
                 tags == null ? List.of() : List.copyOf(tags),
-                frequency, categoryId, groupId, Instant.now());
+                frequency, ignoreOlderSeconds, categoryId, groupId, Instant.now());
     }
 
     /** 渲染用的归一化事件标签键：避免与正文解析出的 host 冲突（同 com.siem Vector 契约） */

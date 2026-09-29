@@ -181,6 +181,16 @@ jobs:
       - name: Build backend
         run: bash build/mvnw.sh -DskipTests package
 
+      - name: Verify ordered ingestion and external-side-effect recovery
+        env:
+          SOCP_TESTCONTAINERS: "true"
+        run: >-
+          bash build/mvnw.sh
+          -pl services/search-config,services/detect-web,services/ai-assistant
+          -am test
+          -Dtest=VectorConfigRendererContainerTest,ConfiguredEventTimePersistenceTest,IngestionOutboxOrderingPersistenceTest,IngestionOutboxClaimPostgresTest,DetectionRouteOutboxPostgresTest,InvestigationAppendAuditPostgresTest
+          -Dsurefire.failIfNoSpecifiedTests=false
+
       - name: Boot every packaged service with a production-like context
         env:
           SOCP_AUTH_COOKIE_SECURE: "true"
@@ -401,6 +411,7 @@ jobs:
           SOCP_DETECT_ROUTING_SOURCE_TOPIC: socp-events
           SOCP_DETECT_ROUTING_SOURCE_GROUP_ID: socp-detect-router-v2
           RECOVERY_TOPIC: socp-detection-routed-v2
+          SOCP_REQUIRE_DOWNSTREAM_DRAIN: "true"
           DETECTION_INSTANCE_URLS: http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082
         run: |
           python3 build/chaos-pipeline.py --scenario routed_migration --count 20 \

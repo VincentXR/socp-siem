@@ -57,7 +57,8 @@ jobs:
 
       - name: Verify repository contracts and versioned content
         run: |
-          python3 -m unittest build/tests/test_verify_ci_gate.py build/tests/test_ci_scope.py
+          python3 -m unittest build/tests/test_verify_ci_gate.py build/tests/test_ci_scope.py \
+            build/tests/test_webhook_sink.py
           python3 build/verify-repository.py --evidence-dir .cache/evidence
 
       - name: Validate GitHub Actions workflows

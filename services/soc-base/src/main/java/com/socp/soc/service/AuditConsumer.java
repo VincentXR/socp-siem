@@ -24,6 +24,7 @@ import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.function.LongPredicate;
 
 /** Persists audit events with durable event-id idempotency and manual Kafka offsets. */
 @Component
@@ -31,6 +32,8 @@ public class AuditConsumer {
 
     private static final Logger log = LoggerFactory.getLogger(AuditConsumer.class);
     private static final ObjectMapper MAPPER = new ObjectMapper().findAndRegisterModules();
+    private static final long SESSION_RESTART_BACKOFF_MS = 1_000L;
+    private static final long BATCH_RETRY_BACKOFF_MS = 500L;
 
     private final AuditRepository repository;
     private final KafkaAuditProperties properties;
@@ -56,6 +59,23 @@ public class AuditConsumer {
     }
 
     private void run() {
+        runLoop(this::runOnce, this::backoff);
+    }
+
+    void runLoop(Runnable session, LongPredicate pause) {
+        while (!Thread.currentThread().isInterrupted()) {
+            try {
+                session.run();
+                return;
+            } catch (RuntimeException failure) {
+                if (Thread.currentThread().isInterrupted()) return;
+                log.error("Audit consumer failed; restarting after backoff", failure);
+                if (!pause.test(SESSION_RESTART_BACKOFF_MS)) return;
+            }
+        }
+    }
+
+    private void runOnce() {
         var props = KafkaClientSupport.reliableConsumer(properties.getBootstrap(),
                 "socp-audit-sink", "earliest", 200);
         try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(props)) {
@@ -82,14 +102,23 @@ public class AuditConsumer {
                 }
                 if (retryBatch) {
                     KafkaClientSupport.rewindBatch(consumer, records);
+                    // Avoid a hot poll/rewind loop while the database or DLQ broker is down.
+                    if (!backoff(BATCH_RETRY_BACKOFF_MS)) return;
                 } else {
                     consumer.commitSync();
                 }
             }
-        } catch (RuntimeException failure) {
-            if (!Thread.currentThread().isInterrupted()) {
-                log.error("Audit consumer stopped unexpectedly", failure);
-            }
+        }
+    }
+
+    /** Sleeps unless interrupted; false tells the worker to stop. */
+    private boolean backoff(long millis) {
+        try {
+            Thread.sleep(millis);
+            return true;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 

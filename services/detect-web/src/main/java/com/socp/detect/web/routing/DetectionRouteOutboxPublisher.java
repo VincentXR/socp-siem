@@ -11,6 +11,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -64,12 +65,17 @@ public class DetectionRouteOutboxPublisher {
         recoverStale();
         long started = System.nanoTime();
         for (DetectionRouteOutboxEntity row :
-                repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
-                        "PENDING", Instant.now())) {
+                repository.findDueKeyHeads(Instant.now())) {
             if (Thread.currentThread().isInterrupted() || System.nanoTime() - started >= DRAIN_BUDGET_NANOS) break;
             int attemptLimit = maxAttempts == 0 ? Integer.MAX_VALUE : maxAttempts;
             Instant now = Instant.now();
-            if (repository.claim(row.getDeliveryId(), now, row.getAttempts(), attemptLimit) != 1) continue;
+            try {
+                if (repository.claim(row.getDeliveryId(), now, row.getAttempts(), attemptLimit) != 1) continue;
+            } catch (DataIntegrityViolationException competingKeyOwner) {
+                // A concurrent replica won the unique processing-key lease after this
+                // scan's snapshot. Leave this row pending for the next polling cycle.
+                continue;
+            }
             row.setAttempts(row.getAttempts() + 1);
             row.setStatus("PROCESSING");
             row.setUpdatedAt(now);

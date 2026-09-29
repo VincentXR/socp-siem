@@ -355,7 +355,7 @@ class LogSourceControllerTest {
         return new com.socp.search.config.api.request.LogSourceRequest(
                 "auth", SourceType.FILE, ParseFormat.AUTO, "/var/log/auth.log", null,
                 null, "prod", true, "beginning", null, null, List.of(), null,
-                null, "utf-8", "event_time", "UTC", List.of(), 1, null, null);
+                null, "utf-8", "event_time", "UTC", List.of(), 1, null, null, null);
     }
 
     private LogSourceController controller(LogSourceRepository repository) {

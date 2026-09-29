@@ -17,6 +17,10 @@ public class IngestionOutboxEvent extends BaseEntity {
     @Id
     private String id;
 
+    /** Database-assigned enqueue order used to fence same-key publication across replicas. */
+    @Column(name = "sequence_no", insertable = false, updatable = false)
+    private Long sequenceNo;
+
     @Column(name = "event_id", nullable = false, length = 255)
     private String eventId;
 
@@ -46,6 +50,11 @@ public class IngestionOutboxEvent extends BaseEntity {
     @com.fasterxml.jackson.annotation.JsonIgnore
     private String claimToken;
 
+    /** Nullable unique lease key: at most one replica may process a routing key. */
+    @Column(name = "processing_key", length = 600)
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private String processingKey;
+
     public String getClaimToken() { return claimToken; }
 
     @Column(name = "published_at")
@@ -73,6 +82,10 @@ public class IngestionOutboxEvent extends BaseEntity {
 
     public String getId() {
         return id;
+    }
+
+    public Long getSequenceNo() {
+        return sequenceNo;
     }
 
     public String getEventId() {

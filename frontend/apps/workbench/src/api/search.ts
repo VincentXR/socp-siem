@@ -14,7 +14,8 @@ export interface LogSourceInput {
   readFrom: string | null; multiline: string | null; sinkTargetId: string | null
   parseRuleIds: string[]; description: string | null; protocol: string | null
   charset: string | null; timeField: string | null; timezone: string | null
-  tags: string[]; frequency: number | null; categoryId: string | null; groupId: string | null
+  tags: string[]; frequency: number | null; ignoreOlderSeconds: number | null
+  categoryId: string | null; groupId: string | null
 }
 export const createSource = (source: LogSourceInput) => post<LogSource>('/search-config/api/v1/sources', source)
 export const updateSource = (id: string, source: LogSourceInput) => put<{ source: LogSource }>(`/search-config/api/v1/sources/${encodeURIComponent(id)}`, source)

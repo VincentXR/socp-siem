@@ -1,13 +1,16 @@
 package com.socp.platform.data.outbox;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /** Limits local delivery admission; database claim tokens still own distributed correctness. */
 public final class OutboxDeliveryExecutor implements AutoCloseable {
@@ -52,6 +55,26 @@ public final class OutboxDeliveryExecutor implements AutoCloseable {
         } finally {
             CompletableFuture.allOf(pending.toArray(CompletableFuture[]::new)).join();
         }
+    }
+
+    /**
+     * Delivers each key's candidates in encounter order while different keys may progress in
+     * parallel. This is a local admission guarantee only; publishers must also fence claims in
+     * their durable store so that another replica cannot overtake an older row for the same key.
+     */
+    public <T, K> void deliverKeyed(List<T> candidates, long deadlineNanos,
+                                    Function<T, K> keySelector, Consumer<T> delivery) {
+        Map<K, List<T>> groups = new LinkedHashMap<>();
+        for (T candidate : candidates) {
+            groups.computeIfAbsent(keySelector.apply(candidate), ignored -> new ArrayList<>())
+                    .add(candidate);
+        }
+        deliver(new ArrayList<>(groups.values()), deadlineNanos, group -> {
+            for (T candidate : group) {
+                if (System.nanoTime() >= deadlineNanos) break;
+                delivery.accept(candidate);
+            }
+        });
     }
 
     @Override

@@ -62,6 +62,8 @@ public class LogSourceEntity {
     @Column(name = "tags", length = 1024)
     private String tagsJson;
     private Integer frequency;
+    @Column(name = "ignore_older_seconds")
+    private Integer ignoreOlderSeconds;
     @Column(name = "category_id")
     private String categoryId;
     @Column(name = "group_id")
@@ -252,6 +254,14 @@ public class LogSourceEntity {
 
     public void setFrequency(Integer frequency) {
         this.frequency = frequency;
+    }
+
+    public Integer getIgnoreOlderSeconds() {
+        return ignoreOlderSeconds;
+    }
+
+    public void setIgnoreOlderSeconds(Integer ignoreOlderSeconds) {
+        this.ignoreOlderSeconds = ignoreOlderSeconds;
     }
 
     public String getCategoryId() {

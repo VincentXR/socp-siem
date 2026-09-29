@@ -6,6 +6,7 @@ import com.socp.soc.persistence.repository.AuditRepository;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -57,5 +58,40 @@ class AuditConsumerTest {
                         "{\"tenantId\":\"../other\",\"action\":\"CREATE\"}"));
 
         verify(repository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void restartsConsumerSessionAfterUnexpectedFailure() {
+        AuditConsumer consumer = new AuditConsumer(mock(AuditRepository.class));
+        AtomicInteger sessions = new AtomicInteger();
+        AtomicInteger pauses = new AtomicInteger();
+
+        consumer.runLoop(() -> {
+            if (sessions.incrementAndGet() == 1) throw new IllegalStateException("broker restart");
+        }, ignored -> {
+            pauses.incrementAndGet();
+            return true;
+        });
+
+        assertEquals(2, sessions.get());
+        assertEquals(1, pauses.get());
+    }
+
+    @Test
+    void interruptionStopsRestartWithoutSleeping() {
+        AuditConsumer consumer = new AuditConsumer(mock(AuditRepository.class));
+        AtomicInteger pauses = new AtomicInteger();
+        try {
+            consumer.runLoop(() -> {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("shutdown");
+            }, ignored -> {
+                pauses.incrementAndGet();
+                return true;
+            });
+            assertEquals(0, pauses.get());
+        } finally {
+            Thread.interrupted();
+        }
     }
 }

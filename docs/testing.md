@@ -801,6 +801,24 @@ selected source outside the initial page; run
 the 501-source management, remote selection and mobile pagination flow. Pages
 are independent reads, not a snapshot across concurrent catalogue changes.
 
+Run `SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/search-config -am test -Dtest=VectorConfigRendererContainerTest,IngestionOutboxClaimPostgresTest -Dsurefire.failIfNoSpecifiedTests=false`
+to validate a mixed native/external rendered configuration with the pinned
+Vector image, prove an old file is read from the beginning, and repeat the
+same-key predecessor fence on PostgreSQL. The H2 persistence suite
+`ConfiguredEventTimePersistenceTest,IngestionOutboxOrderingPersistenceTest`
+also proves that a configured local event time reaches both the database and
+Kafka intent and that retry/delay/competing-publisher ordering completes the
+ordered correlation rule. `DetectionRouteOutboxPostgresTest` covers the same
+replica fence for routed Detection deliveries.
+
+Run `SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/ai-assistant -am test -Dtest=InvestigationAppendAuditPostgresTest -Dsurefire.failIfNoSpecifiedTests=false`
+for the production JDBC audit boundary: a successful remote Incident note
+followed by audit failure must retain the committed target, and a retry naming
+a different case must return the original target without a second note. The
+same proxy-backed suite races two controller requests for different cases and
+requires one successful receipt, one conflict, one persisted target, and one
+remote note while the controller audit boundary remains non-transactional.
+
 ### Ingest configuration cache bounds
 
 Run `SOCP_TESTCONTAINERS=false powershell -NoProfile -File build/mvnw.ps1 -pl services/search-config -am test -Dtest=ParsePipelineResolverCacheTest,IngestSourceResolverCacheTest,TenantRevisionTrackerTest,LogSourceStoreTest,ParseRuleStoreTest -Dsurefire.failIfNoSpecifiedTests=false`.

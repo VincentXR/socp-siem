@@ -19,6 +19,8 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** The same repository contracts run against H2 and real PostgreSQL. */
 @DataJpaTest(showSql = false)
@@ -110,6 +112,59 @@ class IngestionOutboxClaimPersistenceTest {
         }
     }
 
+    @Test void olderUnresolvedRowFencesSameKeyAcrossQueriesClaimsAndRetries() {
+        String first = insert(0, "tenant-a|host|same");
+        String second = insert(0, "tenant-a|host|same");
+        String other = insert(0, "tenant-a|host|other");
+
+        var heads = repository.findDueKeyHeads(BASE);
+        assertEquals(2, heads.size());
+        assertTrue(heads.stream().anyMatch(row -> first.equals(row.getId())));
+        assertTrue(heads.stream().anyMatch(row -> other.equals(row.getId())));
+        assertEquals(0, repository.claim(second, BASE, 12, 0, "later-owner"));
+
+        assertEquals(1, repository.claim(first, BASE, 12, 0, "first-owner"));
+        assertEquals(1, repository.scheduleRetry(first, BASE.plusSeconds(60), "retry", BASE, "first-owner"));
+        assertEquals(0, repository.claim(second, BASE, 12, 0, "later-owner"));
+        assertEquals(1, repository.claim(first, BASE.plusSeconds(60), 12, 1, "retry-owner"));
+        assertEquals(1, repository.markDead(first, "confirmed failure", BASE.plusSeconds(60), "retry-owner"));
+        assertEquals(1, repository.claim(second, BASE.plusSeconds(60), 12, 0, "later-owner"));
+    }
+
+    @Test void anInFlightKeyFencesAnOlderSequenceThatBecomesVisibleLater() {
+        String inFlight = insert(0, "tenant-a|host|commit-race");
+        long inFlightSequence = jdbc.queryForObject(
+                "select sequence_no from t_ingestion_outbox where id = ?", Long.class, inFlight);
+        assertEquals(1, repository.claim(inFlight, BASE, 12, 0, "visible-first"));
+
+        String newlyVisibleOlder = insert(0, "tenant-a|host|commit-race");
+        jdbc.update("update t_ingestion_outbox set sequence_no = ? where id = ?",
+                inFlightSequence - 1, newlyVisibleOlder);
+
+        assertEquals(0, repository.claim(newlyVisibleOlder, BASE, 12, 0, "must-wait"));
+        assertTrue(repository.findDueKeyHeads(BASE).stream()
+                .noneMatch(row -> newlyVisibleOlder.equals(row.getId())));
+        assertEquals(1, repository.markPublished(inFlight, BASE, "visible-first"));
+        assertEquals(1, repository.claim(newlyVisibleOlder, BASE, 12, 0, "after-owner"));
+    }
+
+    @Test void theDatabaseLeaseAllowsOnlyOneProcessingRowPerTenantAndKey() {
+        String first = insert(0, "tenant-a|host|leased");
+        String second = insert(0, "tenant-a|host|leased");
+        assertEquals(1, repository.claim(first, BASE, 12, 0, "owner"));
+        String lease = jdbc.queryForObject(
+                "select processing_key from t_ingestion_outbox where id = ?", String.class, first);
+        assertEquals("tenant-a:tenant-a|host|leased", lease);
+
+        assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
+                () -> jdbc.update("update t_ingestion_outbox "
+                                + "set status = 'PROCESSING', processing_key = ? where id = ?",
+                        lease, second));
+        assertEquals(1, repository.markPublished(first, BASE, "owner"));
+        assertNull(jdbc.queryForObject(
+                "select processing_key from t_ingestion_outbox where id = ?", String.class, first));
+    }
+
     @Test void maintenanceSkipsLockedRowsWithoutExceedingTheBatchLimit() throws Exception {
         String locked = insert(12);
         String free = insert(12);
@@ -147,10 +202,15 @@ class IngestionOutboxClaimPersistenceTest {
     }
 
     protected String insert(int attempts) {
+        return insert(attempts, null);
+    }
+
+    protected String insert(int attempts, String routingKey) {
         String id = UUID.randomUUID().toString();
+        String effectiveRoutingKey = routingKey == null ? "tenant-a|host|" + id : routingKey;
         jdbc.update("insert into t_ingestion_outbox (id, tenant_id, event_id, routing_key, payload, status, attempts, next_attempt_at, created_at, updated_at) "
-                + "values (?, 'tenant-a', ?, 'tenant-a|host|sample', '{}', 'PENDING', ?, ?, ?, ?)",
-                id, id, attempts, Timestamp.from(BASE), Timestamp.from(BASE), Timestamp.from(BASE));
+                + "values (?, 'tenant-a', ?, ?, '{}', 'PENDING', ?, ?, ?, ?)",
+                id, id, effectiveRoutingKey, attempts, Timestamp.from(BASE), Timestamp.from(BASE), Timestamp.from(BASE));
         return id;
     }
 }

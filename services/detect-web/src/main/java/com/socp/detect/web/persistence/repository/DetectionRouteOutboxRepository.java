@@ -13,8 +13,14 @@ import java.util.List;
 public interface DetectionRouteOutboxRepository
         extends TenantScopedRepository<DetectionRouteOutboxEntity, String> {
 
-    List<DetectionRouteOutboxEntity>
-    findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(String status, Instant now);
+    @Query(value = "select current.* from t_detection_route_outbox current "
+            + "where current.status = 'PENDING' and current.next_attempt_at <= :now "
+            + "and not exists (select 1 from t_detection_route_outbox blocker "
+            + "where blocker.tenant_id = current.tenant_id and blocker.routing_key = current.routing_key "
+            + "and (blocker.status = 'PROCESSING' or "
+            + "(blocker.status = 'PENDING' and blocker.sequence_no < current.sequence_no))) "
+            + "order by current.next_attempt_at, current.sequence_no limit 100", nativeQuery = true)
+    List<DetectionRouteOutboxEntity> findDueKeyHeads(@Param("now") Instant now);
 
     long countByStatus(String status);
 
@@ -50,9 +56,14 @@ public interface DetectionRouteOutboxRepository
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update DetectionRouteOutboxEntity e set e.status = 'PROCESSING', "
+            + "e.processingKey = concat(concat(e.tenantId, ':'), e.routingKey), "
             + "e.attempts = e.attempts + 1, e.updatedAt = :now "
             + "where e.deliveryId = :id and e.status = 'PENDING' "
-            + "and e.nextAttemptAt <= :now and e.attempts = :expectedAttempts and e.attempts < :maxAttempts")
+            + "and e.nextAttemptAt <= :now and e.attempts = :expectedAttempts and e.attempts < :maxAttempts "
+            + "and not exists (select blocker.deliveryId from DetectionRouteOutboxEntity blocker "
+            + "where blocker.tenantId = e.tenantId and blocker.routingKey = e.routingKey "
+            + "and (blocker.status = 'PROCESSING' or "
+            + "(blocker.status = 'PENDING' and blocker.sequenceNo < e.sequenceNo)))")
     int claim(@Param("id") String deliveryId, @Param("now") Instant now,
               @Param("expectedAttempts") int expectedAttempts, @Param("maxAttempts") int maxAttempts);
 
@@ -61,7 +72,7 @@ public interface DetectionRouteOutboxRepository
     @Transactional
     @Query("update DetectionRouteOutboxEntity e set e.status = 'PUBLISHED', "
             + "e.deliveryPartition = :partition, e.deliveryOffset = :offset, "
-            + "e.publishedAt = :now, e.updatedAt = :now, e.lastError = null "
+            + "e.processingKey = null, e.publishedAt = :now, e.updatedAt = :now, e.lastError = null "
             + "where e.deliveryId = :id and e.status = 'PROCESSING' and e.attempts = :attempt")
     int markPublished(@Param("id") String deliveryId, @Param("attempt") int attempt,
                       @Param("partition") int partition, @Param("offset") long offset,
@@ -70,7 +81,8 @@ public interface DetectionRouteOutboxRepository
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update DetectionRouteOutboxEntity e set e.status = :status, "
-            + "e.nextAttemptAt = :nextAttemptAt, e.updatedAt = :now, e.lastError = :error "
+            + "e.processingKey = null, e.nextAttemptAt = :nextAttemptAt, "
+            + "e.updatedAt = :now, e.lastError = :error "
             + "where e.deliveryId = :id and e.status = 'PROCESSING' and e.attempts = :attempt")
     int markFailed(@Param("id") String deliveryId, @Param("attempt") int attempt,
                    @Param("status") String status, @Param("nextAttemptAt") Instant nextAttemptAt,
@@ -81,7 +93,7 @@ public interface DetectionRouteOutboxRepository
     // while updating and exceed the batch bound (covered by the container test).
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
-    @Query(value = "update t_detection_route_outbox set "
+    @Query(value = "update t_detection_route_outbox set processing_key = null, "
             + "status = case when attempts >= :maxAttempts then 'DEAD' else 'PENDING' end, "
             + "next_attempt_at = :now, updated_at = :now, last_error = 'route publish lease expired' "
             + "where delivery_id in (with candidates as (select delivery_id from t_detection_route_outbox "
@@ -94,7 +106,7 @@ public interface DetectionRouteOutboxRepository
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
-    @Query(value = "update t_detection_route_outbox set status = 'DEAD', "
+    @Query(value = "update t_detection_route_outbox set status = 'DEAD', processing_key = null, "
             + "updated_at = :now, last_error = 'route publish retry limit reached' "
             + "where delivery_id in (with candidates as (select delivery_id from t_detection_route_outbox "
             + "where status = 'PENDING' and attempts >= :maxAttempts "

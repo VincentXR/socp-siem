@@ -39,7 +39,11 @@ flowchart LR
 `search-config` is the normalization boundary. It converts vendor-specific
 input into a canonical event and writes the local event plus an Ingestion
 Outbox row in one transaction. The publisher waits for Kafka acknowledgement
-before marking that row published. Indexing consumes the canonical stream;
+before marking that row published. For committed rows, database-assigned
+sequence numbers, a claim-time predecessor fence, and a single database-backed
+processing lease serialize rows with the same tenant/routing key across
+publisher replicas; a retrying predecessor blocks that key without blocking
+unrelated keys. Indexing consumes the canonical stream;
 the Detection router durably fans each source event out once per required
 state dimension before workers evaluate the routed stream. Search indexing
 and Detection recover their Kafka backlogs independently.
@@ -92,6 +96,11 @@ the service supports it.
 - Producers use `acks=all` and idempotence where configured.
 - Canonical ingestion returns only after the event and Ingestion Outbox intent
   commit together; broker outages leave retryable `PENDING` rows.
+- Ingestion and Detection-routing Outbox publishers preserve FIFO per
+  `(tenant_id,routing_key)` across concurrent workers and replicas. A row in
+  retry backoff keeps later rows for that key pending; other keys continue.
+  A terminal `DEAD` row no longer blocks later delivery and remains visible for
+  operator recovery.
 - The OpenSearch consumer classifies every bulk item and advances each
   partition only through its contiguous safe prefix. Successful items advance
   immediately; a permanently invalid item advances only after its diagnostic
@@ -140,6 +149,13 @@ the service supports it.
   marks the audit row published; stale claims and broker failures remain
   retryable. Stateless services retain direct Kafka audit delivery because
   there is no local business transaction to join.
+- AI investigation append is an external-side-effect exception to that local
+  atomicity rule. Its incident target claim/binding commits in short local
+  transactions before the idempotent Incident note call; completion commits
+  separately afterwards. The controller explicitly uses a non-transactional
+  audit boundary, so an audit write can fail without retaining an outer
+  connection or erasing the target already used by Incident; a retry cannot
+  select a different case.
 
 ## Security and observability
 

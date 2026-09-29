@@ -3,8 +3,11 @@ package com.socp.detect.web.routing;
 import com.socp.detect.web.persistence.entity.DetectionRouteOutboxEntity;
 import com.socp.detect.web.persistence.repository.DetectionRouteOutboxRepository;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
@@ -15,6 +18,13 @@ import static org.junit.jupiter.api.Assertions.*;
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class DetectionRouteOutboxPublisherTest {
     @Autowired DetectionRouteOutboxRepository repository;
+    @Autowired JdbcTemplate jdbc;
+
+    @BeforeEach
+    @AfterEach
+    void clearPublisherFixtures() {
+        jdbc.update("delete from t_detection_route_outbox where tenant_id = ?", "audit-publisher");
+    }
 
     @Test
     void oneRecoveryPassIsBoundedUnderABacklog() {

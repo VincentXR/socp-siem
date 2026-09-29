@@ -84,6 +84,14 @@ public class AuditAspect {
         TransactionAttribute declared = new AnnotationTransactionAttributeSource()
                 .getTransactionAttribute(method, pjp.getTarget() == null
                         ? method.getDeclaringClass() : pjp.getTarget().getClass());
+        // Some audited operations deliberately commit a short local claim before an
+        // irreversible remote side effect. Wrapping those methods in REQUIRED would
+        // retain an outer connection while their short transactions run and would
+        // falsely imply that a later audit failure can roll the remote effect back.
+        if (declared != null && declared.getPropagationBehavior()
+                == TransactionDefinition.PROPAGATION_NOT_SUPPORTED) {
+            return direct(pjp, action, target);
+        }
         TransactionTemplate required = new TransactionTemplate(transactionManager);
         required.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
         if (declared != null) {
