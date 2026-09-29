@@ -10,6 +10,8 @@ public record IngestSourceContext(
         String sourceId,
         ParseFormat format,
         List<String> parseRuleIds,
+        String timeField,
+        String timezone,
         boolean resolved
 ) {
 
@@ -19,7 +21,7 @@ public record IngestSourceContext(
     }
 
     public static IngestSourceContext unresolved(String collectorId, ParseFormat format) {
-        return new IngestSourceContext(collectorId, null, format, List.of(), false);
+        return new IngestSourceContext(collectorId, null, format, List.of(), null, null, false);
     }
 
     public boolean hasExplicitRules() {

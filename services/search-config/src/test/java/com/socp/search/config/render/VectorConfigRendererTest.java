@@ -67,6 +67,10 @@ class VectorConfigRendererTest {
         assertTrue(toml.contains(".source_id = \"" + src.id() + "\""), "应透传稳定 source_id");
         assertTrue(toml.contains("include = [\"/var/log/auth.log\"]"), "路径应透传");
         assertTrue(toml.contains("read_from = \"beginning\""), "FILE 源应有读取模式");
+        assertTrue(toml.contains("glob_minimum_cooldown_ms = 1000"),
+                "文件发现间隔必须映射到 Vector 的 glob cooldown");
+        assertFalse(toml.contains("ignore_older_secs"),
+                "未配置文件年龄策略时不得把轮询间隔误用为旧文件过滤");
         assertTrue(toml.contains("[transforms.t_"), "每源应有独立 transform");
         assertTrue(toml.contains(".parse_format = \"auto\""), "transform 应标注解析格式");
         assertTrue(toml.contains("[sinks.gls_ingest]"), "首个输出块沿用历史 sink 名");
@@ -151,7 +155,7 @@ class VectorConfigRendererTest {
         LogSource syslogUdp = LogSource.createFull("fw-syslog", SourceType.SYSLOG, ParseFormat.SYSLOG,
                 null, "0.0.0.0:514", null, "prod", true,
                 "beginning", null, null, List.of(), null,
-                "udp", "utf-8", "event_time", "Asia/Shanghai", List.of(), 1, null, null);
+                "udp", "utf-8", "event_time", "Asia/Shanghai", List.of(), 1, null, null, null);
         String toml = new VectorConfigRenderer(null).render(List.of(syslogUdp), id -> platformIngest("p"));
         assertTrue(toml.contains("mode = \"udp\""), "SYSLOG UDP 协议");
         assertTrue(toml.contains("address = \"0.0.0.0:514\""), "514 端口透传");
@@ -160,16 +164,52 @@ class VectorConfigRendererTest {
         LogSource win = LogSource.createFull("win-security", SourceType.WINDOWS_EVENT, ParseFormat.AUTO,
                 null, null, null, "prod", true,
                 "beginning", null, null, List.of(), null,
-                null, null, null, null, List.of(), 1, null, null);
+                null, null, null, null, List.of(), 1, null, null, null);
         String t2 = new VectorConfigRenderer(null).render(List.of(win), id -> platformIngest("p"));
         assertTrue(t2.contains("Winlogbeat"), "Windows 事件给出采集器说明");
+        assertFalse(t2.contains("[transforms.t_"), "外部托管来源不得生成悬空 transform");
+        assertFalse(t2.contains("[sinks."), "没有 Vector 原生输入时不得生成空 sink");
+    }
+
+    @Test
+    void externalManagedSourceDoesNotCreateDanglingInputInMixedConfig() {
+        LogSource nativeFile = fileSource("auth-log", null);
+        LogSource external = LogSource.createFull("windows", SourceType.WINDOWS_EVENT, ParseFormat.AUTO,
+                null, null, null, "prod", true,
+                "beginning", null, null, List.of(), null,
+                null, null, null, null, List.of(), 1, null, null, null);
+
+        String toml = new VectorConfigRenderer(null).render(
+                List.of(nativeFile, external), id -> platformIngest("p"));
+
+        assertTrue(toml.contains("Winlogbeat"));
+        assertEquals(1, occurrences(toml, "[transforms.t_"));
+        assertEquals(1, occurrences(toml, "[sinks.gls_ingest]"));
+        assertFalse(toml.contains("src_" + external.id().replace('-', '_')));
+    }
+
+    @Test
+    void rendersHistoricalFileFilterOnlyWhenExplicitlyConfigured() {
+        LogSource source = LogSource.createFull("recent-only", SourceType.FILE, ParseFormat.AUTO,
+                "/var/log/app.log", null, null, "prod", true,
+                "beginning", null, null, List.of(), null,
+                null, "utf-8", "event_time", "UTC", List.of(), 5, 86_400, null, null);
+
+        String toml = new VectorConfigRenderer(null).render(List.of(source), id -> platformIngest("p"));
+
+        assertTrue(toml.contains("glob_minimum_cooldown_ms = 5000"));
+        assertTrue(toml.contains("ignore_older_secs = 86400"));
+    }
+
+    private static int occurrences(String value, String needle) {
+        return (value.length() - value.replace(needle, "").length()) / needle.length();
     }
 
     private static LogSource fileSource(String name, String sinkTargetId) {
         return LogSource.createFull(name, SourceType.FILE, ParseFormat.AUTO,
                 "/var/log/auth.log", null, null, "prod", true,
                 "beginning", null, sinkTargetId, List.of(), null,
-                null, "utf-8", "event_time", null, List.of(), 1, null, null);
+                null, "utf-8", "event_time", null, List.of(), 1, null, null, null);
     }
 
     private static SinkTarget platformIngest(String id) {

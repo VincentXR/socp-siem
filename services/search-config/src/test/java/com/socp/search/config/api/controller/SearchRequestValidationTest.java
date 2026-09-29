@@ -44,7 +44,7 @@ class SearchRequestValidationTest {
                 valid.path(), valid.address(), valid.topic(), valid.env(), valid.enabled(),
                 valid.readFrom(), valid.multiline(), valid.sinkTargetId(), List.of(), valid.description(),
                 valid.protocol(), valid.charset(), valid.timeField(), valid.timezone(), List.of(),
-                86401, valid.categoryId(), valid.groupId(), valid.createdAt());
+                86401, valid.ignoreOlderSeconds(), valid.categoryId(), valid.groupId(), valid.createdAt());
         assertFalse(validator.validate(invalid).isEmpty());
     }
 }

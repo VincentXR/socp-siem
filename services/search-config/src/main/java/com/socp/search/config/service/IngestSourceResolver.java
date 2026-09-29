@@ -58,7 +58,8 @@ public class IngestSourceResolver {
             return new IngestSourceContext(
                     trustedCollector == null || trustedCollector.isBlank()
                             ? source.collectorTag() : trustedCollector,
-                    source.id(), source.format(), source.parseRuleIds(), true);
+                    source.id(), source.format(), source.parseRuleIds(), source.timeField(),
+                    source.timezone(), true);
         }
         return IngestSourceContext.unresolved(trustedCollector, metadata.format());
     }

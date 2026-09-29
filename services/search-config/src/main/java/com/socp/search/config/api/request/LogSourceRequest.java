@@ -32,13 +32,15 @@ public record LogSourceRequest(
         @Size(max = 64) String timezone,
         @Size(max = 100) List<@Size(max = 128) String> tags,
         @Min(1) @Max(86400) Integer frequency,
+        @Min(1) @Max(315360000) Integer ignoreOlderSeconds,
         @Size(max = 128) String categoryId,
         @Size(max = 128) String groupId) {
 
     public LogSource toNewDomain() {
         return LogSource.createFull(name, type, format, path, address, topic, env, enabled,
                 readFrom, multiline, sinkTargetId, parseRuleIds, description,
-                protocol, charset, timeField, timezone, tags, frequency, categoryId, groupId);
+                protocol, charset, timeField, timezone, tags, frequency, ignoreOlderSeconds,
+                categoryId, groupId);
     }
 
     public LogSource toDomain(String id, Instant createdAt) {
@@ -46,7 +48,8 @@ public record LogSourceRequest(
                 readFrom, multiline, sinkTargetId,
                 parseRuleIds == null ? List.of() : List.copyOf(parseRuleIds), description,
                 protocol, charset, timeField, timezone,
-                tags == null ? List.of() : List.copyOf(tags), frequency, categoryId, groupId,
+                tags == null ? List.of() : List.copyOf(tags), frequency, ignoreOlderSeconds,
+                categoryId, groupId,
                 createdAt);
     }
 }

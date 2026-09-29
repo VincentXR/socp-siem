@@ -122,6 +122,27 @@ Vector transform
   -> ingestion outbox -> Detection / OpenSearch
 ```
 
+For native Vector sources (`FILE`, `SOCKET`, `SYSLOG`, and `KAFKA`), the
+renderer emits a source, its transform, and a bound sink input. The other
+catalogue types (`WINDOWS_EVENT`, `AGENT`, `HTTP_API`, `DATABASE`, and `CLOUD`)
+describe externally managed collectors and therefore emit onboarding comments
+only; they never create a transform that references a nonexistent Vector
+source. Mixed catalogues remain valid Vector configurations.
+
+For `FILE`, `frequency` controls `glob_minimum_cooldown_ms`, the file discovery
+interval. It does not filter old files. `ignoreOlderSeconds` is the separate,
+optional file-modification-age policy and is the only setting that emits
+`ignore_older_secs`; leaving it empty allows `readFrom=beginning` to read an
+older historical file.
+
+When a persisted source configures `timeField`, normalization reads that field
+from the parsed event. Absolute timestamps keep their own offset; local ISO or
+`yyyy-MM-dd HH:mm:ss[.fraction]` values use the source `timezone`. The resolved
+instant is written identically to the PostgreSQL event and canonical Kafka
+payload. A present but invalid configured timestamp is a parse failure rather
+than silently becoming the receipt time. Sources without a usable configured
+event time retain the explicit generated-time fallback marker.
+
 ## Identity and retry contract
 
 The ingest endpoint accepts `Idempotency-Key` for clients that cannot attach an

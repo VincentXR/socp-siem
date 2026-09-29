@@ -20,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -275,6 +276,7 @@ public class InvestigationAgentService {
      * Writes only an analyst-readable summary to Incident. The call is
      * idempotent: once appended, a replay returns the same incident ID.
      */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public Map<String, Object> appendToIncident(String investigationId, String requestedIncidentId) {
         String tenant = TenantContext.require();
         InvestigationEntity entity = repository.findByIdAndTenantId(investigationId, tenant)
@@ -353,10 +355,17 @@ public class InvestigationAgentService {
                 throw ApiException.of(409, "AI 研判入案状态未能确认，请刷新后重试");
             }
             completed = true;
+            // The entity was loaded by a repository-scoped transaction and is detached while
+            // this NOT_SUPPORTED method performs the remote call. Mirror the committed state
+            // for same-instance retries without creating another persistence boundary.
             entity.setIncidentId(incidentId);
             entity.setAppendedAt(appended);
             entity.setUpdatedAt(appended);
             entity.setResultJson(write(result));
+            // The append target and completion are committed by the repository's short local
+            // transactions before this method returns to the controller audit transaction.
+            // A later audit failure therefore cannot erase the target of an already-visible
+            // remote note. Incident APIs remain responsible for idempotency by investigationId.
             audit(result.get("alertId"), "AI_INVESTIGATION_APPEND", "SUCCESS incidentId=" + incidentId);
             return result;
         } finally {

@@ -35,6 +35,7 @@ export interface LogSource {
   sinkTargetId?: string | null; parseRuleIds?: string[]; description?: string | null
   protocol?: string | null; charset?: string | null; timeField?: string | null
   timezone?: string | null; tags?: string[]; frequency?: number | null
+  ignoreOlderSeconds?: number | null
   categoryId?: string | null; groupId?: string | null
 }
 

@@ -38,8 +38,7 @@ class IngestionOutboxPublisherTest {
         when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = pending(
                 "event-1", "default|user|alice", "{}", "00-trace-01");
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
+        when(repository.findDueKeyHeads(any(Instant.class)))
                 .thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), anyInt(), anyInt(), anyString())).thenReturn(1);
         when(producer.sendAndAwait(event.getRoutingKey(), event.getPayload(), event.getTraceparent()))
@@ -60,8 +59,7 @@ class IngestionOutboxPublisherTest {
         when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = pending(
                 "event-1", "route", "{}", null);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
+        when(repository.findDueKeyHeads(any(Instant.class)))
                 .thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), anyInt(), anyInt(), anyString())).thenReturn(1);
         when(producer.sendAndAwait(any(), any(), any())).thenReturn(false);
@@ -80,8 +78,7 @@ class IngestionOutboxPublisherTest {
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = pending("event-1", "route", "{}", null);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
+        when(repository.findDueKeyHeads(any(Instant.class)))
                 .thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), anyInt(), anyInt(), anyString())).thenReturn(0);
         publisher = new IngestionOutboxPublisher(repository, producer);
@@ -102,7 +99,7 @@ class IngestionOutboxPublisherTest {
 
         verify(repository, never()).recoverStaleBatch(any(), any(), eq(100));
         verify(repository, never())
-                .findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(any(), any());
+                .findDueKeyHeads(any());
     }
 
     @Test
@@ -110,8 +107,7 @@ class IngestionOutboxPublisherTest {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class))).thenReturn(List.of());
+        when(repository.findDueKeyHeads(any(Instant.class))).thenReturn(List.of());
         publisher = new IngestionOutboxPublisher(repository, producer);
 
         publisher.publish();
@@ -126,8 +122,7 @@ class IngestionOutboxPublisherTest {
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = pending("event-dead", "route", "{}", null);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class))).thenReturn(List.of(event));
+        when(repository.findDueKeyHeads(any(Instant.class))).thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), org.mockito.ArgumentMatchers.eq(1), anyInt(), anyString())).thenReturn(1);
         when(producer.sendAndAwait(any(), any(), any())).thenReturn(false);
         publisher = new IngestionOutboxPublisher(repository, producer, null, 1, 1, 60_000L, 100, 2);
@@ -149,8 +144,7 @@ class IngestionOutboxPublisherTest {
             systemScope.set(TenantContext.isSystemScope());
             return 0;
         });
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class))).thenReturn(List.of());
+        when(repository.findDueKeyHeads(any(Instant.class))).thenReturn(List.of());
         publisher = new IngestionOutboxPublisher(repository, producer);
 
         TenantContext.set("tenant-a");
@@ -168,8 +162,7 @@ class IngestionOutboxPublisherTest {
         IngestionOutboxEvent event = pending("event-async", "route", "{}", null);
         AtomicBoolean tenantScope = new AtomicBoolean();
         when(producer.isEnabled()).thenReturn(true);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
+        when(repository.findDueKeyHeads(any(Instant.class)))
                 .thenReturn(List.of(event));
         when(repository.claim(any(), any(Instant.class), anyInt(), anyInt(), anyString())).thenAnswer(invocation -> {
             tenantScope.set("tenant-a".equals(TenantContext.get()) && !TenantContext.isSystemScope());
@@ -193,8 +186,7 @@ class IngestionOutboxPublisherTest {
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
         when(producer.isEnabled()).thenReturn(true);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class))).thenReturn(List.of());
+        when(repository.findDueKeyHeads(any(Instant.class))).thenReturn(List.of());
         when(repository.countByStatus("PENDING")).thenReturn(827L);
         when(repository.findOldestCreatedAtByStatus("PENDING"))
                 .thenReturn(Instant.now().minusSeconds(120));
@@ -241,8 +233,7 @@ class IngestionOutboxPublisherTest {
         when(producer.isEnabled()).thenReturn(true);
         IngestionOutboxEvent event = pending("backlog", "route", "{}", null);
         List<IngestionOutboxEvent> fullBatch = java.util.Collections.nCopies(200, event);
-        when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class)))
+        when(repository.findDueKeyHeads(any(Instant.class)))
                 .thenReturn(fullBatch, fullBatch, fullBatch, fullBatch, List.of());
         publisher = new IngestionOutboxPublisher(repository, producer, null,
                 1, 12, 60_000L, 100, 2, 8, 10_000L);
@@ -250,8 +241,7 @@ class IngestionOutboxPublisherTest {
         publisher.publish();
 
         verify(repository, org.mockito.Mockito.times(5))
-                .findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(
-                        org.mockito.ArgumentMatchers.eq("PENDING"), any(Instant.class));
+                .findDueKeyHeads(any(Instant.class));
     }
 
     @Test
@@ -285,7 +275,7 @@ class IngestionOutboxPublisherTest {
         publisher = new IngestionOutboxPublisher(repository, producer, null, 1, 2, 60000, 100, 1);
         IngestionOutboxEvent row = pending("event-token", "route", "{}", null);
         row.setAttempts("dead".equals(outcome) ? 1 : 0);
-        org.mockito.Mockito.when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(eq("PENDING"), any())).thenReturn(List.of(row));
+        org.mockito.Mockito.when(repository.findDueKeyHeads(any())).thenReturn(List.of(row));
         org.mockito.Mockito.when(repository.claim(eq(row.getId()), any(), eq(2), eq(row.getAttempts()), anyString())).thenReturn(1);
         when(producer.sendAndAwait(any(), any(), any())).thenReturn("success".equals(outcome));
         TenantContext.runAsSystem(publisher::publish);
@@ -308,7 +298,7 @@ class IngestionOutboxPublisherTest {
         publisher = new IngestionOutboxPublisher(repository, producer, null, 1, 2, 60000, 100, 1);
         var entered = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);
-        org.mockito.Mockito.when(repository.findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(eq("PENDING"), any())).thenAnswer(invocation -> {
+        org.mockito.Mockito.when(repository.findDueKeyHeads(any())).thenAnswer(invocation -> {
             entered.countDown();
             if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("release timed out");
             return List.of();
@@ -318,7 +308,7 @@ class IngestionOutboxPublisherTest {
             org.junit.jupiter.api.Assertions.assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
             java.util.concurrent.CompletableFuture.runAsync(() -> TenantContext.runAsSystem(publisher::publish))
                     .get(1, java.util.concurrent.TimeUnit.SECONDS);
-            verify(repository).findTop200ByStatusAndNextAttemptAtLessThanEqualOrderByNextAttemptAtAscCreatedAtAsc(eq("PENDING"), any());
+            verify(repository).findDueKeyHeads(any());
         } finally { release.countDown(); }
         first.get(5, java.util.concurrent.TimeUnit.SECONDS);
     }

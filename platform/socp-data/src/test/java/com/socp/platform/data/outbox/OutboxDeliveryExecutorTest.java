@@ -8,6 +8,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -92,5 +93,45 @@ class OutboxDeliveryExecutorTest {
                     List.of(1), System.nanoTime() + Duration.ofSeconds(5).toNanos(), item -> attempts.incrementAndGet()));
         }
         assertEquals(0, attempts.get());
+    }
+
+    @Test void sameKeyIsFifoWhileAnotherKeyCanProgress() throws Exception {
+        record Candidate(String key, int sequence) { }
+        try (var executor = new OutboxDeliveryExecutor("outbox-keyed-", 2)) {
+            var firstEntered = new CountDownLatch(1);
+            var releaseFirst = new CountDownLatch(1);
+            var otherKeyCompleted = new CountDownLatch(1);
+            var delivered = new CopyOnWriteArrayList<Candidate>();
+            Candidate first = new Candidate("same", 1);
+            Candidate second = new Candidate("same", 2);
+            Candidate other = new Candidate("other", 1);
+
+            var drain = CompletableFuture.runAsync(() -> executor.deliverKeyed(
+                    List.of(first, second, other),
+                    System.nanoTime() + Duration.ofSeconds(10).toNanos(), Candidate::key, candidate -> {
+                        if (candidate == first) {
+                            firstEntered.countDown();
+                            try {
+                                if (!releaseFirst.await(5, TimeUnit.SECONDS)) {
+                                    throw new AssertionError("release timed out");
+                                }
+                            } catch (InterruptedException failure) {
+                                Thread.currentThread().interrupt();
+                                throw new AssertionError(failure);
+                            }
+                        }
+                        delivered.add(candidate);
+                        if (candidate == other) otherKeyCompleted.countDown();
+                    }));
+            try {
+                assertTrue(firstEntered.await(2, TimeUnit.SECONDS));
+                assertTrue(otherKeyCompleted.await(2, TimeUnit.SECONDS));
+                assertFalse(delivered.contains(second), "later same-key row must not overtake");
+            } finally {
+                releaseFirst.countDown();
+            }
+            drain.get(5, TimeUnit.SECONDS);
+            assertTrue(delivered.indexOf(first) < delivered.indexOf(second));
+        }
     }
 }

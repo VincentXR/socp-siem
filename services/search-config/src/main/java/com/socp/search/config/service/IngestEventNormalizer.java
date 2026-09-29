@@ -13,7 +13,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.nio.charset.StandardCharsets;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -28,6 +32,10 @@ public class IngestEventNormalizer {
     /** Keep attacker-controlled parser output from creating unbounded maps. */
     private static final int MAX_NORMALIZED_FIELDS = 512;
     private static final int MAX_INDEXED_DIMENSION_CHARS = 255;
+    private static final DateTimeFormatter SPACE_LOCAL_DATE_TIME = new DateTimeFormatterBuilder()
+            .appendPattern("yyyy-MM-dd HH:mm:ss")
+            .optionalStart().appendFraction(java.time.temporal.ChronoField.NANO_OF_SECOND, 0, 9, true)
+            .optionalEnd().toFormatter();
 
     private final ReferenceSetStore referenceSets;
     private final ParserRegistry parsers;
@@ -165,8 +173,16 @@ public class IngestEventNormalizer {
         fields.put("detection_routing_field", DetectionRoutingKey.field(source, host, routingFields));
         fields.put("detection_routing_value", DetectionRoutingKey.value(source, host, routingFields));
 
-        String timestampValue = pick(fields, "timestamp", "@timestamp", "time");
-        boolean generatedEventTime = !hasValidTimestamp(timestampValue);
+        String configuredTimeField = sourceContext == null ? null
+                : firstNonBlank(sourceContext.timeField());
+        String timestampValue = configuredTimeField == null
+                ? firstNonBlank(canonical.get("event_time"), canonical.get("timestamp"),
+                    canonical.get("@timestamp"), canonical.get("time"))
+                : firstNonBlank(canonical.get(configuredTimeField));
+        boolean configuredTimestampPresent = configuredTimeField != null && timestampValue != null;
+        Instant eventTimestamp = parseTimestamp(timestampValue,
+                sourceContext == null ? null : sourceContext.timezone(), configuredTimestampPresent);
+        boolean generatedEventTime = eventTimestamp == null;
         if (generatedEventTime) {
             // The event-time value remains useful for online detection, while
             // the marker lets the durable identity ignore a different retry
@@ -180,7 +196,8 @@ public class IngestEventNormalizer {
                     + MAX_NORMALIZED_FIELDS + ")");
         }
 
-        SearchEvent event = new SearchEvent(eventId, parseTimestamp(timestampValue),
+        SearchEvent event = new SearchEvent(eventId,
+                eventTimestamp == null ? Instant.now() : eventTimestamp,
                 source, host,
                 severity.toUpperCase(java.util.Locale.ROOT), rawLog,
                 Map.copyOf(stringValues(fields)), Map.copyOf(ecs));
@@ -323,30 +340,38 @@ public class IngestEventNormalizer {
         };
     }
 
-    private static Instant parseTimestamp(String value) {
-        if (value == null || value.isBlank()) return Instant.now();
+    private static Instant parseTimestamp(String value, String timezone, boolean strict) {
+        if (value == null || value.isBlank()) return null;
+        ZoneId zone;
+        try {
+            zone = ZoneId.of(firstNonBlank(timezone) == null ? "UTC" : timezone.trim());
+        } catch (java.time.DateTimeException invalidZone) {
+            throw new IngestParseException("configured event timezone is invalid");
+        }
         try {
             return Instant.parse(value);
         } catch (java.time.format.DateTimeParseException notInstant) {
             try {
                 return Instant.from(DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse(value));
-            } catch (java.time.DateTimeException invalid) {
-                return Instant.now();
-            }
-        }
-    }
-
-    private static boolean hasValidTimestamp(String value) {
-        if (value == null || value.isBlank()) return false;
-        try {
-            Instant.parse(value);
-            return true;
-        } catch (java.time.format.DateTimeParseException notInstant) {
-            try {
-                Instant.from(DateTimeFormatter.ISO_OFFSET_DATE_TIME.parse(value));
-                return true;
-            } catch (java.time.DateTimeException invalid) {
-                return false;
+            } catch (java.time.DateTimeException notOffset) {
+                try {
+                    return ZonedDateTime.parse(value, DateTimeFormatter.ISO_ZONED_DATE_TIME).toInstant();
+                } catch (java.time.DateTimeException notZoned) {
+                    try {
+                        return LocalDateTime.parse(value, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+                                .atZone(zone).toInstant();
+                    } catch (java.time.DateTimeException notIsoLocal) {
+                        try {
+                            return LocalDateTime.parse(value, SPACE_LOCAL_DATE_TIME)
+                                    .atZone(zone).toInstant();
+                        } catch (java.time.DateTimeException invalid) {
+                            if (strict) {
+                                throw new IngestParseException("configured event time field contains an invalid timestamp");
+                            }
+                            return null;
+                        }
+                    }
+                }
             }
         }
     }

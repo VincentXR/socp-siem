@@ -12,11 +12,14 @@ import com.socp.search.config.persistence.store.ParseRuleStore;
 import com.socp.search.config.persistence.store.ReferenceSetStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.util.Map;
 import java.util.LinkedHashMap;
 import java.util.Optional;
 import java.util.List;
+import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -29,6 +32,92 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 class IngestEventNormalizerTest {
+
+    @ParameterizedTest
+    @CsvSource({
+            "'2026-09-29T10:15:30+08:00','2026-09-29T02:15:30Z'",
+            "'2026-09-29T10:15:30+08:00[Asia/Shanghai]','2026-09-29T02:15:30Z'",
+            "'2026-09-29T10:15:30','2026-09-29T02:15:30Z'"
+    })
+    void configuredTimeFieldAcceptsOffsetZonedAndLocalIsoFormats(
+            String configuredTime, String expectedInstant) {
+        IngestEventNormalizer normalizer = configuredTimeNormalizer(configuredTime, "Asia/Shanghai");
+
+        var normalized = normalizer.normalize("{}", "collector-1");
+
+        assertEquals(Instant.parse(expectedInstant), normalized.event().timestamp());
+    }
+
+    @Test
+    void invalidConfiguredTimeValueIsQuarantinableParseFailure() {
+        IngestEventNormalizer normalizer = configuredTimeNormalizer(
+                "not-a-timestamp", "Asia/Shanghai");
+
+        var failure = assertThrows(IngestParseException.class,
+                () -> normalizer.normalize("{}", "collector-1"));
+
+        assertEquals("configured event time field contains an invalid timestamp",
+                failure.getMessage());
+    }
+
+    @Test
+    void configuredTimeFieldAndTimezoneDriveCanonicalEventTimestamp() {
+        TenantContext.set("tenant-a");
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        IngestSourceResolver sourceResolver = mock(IngestSourceResolver.class);
+        when(references.snapshot()).thenReturn(ReferenceSetStore.Snapshot.EMPTY);
+        when(sourceResolver.resolve(anyString(), anyString())).thenReturn(new IngestSourceContext(
+                "collector-1", "source-1", ParseFormat.JSON, List.of(),
+                "occurred_local", "Asia/Shanghai", true));
+        when(parsers.parse(anyString(), org.mockito.ArgumentMatchers.eq(ParseFormat.JSON), isNull()))
+                .thenReturn(Map.of("source", "auth", "host", "server-1",
+                        "occurred_local", "2026-09-29 10:15:30", "message", "login"));
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                references, parsers, sourceResolver, null);
+
+        var normalized = normalizer.normalize("{}", "collector-1");
+
+        assertEquals(Instant.parse("2026-09-29T02:15:30Z"), normalized.event().timestamp());
+        assertEquals("2026-09-29T02:15:30Z", normalized.payload().get("timestamp"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                normalized.event().fields().containsKey("event_time_generated"));
+    }
+
+    private static IngestEventNormalizer configuredTimeNormalizer(
+            String configuredTime, String timezone) {
+        TenantContext.set("tenant-a");
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        IngestSourceResolver sourceResolver = mock(IngestSourceResolver.class);
+        when(references.snapshot()).thenReturn(ReferenceSetStore.Snapshot.EMPTY);
+        when(sourceResolver.resolve(anyString(), anyString())).thenReturn(new IngestSourceContext(
+                "collector-1", "source-1", ParseFormat.JSON, List.of(),
+                "occurred_at", timezone, true));
+        when(parsers.parse(anyString(), org.mockito.ArgumentMatchers.eq(ParseFormat.JSON), isNull()))
+                .thenReturn(Map.of("source", "auth", "host", "server-1",
+                        "occurred_at", configuredTime, "message", "login"));
+        return new IngestEventNormalizer(references, parsers, sourceResolver, null);
+    }
+
+    @Test
+    void invalidConfiguredTimezoneIsQuarantinableParseFailure() {
+        TenantContext.set("tenant-a");
+        ParserRegistry parsers = mock(ParserRegistry.class);
+        ReferenceSetStore references = mock(ReferenceSetStore.class);
+        IngestSourceResolver sourceResolver = mock(IngestSourceResolver.class);
+        when(references.snapshot()).thenReturn(ReferenceSetStore.Snapshot.EMPTY);
+        when(sourceResolver.resolve(anyString(), anyString())).thenReturn(new IngestSourceContext(
+                "collector-1", "source-1", ParseFormat.JSON, List.of(),
+                "occurred_local", "Not/A-Timezone", true));
+        when(parsers.parse(anyString(), org.mockito.ArgumentMatchers.eq(ParseFormat.JSON), isNull()))
+                .thenReturn(Map.of("occurred_local", "2026-09-29 10:15:30"));
+        IngestEventNormalizer normalizer = new IngestEventNormalizer(
+                references, parsers, sourceResolver, null);
+
+        assertThrows(IngestParseException.class,
+                () -> normalizer.normalize("{}", "collector-1"));
+    }
 
     @Test
     void rawAndVectorSyslogPreserveDetectionSourceAndHostDimensions() throws Exception {
@@ -339,7 +428,7 @@ class IngestEventNormalizerTest {
         IngestSourceResolver sourceResolver = mock(IngestSourceResolver.class);
         ParsePipelineResolver pipeline = mock(ParsePipelineResolver.class);
         when(sourceResolver.resolve(anyString(), anyString())).thenReturn(new IngestSourceContext(
-                "collector-1", "source-1", ParseFormat.AUTO, List.of("rule-1"), true));
+                "collector-1", "source-1", ParseFormat.AUTO, List.of("rule-1"), null, null, true));
         Map<String, String> additions = new LinkedHashMap<>();
         additions.put("added_1", "value");
         additions.put("added_2", "value");
@@ -364,7 +453,7 @@ class IngestEventNormalizerTest {
         LogSource source = LogSource.createFull("nginx", SourceType.FILE, ParseFormat.AUTO,
                 "/var/log/nginx/access.log", null, null, "prod", true,
                 "beginning", null, null, List.of("nginx-rule"), null,
-                null, "utf-8", "event_time", "UTC", List.of(), 1, null, null);
+                null, "utf-8", "event_time", "UTC", List.of(), 1, null, null, null);
         LogSourceStore sources = mock(LogSourceStore.class);
         when(sources.revision("tenant-a")).thenReturn(1L);
         when(sources.get("collector-1")).thenReturn(Optional.empty());
@@ -400,7 +489,7 @@ class IngestEventNormalizerTest {
         IngestSourceResolver sourceResolver = mock(IngestSourceResolver.class);
         ParsePipelineResolver pipeline = mock(ParsePipelineResolver.class);
         IngestSourceContext context = new IngestSourceContext(
-                "collector-1", "source-1", ParseFormat.AUTO, List.of(), true);
+                "collector-1", "source-1", ParseFormat.AUTO, List.of(), null, null, true);
         when(parsers.parse(anyString(), any(ParseFormat.class), isNull())).thenReturn(Map.of(
                 CanonicalEvent.EVENT_MESSAGE, "raw",
                 CanonicalEvent.EVENT_ACTION, "login",

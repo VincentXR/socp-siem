@@ -1624,6 +1624,8 @@ export const enUS: LocaleMessages = {
     groupId: 'Consumer group',
     readFrom: 'Read from',
     frequency: 'Poll interval (seconds)',
+    ignoreOlderSeconds: 'Ignore files older than (seconds)',
+    ignoreOlderHint: 'Optional. Leave empty to include historical files.',
     outputTarget: 'Output target',
     category: 'Log category',
     sourceBasics: 'Basics',

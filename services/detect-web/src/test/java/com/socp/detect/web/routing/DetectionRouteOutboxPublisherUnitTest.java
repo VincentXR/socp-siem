@@ -44,8 +44,7 @@ class DetectionRouteOutboxPublisherUnitTest {
         row = new DetectionRouteOutboxEntity("delivery-1", "tenant-a", "event-1", "v2", "plan-1",
                 "STATELESS", "event", "event-1", "route-key", "canonical", 0, 12,
                 "routed", "{}", Instant.now());
-        when(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
-                eq("PENDING"), any(Instant.class))).thenReturn(List.of(row));
+        when(repository.findDueKeyHeads(any(Instant.class))).thenReturn(List.of(row));
     }
 
     @AfterEach

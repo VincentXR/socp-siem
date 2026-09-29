@@ -39,7 +39,7 @@ class RequestValidationTest {
         LogSourceRequest request = new LogSourceRequest(
                 "", null, null, null, null, null, null, true,
                 null, null, null, List.of(), null, null, null, null, null,
-                List.of(), 1, null, null);
+                List.of(), 1, null, null, null);
 
         assertTrue(validator.validate(request).size() >= 3);
     }
@@ -61,7 +61,7 @@ class RequestValidationTest {
                 "auth", SourceType.FILE, ParseFormat.AUTO, "demo/auth.log", null,
                 null, "local", true, "beginning", null, null, List.of(), null,
                 null, "utf-8", "event_time", "UTC", List.of("team=soc"), 1,
-                null, null);
+                null, null, null);
 
         var source = request.toNewDomain();
         assertTrue(source.id() != null && !source.id().isBlank());

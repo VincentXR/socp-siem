@@ -15,6 +15,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 import jakarta.validation.Valid;
 
 /**
@@ -69,6 +71,7 @@ public class AiController {
     /** Explicit analyst action; the generated SOAR suggestions are never executed here. */
     @RequireRole({"admin", "analyst"})
     @AuditOperation(action = "AI_INVESTIGATION_APPEND", target = "incident")
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     @PostMapping("/investigations/{id}/append-to-incident")
     public ApiResult<java.util.Map<String, Object>> appendToIncident(
             @PathVariable String id,

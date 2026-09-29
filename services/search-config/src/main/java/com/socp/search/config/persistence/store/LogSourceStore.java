@@ -155,6 +155,7 @@ public class LogSourceStore {
         e.setTimezone(s.timezone());
         e.setTagsJson(writeJson(s.tags()));
         e.setFrequency(s.frequency());
+        e.setIgnoreOlderSeconds(s.ignoreOlderSeconds());
         e.setCategoryId(s.categoryId());
         e.setGroupId(s.groupId());
         e.setCreatedAt(s.createdAt());
@@ -171,7 +172,8 @@ public class LogSourceStore {
                 e.getReadFrom(), e.getMultiline(), e.getSinkTargetId(),
                 parseRuleIds == null ? List.of() : parseRuleIds, e.getDescription(),
                 e.getProtocol(), e.getCharset(), e.getTimeField(), e.getTimezone(),
-                tags == null ? List.of() : tags, e.getFrequency(), e.getCategoryId(), e.getGroupId(),
+                tags == null ? List.of() : tags, e.getFrequency(), e.getIgnoreOlderSeconds(),
+                e.getCategoryId(), e.getGroupId(),
                 e.getCreatedAt());
     }
 

@@ -1622,6 +1622,8 @@ export const zhCN = {
     groupId: '消费组',
     readFrom: '读取位置',
     frequency: '轮询间隔（秒）',
+    ignoreOlderSeconds: '忽略早于指定秒数的文件',
+    ignoreOlderHint: '可选；留空时不按文件修改时间过滤历史日志。',
     outputTarget: '输出目标',
     category: '日志类别',
     sourceBasics: '基本信息',

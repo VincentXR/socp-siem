@@ -24,6 +24,14 @@ public class DetectionRouteOutboxEntity {
     @Column(name = "delivery_id", length = 64)
     private String deliveryId;
 
+    /** Database-assigned enqueue order used to fence same-key publication across replicas. */
+    @Column(name = "sequence_no", insertable = false, updatable = false)
+    private Long sequenceNo;
+
+    /** Nullable unique lease key: at most one replica may process a routing key. */
+    @Column(name = "processing_key", length = 600)
+    private String processingKey;
+
     @Column(name = "tenant_id", nullable = false, length = 64)
     private String tenantId;
 
@@ -120,6 +128,7 @@ public class DetectionRouteOutboxEntity {
     }
 
     public String getDeliveryId() { return deliveryId; }
+    public Long getSequenceNo() { return sequenceNo; }
     public String getTenantId() { return tenantId; }
     public String getSourceEventId() { return sourceEventId; }
     public String getRoutingVersion() { return routingVersion; }

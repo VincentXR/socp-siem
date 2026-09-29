@@ -12,6 +12,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.lang.reflect.Method;
@@ -106,6 +107,18 @@ class TransactionalAuditAspectTest {
                 .isEqualTo("FAIL:expected rejection");
     }
 
+    @Test
+    void notSupportedBoundaryDoesNotRollBackCommittedStateWhenAuditFails() throws Throwable {
+        jdbc.execute("DROP TABLE t_audit_outbox");
+        ProceedingJoinPoint point = point("externalSideEffect", () -> {
+            jdbc.update("INSERT INTO t_business (id) VALUES ('externally-visible')");
+            return "done";
+        });
+
+        assertThatThrownBy(() -> aspect.around(point)).isInstanceOf(RuntimeException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM t_business", Integer.class)).isOne();
+    }
+
     private static ProceedingJoinPoint point(Invocation invocation) throws Throwable {
         return point("mutate", invocation);
     }
@@ -136,6 +149,12 @@ class TransactionalAuditAspectTest {
         @Transactional(noRollbackFor = IllegalArgumentException.class,
                 isolation = Isolation.SERIALIZABLE, timeout = 3)
         public Object toleratedFailure() {
+            return null;
+        }
+
+        @AuditOperation(action = "EXTERNAL", target = "business")
+        @Transactional(propagation = Propagation.NOT_SUPPORTED)
+        public Object externalSideEffect() {
             return null;
         }
     }

@@ -86,7 +86,7 @@ const sourceRuleLoading = ref(false)
 let sourceRuleSearchTimer: number | null = null
 let sourceRuleSearchGeneration = 0
 const logCategories = ref<LogCategory[]>([])
-const newSource = ref({ name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', description: '', protocol: 'tcp', charset: 'utf-8', timeField: '', timezone: 'Asia/Shanghai', tags: '', frequency: 1 as number | null, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true })
+const newSource = ref({ name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', description: '', protocol: 'tcp', charset: 'utf-8', timeField: '', timezone: 'Asia/Shanghai', tags: '', frequency: 1 as number | null, ignoreOlderSeconds: null as number | null, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true })
 const newOutput = ref({ name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true })
 const sourceErrors = ref<Record<string, string>>({})
 const outputErrors = ref<Record<string, string>>({})
@@ -270,7 +270,7 @@ function onIngestTab(key: string | number) {
   if (tab === 'quarantine') loadParseFailures()
 }
 
-const EMPTY_SOURCE = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', description: '', protocol: 'tcp', charset: 'utf-8', timeField: '', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true }
+const EMPTY_SOURCE = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', description: '', protocol: 'tcp', charset: 'utf-8', timeField: '', timezone: 'Asia/Shanghai', tags: '', frequency: 1, ignoreOlderSeconds: null as number | null, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true }
 
 function prepareSourceRuleSelector(ids: string[]) {
   if (sourceRuleSearchTimer !== null) { window.clearTimeout(sourceRuleSearchTimer); sourceRuleSearchTimer = null }
@@ -303,7 +303,8 @@ function openEditSource(source: LogSource) {
     readFrom: source.readFrom || 'beginning', multiline: source.multiline || '', protocol: source.protocol || 'tcp',
     description: source.description || '', charset: source.charset || 'utf-8', timeField: source.timeField || '',
     timezone: source.timezone || 'Asia/Shanghai', tags: (source.tags || []).join(','),
-    frequency: source.frequency ?? 1, categoryId: source.categoryId || '', groupId: source.groupId || '',
+    frequency: source.frequency ?? 1, ignoreOlderSeconds: source.ignoreOlderSeconds ?? null,
+    categoryId: source.categoryId || '', groupId: source.groupId || '',
     sinkTargetId: source.sinkTargetId || '',
     parseRuleIds: [...(source.parseRuleIds || [])], enabled: source.enabled,
   }
@@ -348,7 +349,8 @@ async function saveSource() {
     protocol: newSource.value.protocol || null, charset: newSource.value.charset || null,
     timeField: newSource.value.timeField.trim() || null, timezone: newSource.value.timezone || null,
     tags: newSource.value.tags.split(/[,\uFF0C\s]+/).filter(Boolean),
-    frequency: newSource.value.frequency, groupId: newSource.value.groupId || null,
+    frequency: newSource.value.frequency, ignoreOlderSeconds: newSource.value.ignoreOlderSeconds,
+    groupId: newSource.value.groupId || null,
     categoryId: newSource.value.categoryId || null,
     sinkTargetId: newSource.value.sinkTargetId || null,
     parseRuleIds: newSource.value.parseRuleIds,
@@ -631,6 +633,7 @@ onUnmounted(() => {
                 <FormField :label="t('ingest.filePath')"><el-input v-model="newSource.path" :placeholder="t('ingest.filePathPlaceholder')" /></FormField>
                 <FormField :label="t('ingest.readFrom')"><el-select v-model="newSource.readFrom"><el-option :label="t('ingest.readFromBeginning')" value="beginning" /><el-option :label="t('ingest.readFromEnd')" value="end" /></el-select></FormField>
                 <FormField :label="t('ingest.frequency')"><el-input-number v-model="newSource.frequency" :min="1" controls-position="right" /></FormField>
+                <FormField :label="t('ingest.ignoreOlderSeconds')" :hint="t('ingest.ignoreOlderHint')"><el-input-number v-model="newSource.ignoreOlderSeconds" :min="1" :max="315360000" clearable controls-position="right" /></FormField>
               </FormGrid>
             </FormSection>
             <FormSection v-else-if="newSource.type === 'SOCKET' || newSource.type === 'SYSLOG'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.socketAccessHint')">
