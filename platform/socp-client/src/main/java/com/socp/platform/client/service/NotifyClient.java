@@ -37,6 +37,12 @@ public class NotifyClient {
                 + encode(channelId) + "/alert", alarmJson, headers);
     }
 
+    /** Reopen terminal notification receipts after an audited operator decision. */
+    public ServiceCall recoverAlarmDeliveries(String recoveryJson) {
+        return http.postJson(SocpService.NOTIFY,
+                "/api/v1/operations/notification-deliveries/requeue", recoveryJson);
+    }
+
     private static String encode(String value) {
         return java.net.URLEncoder.encode(value == null ? "" : value,
                 java.nio.charset.StandardCharsets.UTF_8).replace("+", "%20");

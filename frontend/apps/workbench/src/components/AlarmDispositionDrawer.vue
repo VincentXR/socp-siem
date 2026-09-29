@@ -28,6 +28,7 @@ import { addAlarmNote, assignAlarm, getAlarmDeliveries, getAlarmEvidence, getDis
 import { createCaseFromAlarm, getCaseByAlarm } from '../api/incidents'
 import { ApiError } from '../api/core'
 import { useI18n } from '../composables/useI18n'
+import { useConfirm } from '../composables/useConfirm'
 import { tOr } from '../utils/i18nLabel'
 
 const props = withDefaults(defineProps<{
@@ -56,6 +57,7 @@ const drawerVisible = computed({
 })
 
 const { t } = useI18n()
+const { confirmDanger, promptInput } = useConfirm()
 
 const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
 const disposition = ref<Disposition | null>(null)
@@ -271,10 +273,17 @@ async function requeueDelivery(delivery: AlarmDeliveryStatus): Promise<void> {
   if (!alarmId) return
   const token = ++actionToken
   const deliveryId = delivery.deliveryId
+  let recovery: { reason: string; confirmUnknown: boolean } | undefined
+  if (delivery.destination === 'NOTIFY') {
+    if (!await confirmDanger(t('drawer.notificationReplayConfirm'))) return
+    const reason = await promptInput(t('drawer.notificationReplayReason'))
+    if (reason === null) return
+    recovery = { reason: reason.trim(), confirmUnknown: true }
+  }
   requeueBusy.value = deliveryId
   actionError.value = ''
   try {
-    await requeueAlarmDelivery(deliveryId)
+    await requeueAlarmDelivery(deliveryId, recovery)
     if (!actionStillTargets(alarmId, token)) return
     const refreshed = await getAlarmDeliveries(alarmId)
     if (!actionStillTargets(alarmId, token)) return

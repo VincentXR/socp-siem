@@ -1,16 +1,16 @@
 package com.socp.alert.service;
 
-import com.socp.alert.domain.Alarm;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.alert.domain.OutboxEvent;
 import com.socp.alert.domain.OutboxReplayResult;
 import com.socp.alert.persistence.repository.AlarmDeliveryRepository;
 import com.socp.alert.persistence.repository.AlarmRepository;
 import com.socp.alert.persistence.repository.OutboxRepository;
-
-
 import com.socp.platform.data.outbox.DeadOutboxRecord;
 import com.socp.platform.data.outbox.OutboxAdminResult;
 import com.socp.platform.error.exception.ApiException;
+import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.client.service.NotifyClient;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -29,26 +29,31 @@ import java.util.List;
 @Service
 public class OutboxReplayService {
 
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private final OutboxRepository eventRepository;
     private final AlarmDeliveryRepository deliveryRepository;
     private final AlarmRepository alarmRepository;
     private final AlertPerformanceMetrics performanceMetrics;
+    private final NotifyClient notifyClient;
 
     @Autowired
     public OutboxReplayService(OutboxRepository eventRepository,
                                AlarmDeliveryRepository deliveryRepository,
                                AlarmRepository alarmRepository,
-                               AlertPerformanceMetrics performanceMetrics) {
+                               AlertPerformanceMetrics performanceMetrics,
+                               NotifyClient notifyClient) {
         this.eventRepository = eventRepository;
         this.deliveryRepository = deliveryRepository;
         this.alarmRepository = alarmRepository;
         this.performanceMetrics = performanceMetrics;
+        this.notifyClient = notifyClient;
     }
 
     public OutboxReplayService(OutboxRepository eventRepository,
                                AlarmDeliveryRepository deliveryRepository,
                                AlarmRepository alarmRepository) {
-        this(eventRepository, deliveryRepository, alarmRepository, null);
+        this(eventRepository, deliveryRepository, alarmRepository, null, null);
     }
 
     @Transactional(readOnly = true)
@@ -88,11 +93,37 @@ public class OutboxReplayService {
         return new OutboxReplayResult(id, "ALARM_EVENT", tenant, "PENDING", now);
     }
 
-    @Transactional
     public OutboxReplayResult requeueAlarmDelivery(String id) {
+        return requeueAlarmDelivery(id, null, false);
+    }
+
+    public OutboxReplayResult requeueAlarmDelivery(String id, String reason, boolean confirmUnknown) {
         String tenant = TenantContext.require();
-        deliveryRepository.findByIdAndTenantId(id, tenant)
+        var delivery = deliveryRepository.findByIdAndTenantId(id, tenant)
                 .orElseThrow(() -> ApiException.notFound("Alarm delivery row does not exist: " + id));
+        if (!"DEAD".equals(delivery.getStatus())) {
+            throw ApiException.badRequest("Only DEAD alarm delivery rows can be requeued");
+        }
+        if ("NOTIFY".equals(delivery.getDestination())) {
+            if (notifyClient == null) throw ApiException.of(503, "Notification recovery client is unavailable");
+            if (reason == null || reason.isBlank()) {
+                throw ApiException.badRequest("A recovery reason is required for notification replay");
+            }
+            ServiceCall recovery;
+            try {
+                recovery = notifyClient.recoverAlarmDeliveries(MAPPER.writeValueAsString(java.util.Map.of(
+                        "alarmId", delivery.getAlarmId(),
+                        "reason", reason.trim(),
+                        "confirmUnknown", confirmUnknown)));
+            } catch (Exception failure) {
+                throw ApiException.of(503, "Notification terminal receipts could not be reopened");
+            }
+            if (recovery == null || !recovery.ok()) {
+                throw ApiException.of(recovery == null || recovery.status() < 400 ? 503 : recovery.status(),
+                        "Notification terminal receipts could not be reopened: "
+                                + (recovery == null ? "no response" : recovery.failureReason()));
+            }
+        }
         Instant now = Instant.now();
         if (deliveryRepository.requeueDead(id, tenant, now) != 1) {
             throw ApiException.badRequest("Only DEAD alarm delivery rows can be requeued");

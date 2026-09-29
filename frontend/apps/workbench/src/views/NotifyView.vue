@@ -66,7 +66,7 @@ function dispatchStatusType(status: string): 'success' | 'danger' | 'warning' | 
   const value = String(status || '').toLowerCase()
   if (value === 'sent' || value === 'succeeded' || value === 'success') return 'success'
   if (value === 'failed' || value === 'error') return 'danger'
-  if (value === 'retrying' || value === 'pending' || value === 'queued') return 'warning'
+  if (value === 'retrying' || value === 'pending' || value === 'queued' || value === 'requeued') return 'warning'
   return 'info'
 }
 function displayTarget(channel: Channel): string {
@@ -258,10 +258,21 @@ onMounted(loadNotify)
     <el-card shadow="never">
       <template #header>{{ t('notify.dispatchLogsLive') }}</template>
       <el-table v-loading="loading" :data="logs" size="small" border :empty-text="t('common.empty')">
+        <el-table-column type="expand"><template #default="{ row }">
+          <div class="notify-receipt-detail">
+            <div><b>{{ t('notify.alarmId') }}</b><span class="mono">{{ row.alarmId || '—' }}</span></div>
+            <div><b>{{ t('notify.deliveryId') }}</b><span class="mono">{{ row.deliveryId || '—' }}</span></div>
+            <div><b>{{ t('notify.httpStatus') }}</b><span>{{ row.httpStatus ?? '—' }}</span></div>
+            <div><b>{{ t('notify.retryClass') }}</b><span>{{ row.retryable === true ? t('notify.retryable') : row.retryable === false ? t('notify.notRetryable') : '—' }}</span></div>
+            <div><b>{{ t('notify.errorCode') }}</b><span class="mono">{{ row.errorCode || '—' }}</span></div>
+            <div class="notify-receipt-detail-full"><b>{{ t('common.details') }}</b><span>{{ row.detail || row.error || '—' }}</span></div>
+          </div>
+        </template></el-table-column>
         <el-table-column prop="ts" :label="t('common.timestamp')" width="210"><template #default="{ row }">{{ d(row.ts) }}</template></el-table-column>
         <el-table-column prop="channel" :label="t('notify.channel')" min-width="150" show-overflow-tooltip />
         <el-table-column prop="type" :label="t('common.type')" width="110"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
         <el-table-column prop="ruleId" :label="t('notify.rule')" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="errorCode" :label="t('notify.errorCode')" min-width="180" show-overflow-tooltip />
         <el-table-column :label="t('common.status')" width="100"><template #default="{ row }"><el-tag :type="dispatchStatusType(row.status)" size="small">{{ dispatchStatusLabel(row.status) }}</el-tag></template></el-table-column>
       </el-table>
     </el-card>
@@ -294,3 +305,12 @@ onMounted(loadNotify)
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.notify-receipt-detail { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 18px;padding:10px 18px;color:var(--ns-text-2);font-size:12px }
+.notify-receipt-detail > div { display:flex;flex-direction:column;gap:4px;min-width:0 }
+.notify-receipt-detail b { color:var(--ns-text-3);font-weight:500 }
+.notify-receipt-detail span { overflow-wrap:anywhere }
+.notify-receipt-detail-full { grid-column:1 / -1 }
+@media (max-width: 720px) { .notify-receipt-detail { grid-template-columns:1fr } .notify-receipt-detail-full { grid-column:auto } }
+</style>

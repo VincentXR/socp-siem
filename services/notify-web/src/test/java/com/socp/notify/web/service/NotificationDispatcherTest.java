@@ -23,6 +23,7 @@ import java.util.UUID;
 import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -45,7 +46,7 @@ class NotificationDispatcherTest {
 
     @org.junit.jupiter.api.BeforeEach void defaults() {
         org.mockito.Mockito.lenient().when(deliveries.claim(any(), any()))
-                .thenReturn(new NotificationDeliveryState.Claim("token", null));
+                .thenReturn(new NotificationDeliveryState.Claim("token", null, 0));
         org.mockito.Mockito.lenient().when(deliveries.finish(any(), any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean()))
                 .thenReturn(true);
     }
@@ -133,7 +134,7 @@ class NotificationDispatcherTest {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-1", "Ops", "WEBHOOK", "http://ops", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
-        given(deliveries.claim(any(), any())).willReturn(new NotificationDeliveryState.Claim(null, "{\"channel\":\"Ops\",\"status\":\"sent\"}"));
+        given(deliveries.claim(any(), any())).willReturn(new NotificationDeliveryState.Claim(null, "{\"channel\":\"Ops\",\"status\":\"sent\"}", 0));
         NotificationDispatcher dispatcher = dispatcher();
 
         Map<String, Object> result = dispatcher.dispatch(Map.of("id", "AL-1"));
@@ -234,6 +235,7 @@ class NotificationDispatcherTest {
         assertEquals("unknown", channelResult.get("status"));
         assertEquals("NOTIFY_RESULT_UNKNOWN", channelResult.get("errorCode"));
         assertEquals(false, channelResult.get("retryable"));
+        assertNotNull(channelResult.get("deliveryId"));
         verify(deliveries).finish(eq("AL-ERR"), eq("CH-ERR"), eq("token"),
                 org.mockito.ArgumentMatchers.contains("NOTIFY_RESULT_UNKNOWN"), eq(true));
     }
@@ -394,7 +396,7 @@ class NotificationDispatcherTest {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("CH-CORRUPT", "Ops", "WEBHOOK", "http://ops", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
-        given(deliveries.claim(any(), any())).willReturn(new NotificationDeliveryState.Claim(null, "not-json"));
+        given(deliveries.claim(any(), any())).willReturn(new NotificationDeliveryState.Claim(null, "not-json", 0));
 
         Map<String, Object> result = dispatcher().dispatch(Map.of("id", "AL-CORRUPT"));
 
@@ -409,7 +411,7 @@ class NotificationDispatcherTest {
         TenantContext.set("tenant-a");
         Channel channel = new Channel("busy", "Busy", "LOG", "local", true, "");
         given(channels.enabled()).willReturn(List.of(channel));
-        given(deliveries.claim(any(), any())).willReturn(new NotificationDeliveryState.Claim(null, null));
+        given(deliveries.claim(any(), any())).willReturn(new NotificationDeliveryState.Claim(null, null, 0));
         var response = dispatcher().dispatch(Map.of("id", "alarm"));
         assertEquals(1, response.get("failed"));
         assertEquals("NOTIFY_PENDING", ((Map<?, ?>) ((List<?>) response.get("results")).getFirst()).get("errorCode"));
@@ -430,6 +432,7 @@ class NotificationDispatcherTest {
         assertEquals("NOTIFY_RECEIPT_UNCONFIRMED", ((Map<?, ?>) ((List<?>) first.get("results")).getFirst()).get("errorCode"));
         assertEquals("unknown", ((Map<?, ?>) ((List<?>) first.get("results")).getFirst()).get("status"));
         assertEquals(false, ((Map<?, ?>) ((List<?>) first.get("results")).getFirst()).get("retryable"));
+        assertNotNull(((Map<?, ?>) ((List<?>) first.get("results")).getFirst()).get("deliveryId"));
         var second = dispatcher().dispatch(Map.of("id", "alarm"));
         assertEquals(1, second.get("failed"));
         assertEquals("NOTIFY_CLAIM_LOST", ((Map<?, ?>) ((List<?>) second.get("results")).getFirst()).get("errorCode"));

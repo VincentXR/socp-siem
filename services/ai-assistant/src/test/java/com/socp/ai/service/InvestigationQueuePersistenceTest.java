@@ -17,6 +17,8 @@ import org.springframework.data.domain.PageRequest;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
 
@@ -51,6 +53,45 @@ class InvestigationQueuePersistenceTest {
             assertEquals("PARTIAL", agent.get(id).get("status"));
         } finally {
             service.close();
+        }
+    }
+
+    @Test
+    void onlyOneDifferentIncidentTargetCanOwnTheAppendSideEffect() throws Exception {
+        TenantContext.set("audit-ai-append");
+        var row = new com.socp.ai.persistence.entity.InvestigationEntity();
+        row.setId("append-race");
+        row.setTenantId("audit-ai-append");
+        row.setAlertId("AL-APPEND");
+        row.setStatus("COMPLETED");
+        row.setResultJson("{}");
+        row.setAppendClaimToken("expired-owner");
+        row.setAppendClaimUntil(Instant.now().minusSeconds(1));
+        row.setCreatedAt(Instant.now());
+        row.setUpdatedAt(Instant.now());
+        repository.saveAndFlush(row);
+
+        var start = new CountDownLatch(1);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var a = pool.submit(() -> claimAppend(start, "CASE-A", "token-a"));
+            var b = pool.submit(() -> claimAppend(start, "CASE-B", "token-b"));
+            start.countDown();
+            int claimedA = a.get();
+            int claimedB = b.get();
+            assertEquals(1, claimedA + claimedB);
+            var stored = repository.findByIdAndTenantId("append-race", "audit-ai-append").orElseThrow();
+            assertEquals(claimedA == 1 ? "CASE-A" : "CASE-B", stored.getIncidentId());
+            assertEquals(claimedA == 1 ? "token-a" : "token-b", stored.getAppendClaimToken());
+            assertTrue(stored.getAppendClaimUntil().isAfter(Instant.now()));
+        }
+    }
+
+    private int claimAppend(CountDownLatch start, String incidentId, String token) throws Exception {
+        start.await();
+        try (TenantContext.Scope ignored = TenantContext.open("audit-ai-append")) {
+            Instant now = Instant.now();
+            return repository.claimAppend("append-race", "audit-ai-append", incidentId,
+                    token, now, now.plusSeconds(30));
         }
     }
 }

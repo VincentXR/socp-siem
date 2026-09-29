@@ -43,7 +43,7 @@ jobs:
             echo "run_heavy=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_heavy=false" >> "$GITHUB_OUTPUT"
-            echo "Full-stack skipped: documentation-only change"
+            echo "Full-stack skipped: known non-runtime files only"
           fi
 
   full-stack-heavy:
@@ -61,6 +61,10 @@ jobs:
       SOCP_TEMPORAL_TARGET: localhost:7233
       SOCP_RATELIMIT_BACKEND: redis
       SOCP_RATELIMIT_FAIL_CLOSED: "true"
+      # The live Playwright task uses the Vite server on this exact origin.
+      # Keep the gateway's cookie-auth CSRF check enabled, preserve its local
+      # defaults, and add only that isolated browser origin for unsafe requests.
+      SOCP_AUTH_ALLOWED_ORIGINS: "http://localhost:5173,http://localhost:18092,http://127.0.0.1:4173"
       SOCP_CLIENT_EXTERNAL_ALLOWED_HOSTS: "127.0.0.1,localhost"
       SOCP_CLIENT_EXTERNAL_HTTPS_ONLY: "false"
       SOCP_CLIENT_EXTERNAL_ALLOW_PRIVATE_NETWORKS: "true"
@@ -324,6 +328,18 @@ jobs:
       - name: Run full API verification
         run: python3 build/verify-full.py
 
+      - name: Install Chromium for live user-task acceptance
+        run: pnpm exec playwright install --with-deps chromium
+        working-directory: frontend/apps/workbench
+
+      - name: Run live log-source browser acceptance
+        env:
+          SOCP_LIVE_E2E: "true"
+          SOCP_GATEWAY_URL: http://127.0.0.1:18092
+          SOCP_E2E_USERNAME: admin
+        run: pnpm exec playwright test e2e/live-source-workflow.spec.ts
+        working-directory: frontend/apps/workbench
+
       - name: Run true event-pipeline verification
         run: python3 build/verify-pipeline.py
 
@@ -431,7 +447,10 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: full-stack-e2e-logs
-          path: .cache/
+          path: |
+            .cache/
+            frontend/apps/workbench/test-results/
+            frontend/apps/workbench/playwright-report/
           include-hidden-files: true
           if-no-files-found: ignore
 

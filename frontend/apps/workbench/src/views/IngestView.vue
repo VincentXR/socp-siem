@@ -46,6 +46,8 @@ import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
+import ElMessage from 'element-plus/es/components/message/index.mjs'
+import 'element-plus/es/components/message/style/css.mjs'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   ApiError,
@@ -84,7 +86,7 @@ const sourceRuleLoading = ref(false)
 let sourceRuleSearchTimer: number | null = null
 let sourceRuleSearchGeneration = 0
 const logCategories = ref<LogCategory[]>([])
-const newSource = ref({ name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1 as number | null, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true })
+const newSource = ref({ name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', description: '', protocol: 'tcp', charset: 'utf-8', timeField: '', timezone: 'Asia/Shanghai', tags: '', frequency: 1 as number | null, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true })
 const newOutput = ref({ name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true })
 const sourceErrors = ref<Record<string, string>>({})
 const outputErrors = ref<Record<string, string>>({})
@@ -243,7 +245,14 @@ async function replayParseFailure(row: IngestParseFailure) {
   if (!canWrite.value || replayingFailure.value) return
   replayingFailure.value = row.id
   try {
-    await replayIngestParseFailure(row.id)
+    const result = await replayIngestParseFailure(row.id)
+    const index = parseFailures.value.findIndex(item => item.id === row.id)
+    if (index >= 0) parseFailures.value.splice(index, 1, result)
+    if (result.replayStatus === 'REPLAYED') {
+      ElMessage.success(t('ingest.replaySucceeded', { eventId: result.replayedEventId || t('time.notAvailable') }))
+    } else {
+      ElMessage.warning(t('ingest.replayFailed', { reason: result.lastError || result.failureReason }))
+    }
     await loadParseFailures()
   } catch (failure) {
     loadErrors.value = { ...loadErrors.value, quarantine: String(failure) }
@@ -261,7 +270,7 @@ function onIngestTab(key: string | number) {
   if (tab === 'quarantine') loadParseFailures()
 }
 
-const EMPTY_SOURCE = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', protocol: 'tcp', charset: 'utf-8', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true }
+const EMPTY_SOURCE = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', description: '', protocol: 'tcp', charset: 'utf-8', timeField: '', timezone: 'Asia/Shanghai', tags: '', frequency: 1, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true }
 
 function prepareSourceRuleSelector(ids: string[]) {
   if (sourceRuleSearchTimer !== null) { window.clearTimeout(sourceRuleSearchTimer); sourceRuleSearchTimer = null }
@@ -292,7 +301,8 @@ function openEditSource(source: LogSource) {
     name: source.name, type: source.type || 'FILE', format: source.format || 'AUTO',
     path: source.path || '', address: source.address || '', topic: source.topic || '', env: source.env || 'local',
     readFrom: source.readFrom || 'beginning', multiline: source.multiline || '', protocol: source.protocol || 'tcp',
-    charset: source.charset || 'utf-8', timezone: source.timezone || 'Asia/Shanghai', tags: (source.tags || []).join(','),
+    description: source.description || '', charset: source.charset || 'utf-8', timeField: source.timeField || '',
+    timezone: source.timezone || 'Asia/Shanghai', tags: (source.tags || []).join(','),
     frequency: source.frequency ?? 1, categoryId: source.categoryId || '', groupId: source.groupId || '',
     sinkTargetId: source.sinkTargetId || '',
     parseRuleIds: [...(source.parseRuleIds || [])], enabled: source.enabled,
@@ -331,20 +341,18 @@ async function saveSource() {
   isolateError(sourceError, await mutation.run(async () => {
   const source: LogSourceInput = {
     name: newSource.value.name.trim(), type: newSource.value.type, format: newSource.value.format,
-    env: newSource.value.env, enabled: newSource.value.enabled, readFrom: newSource.value.readFrom,
-    protocol: newSource.value.protocol, charset: newSource.value.charset, timezone: newSource.value.timezone,
+    path: newSource.value.path.trim() || null, address: newSource.value.address.trim() || null,
+    topic: newSource.value.topic.trim() || null, env: newSource.value.env.trim() || null,
+    enabled: newSource.value.enabled, readFrom: newSource.value.readFrom || null,
+    multiline: newSource.value.multiline.trim() || null, description: newSource.value.description.trim() || null,
+    protocol: newSource.value.protocol || null, charset: newSource.value.charset || null,
+    timeField: newSource.value.timeField.trim() || null, timezone: newSource.value.timezone || null,
+    tags: newSource.value.tags.split(/[,\uFF0C\s]+/).filter(Boolean),
     frequency: newSource.value.frequency, groupId: newSource.value.groupId || null,
     categoryId: newSource.value.categoryId || null,
     sinkTargetId: newSource.value.sinkTargetId || null,
     parseRuleIds: newSource.value.parseRuleIds,
   }
-  if (newSource.value.multiline.trim()) source.multiline = newSource.value.multiline.trim()
-  if (newSource.value.tags.trim()) source.tags = newSource.value.tags.split(/[,\uFF0C\s]+/).filter(Boolean)
-  // An empty target stays empty: inventing a demo path handed out a source that
-  // looked configured while reading a file that only exists in the repository.
-  if (newSource.value.type === 'FILE') source.path = newSource.value.path.trim()
-  if (newSource.value.type === 'SOCKET' || newSource.value.type === 'SYSLOG') source.address = newSource.value.address.trim()
-  if (newSource.value.type === 'KAFKA') source.topic = newSource.value.topic.trim()
   if (editingSourceId.value) await updateSource(editingSourceId.value, source)
   else await createSource(source)
   sourceSearchDraft.value = source.name
@@ -510,7 +518,7 @@ const showOutputDialogGuard = useFormDialog(showOutputDialog, () => newOutput.va
 async function refreshAll() {
   actionError.value = ''
   loadErrors.value = {}
-  await Promise.all([loadSources(), loadOutputs(), loadParseRules(), loadTasks(), loadCategories()])
+  await Promise.all([loadSources(), loadOutputs(), loadParseRules(), loadTasks(), loadCategories(), loadParseFailures()])
 }
 onMounted(() => { void refreshAll() })
 watch(testDialog, open => { if (!open) cancelPreview() })
@@ -607,6 +615,9 @@ onUnmounted(() => {
                 <FormField :label="t('ingest.environment')">
                   <el-input v-model="newSource.env" :placeholder="t('ingest.environmentPlaceholder')" />
                 </FormField>
+                <FormField :label="t('common.description')" full>
+                  <el-input v-model="newSource.description" type="textarea" :rows="2" :placeholder="t('ingest.sourceDescriptionPlaceholder')" />
+                </FormField>
                 <FormField :label="t('common.enabled')">
                   <el-switch v-model="newSource.enabled" />
                 </FormField>
@@ -639,6 +650,7 @@ onUnmounted(() => {
               <FormGrid :columns="2">
                 <FormField :label="t('ingest.charset')"><el-select v-model="newSource.charset" :placeholder="t('ingest.charsetPlaceholder')"><el-option label="UTF-8" value="utf-8" /><el-option label="GBK" value="gbk" /><el-option label="ISO-8859-1" value="iso-8859-1" /></el-select></FormField>
                 <FormField :label="t('ingest.timezone')"><el-select v-model="newSource.timezone" :placeholder="t('ingest.timezonePlaceholder')"><el-option label="Asia/Shanghai" value="Asia/Shanghai" /><el-option label="UTC" value="UTC" /><el-option label="Asia/Tokyo" value="Asia/Tokyo" /></el-select></FormField>
+                <FormField :label="t('ingest.timeField')"><el-input v-model="newSource.timeField" :placeholder="t('ingest.timeFieldPlaceholder')" /></FormField>
                 <FormField :label="t('ingest.tags')" :hint="t('ingest.tagsHint')" full><el-input v-model="newSource.tags" :placeholder="t('ingest.tagsPlaceholder')" /></FormField>
               </FormGrid>
             </FormSection>
@@ -656,8 +668,10 @@ onUnmounted(() => {
             <el-table-column prop="receivedAt" :label="t('ingest.receivedAt')" width="170"><template #default="{ row }">{{ fmtTime(row.receivedAt) }}</template></el-table-column>
             <el-table-column prop="collectorId" :label="t('ingest.collector')" width="150" show-overflow-tooltip />
             <el-table-column prop="rawPayload" :label="t('ingest.rawPayload')" min-width="240" show-overflow-tooltip />
-            <el-table-column prop="failureReason" :label="t('ingest.failureReason')" min-width="220" show-overflow-tooltip />
+            <el-table-column :label="t('ingest.failureReason')" min-width="220" show-overflow-tooltip><template #default="{ row }"><span :class="{ 'parse-replay-error': row.lastError }">{{ row.lastError || row.failureReason }}</span></template></el-table-column>
             <el-table-column prop="parserVersion" :label="t('ingest.parserVersion')" width="130" show-overflow-tooltip />
+            <el-table-column prop="replayAttempts" :label="t('ingest.replayAttempts')" width="90" />
+            <el-table-column prop="replayedEventId" :label="t('ingest.replayedEventId')" min-width="180" show-overflow-tooltip />
             <el-table-column prop="replayStatus" :label="t('common.status')" width="105"><template #default="{ row }"><el-tag :type="row.replayStatus === 'REPLAYED' ? 'success' : 'warning'" size="small">{{ row.replayStatus }}</el-tag></template></el-table-column>
             <el-table-column v-if="canWrite" :label="t('common.actions')" width="100"><template #default="{ row }"><el-button link type="primary" size="small" :loading="replayingFailure === row.id" :disabled="row.replayStatus === 'REPLAYED' || !!replayingFailure" @click="replayParseFailure(row as IngestParseFailure)">{{ t('ingest.replay') }}</el-button></template></el-table-column>
           </el-table>

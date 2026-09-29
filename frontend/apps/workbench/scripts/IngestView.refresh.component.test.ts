@@ -11,6 +11,7 @@ import type { IngestTask, LogSource } from '../src/api'
 const api = vi.hoisted(() => ({
   listSourcesPage: vi.fn(), listOutputs: vi.fn(), listParseRulesPage: vi.fn(), resolveParseRules: vi.fn(),
   listIngestTasks: vi.fn(), ingestSummary: vi.fn(), listCategories: vi.fn(), previewParse: vi.fn(),
+  listIngestParseFailures: vi.fn(), replayIngestParseFailure: vi.fn(), updateSource: vi.fn(), createSource: vi.fn(),
 }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...api }))
 const summary = { collectors: 1, accepted: 19, skipped: 2, forwarded: 17, bytes: 512, eps1m: 25,
@@ -22,7 +23,9 @@ type View = { refreshAll: () => Promise<void>; sources: Array<{ id: string }>; l
   loadSources: () => Promise<void>; applySourceSearch: () => void
   rulePage: number; ruleTotal: number; ruleSearchDraft: string; parseRules: Array<{ id: string }>
   applyRuleSearch: () => void; openEditSource: (source: LogSource) => void
-  sourceRuleOptionLabel: (id: string) => string; searchSourceRules: (query: string) => void }
+  sourceRuleOptionLabel: (id: string) => string; searchSourceRules: (query: string) => void
+  newSource: Record<string, unknown>; saveSource: () => Promise<void>
+  parseFailures: Array<Record<string, unknown>>; replayParseFailure: (row: Record<string, unknown>) => Promise<void> }
 async function setup() {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: IngestView }] })
   await router.push('/')
@@ -40,9 +43,56 @@ beforeEach(() => {
   api.ingestSummary.mockResolvedValue(summary)
   api.listCategories.mockResolvedValue([])
   api.previewParse.mockResolvedValue({ matched: true, fields: {} })
+  api.listIngestParseFailures.mockResolvedValue({ items: [], total: 0, page: 1, size: 50, totalPages: 0 })
+  api.updateSource.mockResolvedValue({ source: {} })
+  api.createSource.mockResolvedValue({})
 })
 
 describe('ingest independent reads', () => {
+  it('refreshes the quarantine together with the rest of the page', async () => {
+    const { root } = await setup(); await flushPromises()
+    expect(api.listIngestParseFailures).toHaveBeenCalledWith(1, 50, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    root.unmount()
+  })
+
+  it('sends a complete replacement when editing so hidden source fields survive', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    view.openEditSource({
+      id: 'source-a', name: 'Before', type: 'FILE', format: 'JSON', path: '/var/log/a.log',
+      address: null, topic: null, env: 'prod', enabled: true, createdAt: '2026-09-01T00:00:00Z',
+      readFrom: 'end', multiline: '{ mode = "continue_through" }', sinkTargetId: 'sink-a',
+      parseRuleIds: ['rule-a'], description: 'Owned by detection engineering', protocol: 'tcp',
+      charset: 'utf-8', timeField: '@timestamp', timezone: 'UTC', tags: ['team=blue'],
+      frequency: 7, categoryId: 'auth', groupId: 'group-a',
+    })
+    await flushPromises()
+    view.newSource.name = 'After'
+    await view.saveSource()
+    expect(api.updateSource).toHaveBeenCalledWith('source-a', expect.objectContaining({
+      name: 'After', description: 'Owned by detection engineering', timeField: '@timestamp',
+      path: '/var/log/a.log', readFrom: 'end', multiline: '{ mode = "continue_through" }',
+      sinkTargetId: 'sink-a', parseRuleIds: ['rule-a'], tags: ['team=blue'], groupId: 'group-a',
+    }))
+    root.unmount()
+  })
+
+  it('shows and retains the latest replay outcome before refreshing quarantine', async () => {
+    const failed = { id: 'failure-a', collectorId: 'vector', rawPayload: 'bad', receivedAt: '2026-09-01T00:00:00Z',
+      parserVersion: 'v1', failureReason: 'first error', replayStatus: 'PENDING', replayAttempts: 0 }
+    api.listIngestParseFailures.mockResolvedValueOnce({ items: [failed], total: 1, page: 1, size: 50, totalPages: 1 })
+      .mockResolvedValueOnce({ items: [{ ...failed, lastError: 'latest parser error', replayAttempts: 1 }], total: 1, page: 1, size: 50, totalPages: 1 })
+    api.replayIngestParseFailure.mockResolvedValue({ ...failed, lastError: 'latest parser error', replayAttempts: 1, replayed: false })
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    await view.replayParseFailure(failed)
+    await flushPromises()
+    expect(api.replayIngestParseFailure).toHaveBeenCalledWith('failure-a')
+    expect(view.parseFailures[0]?.lastError).toBe('latest parser error')
+    expect(view.parseFailures[0]?.replayAttempts).toBe(1)
+    root.unmount()
+  })
+
   it('pages and searches rule 501 while retaining its selected source-binding label', async () => {
     const deep = { id: 'rule-501', name: 'Deep parser', format: 'KV', pattern: null, sourceId: null,
       enabled: true, order: 501, mapping: [], setFields: [], filters: [] }

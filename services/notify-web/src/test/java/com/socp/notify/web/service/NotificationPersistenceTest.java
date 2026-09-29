@@ -86,6 +86,55 @@ class NotificationPersistenceTest {
         assertNotNull(state.claim("alarm", "channel").token());
     }
 
+    @Test void unknownReceiptNeedsOperatorConfirmationAndRecoveryCreatesANewDeliveryGeneration() {
+        var first = state.claim("alarm", "channel");
+        assertTrue(state.finish("alarm", "channel", first.token(),
+                "{\"channel\":\"Ops\",\"type\":\"WEBHOOK\",\"status\":\"unknown\",\"retryable\":false}", true));
+
+        ApiException unconfirmed = assertThrows(ApiException.class,
+                () -> state.recover("alarm", "destination checked", false));
+        assertEquals(409, unconfirmed.getCode());
+        assertNotNull(state.claim("alarm", "channel").receiptJson());
+
+        var recovery = state.recover("alarm", "destination checked", true);
+        assertEquals(1, recovery.reset().size());
+        var replay = state.claim("alarm", "channel");
+        assertNotNull(replay.token());
+        assertEquals(1, replay.recoveryGeneration());
+    }
+
+    @Test void correctedChannelActuallySendsAfterTerminalReceiptRecovery() {
+        var channel = channels.add(new Channel("recover", "Recovery", "WEBHOOK", "http://fixture.invalid", true, ""));
+        var http = mock(SocpHttpClient.class);
+        when(http.postExternalOnce(any(), any(), any(), anyInt(), anyMap()))
+                .thenReturn(null)
+                .thenReturn(new ServiceCall(null, "fixture", true, 200, "ok", null, 1, false, 1));
+        var executor = new NotificationExecutor();
+        try {
+            var dispatcher = new NotificationDispatcher(channels, http, state, logs, null, executor);
+            assertEquals(1, dispatcher.dispatch(Map.of("id", "alarm-recover")).get("failed"));
+            Map<String, Object> failedLog = dispatcher.log().getFirst();
+            assertEquals("NOTIFY_RESULT_UNKNOWN", failedLog.get("errorCode"));
+            assertEquals(0, failedLog.get("httpStatus"));
+            assertEquals(false, failedLog.get("retryable"));
+            assertTrue(String.valueOf(failedLog.get("detail")).contains("unknown"));
+            assertEquals(1, dispatcher.recover("alarm-recover", "fixed webhook credentials", true).get("reset"));
+            assertEquals(0, dispatcher.dispatch(Map.of("id", "alarm-recover")).get("failed"));
+
+            @SuppressWarnings({"unchecked", "rawtypes"})
+            org.mockito.ArgumentCaptor<Map<String, String>> headers = org.mockito.ArgumentCaptor.forClass((Class) Map.class);
+            verify(http, times(2)).postExternalOnce(any(), any(), any(), anyInt(), headers.capture());
+            assertNotEquals(headers.getAllValues().get(0).get("Idempotency-Key"),
+                    headers.getAllValues().get(1).get("Idempotency-Key"));
+            assertTrue(dispatcher.log().stream().anyMatch(entry -> "requeued".equals(entry.get("status"))
+                    && "unknown".equals(entry.get("previousStatus"))
+                    && Integer.valueOf(1).equals(entry.get("recoveryGeneration"))
+                    && String.valueOf(entry.get("detail")).contains("fixed webhook credentials")));
+        } finally {
+            executor.close();
+        }
+    }
+
     @Test void receiptPersistenceFailureRollsBackAndKeepsUnconfirmedClaim() {
         var first = state.claim("alarm", "channel");
         assertThrows(RuntimeException.class, () -> state.finish("alarm", "channel", first.token(), null, true));

@@ -55,4 +55,17 @@ class NotifyClientCoverageTest {
                 Map.of("Idempotency-Key", "run-9"));
         verify(http).postJson(SocpService.NOTIFY, "/api/v1/notify/alert", "{}", Map.of());
     }
+
+    @Test
+    void recoverAlarmDeliveriesPostsTheOperatorDecisionToTheRecoveryEndpoint() {
+        String request = "{\"alarmId\":\"AL-9\",\"reason\":\"channel configuration repaired\"}";
+        ServiceCall call = new ServiceCall(SocpService.NOTIFY, "http://notify-web/api", true, 200,
+                "{\"reopened\":1}", null, 5, false, 1);
+        given(http.postJson(SocpService.NOTIFY,
+                "/api/v1/operations/notification-deliveries/requeue", request)).willReturn(call);
+
+        assertThat(client.recoverAlarmDeliveries(request).ok()).isTrue();
+        verify(http).postJson(SocpService.NOTIFY,
+                "/api/v1/operations/notification-deliveries/requeue", request);
+    }
 }

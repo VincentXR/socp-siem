@@ -2,6 +2,7 @@ package com.socp.notify.web.api.controller;
 
 import com.socp.notify.web.api.request.ChannelCreateRequest;
 import com.socp.notify.web.api.request.NotifyAlarmRequest;
+import com.socp.notify.web.api.request.NotificationRecoveryRequest;
 import com.socp.notify.web.domain.Channel;
 import com.socp.notify.web.service.NotificationDispatcher;
 import com.socp.notify.web.persistence.store.ChannelStore;
@@ -137,6 +138,14 @@ public class NotifyController {
                         ? "通知渠道暂时不可用，可安全重试"
                         : "通知渠道永久失败或回执未知，请人工核对", result);
         return ResponseEntity.status(status).body(body);
+    }
+
+    @com.socp.platform.auth.security.RequireService
+    @PostMapping("/operations/notification-deliveries/requeue")
+    public ApiResult<Map<String, Object>> recover(
+            @Valid @RequestBody NotificationRecoveryRequest request) {
+        return ApiResult.ok(dispatcher.recover(
+                request.alarmId(), request.reason(), request.confirmUnknown()));
     }
 
     /** 分发日志：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */

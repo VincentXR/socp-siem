@@ -98,6 +98,11 @@ POST /api/admin/outbox/ingestion/{id}/discard    # confirmed unrecoverable
 ```
 Equivalent routes exist for `detection-alerts`, `rule-changes`, `alarm-events`,
 `alarm-deliveries`. Fix the cause before requeueing, or the row returns to DEAD.
+For an `alarm-deliveries` row whose destination is `NOTIFY`, send
+`{"reason":"what was fixed and verified","confirmUnknown":true}`. Alert first
+reopens Notify's durable terminal receipt, then requeues its own outbox row. Set
+`confirmUnknown` only after checking the destination, because an unknown prior
+attempt may already have been accepted and a replay can duplicate it.
 **Confirm**: `*_outbox_dead_count` stops growing (the delta resolves); the specific id leaves
 the DEAD listing.
 

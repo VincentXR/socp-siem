@@ -40,6 +40,12 @@ public class InvestigationEntity {
     @Column(name = "appended_at")
     private Instant appendedAt;
 
+    @Column(name = "append_claim_token", length = 36)
+    private String appendClaimToken;
+
+    @Column(name = "append_claim_until")
+    private Instant appendClaimUntil;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -68,6 +74,10 @@ public class InvestigationEntity {
     public void setIncidentId(String incidentId) { this.incidentId = incidentId; }
     public Instant getAppendedAt() { return appendedAt; }
     public void setAppendedAt(Instant appendedAt) { this.appendedAt = appendedAt; }
+    public String getAppendClaimToken() { return appendClaimToken; }
+    public void setAppendClaimToken(String appendClaimToken) { this.appendClaimToken = appendClaimToken; }
+    public Instant getAppendClaimUntil() { return appendClaimUntil; }
+    public void setAppendClaimUntil(Instant appendClaimUntil) { this.appendClaimUntil = appendClaimUntil; }
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

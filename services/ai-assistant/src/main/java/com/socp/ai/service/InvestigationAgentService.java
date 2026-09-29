@@ -287,57 +287,102 @@ public class InvestigationAgentService {
             return result;
         }
 
-        String incidentId = blankToNull(requestedIncidentId);
-        if (incidentId == null) {
-            ServiceCall created = incidentClient.createFromAlarm(write(objectMap(result.get("alert"))));
-            auditCall(result.get("alertId"), "incident.create", created);
-            if (created == null || !created.ok()) {
-                log.warn("incident case creation failed alertId={} reason={}", result.get("alertId"),
-                        created == null ? "no response" : created.failureReason());
-                throw ApiException.of(502, "创建案件失败，请稍后重试；AI 调查结论尚未写入案件时间线");
-            }
-            Map<String, Object> createdBody = parseBody(created);
-            incidentId = text(createdBody.get("caseId"));
-            if (incidentId == null) incidentId = text(createdBody.get("id"));
-            if (incidentId == null) incidentId = caseIdOf(createdBody.get("case"));
-            if (incidentId == null) {
-                throw ApiException.of(502, "案件服务返回的建案回执缺少案件标识，请稍后重试");
-            }
+        String requested = blankToNull(requestedIncidentId);
+        String claimToken = UUID.randomUUID().toString();
+        Instant claimedAt = Instant.now();
+        if (repository.claimAppend(investigationId, tenant, requested, claimToken, claimedAt,
+                claimedAt.plusSeconds(120)) != 1) {
+            return appendConflict(investigationId, tenant, requested);
         }
 
-        String summary = InvestigationEvidenceComposer.incidentSummary(result);
-        ServiceCall note = incidentClient.addNote(incidentId, "ai-investigation", summary, investigationId);
-        auditCall(result.get("alertId"), "incident.append-summary", note);
-        if (note == null || !note.ok()) {
-            log.warn("incident timeline append failed alertId={} incidentId={} reason={}",
-                    result.get("alertId"), incidentId, note == null ? "no response" : note.failureReason());
-            throw ApiException.of(502, "写入案件时间线失败，请稍后重试");
+        boolean completed = false;
+        try {
+            // A target chosen by an earlier retry remains authoritative. This also
+            // prevents an automatic retry from creating a second case after the
+            // first case was created but the local completion write failed.
+            InvestigationEntity claimed = requested == null
+                    ? repository.findByIdAndTenantId(investigationId, tenant)
+                        .orElseThrow(() -> ApiException.notFound("Investigation does not exist: " + investigationId))
+                    : entity;
+            String incidentId = requested == null ? claimed.getIncidentId() : requested;
+            if (incidentId == null) {
+                ServiceCall created = incidentClient.createFromAlarm(
+                        write(objectMap(result.get("alert"))), investigationId);
+                auditCall(result.get("alertId"), "incident.create", created);
+                if (created == null || !created.ok()) {
+                    log.warn("incident case creation failed alertId={} reason={}", result.get("alertId"),
+                            created == null ? "no response" : created.failureReason());
+                    throw ApiException.of(502, "创建案件失败，请稍后重试；AI 调查结论尚未写入案件时间线");
+                }
+                Map<String, Object> createdBody = parseBody(created);
+                incidentId = text(createdBody.get("caseId"));
+                if (incidentId == null) incidentId = text(createdBody.get("id"));
+                if (incidentId == null) incidentId = caseIdOf(createdBody.get("case"));
+                if (incidentId == null) {
+                    throw ApiException.of(502, "案件服务返回的建案回执缺少案件标识，请稍后重试");
+                }
+                if (repository.bindAppendTarget(investigationId, tenant, claimToken,
+                        incidentId, Instant.now()) != 1) {
+                    throw ApiException.of(409, "AI 研判入案目标已变化，请刷新后重试");
+                }
+            }
+
+            String summary = InvestigationEvidenceComposer.incidentSummary(result);
+            ServiceCall note = incidentClient.addNote(incidentId, "ai-investigation", summary, investigationId);
+            auditCall(result.get("alertId"), "incident.append-summary", note);
+            if (note == null || !note.ok()) {
+                log.warn("incident timeline append failed alertId={} incidentId={} reason={}",
+                        result.get("alertId"), incidentId, note == null ? "no response" : note.failureReason());
+                throw ApiException.of(502, "写入案件时间线失败，请稍后重试");
+            }
+            Map<String, Object> appendReceipt = parseBody(note);
+            if (appendReceipt.get("error") != null || appendReceipt.get("case") == null) {
+                log.warn("incident timeline append was not confirmed alertId={} incidentId={} receipt={}",
+                        result.get("alertId"), incidentId, appendReceipt.keySet());
+                throw ApiException.of(502, "案件服务未确认时间线写入，请稍后重试");
+            }
+            Instant appended = Instant.now();
+            result.put("summaryAppended", true);
+            result.put("incidentId", incidentId);
+            result.put("summaryAppendedAt", appended.toString());
+            if (repository.markAppended(investigationId, tenant, claimToken, incidentId, appended,
+                    write(result), appended) != 1) {
+                InvestigationEntity current = repository.findByIdAndTenantId(investigationId, tenant)
+                        .orElseThrow(() -> ApiException.notFound("Investigation does not exist: " + investigationId));
+                if (current.getAppendedAt() != null) return appendedResult(current, true);
+                throw ApiException.of(409, "AI 研判入案状态未能确认，请刷新后重试");
+            }
+            completed = true;
+            entity.setIncidentId(incidentId);
+            entity.setAppendedAt(appended);
+            entity.setUpdatedAt(appended);
+            entity.setResultJson(write(result));
+            audit(result.get("alertId"), "AI_INVESTIGATION_APPEND", "SUCCESS incidentId=" + incidentId);
+            return result;
+        } finally {
+            if (!completed) repository.releaseAppendClaim(investigationId, tenant, claimToken, Instant.now());
         }
-        Map<String, Object> appendReceipt = parseBody(note);
-        if (appendReceipt.get("error") != null || appendReceipt.get("case") == null) {
-            log.warn("incident timeline append was not confirmed alertId={} incidentId={} receipt={}",
-                    result.get("alertId"), incidentId, appendReceipt.keySet());
-            throw ApiException.of(502, "案件服务未确认时间线写入，请稍后重试");
+    }
+
+    private Map<String, Object> appendConflict(String investigationId, String tenant, String requested) {
+        InvestigationEntity current = repository.findByIdAndTenantId(investigationId, tenant)
+                .orElseThrow(() -> ApiException.notFound("Investigation does not exist: " + investigationId));
+        if (current.getAppendedAt() != null) return appendedResult(current, true);
+        if (requested != null && current.getIncidentId() != null
+                && !requested.equals(current.getIncidentId())) {
+            throw ApiException.of(409, "AI 研判已绑定到案件 " + current.getIncidentId()
+                    + "，不能同时写入另一个案件");
         }
-        Instant appended = Instant.now();
-        result.put("summaryAppended", true);
-        result.put("incidentId", incidentId);
-        result.put("summaryAppendedAt", appended.toString());
-        if (repository.markAppended(investigationId, tenant, incidentId, appended,
-                write(result), appended) != 1) {
-            Map<String, Object> replay = repository.findByIdAndTenantId(investigationId, tenant)
-                    .map(value -> read(value.getResultJson())).orElse(result);
-            replay.put("duplicate", true);
-            replay.put("summaryAppended", true);
-            replay.put("incidentId", incidentId);
-            return replay;
-        }
-        entity.setIncidentId(incidentId);
-        entity.setAppendedAt(appended);
-        entity.setUpdatedAt(appended);
-        entity.setResultJson(write(result));
-        audit(result.get("alertId"), "AI_INVESTIGATION_APPEND", "SUCCESS incidentId=" + incidentId);
-        return result;
+        throw ApiException.of(409, "AI 研判正在写入案件，请稍后刷新结果");
+    }
+
+    private static Map<String, Object> appendedResult(InvestigationEntity entity, boolean duplicate) {
+        Map<String, Object> replay = read(entity.getResultJson());
+        replay.put("duplicate", duplicate);
+        replay.put("summaryAppended", true);
+        replay.put("incidentId", entity.getIncidentId());
+        if (entity.getAppendedAt() != null) replay.put("summaryAppendedAt", entity.getAppendedAt().toString());
+        return replay;
     }
 
     private Map<String, Object> requiredObject(String alertId, String tool, Supplier<ServiceCall> call,

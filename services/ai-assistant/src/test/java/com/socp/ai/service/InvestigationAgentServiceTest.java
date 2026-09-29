@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 
 class InvestigationAgentServiceTest {
 
@@ -86,7 +87,8 @@ class InvestigationAgentServiceTest {
         entity.setStatus("COMPLETED");
         entity.setResultJson("{\"alertId\":\"AL-1\",\"alert\":{\"id\":\"AL-1\"},\"analysis\":\"bounded\",\"recommendedSpl\":\"host=h\",\"citations\":[]}");
         given(repository.findByIdAndTenantId("INV-1", "tenant-a")).willReturn(Optional.of(entity));
-        given(repository.markAppended(anyString(), anyString(), anyString(), any(), anyString(), any())).willReturn(1);
+        given(repository.claimAppend(anyString(), anyString(), anyString(), anyString(), any(), any())).willReturn(1);
+        given(repository.markAppended(anyString(), anyString(), anyString(), anyString(), any(), anyString(), any())).willReturn(1);
         given(incidents.addNote(anyString(), anyString(), anyString(), anyString()))
                 .willReturn(ok("{\"code\":0,\"message\":\"ok\",\"data\":{\"case\":{\"id\":\"CASE-1\"}}}",
                         SocpService.INCIDENT));
@@ -115,6 +117,7 @@ class InvestigationAgentServiceTest {
         entity.setStatus("COMPLETED");
         entity.setResultJson("{\"alertId\":\"AL-1\",\"alert\":{\"id\":\"AL-1\"},\"citations\":[]}");
         given(repository.findByIdAndTenantId("INV-1", "tenant-a")).willReturn(Optional.of(entity));
+        given(repository.claimAppend(anyString(), anyString(), anyString(), anyString(), any(), any())).willReturn(1);
         given(incidents.addNote(anyString(), anyString(), anyString(), anyString()))
                 .willReturn(ok("{\"code\":0,\"message\":\"ok\",\"data\":{}}", SocpService.INCIDENT));
 
@@ -126,7 +129,70 @@ class InvestigationAgentServiceTest {
                 .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
                 .extracting("code").isEqualTo(502);
         verify(repository, org.mockito.Mockito.never())
-                .markAppended(anyString(), anyString(), anyString(), any(), anyString(), any());
+                .markAppended(anyString(), anyString(), anyString(), anyString(), any(), anyString(), any());
+    }
+
+    @Test
+    void aConcurrentAppendToAnotherIncidentIsRejectedWithoutSideEffects() {
+        TenantContext.set("tenant-a");
+        InvestigationRepository repository = mock(InvestigationRepository.class);
+        IncidentClient incidents = mock(IncidentClient.class);
+        InvestigationEntity entity = new InvestigationEntity();
+        entity.setId("INV-1");
+        entity.setTenantId("tenant-a");
+        entity.setAlertId("AL-1");
+        entity.setStatus("COMPLETED");
+        entity.setIncidentId("CASE-A");
+        entity.setResultJson("{\"alertId\":\"AL-1\",\"alert\":{\"id\":\"AL-1\"}}");
+        given(repository.findByIdAndTenantId("INV-1", "tenant-a")).willReturn(Optional.of(entity));
+        given(repository.claimAppend(eq("INV-1"), eq("tenant-a"), eq("CASE-B"),
+                anyString(), any(), any())).willReturn(0);
+
+        InvestigationAgentService service = new InvestigationAgentService(
+                repository, mock(AlertClient.class), mock(SearchClient.class), incidents,
+                mock(ThreatClient.class), mock(LlmChatClient.class), mock(AuditSink.class), properties());
+
+        assertThatThrownBy(() -> service.appendToIncident("INV-1", "CASE-B"))
+                .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
+                .hasMessageContaining("CASE-A")
+                .extracting("code").isEqualTo(409);
+        verify(incidents, never()).addNote(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void aLostCompletionFenceReturnsTheActuallyPersistedTarget() {
+        TenantContext.set("tenant-a");
+        InvestigationRepository repository = mock(InvestigationRepository.class);
+        IncidentClient incidents = mock(IncidentClient.class);
+        InvestigationEntity before = new InvestigationEntity();
+        before.setId("INV-1");
+        before.setTenantId("tenant-a");
+        before.setAlertId("AL-1");
+        before.setStatus("COMPLETED");
+        before.setResultJson("{\"alertId\":\"AL-1\",\"alert\":{\"id\":\"AL-1\"}}");
+        InvestigationEntity winner = new InvestigationEntity();
+        winner.setId("INV-1");
+        winner.setTenantId("tenant-a");
+        winner.setIncidentId("CASE-B");
+        winner.setAppendedAt(java.time.Instant.parse("2026-09-29T00:00:00Z"));
+        winner.setResultJson("{\"alertId\":\"AL-1\",\"incidentId\":\"CASE-B\",\"summaryAppended\":true}");
+        given(repository.findByIdAndTenantId("INV-1", "tenant-a"))
+                .willReturn(Optional.of(before), Optional.of(winner));
+        given(repository.claimAppend(eq("INV-1"), eq("tenant-a"), eq("CASE-A"),
+                anyString(), any(), any())).willReturn(1);
+        given(repository.markAppended(anyString(), anyString(), anyString(), anyString(), any(), anyString(), any()))
+                .willReturn(0);
+        given(incidents.addNote(eq("CASE-A"), anyString(), anyString(), eq("INV-1")))
+                .willReturn(ok("{\"data\":{\"case\":{\"id\":\"CASE-A\"}}}", SocpService.INCIDENT));
+
+        InvestigationAgentService service = new InvestigationAgentService(
+                repository, mock(AlertClient.class), mock(SearchClient.class), incidents,
+                mock(ThreatClient.class), mock(LlmChatClient.class), mock(AuditSink.class), properties());
+
+        Map<String, Object> result = service.appendToIncident("INV-1", "CASE-A");
+
+        assertThat(result.get("duplicate")).isEqualTo(true);
+        assertThat(result.get("incidentId")).isEqualTo("CASE-B");
     }
 
     @Test

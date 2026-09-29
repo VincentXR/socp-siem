@@ -244,7 +244,9 @@ export interface Technique { id: string; name: string; tactic: string; url: stri
 export interface Channel { id: string; name: string; type: string; target: string; enabled: boolean; description: string }
 export interface DispatchLogEntry {
   ts: string; channel: string; type: string; ruleId: string; status: string
-  alarmId?: string; error?: string
+  alarmId?: string; channelId?: string; deliveryId?: string; error?: string
+  errorCode?: string; httpStatus?: number; detail?: string; retryable?: boolean
+  duplicate?: boolean; previousStatus?: string; recoveryGeneration?: number
 }
 export interface TimelineEvent { ts: string; type: string; message: string; source: string }
 export interface CaseInfo {
