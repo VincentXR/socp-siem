@@ -170,22 +170,23 @@ class OutboxPublisherTest {
     @Test
     void asyncTriggerRunsCrossTenantScanInsideSystemScope() throws InterruptedException {
         AtomicBoolean systemScope = new AtomicBoolean();
-        CountDownLatch scopeCaptured = new CountDownLatch(1);
+        CountDownLatch scanObserved = new CountDownLatch(1);
         given(kafkaPublisher.isAvailable()).willReturn(true);
-        given(outboxRepository.markExhaustedBatch(anyInt(), anyString(), any(Instant.class), eq(100))).willAnswer(invocation -> {
-            systemScope.set(TenantContext.isSystemScope());
-            scopeCaptured.countDown();
-            return 0;
-        });
         given(outboxRepository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
-                eq("PENDING"), any(Instant.class))).willReturn(List.of());
+                eq("PENDING"), any(Instant.class))).willAnswer(invocation -> {
+            systemScope.set(TenantContext.isSystemScope());
+            scanObserved.countDown();
+            return List.of();
+        });
         publisher = publisher();
 
         TenantContext.set("tenant-a");
         publisher.triggerAsync();
 
-        assertEquals(true, scopeCaptured.await(2, TimeUnit.SECONDS));
-        verify(outboxRepository, timeout(2_000)).markExhaustedBatch(anyInt(), anyString(), any(Instant.class), eq(100));
+        assertEquals(true, scanObserved.await(2, TimeUnit.SECONDS));
+        verify(outboxRepository, timeout(2_000))
+                .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                        eq("PENDING"), any(Instant.class));
         assertEquals(true, systemScope.get());
     }
 

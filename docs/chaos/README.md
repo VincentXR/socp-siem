@@ -55,6 +55,7 @@ Those exported variables must remain set for launcher and recovery calls. With
 that environment, the scenario command is:
 
 ```bash
+SOCP_REQUIRE_DOWNSTREAM_DRAIN=true \
 python build/chaos-pipeline.py --scenario multi_instance --count 30 \
   --rebalance-cycles 3 --run-id local-multi-instance \
   --output .cache/chaos/local-multi-instance.json
@@ -78,6 +79,12 @@ assignment returns to a disjoint three-instance layout. The report records the
 dataset version/seed, commit, Kafka lag, journal state, delivery receipts, and
 logical ClickHouse uniqueness evidence.
 
+`SOCP_REQUIRE_DOWNSTREAM_DRAIN=true` makes the oracle wait, for a bounded four
+minutes, until all expected Alert downstream receipts are present and no row is
+pending, processing, failed, or unknown. CI and release-candidate evidence use
+this mode. Without it, the report takes an immediate delivery snapshot; that is
+useful for diagnosis but is not equivalent downstream-drain evidence.
+
 ## Pass meaning
 
 `pass=true` means every selected invariant was observed: no silent dependency
@@ -87,11 +94,14 @@ The multi-instance oracle compares expected deterministic alert IDs with the
 actual set after the rebalance. The matrix does not claim exactly-once
 delivery, strict cross-partition ordering, or production HA.
 
-CI cadence is intentionally split by environment. Pull requests and the
-nightly scheduled job run the deterministic duplicate-delivery and outbox
-replay scenarios. The Compose-backed process/database/OpenSearch outage
-matrix and the multi-instance rebalance oracle run in the weekly full-stack
-workflow, where the named containers and three-instance topology exist.
+CI cadence is intentionally split by environment. Change CI runs the
+deterministic duplicate-delivery and outbox replay scenarios on pushes and
+pull requests. Runtime-affecting pull requests, manual Full Stack runs, and the
+weekly schedule run the Compose-backed process/database/OpenSearch outage
+matrix and multi-instance rebalance oracle, where the named containers and
+three-instance topology exist. Known documentation-only changes still receive
+an explicit successful aggregate conclusion while legally skipping that heavy
+job.
 
 Additional scenarios should record a before/after snapshot and an observable
 invariant. A restart alone is not a chaos test unless loss, duplication, lag,
