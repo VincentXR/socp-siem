@@ -75,10 +75,37 @@ describe('CommandPalette', () => {
     expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([false])
     wrapper.unmount()
   })
+
+  it('exposes the active option on the actual input and keeps the listbox valid with no matches', async () => {
+    const wrapper = await mountPalette({ modelValue: true, menuGroups })
+    const input = wrapper.find('input')
+    expect(input.attributes('role')).toBe('combobox')
+    expect(input.attributes('aria-autocomplete')).toBe('list')
+    const listbox = wrapper.find('[role="listbox"]')
+    expect(input.attributes('aria-controls')).toBe(listbox.attributes('id'))
+    expect(input.attributes('aria-activedescendant')).toBe(wrapper.findAll('[role="option"]')[0].attributes('id'))
+    await input.trigger('keydown', { key: 'ArrowDown' })
+    expect(input.attributes('aria-activedescendant')).toBe(wrapper.findAll('[role="option"]')[1].attributes('id'))
+    await input.setValue('no-result-at-all')
+    expect(wrapper.find('[role="listbox"]').exists()).toBe(true)
+    expect(input.attributes('aria-activedescendant')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('does not navigate while Enter confirms an IME composition', async () => {
+    const wrapper = await mountPalette({ modelValue: true, menuGroups })
+    const input = wrapper.find('input')
+    const composing = press(input.element, 'Enter', { isComposing: true })
+    expect(composing.defaultPrevented).toBe(false)
+    expect(wrapper.emitted('select')).toBeUndefined()
+    await input.trigger('keydown', { key: 'Enter' })
+    expect(wrapper.emitted('select')).toEqual([[items[0].key]])
+    wrapper.unmount()
+  })
 })
 
 describe('AppShell quick jump', () => {
-  async function mountShell() {
+  async function mountShell(connected = false) {
     const router = createRouter({
       history: createMemoryHistory(),
       routes: [{ path: '/:pathMatch(.*)*', name: 'shell', component: { template: '<div />' } }],
@@ -86,6 +113,8 @@ describe('AppShell quick jump', () => {
     await router.push('/overview')
     await router.isReady()
     const wrapper = mount(AppShell, {
+      attachTo: connected ? document.body : undefined,
+      slots: { default: '<main id="main-content" tabindex="-1">Workbench</main>' },
       props: {
         menuGroups,
         activeMenu: 'overview',
@@ -100,6 +129,15 @@ describe('AppShell quick jump', () => {
     await flushPromises()
     return wrapper
   }
+
+  it('moves keyboard focus from the skip link into the main region', async () => {
+    const wrapper = await mountShell(true)
+    const skip = wrapper.find<HTMLAnchorElement>('.skip-link')
+    skip.element.focus()
+    await skip.trigger('click')
+    expect(document.activeElement).toBe(wrapper.find('main').element)
+    wrapper.unmount()
+  })
 
   it('opens on Ctrl+K, keeps Escape close harmless, and removes the listener on unmount', async () => {
     const wrapper = await mountShell()

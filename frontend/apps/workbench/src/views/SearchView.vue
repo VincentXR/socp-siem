@@ -31,6 +31,7 @@ import SevBadge from '../components/SevBadge.vue'
 import RowActivate from '../components/RowActivate.vue'
 import FormField from '../components/FormField.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
+import { useFocusReturn } from '../composables/useFocusReturn'
 import { exportSearch, listAlarmsByEvent, listFields, splSearch, type Alarm, type FieldDef, type SearchEvent, type SearchResult } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
@@ -80,6 +81,8 @@ const fieldKeyword = ref('')
 const fieldsLoading = ref(false)
 const fieldsError = ref('')
 const selectedEvent = ref<SearchEvent | null>(null)
+// The event drawer opens from a result row, so closing it must not drop focus.
+const restoreEventFocus = useFocusReturn(computed(() => Boolean(selectedEvent.value)))
 const relatedAlarms = ref<Alarm[]>([])
 const relatedAlarmsLoading = ref(false)
 const relatedAlarmsError = ref('')
@@ -423,14 +426,18 @@ function onQueryEnter(event: Event | KeyboardEvent): void {
   void search()
 }
 
+/** Exporting runs a server-side scan, so a second click must not start another. */
+const exporting = ref<'json' | 'csv' | ''>('')
 async function exportCurrent(format: 'json' | 'csv'): Promise<void> {
+  if (exporting.value) return
+  exporting.value = format
   const scoped = activeQuery.value || buildScopedQuery(query.value, selectedTimeRange.value)
   try {
     await exportSearch(scoped, format)
     ElMessage.success(t('search.exportReady'))
   } catch (cause) {
     ElMessage.error(`${t('search.exportFailed')}${cause instanceof Error ? cause.message : String(cause)}`)
-  }
+  } finally { exporting.value = '' }
 }
 
 const maxBrowsePages = computed(() => Math.ceil(MAX_BROWSE_ROWS / pageSize.value))
@@ -473,8 +480,8 @@ onMounted(() => {
           <div class="search-query-row">
             <el-input ref="queryInput" v-model="query" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" resize="none" :aria-label="t('search.queryLabel')" :placeholder="t('search.queryPlaceholder')" @keydown.enter="onQueryEnter" />
             <el-tooltip :content="t('search.queryLimitHint')" placement="top"><el-button type="primary" :loading="loading" @click="() => search()">{{ t('search.runQuery') }}</el-button></el-tooltip>
-            <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :disabled="!result" @click="exportCurrent('json')">{{ t('common.exportJson') }}</el-button></el-tooltip>
-            <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :disabled="!result" @click="exportCurrent('csv')">{{ t('common.exportCsv') }}</el-button></el-tooltip>
+            <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :loading="exporting === 'json'" :disabled="!result || Boolean(exporting)" @click="exportCurrent('json')">{{ t('common.exportJson') }}</el-button></el-tooltip>
+            <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :loading="exporting === 'csv'" :disabled="!result || Boolean(exporting)" @click="exportCurrent('csv')">{{ t('common.exportCsv') }}</el-button></el-tooltip>
           </div>
           <div class="search-query-help">{{ t('search.queryKeyboardHint') }}</div>
           <div v-if="hasDraftChanges" class="search-result-hint" role="status">{{ t('search.draftHint') }}</div>
@@ -533,7 +540,7 @@ onMounted(() => {
       <template #footer><el-button @click="saveDialogVisible = false">{{ t('common.cancel') }}</el-button><el-button type="primary" :disabled="!savedQueryName.trim()" @click="saveQuery">{{ t('common.save') }}</el-button></template>
     </el-dialog>
 
-    <el-drawer :model-value="Boolean(selectedEvent)" :title="t('search.eventDetails')" size="min(620px, 96vw)" @close="closeEvent">
+    <el-drawer :model-value="Boolean(selectedEvent)" :title="t('search.eventDetails')" size="min(620px, 96vw)" @close="closeEvent" @closed="restoreEventFocus">
       <template v-if="selectedEvent">
         <div class="search-event-summary"><SevBadge :value="selectedEvent.severity" /><span class="mono">{{ selectedEvent.timestamp }}</span><span>{{ selectedEvent.host || t('time.notAvailable') }}</span></div>
         <div class="search-event-message">{{ selectedEvent.msg || t('time.notAvailable') }}</div>

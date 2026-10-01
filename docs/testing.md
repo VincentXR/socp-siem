@@ -79,6 +79,15 @@ occurs in this check.
 
 ## Test environments
 
+Workbench keyboard and modal regressions use actual Element Plus components
+and their focus traps in `useFocusReturn.component.test.ts` and
+`CommandPalette.component.test.ts`. The browser checks in
+`e2e/focus-return.spec.ts`, `e2e/soar.spec.ts`, `e2e/workbench.spec.ts` and
+`e2e/ingest-summary-refresh.spec.ts` cover focus after transitions, native text
+shortcuts, SOAR menu/save keys, reduced motion and configuration confirmation.
+These browser checks run real UI behavior with explicitly mocked backend
+endpoints; they do not replace live-service or collector acceptance.
+
 `IngestBodyLimitAdviceTest` checks bounded raw reads, chunked/underreported
 lengths and method/class limits without weakening collector limits.
 `RuleControllerTest` checks the real manual Detection routes reject oversized

@@ -24,6 +24,35 @@ Alarm evidence links carry their event query directly and use `range=all`,
 so historical evidence is not hidden by the default recent-time window.
 Search controls precede the field dictionary on narrow screens.
 
+## Keyboard and modal behavior
+
+The shell's first keyboard link moves focus past navigation into the main
+workbench region. The command palette uses a combobox on the actual input,
+with a persistent listbox and `aria-activedescendant` identifying its selected
+option. IME confirmation does not select a page. Move initial focus after the
+dialog's focus trap opens, rather than racing it from a model-value watcher.
+
+Row detail triggers must support Enter and Space through `RowActivate` or a
+native button. Drawers use `useFocusReturn` through their `closed` event so
+focus recovery runs after the leave transition. Restore the opening control
+when available, otherwise the main region; do not steal focus from another
+surface or restore focus after reopening or leaving the view.
+
+SOAR canvas shortcuts operate only inside the editor and preserve native text
+editing. An inactive Element Plus dialog still has a hidden overlay in the DOM;
+its existence is not evidence of an open modal. Context menus support Escape,
+arrow keys and Home/End, and return focus to their node when dismissed.
+System reduced-motion preferences apply to CSS effects and animated counters,
+including preference changes while the workbench is open.
+
+Confirm writes against captured resource IDs, target states and input values.
+Reserve the operation while confirmation is pending and recheck authorization
+before submitting; cancellation must send no write. Ingest task controls edit
+configuration and still require a rendered Vector configuration to be manually
+applied. Disabling an automation rule prevents future triggers, while existing
+runs continue. Notification and connection confirmations describe subsequent
+delivery behavior and do not promise to undo completed side effects.
+
 ## Table and URL state checks
 
 Each Element Plus table using `sortable="custom"` must bind its own

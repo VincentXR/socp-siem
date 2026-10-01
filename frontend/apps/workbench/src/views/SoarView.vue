@@ -19,7 +19,7 @@ import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { watch, computed, onMounted, ref } from 'vue'
+import { watch, computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import SoarControlPlane from '../components/soar/SoarControlPlane.vue'
@@ -75,8 +75,9 @@ const editorRef = ref<{
 const openRunRequest = ref<RunOpenRequest | null>(null)
 const loading = ref(false)
 const approvalsLoading = ref(false)
-/** Trailing re-entry so a request that lands mid-flight is never silently dropped. */
-let approvalsPending = false
+/** Replacement reads cancel stale requests and keep the newest refresh authoritative. */
+let approvalController: AbortController | null = null
+let disposed = false
 const contextAlarmId = computed(() => typeof route.query.alarmId === 'string' ? route.query.alarmId : '')
 // Approval decision state
 const approvalFilter = ref<'PENDING' | 'ALL'>('PENDING')
@@ -109,7 +110,7 @@ const approvalGuard = useFormDialog(approvalVisible, () => approvalModal.value.r
 const approvalReasonMissing = computed(() => !approvalModal.value.reason.trim())
 
 function openApprovalModal(row: any, approve: boolean) {
-  if (!soarAccess.canApprove.value) return
+  if (!soarAccess.canApprove.value || approvalModal.value.loading) return
   approvalModal.value = {
     visible: true,
     approvalId: String(row?.id || ''),
@@ -124,7 +125,7 @@ function openApprovalModal(row: any, approve: boolean) {
 
 async function submitApprovalDecision() {
   const modal = approvalModal.value
-  if (!soarAccess.canApprove.value || !modal.reason.trim()) return
+  if (!soarAccess.canApprove.value || modal.loading || !modal.reason.trim()) return
   modal.loading = true
   modal.error = ''
   try {
@@ -141,43 +142,54 @@ async function submitApprovalDecision() {
   }
 }
 
-async function loadBaseData() {
-  if (loading.value) return
+let baseController: AbortController | null = null
+
+/**
+ * A reload while another one is in flight must supersede it, not be dropped:
+ * the previous reads are aborted and replaced immediately so the newest request
+ * owns the visible data.
+ */
+async function loadBaseData(): Promise<void> {
+  if (disposed) return
+  baseController?.abort()
+  const controller = new AbortController()
+  baseController = controller
   loading.value = true
   loadError.value = ''
   try {
     const [playbookResult, runResult, templateResult] = await Promise.allSettled([
-      listPlaybooks(0, 100),
-      listRuns(),
-      listTemplates(),
+      listPlaybooks(0, 100, { signal: controller.signal }),
+      listRuns(0, 20, { signal: controller.signal }),
+      listTemplates({ signal: controller.signal }),
     ])
+    if (disposed || controller.signal.aborted || baseController !== controller) return
     if (playbookResult.status === 'fulfilled') playbooks.value = playbookResult.value.items
     if (runResult.status === 'fulfilled') runs.value = runResult.value.items
     if (templateResult.status === 'fulfilled') templates.value = templateResult.value
     const firstFailure = [playbookResult, runResult, templateResult].find(result => result.status === 'rejected')
     if (firstFailure?.status === 'rejected') loadError.value = firstFailure.reason instanceof Error ? firstFailure.reason.message : 'Unable to load SOAR data'
   } finally {
-    loading.value = false
+    if (baseController === controller) { baseController = null; loading.value = false }
   }
 }
 
 async function loadApprovals(): Promise<void> {
-  if (approvalsLoading.value) {
-    approvalsPending = true
-    return
-  }
+  if (disposed) return
+  approvalController?.abort()
+  const controller = new AbortController()
+  approvalController = controller
   approvalsLoading.value = true
   approvalsError.value = ''
   try {
-    approvals.value = await listApprovals()
+    const result = await listApprovals({ signal: controller.signal })
+    if (disposed || controller.signal.aborted || approvalController !== controller) return
+    approvals.value = result
   } catch (failure) {
-    approvalsError.value = failure instanceof Error ? failure.message : 'Unable to load SOAR approvals'
-  } finally {
-    approvalsLoading.value = false
-    if (approvalsPending) {
-      approvalsPending = false
-      void loadApprovals()
+    if (!disposed && !controller.signal.aborted && approvalController === controller) {
+      approvalsError.value = failure instanceof Error ? failure.message : 'Unable to load SOAR approvals'
     }
+  } finally {
+    if (approvalController === controller) { approvalController = null; approvalsLoading.value = false }
   }
 }
 
@@ -320,6 +332,7 @@ const canLeaveEditor = async (): Promise<boolean> => !editorRef.value?.hasUnsave
 onBeforeRouteLeave(canLeaveEditor)
 onBeforeRouteUpdate((to, from) => to.path === from.path || canLeaveEditor())
 onMounted(() => { void refreshSoarPage() })
+onUnmounted(() => { disposed = true; baseController?.abort(); approvalController?.abort() })
 </script>
 
 <template>

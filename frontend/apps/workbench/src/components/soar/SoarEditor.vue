@@ -18,7 +18,7 @@ import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { VueFlow, useVueFlow, type NodeMouseEvent } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -136,6 +136,7 @@ const newPlaybookSaving = ref(false)
 const newPlaybookError = ref('')
 const newPlaybookForm = ref({ name: '', description: '', tags: '' })
 const newPlaybookGuard = useFormDialog(newPlaybookVisible, () => newPlaybookForm.value, () => newPlaybookSaving.value)
+let disposed = false
 
 function defaultDryRunInput(): JsonObject {
   return {
@@ -272,19 +273,23 @@ function clearRunHighlights(): void {
 /** Re-overlays the canvas with a run's node statuses and follows that run. */
 async function overlayRun(runId: string): Promise<void> {
   activeRunId.value = runId
-  runRows.value = await listNodes(runId)
+  const rows = await listNodes(runId)
+  if (disposed || activeRunId.value !== runId) return
+  runRows.value = rows
   flow.applyRunHighlights(runRows.value)
 }
 
 /** Resume the overlaid run from its failed nodes (engine keeps the variables snapshot). */
 async function retryRunFromCanvas(): Promise<void> {
   if (!props.canExecute || !activeRunId.value || runActionBusy.value) return
-  const reason = await promptInput(t('soar.retryReason'))
-  if (!reason) return
+  const runId = activeRunId.value
   runActionBusy.value = 'retry'
   errorMessage.value = ''
   try {
-    const result = await retryRun(activeRunId.value, reason)
+    const reason = await promptInput(t('soar.retryReason'))
+    if (!reason || !props.canExecute || disposed || activeRunId.value !== runId) return
+    const result = await retryRun(runId, reason)
+    if (disposed || activeRunId.value !== runId) return
     await overlayRun(result.runId)
     message.value = `${t('soar.runQueued')} ${result.runId}`
   } catch (failure) {
@@ -297,11 +302,13 @@ async function retryRunFromCanvas(): Promise<void> {
 /** Start a fresh execution series from the overlaid run. */
 async function rerunFromCanvas(): Promise<void> {
   if (!props.canExecute || !activeRunId.value || runActionBusy.value) return
-  if (!(await confirmDanger(t('soar.rerunConfirm')))) return
+  const runId = activeRunId.value
   runActionBusy.value = 'rerun'
   errorMessage.value = ''
   try {
-    const result = await rerunRun(activeRunId.value, t('soar.rerunRun'))
+    if (!(await confirmDanger(t('soar.rerunConfirm'))) || !props.canExecute || disposed || activeRunId.value !== runId) return
+    const result = await rerunRun(runId, t('soar.rerunRun'))
+    if (disposed || activeRunId.value !== runId) return
     await overlayRun(result.runId)
     message.value = `${t('soar.runQueued')} ${result.runId}`
   } catch (failure) {
@@ -423,7 +430,7 @@ async function createVersion() {
 
 /* ---------------- selectors / change handlers ---------------- */
 async function changeVersion(version: number): Promise<void> {
-  if (loading.value || !(await discardGuard())) return
+  if (loading.value || saving.value || publishing.value || runActionBusy.value || !(await discardGuard())) return
   await loadVersion(version)
 }
 
@@ -459,16 +466,22 @@ async function applyDefinitionJson() {
 
 /* ---------------- save / validate / dry-run / publish ---------------- */
 async function save(): Promise<boolean> {
-  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value) return false
+  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value || !hasUnsavedChanges.value || saving.value || loading.value || publishing.value) return false
+  const playbookId = selectedPlaybookId.value
+  const versionNo = selectedVersionNo.value
+  const revision = flow.graphRevision.value
   saving.value = true
   errorMessage.value = ''
   try {
     const payload = flow.serializeForSave()
-    const result = await saveVersion(selectedPlaybookId.value, selectedVersionNo.value,
+    const result = await saveVersion(playbookId, versionNo,
       payload.definition, payload.layout, rowVersion.value)
+    if (disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo) return false
     rowVersion.value = result.rowVersion
     versions.value = versions.value.map(item => item.version === result.version ? result : item)
-    flow.applyDefinition(result.definition, result.layout)
+    // The server acknowledges the submitted snapshot. Edits made while that
+    // write was pending stay dirty and must never be replaced by its response.
+    if (flow.graphRevision.value === revision) flow.applyDefinition(result.definition, result.layout)
     validation.value = null
     message.value = t('soar.draftSaved', { version: result.version })
     emit('saved', result)
@@ -553,16 +566,19 @@ async function queueRun(): Promise<void> {
 }
 
 async function publish() {
+  const playbookId = selectedPlaybookId.value
   const versionNo = selectedVersionNo.value
-  if (!props.canPublish || !selectedPlaybookId.value || !versionNo || !isDraft.value || publishing.value) return
+  if (!props.canPublish || !playbookId || !versionNo || !isDraft.value || publishing.value || saving.value || loading.value) return
   // Publish is only allowed once the canvas edits are saved and the stored
   // revision has a fresh server verdict of "valid" — never on a stale result.
   if (unsavedDraftBlocks()) return
-  if (!(await confirmDanger(t('soar.publishConfirm', { version: versionNo })))) return
   publishing.value = true
   try {
+    if (!(await confirmDanger(t('soar.publishConfirm', { version: versionNo }))) || !props.canPublish || disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo || unsavedDraftBlocks()) return
     if (!(await validate())) return
-    const result = await publishVersion(selectedPlaybookId.value, versionNo)
+    if (!props.canPublish || disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo || unsavedDraftBlocks()) return
+    const result = await publishVersion(playbookId, versionNo)
+    if (disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo) return
     versions.value = versions.value.map(item => item.version === result.version ? result : item)
     rowVersion.value = result.rowVersion
     await loadVersions()
@@ -605,6 +621,9 @@ async function openPublishedDiff(): Promise<void> {
 /* ---------------- canvas context menu / node search ---------------- */
 
 const contextMenu = ref<{ nodeId: string; nodeType: string; x: number; y: number } | null>(null)
+const contextMenuRef = ref<HTMLElement | null>(null)
+const canvasRef = ref<HTMLElement | null>(null)
+let contextMenuOrigin: HTMLElement | null = null
 
 /** Flat node list for the canvas search box (label = name · type · id). */
 const nodeSearchOptions = computed(() => {
@@ -622,22 +641,42 @@ function searchNode(nodeId: string): void {
   closeContextMenu()
 }
 
-function closeContextMenu(): void {
+function closeContextMenu(restoreFocus = false): void {
   contextMenu.value = null
+  if (restoreFocus && contextMenuOrigin?.isConnected) contextMenuOrigin.focus()
+  contextMenuOrigin = null
+}
+
+function showContextMenu(nodeId: string, nodeType: string, clientX: number, clientY: number): void {
+  const pane = flowStore.vueFlowRef.value
+  const rect = pane?.getBoundingClientRect()
+  const x = Math.max(0, Math.min(clientX - (rect?.left ?? 0), (rect?.width ?? 400) - 170))
+  const y = Math.max(0, Math.min(clientY - (rect?.top ?? 0), (rect?.height ?? 400) - 130))
+  contextMenuOrigin = canvasRef.value?.querySelector<HTMLElement>(`.vue-flow__node[data-id="${CSS.escape(nodeId)}"]`) ?? null
+  contextMenu.value = { nodeId, nodeType, x, y }
+  // Move focus into the menu so it is usable without a pointing device; the
+  // menu is otherwise reachable only through a right-click.
+  void nextTick(() => contextMenuRef.value?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus())
 }
 
 function openNodeContextMenu(event: NodeMouseEvent): void {
   if (!props.canWrite) return
   event.event.preventDefault()
-  const pane = flowStore.vueFlowRef.value
-  const rect = pane?.getBoundingClientRect()
   flow.selectNode(event.node.id)
   const nodeType = String((event.node.data as { nodeType?: string } | undefined)?.nodeType ?? '')
   // A context menu is always raised by a right-click, i.e. a MouseEvent.
   const mouseEvent = event.event as MouseEvent
-  const x = Math.max(0, Math.min(mouseEvent.clientX - (rect?.left ?? 0), (rect?.width ?? 400) - 170))
-  const y = Math.max(0, Math.min(mouseEvent.clientY - (rect?.top ?? 0), (rect?.height ?? 400) - 130))
-  contextMenu.value = { nodeId: event.node.id, nodeType, x, y }
+  showContextMenu(event.node.id, nodeType, mouseEvent.clientX, mouseEvent.clientY)
+}
+
+/** Keyboard equivalent of the right-click: ContextMenu / Shift+F10 on the selected node. */
+function openContextMenuFromKeyboard(): void {
+  if (!props.canWrite || contextMenu.value) return
+  const selected = flowStore.getSelectedNodes.value[0]
+  if (!selected) return
+  const nodeType = String((selected.data as { nodeType?: string } | undefined)?.nodeType ?? '')
+  const rect = canvasRef.value?.querySelector<HTMLElement>(`.vue-flow__node[data-id="${CSS.escape(selected.id)}"]`)?.getBoundingClientRect()
+  showContextMenu(selected.id, nodeType, rect?.right ?? 0, rect?.bottom ?? 0)
 }
 
 function onNodeDoubleClick(event: NodeMouseEvent): void {
@@ -653,6 +692,7 @@ async function renameNodePrompt(nodeId: string): Promise<void> {
     defaultValue: typeof raw.name === 'string' ? raw.name : '',
   })
   if (next === null) return
+  if (!props.canWrite || disposed || !flow.getDefinition().nodes.includes(raw)) return
   const trimmed = next.trim()
   if (trimmed) raw.name = trimmed
   else delete raw.name
@@ -661,8 +701,8 @@ async function renameNodePrompt(nodeId: string): Promise<void> {
 
 async function contextAction(action: 'copy' | 'delete' | 'rename'): Promise<void> {
   const menu = contextMenu.value
-  closeContextMenu()
-  if (!menu) return
+  closeContextMenu(true)
+  if (!props.canWrite || !menu) return
   flow.selectNode(menu.nodeId)
   if (action === 'copy') {
     flow.copySelection()
@@ -677,13 +717,15 @@ async function contextAction(action: 'copy' | 'delete' | 'rename'): Promise<void
 
 /** Retires a published revision; the server keeps it for audit but stops running it. */
 async function deprecateSelected(): Promise<void> {
+  const playbookId = selectedPlaybookId.value
   const version = selectedVersion.value
-  if (!props.canPublish || !selectedPlaybookId.value || !version || version.status !== 'PUBLISHED') return
-  if (!(await confirmDanger(t('soar.deprecateConfirm', { version: version.version })))) return
+  if (!props.canPublish || !playbookId || !version || version.status !== 'PUBLISHED' || loading.value || publishing.value || saving.value) return
   loading.value = true
   errorMessage.value = ''
   try {
-    await deprecateVersion(selectedPlaybookId.value, version.version)
+    if (!(await confirmDanger(t('soar.deprecateConfirm', { version: version.version }))) || !props.canPublish || disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
+    await deprecateVersion(playbookId, version.version)
+    if (disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
     await loadVersions(version.version)
     message.value = t('soar.versionDeprecated', { version: version.version })
   } catch (failure) {
@@ -699,14 +741,15 @@ async function deprecateSelected(): Promise<void> {
  * still has to review, validate and publish.
  */
 async function rollbackSelected(): Promise<void> {
+  const playbookId = selectedPlaybookId.value
   const version = selectedVersion.value
-  if (!props.canWrite || !selectedPlaybookId.value || !version || version.status === 'DRAFT') return
-  if (!(await discardGuard())) return
-  if (!(await confirmDanger(t('soar.rollbackConfirm', { version: version.version })))) return
+  if (!props.canWrite || !playbookId || !version || version.status === 'DRAFT' || loading.value || publishing.value || saving.value) return
   loading.value = true
   errorMessage.value = ''
   try {
-    const draft = await rollbackVersion(selectedPlaybookId.value, version.version)
+    if (!(await discardGuard()) || !(await confirmDanger(t('soar.rollbackConfirm', { version: version.version }))) || !props.canWrite || disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
+    const draft = await rollbackVersion(playbookId, version.version)
+    if (disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
     versions.value = [draft, ...versions.value.filter(item => item.version !== draft.version)]
     selectedVersionNo.value = draft.version
     rowVersion.value = draft.rowVersion
@@ -730,11 +773,28 @@ function onCanvasDrop(event: DragEvent): void {
 }
 
 async function onKeyDown(event: KeyboardEvent): Promise<void> {
-  if (!props.canWrite) return
+  if (!props.canWrite || event.defaultPrevented || event.isComposing) return
   const target = event.target as HTMLElement | null
-  if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+  if (target?.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="combobox"]')) return
+  // Element Plus retains hidden overlays after closing. Only a visible modal
+  // blocks shortcuts; the keyboard listener itself belongs to this editor.
+  if ([...document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')]
+    .some(dialog => dialog.getClientRects().length > 0 && getComputedStyle(dialog).visibility !== 'hidden')) return
   const modified = event.ctrlKey || event.metaKey
   const key = event.key.toLowerCase()
+  if (modified && key === 's') {
+    event.preventDefault()
+    await save()
+    return
+  }
+  // Graph shortcuts belong to the canvas, never the property form or page header.
+  if (!target || !canvasRef.value?.contains(target) || contextMenu.value) return
+  if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+    if (!flowStore.getSelectedNodes.value.length) return
+    event.preventDefault()
+    openContextMenuFromKeyboard()
+    return
+  }
   if (modified && key === 'z') {
     event.preventDefault()
     if (event.shiftKey) flow.redo()
@@ -765,6 +825,23 @@ async function onKeyDown(event: KeyboardEvent): Promise<void> {
   if (!flowStore.getSelectedNodes.value.length && !flowStore.getSelectedEdges.value.length) return
   event.preventDefault()
   await flow.deleteSelection()
+}
+
+function onContextMenuKeyDown(event: KeyboardEvent): void {
+  const buttons = [...(contextMenuRef.value?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])]
+  if (!buttons.length) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeContextMenu(true)
+    return
+  }
+  if (event.key === 'Tab') { closeContextMenu(true); return }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  event.preventDefault()
+  const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+  const index = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+    : (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+  buttons[index]?.focus()
 }
 
 function onIssueClick(issue: ValidationIssue): void {
@@ -827,7 +904,6 @@ defineExpose({
 
 onMounted(() => {
   resetDryRunInput()
-  document.addEventListener('keydown', onKeyDown)
   if (props.openRun && props.openRun.token !== handledOpenRunToken.value) {
     void handleOpenRunRequest(props.openRun)
   } else {
@@ -840,13 +916,13 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  document.removeEventListener('keydown', onKeyDown)
+  disposed = true
   window.removeEventListener('beforeunload', beforeUnloadHandler)
 })
 </script>
 
 <template>
-  <el-card shadow="never" class="soar-editor">
+  <el-card shadow="never" class="soar-editor" @keydown="onKeyDown">
     <template #header>
       <div class="soar-editor-header">
         <div>
@@ -857,7 +933,7 @@ onUnmounted(() => {
         </div>
         <div class="soar-editor-selects">
           <span>{{ playbooks.find(item => item.id === selectedPlaybookId)?.name || t('forms.blank') }}</span>
-          <el-select :model-value="selectedVersionNo" :disabled="loading" :aria-label="t('soar.version')" @change="changeVersion">
+          <el-select :model-value="selectedVersionNo" :disabled="loading || saving || publishing || Boolean(runActionBusy)" :aria-label="t('soar.version')" @change="changeVersion">
 
             <el-option v-for="version in versions" :key="version.id" :value="version.version" :label="`${t('soar.revisionLabel', { version: version.version })} · ${statusLabel(version.status)}`" />
           </el-select>
@@ -946,7 +1022,7 @@ onUnmounted(() => {
       <SoarFlowPalette :flow="flow" :read-only="!props.canWrite" />
 
       <section class="soar-canvas-panel" :aria-label="t('soar.playbookGraph')">
-        <div class="soar-canvas" @dragover.prevent @drop="onCanvasDrop">
+        <div ref="canvasRef" class="soar-canvas" @dragover.prevent @drop="onCanvasDrop">
           <VueFlow
             id="soar-flow"
             :node-types="nodeTypes"
@@ -959,9 +1035,9 @@ onUnmounted(() => {
             :nodes-connectable="props.canWrite"
             @node-context-menu="openNodeContextMenu"
             @node-double-click="onNodeDoubleClick"
-            @node-click="closeContextMenu"
-            @pane-click="closeContextMenu"
-            @move-start="closeContextMenu"
+            @node-click="closeContextMenu()"
+            @pane-click="closeContextMenu()"
+            @move-start="closeContextMenu()"
           >
             <Background pattern-color="#94a3b8" :gap="18" :size="1" />
             <Controls position="bottom-right" />
@@ -995,10 +1071,10 @@ onUnmounted(() => {
             >{{ t('soar.rerunRun') }}</button>
             <button type="button" class="soar-run-legend-clear" @click="clearRunHighlights">{{ t('soar.runHighlightClear') }}</button>
           </div>
-          <div v-if="contextMenu" class="soar-node-context-menu" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }">
-            <button type="button" @click="contextAction('rename')">{{ t('soar.contextMenu.rename') }}</button>
-            <button type="button" @click="contextAction('copy')">{{ t('common.copy') }}</button>
-            <button type="button" :disabled="contextMenu.nodeType === 'START'" @click="contextAction('delete')">{{ t('common.delete') }}</button>
+          <div v-if="contextMenu" ref="contextMenuRef" class="soar-node-context-menu" role="menu" :aria-label="t('soar.contextMenu.label')" :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }" @keydown.stop="onContextMenuKeyDown">
+            <button type="button" role="menuitem" tabindex="-1" @click="contextAction('rename')">{{ t('soar.contextMenu.rename') }}</button>
+            <button type="button" role="menuitem" tabindex="-1" @click="contextAction('copy')">{{ t('common.copy') }}</button>
+            <button type="button" role="menuitem" tabindex="-1" :disabled="contextMenu.nodeType === 'START'" @click="contextAction('delete')">{{ t('common.delete') }}</button>
           </div>
         </div>
         <div class="soar-canvas-footer">
@@ -1180,6 +1256,9 @@ onUnmounted(() => {
   font: inherit;
   font-size: 12px;
   text-align: left;
+}
+.soar-node-context-menu button:focus-visible {
+  outline: 2px solid var(--ns-accent); outline-offset: 1px; box-shadow: var(--ns-focus);
 }
 .soar-node-context-menu button:hover:not(:disabled) { background: var(--ns-bg-subtle); }
 .soar-node-context-menu button:disabled { color: var(--ns-text-3); cursor: not-allowed; }

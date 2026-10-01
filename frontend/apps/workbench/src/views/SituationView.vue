@@ -22,6 +22,7 @@ import { loadEcharts } from '../lib/echarts'
 import TrendChart from '../components/TrendChart.vue'
 import SevBadge from '../components/SevBadge.vue'
 import PageHeader from '../components/PageHeader.vue'
+import RowActivate from '../components/RowActivate.vue'
 import {
   alarmStats, ApiError, currentSession, gasEngineStats, gasRecentAlerts, ingestSummary, SEVERITIES,
   type ApiRequestOptions,
@@ -396,7 +397,9 @@ onUnmounted(() => {
                       <span class="risk-pill" :class="`risk-${String(row.riskLevel || 'INFO').toLowerCase()}`">{{ row.riskScore }}</span>
                     </template>
                   </el-table-column>
-                  <el-table-column prop="ruleName" :label="t('common.rule')" min-width="150" show-overflow-tooltip />
+                  <el-table-column prop="ruleName" :label="t('common.rule')" min-width="150" show-overflow-tooltip>
+                    <template #default="{ row }"><RowActivate :aria-label="String(row.ruleName ?? '')" @activate="openRiskRow(row)">{{ row.ruleName }}</RowActivate></template>
+                  </el-table-column>
                   <el-table-column prop="entity" :label="t('common.entity')" width="130" show-overflow-tooltip />
                   <el-table-column label="ATT&CK" width="92">
                     <template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.mitre || '—' }}</span></template>

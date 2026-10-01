@@ -145,7 +145,7 @@ onMounted(async () => {
       @toggle-theme="toggleTheme"
       @logout="auth.doLogout"
     >
-      <main class="socp-content"><RouterView v-if="routeMenuAllowed" /></main>
+      <main id="main-content" class="socp-content" tabindex="-1"><RouterView v-if="routeMenuAllowed" /></main>
     </AppShell>
   </el-config-provider>
 </template>

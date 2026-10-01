@@ -229,6 +229,7 @@ test('SOAR workbench covers draft lifecycle, run inspection and human controls',
   await expect(publishConfirm).toContainText('Publish version 1')
   await publishConfirm.getByRole('button', { name: /Confirm|确认/ }).click()
   await expect(page.locator('.soar-editor-message')).toContainText('Published revision 1')
+  await expect(publishConfirm).not.toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('soar-editor.png'), fullPage: true })
 
   await page.getByRole('button', { name: 'Back to list', exact: true }).click()
@@ -310,4 +311,102 @@ test('SOAR run controls surface permission failures without breaking the inspect
   await expect(page.locator('.soar-inspector-error[role="alert"]')).toContainText('SOAR rerun permission required')
   await expect(page.locator('.soar-run-summary')).toContainText('run-1')
   expect(state.unknown).toEqual([])
+})
+
+test('SOAR canvas shortcuts work after a dialog closes and the context menu supports keyboard navigation', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  const state = await installSoarMocks(page, 'admin')
+  state.versions['pb-existing'] = [{ ...EXISTING_VERSION, status: 'DRAFT' }]
+  await page.goto('/soar/playbooks/pb-existing/edit')
+  await expect(page.locator('.vue-flow__node[data-id="end"]')).toBeVisible()
+  const start = page.locator('.vue-flow__node[data-id="start"]')
+  // The rename prompt creates an Element Plus overlay which remains in the DOM after closing.
+  await start.dblclick()
+  const rename = page.locator('.el-message-box')
+  await expect(rename).toBeVisible()
+  await rename.locator('input').fill('Keyboard renamed')
+  await rename.getByRole('button', { name: 'Confirm', exact: true }).click()
+  await expect(rename).not.toBeVisible()
+  await expect(start).toContainText('Keyboard renamed')
+  await start.focus()
+  await page.keyboard.press('ControlOrMeta+s')
+  await expect(page.locator('.soar-editor-message')).toContainText('Saved draft revision 1')
+  expect(state.requests.filter(request => request.method === 'PUT')).toHaveLength(1)
+
+  await start.focus()
+  await page.keyboard.press('Shift+F10')
+  const menu = page.getByRole('menu', { name: 'Node actions menu' })
+  await expect(menu).toBeVisible()
+  await expect(menu.getByRole('menuitem', { name: 'Rename' })).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(menu.getByRole('menuitem', { name: 'Copy' })).toBeFocused()
+  await page.keyboard.press('ArrowDown')
+  await expect(menu.getByRole('menuitem', { name: 'Rename' })).toBeFocused()
+  await page.keyboard.press('End')
+  await expect(menu.getByRole('menuitem', { name: 'Copy' })).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(menu).not.toBeVisible()
+  await expect(start).toBeFocused()
+  expect(state.unknown).toEqual([])
+})
+
+test('SOAR keyboard actions leave inputs, dialogs and other page controls alone', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  const state = await installSoarMocks(page, 'admin')
+  state.versions['pb-existing'] = [{ ...EXISTING_VERSION, status: 'DRAFT' }]
+  await page.goto('/soar/playbooks/pb-existing/edit')
+  const end = page.locator('.vue-flow__node[data-id="end"]')
+  await expect(end).toBeVisible()
+  await end.click()
+  const definition = page.getByLabel('Definition JSON')
+  await definition.focus()
+  // Synthetic cancellation checks isolate app handling from the browser's native menu.
+  expect(await definition.evaluate(input => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true, cancelable: true })))).toBe(true)
+  await expect(page.getByRole('menu', { name: 'Node actions menu' })).not.toBeVisible()
+  await page.getByRole('button', { name: 'Back to list', exact: true }).focus()
+  await page.keyboard.press('Delete')
+  await expect(end).toBeVisible()
+  await end.dblclick()
+  const rename = page.locator('.el-message-box')
+  await expect(rename).toBeVisible()
+  const input = rename.locator('input')
+  expect(await input.evaluate(element => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true })))).toBe(true)
+  await expect(page.getByRole('menu', { name: 'Node actions menu' })).not.toBeVisible()
+  await rename.getByRole('button', { name: 'Cancel', exact: true }).click()
+  expect(state.requests.filter(request => request.method === 'PUT')).toHaveLength(0)
+  expect(state.unknown).toEqual([])
+})
+
+test('SOAR repeated save shortcuts submit once and a delayed save preserves newer canvas edits', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  const state = await installSoarMocks(page, 'admin')
+  state.versions['pb-existing'] = [{ ...EXISTING_VERSION, status: 'DRAFT' }]
+  let release: () => void = () => {}
+  const pending = new Promise<void>(resolve => { release = resolve })
+  let saves = 0
+  await page.route('**/soar-web/api/playbooks/pb-existing/versions/1', async route => {
+    if (route.request().method() === 'PUT') { saves++; await pending }
+    await route.fallback()
+  })
+  await page.goto('/soar/playbooks/pb-existing/edit')
+  const start = page.locator('.vue-flow__node[data-id="start"]')
+  await expect(start).toBeVisible()
+  await page.getByLabel('Definition JSON').fill(JSON.stringify(EDITED_DEFINITION))
+  await page.getByRole('button', { name: 'Apply JSON' }).click()
+  await start.focus()
+  const sent = page.waitForRequest(request => request.method() === 'PUT')
+  await page.keyboard.press('ControlOrMeta+s')
+  await sent
+  await page.keyboard.press('ControlOrMeta+s')
+  expect(saves).toBe(1)
+  const newer = { ...EDITED_DEFINITION, nodes: [{ ...EDITED_DEFINITION.nodes[0], name: 'Unsaved newer edit' }, EDITED_DEFINITION.nodes[1]] }
+  await page.getByLabel('Definition JSON').fill(JSON.stringify(newer))
+  await page.getByRole('button', { name: 'Apply JSON' }).click()
+  await expect(start).toContainText('Unsaved newer edit')
+  release()
+  await expect(page.locator('.soar-editor-message')).toContainText('Saved draft revision 1')
+  await expect(start).toContainText('Unsaved newer edit')
+  await expect(page.getByRole('button', { name: 'Save draft' })).toBeEnabled()
+  const persisted = state.versions['pb-existing'][0].definition as typeof EDITED_DEFINITION
+  expect(persisted.nodes[0].name).toBe('Browser start')
 })

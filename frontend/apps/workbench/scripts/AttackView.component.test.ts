@@ -67,7 +67,7 @@ describe('ATT&CK request ownership', () => {
   })
   it('retains coverage on failure and does not classify unknown catalogue IDs as covered', async () => {
     const wrapper = setup(); await flushPromises()
-    expect(wrapper.findAll('.am-cell')[1]!.attributes('style')).not.toContain('--ns-success')
+    expect(wrapper.findAll('.am-cell')[1]!.classes()).not.toContain('am-cell--covered')
     api.activeRuleTechniques.mockRejectedValueOnce(new Error('coverage unavailable'))
     button(wrapper, 'attack.refreshCoverage').vm.$emit('click'); await flushPromises()
     expect(wrapper.text()).toContain('50%')

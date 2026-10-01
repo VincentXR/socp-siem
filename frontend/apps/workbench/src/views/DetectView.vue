@@ -27,7 +27,7 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
 import { useLatestRequest } from '../composables/useLatestRequest'
@@ -115,6 +115,9 @@ const fieldLoadError = ref('')
 const referenceLoadError = ref('')
 const techniqueLoadError = ref('')
 const actionMessage = ref('')
+const listActionBusy = ref(false)
+let disposed = false
+onUnmounted(() => { disposed = true })
 const saveError = ref('')
 const saveNotice = ref('')
 const saveConflict = ref(false)
@@ -525,33 +528,50 @@ function ruleUpdateSpec(rule: RuleSpec, enabled: boolean, status: string): Parti
 }
 
 async function toggleRule(row: unknown): Promise<void> {
-  if (!canManageRules.value) return
-  const rule = normalizeRuleSpec(row)
-  if (!rule) return
+  if (!canManageRules.value || listActionBusy.value || disposed) return
+  const normalized = normalizeRuleSpec(row)
+  if (!normalized) return
+  const rule = clone(normalized)
+  listActionBusy.value = true
   actionMessage.value = ''
-  const status = textValue(rule.status).toUpperCase()
-  if (status === 'ACTIVE' || rule.enabled) {
-    try { await updateGasRule(String(rule.id), ruleUpdateSpec(rule, false, 'DISABLED'), rule.revisionToken); await loadRules() }
-    catch (error) { actionMessage.value = ruleMutationMessage(error) }
-    return
+  try {
+    const status = textValue(rule.status).toUpperCase()
+    if (status === 'ACTIVE' || rule.enabled) {
+      if (!await confirmDanger(t('detect.disableRuleConfirm', { name: textValue(rule.name) || String(rule.id) }))) return
+      if (!canManageRules.value || disposed) return
+      await updateGasRule(String(rule.id), ruleUpdateSpec(rule, false, 'DISABLED'), rule.revisionToken)
+      await loadRules()
+      return
+    }
+    if (!canActivate.value) { actionMessage.value = t('detect.activationAdminOnly'); return }
+    if (status === 'ARCHIVED') return
+    await activateGasRule(String(rule.id), rule.revisionToken)
+    await loadRules()
+  } catch (error) {
+    if (!disposed) actionMessage.value = ruleMutationMessage(error)
+  } finally {
+    listActionBusy.value = false
   }
-  if (!canActivate.value) { actionMessage.value = t('detect.activationAdminOnly'); return }
-  if (status === 'ARCHIVED') return
-  try { await activateGasRule(String(rule.id), rule.revisionToken); await loadRules() }
-  catch (error) { actionMessage.value = ruleMutationMessage(error) }
 }
 
 async function removeRule(row: unknown): Promise<void> {
-  if (!canManageRules.value) return
+  if (!canManageRules.value || listActionBusy.value || disposed) return
   const rule = normalizeRuleSpec(row)
   if (!rule) return
   if (ruleStatus(rule) === 'ACTIVE') {
     actionMessage.value = t('detect.disableBeforeDelete')
     return
   }
-  if (!await confirmDanger(t('detect.deleteRuleConfirm'))) return
-  try { await deleteGasRule(String(rule.id), rule.revisionToken); await loadRules() }
-  catch (error) { actionMessage.value = ruleMutationMessage(error) }
+  const { id, revisionToken } = rule
+  listActionBusy.value = true
+  try {
+    if (!await confirmDanger(t('detect.deleteRuleConfirm'))) return
+    if (!canManageRules.value || disposed) return
+    await deleteGasRule(String(id), revisionToken)
+    await loadRules()
+  } catch (error) {
+    if (!disposed) actionMessage.value = ruleMutationMessage(error)
+  } finally { listActionBusy.value = false }
 }
 
 function copyRuleAsDraft(row: unknown): void {
@@ -780,7 +800,7 @@ watch(() => route.fullPath, () => { historyOpen.value = false })
       </div>
     </section>
     </el-drawer>
-    <section v-if="!route.meta.editor" class="detect-list-section"><p v-if="typeof route.query.reference === 'string'" class="form-hint">{{ t('detect.watchlistFilter', { name: route.query.reference }) }} <el-button link @click="router.push({ query: { ...route.query, reference: undefined, page: undefined } })">{{ t('detect.clearWatchlistFilter') }}</el-button></p><form class="rule-search" @submit.prevent="applyRuleFilters"><el-input v-model="ruleKeyword" :placeholder="t('forms.search')" :aria-label="t('forms.search')" clearable maxlength="256" @clear="applyRuleFilters" /><el-button native-type="submit" size="small" :loading="loading">{{ t('forms.search') }}</el-button></form><div class="workspace-section-head list-head"><div><h2>{{ t('detect.rules') }}</h2><p>{{ t('detect.lifecycleHint') }}</p></div><span class="toolbar-count">{{ t('common.total', { total: rulesTotal }) }}</span></div><el-card shadow="never" class="detect-table-card"><el-table v-loading="loading" :data="rules" size="small" row-key="id" border allow-drag-last-column @header-dragend="onHeaderDragEnd"><el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="180" show-overflow-tooltip /><el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 150)"><template #default="{ row }"><span>{{ typeLabel(row.type) }}</span></template></el-table-column><el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 110)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column><el-table-column column-key="match" :label="t('detect.matchingConditions')" :width="columnWidth('match')" min-width="260" show-overflow-tooltip><template #default="{ row }"><span v-if="row.match?.length" class="mono">{{ row.match.map((condition: RuleCondition) => `${condition.field} ${condition.op} ${condition.value}`).join(' AND ') }}</span><span v-else-if="row.steps?.length">{{ t('detect.stepCount', { count: row.steps.length }) }}</span><span v-else>—</span></template></el-table-column><el-table-column column-key="status" :label="t('detect.ruleStatus')" :width="columnWidth('status', 110)"><template #default="{ row }"><el-tag :type="statusTag(ruleStatus(row))" size="small">{{ lifecycleStatusLabel(ruleStatus(row)) }}</el-tag></template></el-table-column><el-table-column :label="t('common.actions')" width="340" fixed="right" :resizable="false"><template #default="{ row }"><el-button v-if="canManageRules" link type="primary" size="small" @click="openRuleEditor(row)">{{ t('common.edit') }}</el-button><el-button v-if="canManageRules" link size="small" @click="openRuleHistory(row)">{{ t('detect.revisionHistory') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="testSingleRule(row)">{{ t('detect.testRule') }}</el-button><el-button v-if="canActivate && ruleStatus(row) === 'ACTIVE'" link size="small" @click="toggleRule(row)">{{ t('common.disable') }}</el-button><el-button v-if="canActivate && ['DISABLED', 'DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="toggleRule(row)">{{ t('common.enable') }}</el-button><el-button v-if="canManageRules && ruleStatus(row) !== 'ARCHIVED'" link size="small" @click="copyRuleAsDraft(row)">{{ t('common.copy') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'DISABLED'].includes(ruleStatus(row))" link type="danger" size="small" @click="removeRule(row)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="rulePage" v-model:page-size="rulePageSize" :total="rulesTotal" /><EmptyState v-if="!loading && !loadError && !rules.length" :title="t('detect.noRules')" :description="t('detect.noRulesHint')" /></el-card></section>
+    <section v-if="!route.meta.editor" class="detect-list-section"><p v-if="typeof route.query.reference === 'string'" class="form-hint">{{ t('detect.watchlistFilter', { name: route.query.reference }) }} <el-button link @click="router.push({ query: { ...route.query, reference: undefined, page: undefined } })">{{ t('detect.clearWatchlistFilter') }}</el-button></p><form class="rule-search" @submit.prevent="applyRuleFilters"><el-input v-model="ruleKeyword" :placeholder="t('forms.search')" :aria-label="t('forms.search')" clearable maxlength="256" @clear="applyRuleFilters" /><el-button native-type="submit" size="small" :loading="loading">{{ t('forms.search') }}</el-button></form><div class="workspace-section-head list-head"><div><h2>{{ t('detect.rules') }}</h2><p>{{ t('detect.lifecycleHint') }}</p></div><span class="toolbar-count">{{ t('common.total', { total: rulesTotal }) }}</span></div><el-card shadow="never" class="detect-table-card"><el-table v-loading="loading" :data="rules" size="small" row-key="id" border allow-drag-last-column @header-dragend="onHeaderDragEnd"><el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="180" show-overflow-tooltip /><el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 150)"><template #default="{ row }"><span>{{ typeLabel(row.type) }}</span></template></el-table-column><el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 110)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column><el-table-column column-key="match" :label="t('detect.matchingConditions')" :width="columnWidth('match')" min-width="260" show-overflow-tooltip><template #default="{ row }"><span v-if="row.match?.length" class="mono">{{ row.match.map((condition: RuleCondition) => `${condition.field} ${condition.op} ${condition.value}`).join(' AND ') }}</span><span v-else-if="row.steps?.length">{{ t('detect.stepCount', { count: row.steps.length }) }}</span><span v-else>—</span></template></el-table-column><el-table-column column-key="status" :label="t('detect.ruleStatus')" :width="columnWidth('status', 110)"><template #default="{ row }"><el-tag :type="statusTag(ruleStatus(row))" size="small">{{ lifecycleStatusLabel(ruleStatus(row)) }}</el-tag></template></el-table-column><el-table-column :label="t('common.actions')" width="340" fixed="right" :resizable="false"><template #default="{ row }"><el-button v-if="canManageRules" link type="primary" size="small" @click="openRuleEditor(row)">{{ t('common.edit') }}</el-button><el-button v-if="canManageRules" link size="small" @click="openRuleHistory(row)">{{ t('detect.revisionHistory') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" @click="testSingleRule(row)">{{ t('detect.testRule') }}</el-button><el-button v-if="canActivate && ruleStatus(row) === 'ACTIVE'" link size="small" :disabled="listActionBusy" @click="toggleRule(row)">{{ t('common.disable') }}</el-button><el-button v-if="canActivate && ['DISABLED', 'DRAFT', 'TESTING'].includes(ruleStatus(row))" link size="small" :disabled="listActionBusy" @click="toggleRule(row)">{{ t('common.enable') }}</el-button><el-button v-if="canManageRules && ruleStatus(row) !== 'ARCHIVED'" link size="small" @click="copyRuleAsDraft(row)">{{ t('common.copy') }}</el-button><el-button v-if="canManageRules && ['DRAFT', 'DISABLED'].includes(ruleStatus(row))" link type="danger" size="small" :disabled="listActionBusy" @click="removeRule(row)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="rulePage" v-model:page-size="rulePageSize" :total="rulesTotal" /><EmptyState v-if="!loading && !loadError && !rules.length" :title="t('detect.noRules')" :description="t('detect.noRulesHint')" /></el-card></section>
   </div>
 </template>
 

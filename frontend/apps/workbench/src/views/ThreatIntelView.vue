@@ -19,7 +19,7 @@ import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import DataTableCard from '../components/DataTableCard.vue'
 import EmptyState from '../components/EmptyState.vue'
 import FilterToolbar from '../components/FilterToolbar.vue'
@@ -43,6 +43,7 @@ import { readImportRows } from '../lib/resource-import'
 import { IOC_TYPES, prepareIocImport } from '../lib/ioc-import'
 import { useMutation } from '../composables/useMutation'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges'
+import { useFocusReturn } from '../composables/useFocusReturn'
 import { useRoute } from 'vue-router'
 import ActionFeedback from '../components/ActionFeedback.vue'
 import { useI18n } from '../composables/useI18n'
@@ -55,6 +56,9 @@ const route = useRoute()
 const mutation = useMutation()
 const actionBusy = mutation.busy
 const actionError = mutation.error
+const confirming = ref(false)
+let disposed = false
+onUnmounted(() => { disposed = true })
 const importUnconfirmed = ref(false)
 const importResult = ref<{ imported: number; skipped: number; errors: string[] } | null>(null)
 const statsError = ref('')
@@ -63,6 +67,8 @@ const loadError = ref('')
 const matchValue = ref('')
 const showIocDialog = ref(false)
 const showDetailDrawer = ref(false)
+// Opened from an IOC row: closing it must not send focus back to the document start.
+const restoreDetailFocus = useFocusReturn(showDetailDrawer)
 const editingIocId = ref<string | null>(null)
 const detailIoc = ref<Ioc | null>(null)
 const iocImportInput = ref<HTMLInputElement | null>(null)
@@ -147,31 +153,42 @@ async function saveIoc(): Promise<void> {
 }
 
 async function removeIoc(ioc: Ioc): Promise<void> {
-  if (!canWrite.value || actionBusy.value) return
+  const { id, value } = ioc
+  if (!await confirmWrite(t('threat.confirmDelete', { value }), t('common.delete'))) return
   await mutation.run(async () => {
-    if (!await confirmDanger(t('threat.confirmDelete', { value: ioc.value }), { title: t('common.delete') })) return
-    await threatIntelApi.remove(ioc.id)
+    await threatIntelApi.remove(id)
     latestRequest.cancel()
-    if (detailIoc.value?.id === ioc.id) { showDetailDrawer.value = false; detailIoc.value = null }
+    if (detailIoc.value?.id === id) { showDetailDrawer.value = false; detailIoc.value = null }
     ElMessage.success(t('threat.deleted'))
     await loadTi()
   })
 }
 
 async function toggleLifecycle(value: unknown): Promise<void> {
-  if (!canWrite.value || actionBusy.value) return
+  if (!canWrite.value || actionBusy.value || confirming.value || disposed) return
   const ioc = value as Ioc
+  const { id, revoked } = ioc
+  if (!revoked && !await confirmWrite(t('threat.revokeConfirm'), t('threat.revoke'))) return
+  if (!canWrite.value || actionBusy.value || disposed) return
   await mutation.run(async () => {
-    if (!ioc.revoked && !await confirmDanger(t('threat.revokeConfirm'), { title: t('threat.revoke') })) return
-    lifecycleBusyId.value = ioc.id
+    lifecycleBusyId.value = id
     try {
-      const updated = await threatIntelApi.setRevoked(ioc.id, !ioc.revoked)
+      const updated = await threatIntelApi.setRevoked(id, !revoked)
       latestRequest.cancel()
-      if (detailIoc.value?.id === ioc.id) detailIoc.value = updated
-      ElMessage.success(ioc.revoked ? t('threat.restored') : t('threat.revokedSuccess'))
+      if (detailIoc.value?.id === id) detailIoc.value = updated
+      ElMessage.success(revoked ? t('threat.restored') : t('threat.revokedSuccess'))
       await loadTi()
     } finally { lifecycleBusyId.value = '' }
   })
+}
+
+async function confirmWrite(message: string, title: string): Promise<boolean> {
+  if (!canWrite.value || actionBusy.value || confirming.value || disposed) return false
+  confirming.value = true
+  try {
+    const confirmed = await confirmDanger(message, { title })
+    return confirmed && canWrite.value && !actionBusy.value && !disposed
+  } finally { confirming.value = false }
 }
 
 function openDetail(ioc: Ioc): void { detailIoc.value = ioc; showDetailDrawer.value = true }
@@ -285,6 +302,6 @@ watch([() => route.query.q, () => route.query.page, () => route.query.type], () 
 
     <el-dialog v-model="importPreviewVisible" :before-close="importGuard.beforeClose" :title="t('threat.importPreviewTitle')" width="720px" :close-on-click-modal="false"><ActionFeedback :error="actionError" /><p v-if="importUnconfirmed" role="status" class="dialog-hint">{{ t('threat.importUnconfirmed') }}</p><p class="dialog-hint">{{ t('threat.importLimits') }}</p><p class="dialog-hint">{{ t('forms.importPreview', { count: importPreviewRows.length, shown: Math.min(importPreviewRows.length, 20) }) }}</p><el-table :data="importPreviewRows.slice(0, 20)" size="small" max-height="360" border><el-table-column prop="type" :label="t('common.type')" width="90" /><el-table-column prop="value" :label="t('threat.iocValue')" min-width="200" show-overflow-tooltip /><el-table-column prop="severity" :label="t('common.severity')" width="110" /><el-table-column prop="source" :label="t('common.source')" width="130" show-overflow-tooltip /></el-table><template #footer><el-button @click="importGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="actionBusy" :disabled="!canWrite || actionBusy || !importPreviewRows.length" @click="confirmIocImport">{{ t('threat.confirmImport') }}</el-button></template></el-dialog>
 
-    <el-drawer :model-value="showDetailDrawer" :title="detailIoc?.value || t('threat.iocDetails')" size="min(560px, 96vw)" @close="showDetailDrawer = false"><template v-if="detailIoc"><ActionFeedback :error="actionError" /><div class="threat-detail-status"><SevBadge :value="detailIoc.severity" /><el-tag :type="lifecycleLabel(detailIoc).type" size="small">{{ lifecycleLabel(detailIoc).text }}</el-tag><span class="mono">{{ detailIoc.type }}</span></div><dl class="threat-detail-grid"><dt>{{ t('common.source') }}</dt><dd>{{ detailIoc.source || t('time.notAvailable') }}</dd><dt>{{ t('threat.confidence') }}</dt><dd>{{ detailIoc.confidence == null ? t('time.notAvailable') : `${detailIoc.confidence}%` }}</dd><dt>{{ t('threat.validFrom') }}</dt><dd>{{ formatTime(detailIoc.validFrom) }}</dd><dt>{{ t('threat.validUntil') }}</dt><dd>{{ formatTime(detailIoc.validUntil || detailIoc.expiration) }}</dd><dt>{{ t('threat.provenance') }}</dt><dd>{{ detailIoc.provenance || t('time.notAvailable') }}</dd><dt>{{ t('common.description') }}</dt><dd>{{ detailIoc.description || t('time.notAvailable') }}</dd></dl><div v-if="detailIoc.tags?.length" class="threat-detail-tags"><el-tag v-for="tag in detailIoc.tags" :key="tag" size="small">{{ tag }}</el-tag></div><div v-if="canWrite" class="threat-detail-actions"><el-button type="primary" :disabled="actionBusy" @click="openEditIoc(detailIoc)">{{ t('common.edit') }}</el-button><el-button :type="detailIoc.revoked ? 'success' : 'warning'" :loading="lifecycleBusyId === detailIoc.id" :disabled="actionBusy" @click="toggleLifecycle(detailIoc)">{{ detailIoc.revoked ? t('threat.restore') : t('threat.revoke') }}</el-button><el-button type="danger" plain :disabled="actionBusy" @click="removeIoc(detailIoc)">{{ t('common.delete') }}</el-button></div></template></el-drawer>
+    <el-drawer :model-value="showDetailDrawer" :title="detailIoc?.value || t('threat.iocDetails')" size="min(560px, 96vw)" @close="showDetailDrawer = false" @closed="restoreDetailFocus"><template v-if="detailIoc"><ActionFeedback :error="actionError" /><div class="threat-detail-status"><SevBadge :value="detailIoc.severity" /><el-tag :type="lifecycleLabel(detailIoc).type" size="small">{{ lifecycleLabel(detailIoc).text }}</el-tag><span class="mono">{{ detailIoc.type }}</span></div><dl class="threat-detail-grid"><dt>{{ t('common.source') }}</dt><dd>{{ detailIoc.source || t('time.notAvailable') }}</dd><dt>{{ t('threat.confidence') }}</dt><dd>{{ detailIoc.confidence == null ? t('time.notAvailable') : `${detailIoc.confidence}%` }}</dd><dt>{{ t('threat.validFrom') }}</dt><dd>{{ formatTime(detailIoc.validFrom) }}</dd><dt>{{ t('threat.validUntil') }}</dt><dd>{{ formatTime(detailIoc.validUntil || detailIoc.expiration) }}</dd><dt>{{ t('threat.provenance') }}</dt><dd>{{ detailIoc.provenance || t('time.notAvailable') }}</dd><dt>{{ t('common.description') }}</dt><dd>{{ detailIoc.description || t('time.notAvailable') }}</dd></dl><div v-if="detailIoc.tags?.length" class="threat-detail-tags"><el-tag v-for="tag in detailIoc.tags" :key="tag" size="small">{{ tag }}</el-tag></div><div v-if="canWrite" class="threat-detail-actions"><el-button type="primary" :disabled="actionBusy" @click="openEditIoc(detailIoc)">{{ t('common.edit') }}</el-button><el-button :type="detailIoc.revoked ? 'success' : 'warning'" :loading="lifecycleBusyId === detailIoc.id" :disabled="actionBusy" @click="toggleLifecycle(detailIoc)">{{ detailIoc.revoked ? t('threat.restore') : t('threat.revoke') }}</el-button><el-button type="danger" plain :disabled="actionBusy" @click="removeIoc(detailIoc)">{{ t('common.delete') }}</el-button></div></template></el-drawer>
   </div>
 </template>

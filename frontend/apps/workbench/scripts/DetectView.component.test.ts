@@ -9,7 +9,7 @@ import { ApiError } from '../src/api/core'
 const mocks = vi.hoisted(() => {
   const rules = vi.fn().mockResolvedValue([{ id: 'original', name: 'Existing rule', type: 'pattern', severity: 'HIGH', status: 'DISABLED', enabled: false, match: [{ field: 'msg', op: 'eq', value: 'alert' }] }])
   return {
-    fixtureRules: rules,
+    fixtureRules: rules, confirm: vi.fn(),
     getRule: vi.fn(async (id: string) => { const rule = (await rules()).find((row: { id: string }) => row.id === id); return rule ? { ...rule, revisionToken: 'a'.repeat(64) } : rule }),
     listRulePage: vi.fn(async () => { const items = await rules(); return { items, total: items.length, page: 1, size: 20, totalPages: 1 } }),
     gasStats: vi.fn().mockResolvedValue({ rules: 1, queueLoad: 0 }),
@@ -19,6 +19,48 @@ const mocks = vi.hoisted(() => {
   }
 })
 vi.mock('../src/api', async importOriginal => ({ ...await importOriginal<object>(), ...mocks }))
+vi.mock('element-plus/es/components/message-box/index.mjs', () => ({ default: { confirm: mocks.confirm } }))
+
+describe('rule list confirmation', () => {
+  it('prevents duplicate disabling and retains the confirmed revision and complete payload', async () => {
+    mocks.updateGasRule.mockClear(); mocks.confirm.mockClear()
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect', component: DetectView }] })
+    await router.push('/detect')
+    const wrapper = mount(RouterView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } } })
+    await flushPromises()
+    const view = wrapper.findComponent(DetectView).vm as unknown as { toggleRule: (rule: unknown) => Promise<void> }
+    const rule = { id: 'rule-a', name: 'Active rule', type: 'pattern', severity: 'HIGH', status: 'ACTIVE', enabled: true,
+      match: [{ field: 'msg', op: 'eq', value: 'alert' }], revisionToken: 'a'.repeat(64) }
+    let confirm!: (value: string) => void
+    mocks.confirm.mockReturnValueOnce(new Promise<string>(resolve => { confirm = resolve }))
+    const pending = view.toggleRule(rule)
+    await view.toggleRule(rule)
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    expect(mocks.updateGasRule).not.toHaveBeenCalled()
+    rule.id = 'rule-b'; rule.revisionToken = 'b'.repeat(64); rule.match[0]!.value = 'different'
+    confirm('confirm'); await pending
+    expect(mocks.updateGasRule).toHaveBeenCalledExactlyOnceWith('rule-a', expect.objectContaining({
+      id: 'rule-a', enabled: false, status: 'DISABLED', match: [{ field: 'msg', op: 'eq', value: 'alert' }],
+    }), 'a'.repeat(64))
+    wrapper.unmount()
+  })
+
+  it('rechecks permission after the operator confirms', async () => {
+    mocks.updateGasRule.mockClear(); mocks.confirm.mockClear()
+    const role = ref('admin')
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect', component: DetectView }] })
+    await router.push('/detect')
+    const wrapper = mount(RouterView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: role } } } })
+    await flushPromises()
+    let confirm!: (value: string) => void
+    mocks.confirm.mockReturnValueOnce(new Promise<string>(resolve => { confirm = resolve }))
+    const view = wrapper.findComponent(DetectView).vm as unknown as { toggleRule: (rule: unknown) => Promise<void> }
+    const pending = view.toggleRule({ id: 'rule-a', type: 'pattern', enabled: true, status: 'ACTIVE' })
+    role.value = 'viewer'; confirm('confirm'); await pending
+    expect(mocks.updateGasRule).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
 
 describe('rule editor identity', () => {
   it('retains a rejected draft and never takes its precondition from editable JSON', async () => {

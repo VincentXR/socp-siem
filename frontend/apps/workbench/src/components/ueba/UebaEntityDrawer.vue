@@ -15,17 +15,20 @@ import ActionFeedback from '../ActionFeedback.vue'
 import SevBadge from '../SevBadge.vue'
 import type { RiskEntity } from '../../api'
 import { useI18n } from '../../composables/useI18n'
+import { useFocusReturn } from '../../composables/useFocusReturn'
 import { tOr } from '../../utils/i18nLabel'
+import { computed } from 'vue'
 
-defineProps<{ modelValue: boolean; entity: RiskEntity | null; loading?: boolean; error?: string }>()
+const props = defineProps<{ modelValue: boolean; entity: RiskEntity | null; loading?: boolean; error?: string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: boolean]; 'go-alarms': []; retry: [] }>()
 const { t, d } = useI18n()
+const restoreDrawerFocus = useFocusReturn(computed(() => props.modelValue))
 
 function formatTime(value: string | null) { return value ? d(value, 'dateTime') : t('time.notAvailable') }
 </script>
 
 <template>
-  <el-drawer :model-value="modelValue" size="min(480px, 96vw)" :title="entity?.entity ?? t('ueba.entityProfile')" @update:model-value="emit('update:modelValue', $event)">
+  <el-drawer :model-value="modelValue" size="min(480px, 96vw)" :title="entity?.entity ?? t('ueba.entityProfile')" @update:model-value="emit('update:modelValue', $event)" @closed="restoreDrawerFocus">
     <div v-if="loading" role="status">{{ t('common.loading') }}</div>
     <ActionFeedback :error="error" />
     <el-button v-if="error" @click="emit('retry')">{{ t('common.retry') }}</el-button>

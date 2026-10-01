@@ -4,6 +4,7 @@ import { isWorkbenchBackendUrl } from './helpers'
 test('ingest summary failure preserves measured throughput and parse preview stays usable', async ({ page }, testInfo) => {
   const unexpected: string[] = [], errors: string[] = []
   let summaryFails = false
+  let configEnabled = true, configWrites = 0
   page.on('pageerror', error => errors.push(error.message))
   await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
   await page.route('**/*', async route => {
@@ -26,7 +27,10 @@ test('ingest summary failure preserves measured throughput and parse preview sta
     else if (path === '/search-config/api/v1/outputs') data = []
     else if (path === '/search-config/api/v1/parse-rules') data = { items: [], total: 0, page: 1,
       size: Number(url.searchParams.get('size')), totalPages: 0 }
-    else if (path === '/search-config/api/v1/ingest/tasks') data = [{ id: 'task-a', name: 'Source A', type: 'FILE', format: 'AUTO', enabled: true,
+    else if (path === '/search-config/api/v1/ingest/tasks/task-a/stop' && route.request().method() === 'POST') {
+      configWrites++; configEnabled = false; data = { id: 'task-a', enabled: false }
+    }
+    else if (path === '/search-config/api/v1/ingest/tasks') data = [{ id: 'task-a', name: 'Source A', type: 'FILE', format: 'AUTO', enabled: configEnabled,
       collector: 'vector', target: '/var/log/auth.log', env: 'local', tags: [], categoryId: null, sinkTargetId: null,
       parseRuleIds: ['R-A'], createdAt: '2026-09-23T00:00:00Z', runtime: { health: 'HEALTHY', eps1m: 25, eps5m: 22, accepted: 19, skipped: 2, forwarded: 17, bytes: 512, lastError: null } }]
     else if (path === '/search-config/api/v1/ingest/tasks/summary') data = { collectors: 1, accepted: 19, skipped: 2, forwarded: 17, bytes: 512, eps1m: 25, byHealth: {}, sources: 3, enabledSources: 2 }
@@ -51,5 +55,19 @@ test('ingest summary failure preserves measured throughput and parse preview sta
   const preview = page.getByRole('dialog', { name: 'Parse preview · Source A' })
   await preview.getByRole('button', { name: 'Run parse preview' }).click()
   await expect(preview).toContainText('"source": "A"')
+  await preview.getByRole('button', { name: 'Close', exact: true }).click()
+  const task = page.getByRole('row', { name: /Source A/ })
+  await task.getByRole('button', { name: 'Disable config', exact: true }).click()
+  const confirmation = page.getByRole('dialog', { name: 'Confirm', exact: true })
+  await expect(confirmation).toContainText('manually apply')
+  expect(configWrites).toBe(0)
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(confirmation).not.toBeVisible()
+  await expect(task.getByRole('button', { name: 'Disable config', exact: true })).toBeEnabled()
+  expect(configWrites).toBe(0)
+  await task.getByRole('button', { name: 'Disable config', exact: true }).click()
+  await confirmation.getByRole('button', { name: 'Confirm', exact: true }).click()
+  await expect(task.getByRole('button', { name: 'Enable config', exact: true })).toBeVisible()
+  expect(configWrites).toBe(1)
   expect(unexpected).toEqual([]); expect(errors).toEqual([])
 })

@@ -60,6 +60,47 @@ describe('notification configuration and test delivery', () => {
   })
   afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
 
+  it('binds a row test to its confirmed channel and prevents duplicate confirmations', async () => {
+    mocks.listChannels.mockResolvedValue({ items: [channel], total: 1 })
+    await open(true)
+    const view = wrapper.findComponent(NotifyView).vm as unknown as { sendTest: (target: typeof channel) => Promise<void>; actionBusy: boolean }
+    const target = { ...channel }
+    const confirmation = deferred<string>()
+    mocks.confirm.mockReturnValueOnce(confirmation.promise)
+    const pending = view.sendTest(target)
+    await view.sendTest(target)
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    expect(view.actionBusy).toBe(false)
+    expect(mocks.testChannel).not.toHaveBeenCalled()
+    target.id = 'another-channel'
+    confirmation.resolve('confirm'); await pending
+    expect(mocks.testChannel).toHaveBeenCalledExactlyOnceWith(channel.id)
+  })
+
+  it('does not invert a channel whose enabled state changed during confirmation', async () => {
+    mocks.listChannels.mockResolvedValue({ items: [channel], total: 1 })
+    await open(true)
+    const view = wrapper.findComponent(NotifyView).vm as unknown as { toggle: (id: string) => Promise<void>; channels: typeof channel[] }
+    const confirmation = deferred<string>()
+    mocks.confirm.mockReturnValueOnce(confirmation.promise)
+    const pending = view.toggle(channel.id)
+    view.channels = [{ ...channel, enabled: true }]
+    confirmation.resolve('confirm'); await pending
+    expect(mocks.toggleChannel).not.toHaveBeenCalled()
+  })
+
+  it('abandons a late test confirmation after navigation unmounts the view', async () => {
+    mocks.listChannels.mockResolvedValue({ items: [channel], total: 1 })
+    const router = await open(true)
+    const view = wrapper.findComponent(NotifyView).vm as unknown as { sendTest: (target: typeof channel) => Promise<void> }
+    const confirmation = deferred<string>()
+    mocks.confirm.mockReturnValueOnce(confirmation.promise)
+    const pending = view.sendTest(channel)
+    await router.push('/elsewhere')
+    confirmation.resolve('confirm'); await pending
+    expect(mocks.testChannel).not.toHaveBeenCalled()
+  })
+
   it('retains the acknowledged channel after a failed test and retries without another write', async () => {
     mocks.testChannel.mockRejectedValueOnce(new Error('Test delivery unavailable'))
     const router = await open()

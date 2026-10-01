@@ -32,7 +32,7 @@ import FormField from '../FormField.vue'
 import FormGrid from '../FormGrid.vue'
 import FormSection from '../FormSection.vue'
 import { useI18n } from '../../composables/useI18n'
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useConfirm } from '../../composables/useConfirm'
 import { tOr } from '../../utils/i18nLabel'
 import {
@@ -96,7 +96,8 @@ watch(() => props.section, (val) => {
     tab.value = 'connections'
   }
 })
-let loadPending = false
+let loadController: AbortController | null = null
+let disposed = false
 // A row error belongs to the table that raised it. Each tab also owns its
 // data load so a hidden control-plane section does not fan out six requests.
 watch(tab, () => {
@@ -176,10 +177,11 @@ function parseJson(value: string, fallback: unknown = {}) {
 }
 
 async function load() {
-  if (loading.value) {
-    loadPending = true
-    return
-  }
+  if (disposed) return
+  loadController?.abort()
+  const controller = new AbortController()
+  loadController = controller
+  const options = { signal: controller.signal }
   loading.value = true
   clearFeedback()
   const showRules = tab.value === 'rules'
@@ -190,13 +192,14 @@ async function load() {
     page: 0, size: 100, total: 0, totalPages: 0, items: [],
   }
   const results = await Promise.allSettled([
-    showRules ? listAutomationRules(0, 100) : Promise.resolve(null),
-    showConnections && props.canViewConnections ? listConnections(0, 100) : Promise.resolve(emptyConnections),
-    showConnections ? listActions() : Promise.resolve([] as SoarActionDescriptor[]),
-    showTasks ? listManualTasksPage(true, 0, 100) : Promise.resolve(null),
-    showOperations && props.canOperate ? listDeadDispatches() : Promise.resolve([] as SoarDeadLetter[]),
-    showOperations ? getStats() : Promise.resolve(null),
+    showRules ? listAutomationRules(0, 100, options) : Promise.resolve(null),
+    showConnections && props.canViewConnections ? listConnections(0, 100, options) : Promise.resolve(emptyConnections),
+    showConnections ? listActions(options) : Promise.resolve([] as SoarActionDescriptor[]),
+    showTasks ? listManualTasksPage(true, 0, 100, options) : Promise.resolve(null),
+    showOperations && props.canOperate ? listDeadDispatches(options) : Promise.resolve([] as SoarDeadLetter[]),
+    showOperations ? getStats(options) : Promise.resolve(null),
   ])
+  if (disposed || controller.signal.aborted || loadController !== controller) return
   const [ruleResult, connectionResult, actionResult, taskResult, deadResult, statsResult] = results
   if (ruleResult.status === 'fulfilled' && ruleResult.value) rules.value = ruleResult.value.items
   if (connectionResult.status === 'fulfilled') connections.value = connectionResult.value.items
@@ -207,10 +210,7 @@ async function load() {
   const failures = results.filter(item => item.status === 'rejected')
   if (failures.length) loadError.value = failureText(failures[0].reason)
   loading.value = false
-  if (loadPending) {
-    loadPending = false
-    void load()
-  }
+  loadController = null
 }
 
 async function loadPublishedVersionOptions(): Promise<void> {
@@ -338,14 +338,17 @@ async function createRule() {
 
 async function toggleRule(rule: SoarAutomationRule) {
   if (!props.canPublish || ruleAction.value[rule.id]) return
-  ruleAction.value = { ...ruleAction.value, [rule.id]: 'toggle' }
+  const id = rule.id
+  const enabled = !rule.enabled
+  ruleAction.value = { ...ruleAction.value, [id]: 'toggle' }
   rowError.value = ''
   try {
-    await setAutomationRuleEnabled(rule.id, !rule.enabled)
+    if (!(await confirmDanger(t(enabled ? 'soar.enableRuleConfirm' : 'soar.disableRuleConfirm', { name: rule.name }))) || !props.canPublish || disposed) return
+    await setAutomationRuleEnabled(id, enabled)
     await load()
-    message.value = rule.enabled ? t('soar.ruleDisabled') : t('soar.ruleEnabled')
+    message.value = enabled ? t('soar.ruleEnabled') : t('soar.ruleDisabled')
   } catch (failure) { rowError.value = failureText(failure) }
-  finally { ruleAction.value = { ...ruleAction.value, [rule.id]: '' } }
+  finally { ruleAction.value = { ...ruleAction.value, [id]: '' } }
 }
 
 function editRule(rule: SoarAutomationRule) {
@@ -443,14 +446,17 @@ async function createConnection() {
 
 async function toggleConnection(connection: SoarConnection) {
   if (!props.canManageConnections || connectionAction.value[connection.id]) return
-  connectionAction.value = { ...connectionAction.value, [connection.id]: 'enable' }
+  const id = connection.id
+  const enabled = !connection.enabled
+  connectionAction.value = { ...connectionAction.value, [id]: 'enable' }
   rowError.value = ''
   try {
-    await setConnectionEnabled(connection.id, !connection.enabled)
+    if (!(await confirmDanger(t(enabled ? 'soar.enableConnectionConfirm' : 'soar.disableConnectionConfirm', { name: connection.name }))) || !props.canManageConnections || disposed) return
+    await setConnectionEnabled(id, enabled)
     await load()
     message.value = t('soar.connectionStateUpdated')
   } catch (failure) { rowError.value = failureText(failure) }
-  finally { connectionAction.value = { ...connectionAction.value, [connection.id]: '' } }
+  finally { connectionAction.value = { ...connectionAction.value, [id]: '' } }
 }
 
 async function testConnection(connection: SoarConnection) {
@@ -467,15 +473,16 @@ async function testConnection(connection: SoarConnection) {
 
 async function removeConnection(connection: SoarConnection) {
   if (!props.canManageConnections || connectionAction.value[connection.id]) return
-  if (!(await confirmDanger(t('soar.deleteConnectionConfirm', { name: connection.name })))) return
-  connectionAction.value = { ...connectionAction.value, [connection.id]: 'delete' }
+  const id = connection.id
+  connectionAction.value = { ...connectionAction.value, [id]: 'delete' }
   rowError.value = ''
   try {
-    await deleteConnection(connection.id)
+    if (!(await confirmDanger(t('soar.deleteConnectionConfirm', { name: connection.name }))) || !props.canManageConnections || disposed) return
+    await deleteConnection(id)
     await load()
     message.value = t('soar.connectionRemoved')
   } catch (failure) { rowError.value = failureText(failure) }
-  finally { connectionAction.value = { ...connectionAction.value, [connection.id]: '' } }
+  finally { connectionAction.value = { ...connectionAction.value, [id]: '' } }
 }
 
 async function completeTask(task: SoarManualTask) {
@@ -504,10 +511,12 @@ function deadLetterKey(letter: SoarDeadLetter): string { return `${letter.kind}-
 async function requeue(letter: SoarDeadLetter) {
   if (!props.canOperate || deadLetterAction.value[deadLetterKey(letter)]) return
   const key = deadLetterKey(letter)
+  const id = letter.id
   deadLetterAction.value = { ...deadLetterAction.value, [key]: 'requeue' }
   rowError.value = ''
   try {
-    await requeueDeadDispatch(letter.id, t('soar.requeueReason'))
+    if (!(await confirmDanger(t('soar.requeueDeadLetterConfirm'))) || !props.canOperate || disposed) return
+    await requeueDeadDispatch(id, t('soar.requeueReason'))
     await load()
     message.value = t('soar.deadLetterRequeued')
   } catch (failure) { rowError.value = failureText(failure) }
@@ -516,12 +525,13 @@ async function requeue(letter: SoarDeadLetter) {
 
 async function discard(letter: SoarDeadLetter) {
   if (!props.canOperate || deadLetterAction.value[deadLetterKey(letter)]) return
-  if (!(await confirmDanger(t('soar.discardDeadLetterConfirm')))) return
   const key = deadLetterKey(letter)
+  const id = letter.id
   deadLetterAction.value = { ...deadLetterAction.value, [key]: 'discard' }
   rowError.value = ''
   try {
-    await discardDeadDispatch(letter.id, t('soar.discardReason'))
+    if (!(await confirmDanger(t('soar.discardDeadLetterConfirm'))) || !props.canOperate || disposed) return
+    await discardDeadDispatch(id, t('soar.discardReason'))
     await load()
     message.value = t('soar.deadLetterDiscarded')
   } catch (failure) { rowError.value = failureText(failure) }
@@ -531,6 +541,7 @@ async function discard(letter: SoarDeadLetter) {
 const { t } = useI18n()
 const { confirmDanger } = useConfirm()
 onMounted(() => { void load() })
+onUnmounted(() => { disposed = true; loadController?.abort() })
 
 function statusLabel(status: string): string {
   return tOr(t, 'soar.status.' + status, status)

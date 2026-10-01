@@ -41,6 +41,23 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.resetAllMocks() })
 
 describe('search investigation state', () => {
+  it('serializes export formats, retains the applied query and restores controls after failure', async () => {
+    let reject!: (error: Error) => void
+    api.exportSearch.mockReturnValueOnce(new Promise((_resolve, failure) => { reject = failure }))
+    await mountSearch({ q: 'source=auth', range: 'all' })
+    const applied = api.splSearch.mock.calls[0]?.[0]
+    await button('Export JSON').trigger('click')
+    await button('Export CSV').trigger('click')
+    expect(api.exportSearch).toHaveBeenCalledExactlyOnceWith(applied, 'json')
+    expect(button('Export CSV').attributes('disabled')).toBeDefined()
+    await wrapper!.get('.search-query-row textarea').setValue('source=web')
+    reject(new Error('Export unavailable')); await flushPromises()
+    expect(button('Export CSV').attributes('disabled')).toBeUndefined()
+    await button('Export CSV').trigger('click'); await flushPromises()
+    expect(api.exportSearch).toHaveBeenLastCalledWith(applied, 'csv')
+    expect(api.exportSearch).toHaveBeenCalledTimes(2)
+  })
+
   it('allows newlines and IME confirmation without running a query', async () => {
     await mountSearch({ range: 'all' })
     const editor = wrapper!.get('.search-query-row textarea')
