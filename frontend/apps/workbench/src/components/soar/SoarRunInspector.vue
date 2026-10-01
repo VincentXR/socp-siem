@@ -18,6 +18,7 @@ import type { RunOpenRequest } from './editor/runHighlight'
 import { useConfirm } from '../../composables/useConfirm'
 import { useFormDialog } from '../../composables/useFormDialog'
 import { useI18n } from '../../composables/useI18n'
+import RowActivate from '../RowActivate.vue'
 import { tOr } from '../../utils/i18nLabel'
 import {
   cancelWorkflowRun,
@@ -64,6 +65,7 @@ const artifacts = ref<SoarArtifact[]>([])
 const attempts = ref<SoarAttempt[]>([])
 const selectedNodeRunId = ref('')
 const loading = ref(false)
+const runsLoading = ref(false)
 const errorMessage = ref('')
 const streamState = ref<'closed' | 'live' | 'polling'>('closed')
 const queueDialogVisible = ref(false)
@@ -81,6 +83,12 @@ const queueForm = ref({
 const queueGuard = useFormDialog(queueDialogVisible, () => queueForm.value, () => queueLoading.value)
 let pollTimer: ReturnType<typeof setInterval> | undefined
 let stream: EventSource | undefined
+let disposed = false
+let runsController: AbortController | null = null
+let runController: AbortController | null = null
+let projectionController: AbortController | null = null
+let projectionPending = false
+let attemptController: AbortController | null = null
 
 const selectedNode = computed(() => nodes.value.find(node => node.id === selectedNodeRunId.value))
 const lastSequence = computed(() => events.value.reduce((max, item) => Math.max(max, item.sequence || 0), 0))
@@ -145,7 +153,7 @@ function parseObject(value: string, label: string): Record<string, unknown> {
 }
 
 async function submitQueue(): Promise<void> {
-  if (!props.canExecute) return
+  if (!props.canExecute || queueLoading.value) return
   queueError.value = ''
   queueMessage.value = ''
   if (!queueForm.value.playbookVersionId) {
@@ -203,13 +211,23 @@ function json(value: unknown): string {
 }
 
 async function loadRuns() {
+  if (disposed || !props.active) return
+  runsController?.abort()
+  const controller = new AbortController()
+  runsController = controller
+  runsLoading.value = true
   try {
-    const result = await listRuns(0, 100)
+    const result = await listRuns(0, 100, { signal: controller.signal })
+    if (disposed || !props.active || controller.signal.aborted || runsController !== controller) return
     runs.value = result.items
-    if (!selectedRunId.value && runs.value[0]) selectedRunId.value = runs.value[0].runId
-    if (selectedRunId.value) await refreshRun()
+    if (!selectedRunId.value && runs.value[0]) {
+      selectedRunId.value = runs.value[0].runId
+    } else if (selectedRunId.value) await refreshRun()
   } catch (failure) {
+    if (disposed || !props.active || controller.signal.aborted || runsController !== controller) return
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadRuns')
+  } finally {
+    if (runsController === controller) { runsController = null; runsLoading.value = false }
   }
 }
 
@@ -219,18 +237,27 @@ async function loadRuns() {
 let loadGeneration = 0
 
 async function refreshRun() {
-  if (!selectedRunId.value) return
+  if (disposed || !props.active || !selectedRunId.value) return
   const generation = ++loadGeneration
+  runController?.abort()
+  projectionController?.abort()
+  projectionPending = false
+  attemptController?.abort()
+  closeStream()
+  const controller = new AbortController()
+  runController = controller
+  const options = { signal: controller.signal }
+  const runId = selectedRunId.value
   loading.value = true
   errorMessage.value = ''
   try {
     const [runResult, nodeResult, eventResult, artifactResult] = await Promise.all([
-      getRun(selectedRunId.value),
-      listNodes(selectedRunId.value),
-      listEvents(selectedRunId.value, 0, 0, 200),
-      listArtifacts(selectedRunId.value),
+      getRun(runId, options),
+      listNodes(runId, options),
+      listEvents(runId, 0, 0, 200, options),
+      listArtifacts(runId, options),
     ])
-    if (generation !== loadGeneration) return
+    if (disposed || !props.active || controller.signal.aborted || generation !== loadGeneration) return
     run.value = runResult
     nodes.value = nodeResult
     events.value = eventResult.items
@@ -239,44 +266,52 @@ async function refreshRun() {
       selectedNodeRunId.value = nodes.value[0]?.id ?? ''
     }
     await loadAttempts()
-    if (generation !== loadGeneration) return
+    if (disposed || !props.active || controller.signal.aborted || generation !== loadGeneration) return
     openStream()
   } catch (failure) {
-    if (generation !== loadGeneration) return
+    if (disposed || !props.active || controller.signal.aborted || generation !== loadGeneration) return
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadRunDetails')
   } finally {
     if (generation === loadGeneration) loading.value = false
+    if (runController === controller) runController = null
   }
 }
 
 async function loadAttempts() {
+  if (disposed || !props.active) return
+  attemptController?.abort()
+  const controller = new AbortController()
+  attemptController = controller
   const nodeRunId = selectedNodeRunId.value
-  if (!nodeRunId) { attempts.value = []; return }
+  if (!nodeRunId) { attempts.value = []; attemptController = null; return }
   try {
-    const result = await listNodeAttempts(nodeRunId, 0, 100)
-    if (nodeRunId !== selectedNodeRunId.value) return
+    const result = await listNodeAttempts(nodeRunId, 0, 100, { signal: controller.signal })
+    if (disposed || !props.active || controller.signal.aborted || nodeRunId !== selectedNodeRunId.value) return
     attempts.value = result.items
   } catch (failure) {
-    if (nodeRunId !== selectedNodeRunId.value) return
+    if (disposed || !props.active || controller.signal.aborted || nodeRunId !== selectedNodeRunId.value) return
     attempts.value = []
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadAttempts')
+  } finally {
+    if (attemptController === controller) attemptController = null
   }
 }
 
 function openStream() {
   closeStream()
-  if (!props.active || !selectedRunId.value || typeof EventSource === 'undefined') {
+  if (disposed || !props.active || !selectedRunId.value || typeof EventSource === 'undefined') {
     streamState.value = 'polling'
     return
   }
   const streamRunId = selectedRunId.value
   const generation = loadGeneration
   stream = new EventSource(`/soar-web/api/runs/${encodeURIComponent(streamRunId)}/stream`)
+  const source = stream
   streamState.value = 'live'
   stream.addEventListener('run-event', event => {
     // An old run's EventSource stays open until the new run's load reaches
     // openStream(); its late events must not append to the new timeline.
-    if (streamRunId !== selectedRunId.value || generation !== loadGeneration) return
+    if (disposed || !props.active || source !== stream || streamRunId !== selectedRunId.value || generation !== loadGeneration) return
     const payload = (event as MessageEvent<string>).data
     try {
       const item = JSON.parse(payload) as SoarEvent
@@ -287,6 +322,7 @@ function openStream() {
     } catch { /* malformed stream data is ignored; the next poll repairs the projection */ }
   })
   stream.onerror = () => {
+    if (source !== stream) return
     closeStream()
     streamState.value = 'polling'
   }
@@ -297,14 +333,26 @@ function closeStream() {
   stream = undefined
 }
 
-async function refreshProjection() {
-  if (!selectedRunId.value) return
+async function refreshProjection(force = false) {
+  if (disposed || !props.active || !selectedRunId.value || loading.value) return
+  // Poll ticks and stream events coalesce while this run is loading. Cancelling
+  // at each five-second tick would starve healthy but slower requests forever.
+  if (projectionController && !projectionController.signal.aborted && !force) {
+    projectionPending = true
+    return
+  }
+  projectionPending = false
+  projectionController?.abort()
+  const controller = new AbortController()
+  projectionController = controller
+  const options = { signal: controller.signal }
+  const runId = selectedRunId.value
   const generation = loadGeneration
   try {
     const [runResult, nodeResult, artifactResult] = await Promise.all([
-      getRun(selectedRunId.value), listNodes(selectedRunId.value), listArtifacts(selectedRunId.value),
+      getRun(runId, options), listNodes(runId, options), listArtifacts(runId, options),
     ])
-    if (generation !== loadGeneration) return
+    if (disposed || !props.active || controller.signal.aborted || generation !== loadGeneration) return
     run.value = runResult
     nodes.value = nodeResult
     if (!nodes.value.some(node => node.id === selectedNodeRunId.value)) {
@@ -313,68 +361,81 @@ async function refreshProjection() {
     artifacts.value = artifactResult
     await loadAttempts()
   } catch { /* retain the last known durable projection */ }
+  finally {
+    if (projectionController === controller) {
+      projectionController = null
+      const pending = projectionPending
+      projectionPending = false
+      if (pending && !controller.signal.aborted && generation === loadGeneration) void refreshProjection()
+    }
+  }
 }
 
 async function cancel() {
-  if (!props.canExecute || !selectedRunId.value) return
-  const reason = await promptInput(t('soar.cancelReason'))
-  if (!reason) return
+  if (!props.canExecute || !selectedRunId.value || controlBusy.value) return
+  const runId = selectedRunId.value
   errorMessage.value = ''
   controlBusy.value = 'cancel'
   try {
-    await cancelWorkflowRun(selectedRunId.value, reason)
-    await refreshProjection()
+    const reason = await promptInput(t('soar.cancelReason'))
+    if (!reason || !props.canExecute || disposed || !props.active || runId !== selectedRunId.value) return
+    await cancelWorkflowRun(runId, reason)
+    if (runId === selectedRunId.value) await refreshProjection(true)
   } catch (failure) {
-    errorMessage.value = failureText(failure)
+    if (runId === selectedRunId.value) errorMessage.value = failureText(failure)
   } finally {
     controlBusy.value = ''
   }
 }
 
 async function retry() {
-  if (!props.canExecute || !selectedRunId.value) return
-  const reason = await promptInput(t('soar.retryReason'))
-  if (!reason) return
+  if (!props.canExecute || !selectedRunId.value || controlBusy.value) return
+  const runId = selectedRunId.value
   errorMessage.value = ''
   controlBusy.value = 'retry'
   try {
-    await retryRun(selectedRunId.value, reason)
-    await loadRuns()
+    const reason = await promptInput(t('soar.retryReason'))
+    if (!reason || !props.canExecute || disposed || !props.active || runId !== selectedRunId.value) return
+    await retryRun(runId, reason)
+    if (runId === selectedRunId.value) await loadRuns()
   } catch (failure) {
-    errorMessage.value = failureText(failure)
+    if (runId === selectedRunId.value) errorMessage.value = failureText(failure)
   } finally {
     controlBusy.value = ''
   }
 }
 
 async function rerun() {
-  if (!props.canExecute || !selectedRunId.value) return
-  if (!(await confirmDanger(t('soar.rerunConfirm')))) return
+  if (!props.canExecute || !selectedRunId.value || controlBusy.value) return
+  const runId = selectedRunId.value
   errorMessage.value = ''
   controlBusy.value = 'rerun'
   try {
-    await rerunRun(selectedRunId.value, t('soar.rerunRun'))
-    await loadRuns()
+    if (!(await confirmDanger(t('soar.rerunConfirm'))) || !props.canExecute || disposed || !props.active || runId !== selectedRunId.value) return
+    await rerunRun(runId, t('soar.rerunRun'))
+    if (runId === selectedRunId.value) await loadRuns()
   } catch (failure) {
-    errorMessage.value = failureText(failure)
+    if (runId === selectedRunId.value) errorMessage.value = failureText(failure)
   } finally {
     controlBusy.value = ''
   }
 }
 
 async function resolveUnknown(node: SoarNodeRun, resolution: 'CONFIRMED_SUCCEEDED' | 'CONFIRMED_NOT_EXECUTED') {
-  if (!props.canOperate) return
-  const evidence = await promptInput(t('soar.evidenceRequired'))
-  if (!evidence) return
-  const reason = await promptInput(t('soar.resolutionReasonRequired'))
-  if (!reason) return
+  if (!props.canOperate || controlBusy.value) return
+  const runId = selectedRunId.value
+  const nodeId = node.id
   errorMessage.value = ''
   controlBusy.value = 'resolve'
   try {
-    await resolveUnknownApi(node.id, resolution, evidence, reason)
-    await refreshProjection()
+    const evidence = await promptInput(t('soar.evidenceRequired'))
+    if (!evidence || !props.canOperate || disposed || !props.active || runId !== selectedRunId.value) return
+    const reason = await promptInput(t('soar.resolutionReasonRequired'))
+    if (!reason || !props.canOperate || disposed || !props.active || runId !== selectedRunId.value) return
+    await resolveUnknownApi(nodeId, resolution, evidence, reason)
+    if (runId === selectedRunId.value) await refreshProjection(true)
   } catch (failure) {
-    errorMessage.value = failureText(failure)
+    if (runId === selectedRunId.value) errorMessage.value = failureText(failure)
   } finally {
     controlBusy.value = ''
   }
@@ -408,6 +469,7 @@ function stopPolling(): void {
 }
 watch(() => props.active, active => {
   if (!active) {
+    cancelReads()
     stopPolling()
     closeStream()
     streamState.value = 'closed'
@@ -423,9 +485,22 @@ onMounted(() => {
   startPolling()
 })
 onUnmounted(() => {
+  disposed = true
+  cancelReads()
   stopPolling()
   closeStream()
 })
+
+function cancelReads(): void {
+  loadGeneration++
+  projectionPending = false
+  runsController?.abort()
+  runController?.abort()
+  projectionController?.abort()
+  attemptController?.abort()
+  loading.value = false
+  runsLoading.value = false
+}
 
 function statusLabel(status: string): string {
   return tOr(t, 'soar.status.' + status, status)
@@ -451,11 +526,11 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
         </div>
         <div class="soar-run-select">
           <el-button v-if="props.canExecute" size="small" type="primary" plain @click="openQueueDialog">{{ t('soar.queueRun') }}</el-button>
-          <select v-model="selectedRunId" :aria-label="t('soar.selectRun')">
+          <select v-model="selectedRunId" :disabled="Boolean(controlBusy)" :aria-label="t('soar.selectRun')">
             <option value="">{{ t('soar.selectRun') }}</option>
             <option v-for="item in runs" :key="item.runId" :value="item.runId">{{ item.runId }} · {{ statusLabel(item.status) }}</option>
           </select>
-          <el-button size="small" :loading="loading" @click="loadRuns">{{ t('common.refresh') }}</el-button>
+          <el-button size="small" :loading="loading || runsLoading" @click="loadRuns">{{ t('common.refresh') }}</el-button>
         </div>
       </div>
     </template>
@@ -490,7 +565,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
           <div class="soar-table-scroll">
             <table><thead><tr><th>{{ t('soar.node') }}</th><th>{{ t('common.type') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.iteration') }}</th><th>{{ t('soar.output') }}</th></tr></thead>
               <tbody><tr v-for="node in nodes" :key="node.id" :class="{ active: selectedNodeRunId === node.id }" @click="selectedNodeRunId = node.id">
-                <td><b>{{ node.nodeId }}</b><small>{{ node.id }}</small></td><td>{{ nodeTypeLabel(node.nodeType) }}</td><td><el-tag size="small" :type="['FAILED', 'ACTION_UNKNOWN', 'UNKNOWN'].includes(node.status) ? 'danger' : (node.status === 'SUCCEEDED' ? 'success' : 'info')">{{ statusLabel(node.status) }}</el-tag></td><td>{{ node.iterationPath || '-' }}</td><td class="mono">{{ json(node.output).slice(0, 180) }}</td>
+                <td><RowActivate :aria-label="String(node.nodeId ?? node.id)" @activate="selectedNodeRunId = node.id"><b>{{ node.nodeId }}</b><small>{{ node.id }}</small></RowActivate></td><td>{{ nodeTypeLabel(node.nodeType) }}</td><td><el-tag size="small" :type="['FAILED', 'ACTION_UNKNOWN', 'UNKNOWN'].includes(node.status) ? 'danger' : (node.status === 'SUCCEEDED' ? 'success' : 'info')">{{ statusLabel(node.status) }}</el-tag></td><td>{{ node.iterationPath || '-' }}</td><td class="mono">{{ json(node.output).slice(0, 180) }}</td>
               </tr></tbody>
             </table>
             <div v-if="!nodes.length" class="soar-empty">{{ t('soar.noNodeProjection') }}</div>

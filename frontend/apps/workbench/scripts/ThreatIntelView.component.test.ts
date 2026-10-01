@@ -5,8 +5,11 @@ import { describe, expect, it, vi } from 'vitest'
 import ElPagination from 'element-plus/es/components/pagination/index.mjs'
 import ThreatIntelView from '../src/views/ThreatIntelView.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
+import type { Ioc } from '../src/api'
+import { translate } from '../src/i18n'
 
 const mocks = vi.hoisted(() => ({
+  confirm: vi.fn(),
   threatIntelApi: {
     list: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     stats: vi.fn().mockResolvedValue({ total: 7, byType: { IP: 4, DOMAIN: 2, SHA256: 1 } }),
@@ -15,6 +18,45 @@ const mocks = vi.hoisted(() => ({
 }))
 
 vi.mock('../src/api/domains', () => mocks)
+vi.mock('element-plus/es/components/message-box/index.mjs', () => ({ default: { confirm: mocks.confirm } }))
+
+describe('IOC confirmation boundaries', () => {
+  it('keeps the page usable while confirming, deduplicates and binds the deleted IOC', async () => {
+    mocks.confirm.mockClear(); mocks.threatIntelApi.remove.mockClear()
+    const { wrapper } = await mountAtLocation({})
+    const ioc = { id: 'ioc-a', value: '192.0.2.1' } as Ioc
+    let confirm!: (value: string) => void
+    mocks.confirm.mockReturnValueOnce(new Promise<string>(resolve => { confirm = resolve }))
+    const view = wrapper.vm as unknown as { removeIoc: (ioc: Ioc) => Promise<void>; actionBusy: boolean }
+    const pending = view.removeIoc(ioc)
+    await view.removeIoc(ioc)
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    expect(view.actionBusy).toBe(false)
+    const createButton = wrapper.findAll('button').find(button => button.text() === translate('threat.addIoc'))
+    expect(createButton).toBeTruthy()
+    expect(createButton!.attributes('disabled')).toBeUndefined()
+    expect(mocks.threatIntelApi.remove).not.toHaveBeenCalled()
+    ioc.id = 'ioc-b'
+    confirm('confirm'); await pending
+    expect(mocks.threatIntelApi.remove).toHaveBeenCalledExactlyOnceWith('ioc-a')
+    wrapper.unmount()
+  })
+
+  it('rechecks permission after a lifecycle confirmation', async () => {
+    mocks.confirm.mockClear(); mocks.threatIntelApi.setRevoked.mockClear()
+    const role = ref('admin')
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })
+    const wrapper = mount(ThreatIntelView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: role } } } })
+    await flushPromises()
+    let confirm!: (value: string) => void
+    mocks.confirm.mockReturnValueOnce(new Promise<string>(resolve => { confirm = resolve }))
+    const view = wrapper.vm as unknown as { toggleLifecycle: (ioc: Ioc) => Promise<void> }
+    const pending = view.toggleLifecycle({ id: 'ioc-a', revoked: false } as Ioc)
+    role.value = 'viewer'; confirm('confirm'); await pending
+    expect(mocks.threatIntelApi.setRevoked).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
 
 describe('threat intel metric cards', () => {
   it('renders one shared metric card per reported type plus the total', async () => {

@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
 }))
 vi.mock('../src/api', async importOriginal => ({ ...await importOriginal<object>(), ...mocks }))
 
-const emptyPage = { page: 0, size: 100, total: 0, totalPages: 0, items: [] }
+const emptyPage = { page: 0, size: 100, total: 0, totalPages: 0, items: [] as Array<Record<string, unknown>> }
 
 async function mountSoar(path: string) {
   const router = createRouter({
@@ -38,6 +38,7 @@ async function mountSoar(path: string) {
 
 describe('soar approvals lifecycle', () => {
   beforeEach(() => {
+    Object.values(mocks).forEach(mock => mock.mockReset())
     mocks.listPlaybooks.mockResolvedValue(emptyPage)
     mocks.listRuns.mockResolvedValue(emptyPage)
     mocks.listTemplates.mockResolvedValue([])
@@ -98,5 +99,36 @@ describe('soar approvals lifecycle', () => {
     await flushPromises()
     expect(router.currentRoute.value.query).toEqual({ tab: 'approvals', filter: 'ALL' })
     wrapper.unmount()
+  })
+
+  it('starts a new refresh immediately and ignores a late response from the aborted request', async () => {
+    let oldResult: (value: typeof emptyPage) => void = () => {}
+    mocks.listPlaybooks.mockImplementationOnce(() => new Promise(resolve => { oldResult = resolve }))
+    const { wrapper } = await mountSoar('/soar')
+    const firstSignal = mocks.listPlaybooks.mock.calls[0][2].signal as AbortSignal
+    mocks.listPlaybooks.mockResolvedValueOnce({ ...emptyPage, items: [{ id: 'newest', name: 'Latest catalog', status: 'ACTIVE' }] })
+    const refresh = wrapper.findAllComponents({ name: 'ElButton' }).find(button => button.text() === '刷新')!
+    refresh.vm.$emit('click', new MouseEvent('click'))
+    await flushPromises()
+    expect(firstSignal.aborted).toBe(true)
+    expect(mocks.listPlaybooks).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('Latest catalog')
+    oldResult({ ...emptyPage, items: [{ id: 'old', name: 'Stale catalog', status: 'ACTIVE' }] })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Latest catalog')
+    expect(wrapper.text()).not.toContain('Stale catalog')
+    wrapper.unmount()
+  })
+
+  it('aborts pending reads on unmount without running a queued reload', async () => {
+    let settle: (value: typeof emptyPage) => void = () => {}
+    mocks.listPlaybooks.mockImplementationOnce(() => new Promise(resolve => { settle = resolve }))
+    const { wrapper } = await mountSoar('/soar')
+    const signal = mocks.listPlaybooks.mock.calls[0][2].signal as AbortSignal
+    wrapper.unmount()
+    expect(signal.aborted).toBe(true)
+    settle(emptyPage)
+    await flushPromises()
+    expect(mocks.listPlaybooks).toHaveBeenCalledTimes(1)
   })
 })

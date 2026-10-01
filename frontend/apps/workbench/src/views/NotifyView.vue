@@ -33,7 +33,7 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import FormField from '../components/FormField.vue'
 import FormGrid from '../components/FormGrid.vue'
@@ -47,6 +47,9 @@ const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('notify-channels')
 
 const channelTypes = ['SLACK', 'WEBHOOK', 'DINGTALK', 'WECOM', 'EMAIL', 'LOG'] as const
 const channels = ref<Channel[]>([])
+const confirming = ref(false)
+let disposed = false
+onUnmounted(() => { disposed = true })
 const editingId = ref('')
 const keyword = ref('')
 const filteredChannels = computed(() => channels.value.filter(channel => [channel.name, channel.type, channelTypeLabel(channel.type)].join(' ').toLowerCase().includes(keyword.value.toLowerCase())))
@@ -86,11 +89,10 @@ function openChannel(channel?: Channel) {
   dialogVisible.value = true
 }
 async function sendTest(channel: Channel) {
-  if (!canWrite.value || actionBusy.value) return
-  if (!await confirmDanger(t('notify.testConfirm', { name: channel.name }))) return
-  if (!canWrite.value || actionBusy.value) return
+  const { id, name } = channel
+  if (!await confirmWrite('notify.testConfirm', { name })) return
   await mutation.run(async () => {
-    try { showTestResult(await testChannel(channel.id)) }
+    try { showTestResult(await testChannel(id)) }
     finally { await loadNotify() }
   })
 }
@@ -216,17 +218,30 @@ async function saveAndTestChannel() {
 }
 
 async function removeChannel(id: string) {
-  if (!canWrite.value || actionBusy.value) return
-  if (!await confirmDanger(t('notify.confirmDelete'))) return
-  if (!canWrite.value || actionBusy.value) return
+  if (!await confirmWrite('notify.confirmDelete')) return
   return mutation.run(async () => {
     await deleteChannel(id)
     await loadNotify()
   })
 }
 async function toggle(id: string) {
-  if (!canWrite.value || actionBusy.value) return
-  await mutation.run(async () => { await toggleChannel(id); await loadNotify() })
+  const channel = channels.value.find(item => item.id === id)
+  if (!channel) return
+  const { enabled, name } = channel
+  if (!await confirmWrite(enabled ? 'notify.disableChannelConfirm' : 'notify.enableChannelConfirm', { name })) return
+  // The API toggles rather than sets state; do not invert a catalog that
+  // changed while the operator was reading the confirmation.
+  if (channels.value.find(item => item.id === id)?.enabled !== enabled) return
+  return mutation.run(async () => { await toggleChannel(id); await loadNotify() })
+}
+
+async function confirmWrite(key: string, params?: Record<string, string>): Promise<boolean> {
+  if (!canWrite.value || actionBusy.value || confirming.value || disposed) return false
+  confirming.value = true
+  try {
+    const confirmed = await confirmDanger(t(key, params))
+    return confirmed && canWrite.value && !actionBusy.value && !disposed
+  } finally { confirming.value = false }
 }
 
 const dialogVisibleGuard = useFormDialog(dialogVisible, () => form.value, () => actionBusy.value)

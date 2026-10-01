@@ -68,6 +68,13 @@ function jumpTo(key: string): void {
   emit('menu-change', key)
 }
 
+function skipToContent(): void {
+  mobileSidebarOpen.value = false
+  const main = document.getElementById('main-content')
+  main?.focus()
+  main?.scrollIntoView?.({ block: 'start' })
+}
+
 const isMobileViewport = () => typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 860px)').matches)
 const mobileViewport = ref(isMobileViewport())
 const COLLAPSED_GROUPS_KEY = 'socp.sidebar.collapsed-groups'
@@ -138,6 +145,7 @@ onUnmounted(() => {
 
 <template>
   <div class="socp-shell">
+    <a href="#main-content" class="skip-link" @click.prevent="skipToContent">{{ t('app.skipToContent') }}</a>
     <aside id="socp-primary-navigation" class="socp-sider" :class="{ 'is-mobile-open': mobileSidebarOpen }" :aria-hidden="mobileViewport && !mobileSidebarOpen" :inert="mobileViewport && !mobileSidebarOpen ? true : undefined">
       <div class="socp-sidebar-brand">
         <button type="button" class="socp-logo" :title="t('menu.overview')" :aria-label="t('menu.overview')" @click="goOverview"><span class="dot" />{{ t('app.title') }}</button>
@@ -217,7 +225,9 @@ onUnmounted(() => {
           <span class="header-icon" aria-hidden="true" v-html="`<svg viewBox='0 0 24 24' width='14' height='14' fill='none' stroke='currentColor' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>${MENU_ICONS.search}</svg>`" />
         </el-button>
         <el-button class="header-action" size="small" :title="t('app.langToggle')" @click="toggleLocale">
-          <span class="header-icon" aria-hidden="true">🌐</span>
+          <span class="header-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a13.5 13.5 0 0 1 3.5 9 13.5 13.5 0 0 1-3.5 9 13.5 13.5 0 0 1-3.5-9A13.5 13.5 0 0 1 12 3Z"/></svg>
+          </span>
           <span class="header-action-label">{{ t('app.languageCode') }}</span>
         </el-button>
         <el-button class="header-action" size="small" :title="t('app.themeToggle')" @click="emit('toggle-theme')">

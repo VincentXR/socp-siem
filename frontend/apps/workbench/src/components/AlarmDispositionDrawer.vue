@@ -28,6 +28,7 @@ import { addAlarmNote, assignAlarm, getAlarmDeliveries, getAlarmEvidence, getDis
 import { createCaseFromAlarm, getCaseByAlarm } from '../api/incidents'
 import { ApiError } from '../api/core'
 import { useI18n } from '../composables/useI18n'
+import { useFocusReturn } from '../composables/useFocusReturn'
 import { useConfirm } from '../composables/useConfirm'
 import { tOr } from '../utils/i18nLabel'
 
@@ -55,6 +56,7 @@ const drawerVisible = computed({
   get: () => props.modelValue,
   set: (value: boolean) => emit('update:modelValue', value),
 })
+const restoreDrawerFocus = useFocusReturn(drawerVisible)
 
 const { t } = useI18n()
 const { confirmDanger, promptInput } = useConfirm()
@@ -304,7 +306,7 @@ function openEvidenceSearch() {
 </script>
 
 <template>
-  <el-drawer v-model="drawerVisible" class="alarm-detail-drawer" :title="`${t('drawer.title')} · ${props.alarm?.title || props.alarm?.ruleName || ''}`" size="min(760px, 96vw)" :before-close="beforeClose" :close-on-click-modal="!actionPending" :close-on-press-escape="!actionPending">
+  <el-drawer v-model="drawerVisible" class="alarm-detail-drawer" :title="`${t('drawer.title')} · ${props.alarm?.title || props.alarm?.ruleName || ''}`" size="min(760px, 96vw)" :before-close="beforeClose" :close-on-click-modal="!actionPending" :close-on-press-escape="!actionPending" @closed="restoreDrawerFocus">
     <template v-if="props.alarm">
       <div class="alarm-action-strip">
         <div class="alarm-action-state">

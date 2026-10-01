@@ -12,8 +12,10 @@ const api = vi.hoisted(() => ({
   listSourcesPage: vi.fn(), listOutputs: vi.fn(), listParseRulesPage: vi.fn(), resolveParseRules: vi.fn(),
   listIngestTasks: vi.fn(), ingestSummary: vi.fn(), listCategories: vi.fn(), previewParse: vi.fn(),
   listIngestParseFailures: vi.fn(), replayIngestParseFailure: vi.fn(), updateSource: vi.fn(), createSource: vi.fn(),
+  startIngestTask: vi.fn(), stopIngestTask: vi.fn(), confirm: vi.fn(),
 }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...api }))
+vi.mock('element-plus/es/components/message-box/index.mjs', () => ({ default: { confirm: api.confirm } }))
 const summary = { collectors: 1, accepted: 19, skipped: 2, forwarded: 17, bytes: 512, eps1m: 25,
   byHealth: { HEALTHY: 1 }, sources: 3, enabledSources: 2 }
 type View = { refreshAll: () => Promise<void>; sources: Array<{ id: string }>; logCategories: Array<{ id: string }>
@@ -25,7 +27,9 @@ type View = { refreshAll: () => Promise<void>; sources: Array<{ id: string }>; l
   applyRuleSearch: () => void; openEditSource: (source: LogSource) => void
   sourceRuleOptionLabel: (id: string) => string; searchSourceRules: (query: string) => void
   newSource: Record<string, unknown>; saveSource: () => Promise<void>
-  parseFailures: Array<Record<string, unknown>>; replayParseFailure: (row: Record<string, unknown>) => Promise<void> }
+  parseFailures: Array<Record<string, unknown>>; replayParseFailure: (row: Record<string, unknown>) => Promise<void>
+  sourcesLoading: boolean; refreshing: boolean; actionBusy: boolean; tasks: IngestTask[]
+  toggleTask: (task: IngestTask) => Promise<void> }
 async function setup() {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: IngestView }] })
   await router.push('/')
@@ -46,9 +50,63 @@ beforeEach(() => {
   api.listIngestParseFailures.mockResolvedValue({ items: [], total: 0, page: 1, size: 50, totalPages: 0 })
   api.updateSource.mockResolvedValue({ source: {} })
   api.createSource.mockResolvedValue({})
+  api.confirm.mockResolvedValue('confirm')
 })
 
 describe('ingest independent reads', () => {
+  it('keeps a newer source read loading when a superseded read finishes', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const first = deferred<{ items: []; total: number; page: number; size: number; totalPages: number }>()
+    const second = deferred<{ items: []; total: number; page: number; size: number; totalPages: number }>()
+    api.listSourcesPage.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    const oldRead = view.loadSources(), currentRead = view.loadSources()
+    expect(view.sourcesLoading).toBe(true)
+    first.resolve({ items: [], total: 0, page: 1, size: 20, totalPages: 0 }); await oldRead
+    expect(view.sourcesLoading).toBe(true)
+    second.resolve({ items: [], total: 0, page: 1, size: 20, totalPages: 0 }); await currentRead
+    expect(view.sourcesLoading).toBe(false)
+    root.unmount()
+  })
+
+  it('confirms a configuration change without claiming the collector stops, and suppresses duplicate requests', async () => {
+    const task = { id: 'task-a', name: 'Source A', enabled: true, runtime: { health: 'HEALTHY' } } as IngestTask
+    api.listIngestTasks.mockResolvedValue([task])
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const confirmation = deferred<string>()
+    api.confirm.mockReturnValueOnce(confirmation.promise)
+    const first = view.toggleTask(view.tasks[0]!)
+    await view.toggleTask(view.tasks[0]!)
+    expect(api.confirm).toHaveBeenCalledTimes(1)
+    expect(api.confirm.mock.calls[0]?.[0]).toContain('手工应用 Vector')
+    expect(view.actionBusy).toBe(false)
+    expect(api.stopIngestTask).not.toHaveBeenCalled()
+    confirmation.resolve('confirm'); await first
+    expect(api.stopIngestTask).toHaveBeenCalledExactlyOnceWith('task-a')
+    root.unmount()
+  })
+
+  it('does not toggle a changed task after confirmation or execute a confirmation after leaving', async () => {
+    const task = { id: 'task-a', name: 'Source A', enabled: true, runtime: { health: 'HEALTHY' } } as IngestTask
+    api.listIngestTasks.mockResolvedValue([task])
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const confirmation = deferred<string>()
+    api.confirm.mockReturnValueOnce(confirmation.promise)
+    const operation = view.toggleTask(view.tasks[0]!)
+    view.tasks[0]!.enabled = false
+    confirmation.resolve('confirm'); await operation
+    expect(api.stopIngestTask).not.toHaveBeenCalled()
+    expect(api.startIngestTask).not.toHaveBeenCalled()
+    const leaving = deferred<string>()
+    api.confirm.mockReturnValueOnce(leaving.promise)
+    const late = view.toggleTask(view.tasks[0]!)
+    root.unmount()
+    leaving.resolve('confirm'); await late
+    expect(api.startIngestTask).not.toHaveBeenCalled()
+  })
+
   it('refreshes the quarantine together with the rest of the page', async () => {
     const { root } = await setup(); await flushPromises()
     expect(api.listIngestParseFailures).toHaveBeenCalledWith(1, 50, expect.objectContaining({ signal: expect.any(AbortSignal) }))

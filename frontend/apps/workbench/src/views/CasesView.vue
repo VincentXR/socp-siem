@@ -45,6 +45,7 @@ import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useDebouncedWatch } from '../composables/useDebouncedWatch'
 import { useLatestRequest } from '../composables/useLatestRequest'
 import { useListQuery } from '../composables/useListQuery'
+import { useFocusReturn } from '../composables/useFocusReturn'
 import { caseApi, type CaseInfo, type TimelineEvent } from '../api/domains'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
@@ -81,6 +82,7 @@ const associatedRulePageSize = ref(50)
 const associatedRuleTotal = ref(0)
 const associatedRuleError = ref('')
 const drawerVisible = ref(false)
+const restoreDrawerFocus = useFocusReturn(drawerVisible)
 const createDialogVisible = ref(false)
 const caseForm = ref({ title: '', entity: '', severity: 'HIGH', assignee: '' })
 const titleError = ref('')
@@ -365,7 +367,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status], (
       </template>
     </el-dialog>
 
-    <el-drawer :model-value="drawerVisible" :before-close="closeDetail" :title="`${t('cases.title')} · ${detail?.title ?? selectedId}`" size="min(520px, 96vw)">
+    <el-drawer :model-value="drawerVisible" :before-close="closeDetail" :title="`${t('cases.title')} · ${detail?.title ?? selectedId}`" size="min(520px, 96vw)" @closed="restoreDrawerFocus">
       <p v-if="detailLoading" role="status">{{ t('common.loading') }}</p>
       <ActionFeedback :error="detailError" />
       <el-button v-if="detailError" @click="loadDetail">{{ t('common.retry') }}</el-button>

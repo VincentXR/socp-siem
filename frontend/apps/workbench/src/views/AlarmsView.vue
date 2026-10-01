@@ -15,7 +15,7 @@ import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
-import { onMounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AlarmDispositionDrawer from '../components/AlarmDispositionDrawer.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -26,6 +26,7 @@ import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { relTime } from '../lib/ui'
 import { listRuleOptions, SEVERITIES, type Alarm, type RuleOption } from '../api'
 import { useLatestRequest } from '../composables/useLatestRequest'
+import { useConfirm } from '../composables/useConfirm'
 import { batchUpdateAlarmDisposition, getAlarm } from '../api/alarms'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
@@ -51,6 +52,9 @@ const props = defineProps<{
 }>()
 
 const { t } = useI18n()
+const { confirmDanger } = useConfirm()
+let disposed = false
+onUnmounted(() => { disposed = true })
 
 const keyword = defineModel<string>('keyword', { default: '' })
 const severity = defineModel<string>('severity', { default: '' })
@@ -65,6 +69,7 @@ const batchOperation = ref<'assign' | 'status'>('assign')
 const pageSize = defineModel<number>('pageSize', { default: 20 })
 const batchAssignee = ref('')
 const batchBusy = ref(false)
+const batchConfirming = ref(false)
 const batchError = ref('')
 const exporting = ref('')
 const exportError = ref('')
@@ -121,20 +126,27 @@ function handleSelectionChange(rows: Alarm[]): void {
 }
 
 async function handleBatchUpdate(): Promise<void> {
-  if (!props.canWrite || batchBusy.value || !selectedAlarms.value.length) return
+  if (!props.canWrite || batchBusy.value || batchConfirming.value || disposed || !selectedAlarms.value.length) return
   if (batchOperation.value === 'assign' ? !batchAssignee.value.trim() : !batchStatus.value) return
+  const ids = selectedAlarms.value.map(alarm => alarm.id)
+  const operation = batchOperation.value
+  const payload = operation === 'assign' ? { assignee: batchAssignee.value.trim() } : { status: batchStatus.value }
+  batchConfirming.value = true
+  let confirmed: boolean
+  try {
+    confirmed = await confirmDanger(operation === 'assign'
+      ? t('alarms.batchAssignConfirm', { count: ids.length, assignee: payload.assignee ?? '' })
+      : t('alarms.batchStatusConfirm', { count: ids.length, status: tOr(t, 'statuses.' + payload.status, payload.status ?? '') }))
+  }
+  finally { batchConfirming.value = false }
+  if (!confirmed || !props.canWrite || batchBusy.value || disposed) return
   batchBusy.value = true
   batchError.value = ''
   try {
-    await batchUpdateAlarmDisposition(
-      selectedAlarms.value.map(alarm => alarm.id),
-      batchOperation.value === 'assign'
-        ? { assignee: batchAssignee.value.trim() }
-        : { status: batchStatus.value },
-    )
+    await batchUpdateAlarmDisposition(ids, payload)
     ElMessage.success(t('common.success'))
-    selectedAlarms.value = []
-    batchAssignee.value = ''
+    if (selectedAlarms.value.map(alarm => alarm.id).join('\0') === ids.join('\0')) selectedAlarms.value = []
+    if (operation === 'assign' && batchAssignee.value.trim() === payload.assignee) batchAssignee.value = ''
     await props.loadPage()
   } catch (error) {
     batchError.value = error instanceof Error ? error.message : String(error)
@@ -235,14 +247,14 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
     <div v-if="props.canWrite && selectedAlarms.length" class="alarm-batchbar">
       <strong>{{ selectedAlarms.length }} {{ t('alarms.selected') }}</strong>
       <span>{{ t('alarms.batchHint') }}</span>
-      <el-select v-model="batchOperation" size="small" style="width:150px"><el-option :label="t('forms.assign')" value="assign" /><el-option :label="t('forms.changeStatus')" value="status" /></el-select>
-      <el-select v-if="batchOperation === 'status'" v-model="batchStatus" size="small" style="width:150px">
+      <el-select v-model="batchOperation" :disabled="batchConfirming || batchBusy" size="small" style="width:150px"><el-option :label="t('forms.assign')" value="assign" /><el-option :label="t('forms.changeStatus')" value="status" /></el-select>
+      <el-select v-if="batchOperation === 'status'" v-model="batchStatus" :disabled="batchConfirming || batchBusy" size="small" style="width:150px">
         <el-option v-for="item in DISP_STATUSES" :key="item" :label="tOr(t, 'statuses.' + item, item)" :value="item" />
       </el-select>
-      <el-select v-else v-model="batchAssignee" filterable default-first-option clearable size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px">
+      <el-select v-else v-model="batchAssignee" :disabled="batchConfirming || batchBusy" filterable default-first-option clearable size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px">
         <el-option v-for="assignee in props.assigneeOptions ?? []" :key="assignee" :label="assignee" :value="assignee" />
       </el-select>
-      <el-button size="small" type="primary" :loading="batchBusy" @click="handleBatchUpdate">{{ t('common.update') }}</el-button>
+      <el-button size="small" type="primary" :loading="batchBusy" :disabled="batchConfirming" @click="handleBatchUpdate">{{ t('common.update') }}</el-button>
       <span v-if="batchError" class="alarm-batch-error" role="alert">{{ batchError }}</span>
     </div>
 

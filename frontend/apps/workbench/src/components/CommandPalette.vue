@@ -35,6 +35,13 @@ const matches = computed(() => {
 
 watch(matches, () => { highlighted.value = 0 })
 
+/** Combobox pattern: focus stays on the input, so the listbox's active
+ *  option is exposed through aria-activedescendant for screen readers. */
+const activeDescendantId = computed(() => {
+  const entry = matches.value[highlighted.value]
+  return entry ? `cp-option-${entry.key}` : undefined
+})
+
 watch(highlighted, index => {
   paletteRef.value?.querySelectorAll<HTMLElement>('.command-palette-item')[index]?.scrollIntoView?.({ block: 'nearest' })
 })
@@ -43,8 +50,15 @@ watch(() => props.modelValue, open => {
   if (!open) return
   query.value = ''
   highlighted.value = 0
-  nextTick(() => paletteRef.value?.querySelector<HTMLInputElement>('input')?.focus())
 })
+
+async function focusInput(): Promise<void> {
+  // The trap queues its default focus after emitting open-auto-focus. Wait for
+  // that update too, so it cannot replace the command input with the close button.
+  await nextTick()
+  await nextTick()
+  if (props.modelValue) paletteRef.value?.querySelector<HTMLInputElement>('input')?.focus()
+}
 
 function move(step: number): void {
   const total = matches.value.length
@@ -61,6 +75,17 @@ function commit(): void {
   const entry = matches.value[highlighted.value]
   if (entry) pick(entry.key)
 }
+
+function onKeyDown(event: KeyboardEvent): void {
+  if (event.isComposing || event.keyCode === 229) return
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault()
+    move(event.key === 'ArrowDown' ? 1 : -1)
+  } else if (event.key === 'Enter') {
+    event.preventDefault()
+    commit()
+  }
+}
 </script>
 
 <template>
@@ -69,20 +94,29 @@ function commit(): void {
     :title="t('nav.commandPalette')"
     width="min(560px, 92vw)"
     append-to-body
+    @open-auto-focus="focusInput"
     @update:model-value="value => emit('update:modelValue', Boolean(value))"
   >
     <div
       ref="paletteRef"
       class="command-palette"
-      @keydown.down.prevent="move(1)"
-      @keydown.up.prevent="move(-1)"
-      @keydown.enter.prevent="commit"
+      @keydown="onKeyDown"
     >
-      <el-input v-model="query" :aria-label="t('nav.commandPalette')" :placeholder="t('nav.commandPaletteHint')" />
+      <el-input
+        v-model="query"
+        :aria-label="t('nav.commandPalette')"
+        :placeholder="t('nav.commandPaletteHint')"
+        container-role="combobox"
+        aria-autocomplete="list"
+        aria-expanded="true"
+        aria-controls="command-palette-listbox"
+        :aria-activedescendant="activeDescendantId"
+      />
       <p v-if="matches.length === 0" class="command-palette-empty">{{ t('common.empty') }}</p>
-      <ul v-else class="command-palette-list" role="listbox" :aria-label="t('nav.commandPalette')">
+      <ul id="command-palette-listbox" class="command-palette-list" role="listbox" :aria-label="t('nav.commandPalette')">
         <li
           v-for="(entry, index) in matches"
+          :id="`cp-option-${entry.key}`"
           :key="entry.key"
           class="command-palette-item"
           :class="{ active: index === highlighted }"

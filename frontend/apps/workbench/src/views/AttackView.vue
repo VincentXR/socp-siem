@@ -113,10 +113,10 @@ const attackMatrix = computed(() => {
   })
 })
 
-function techStyle(technique: { covered: boolean; count: number }) {
-  if (technique.count > 0) return 'background:var(--ns-danger);color:var(--ns-on-danger);border-color:var(--ns-danger)'
-  if (technique.covered) return 'background:var(--ns-success);color:var(--ns-on-success);border-color:transparent'
-  return 'background:var(--ns-bg-inset);color:var(--ns-text-3);border-color:var(--ns-border)'
+function techClass(technique: { covered: boolean; count: number }) {
+  if (technique.count > 0) return 'am-cell--hit'
+  if (technique.covered) return 'am-cell--covered'
+  return 'am-cell--idle'
 }
 
 function openUrl(url: string): void {
@@ -193,20 +193,20 @@ onUnmounted(() => {
     <PageHeader :title="t('attack.title')" :description="t('attack.description')">
       <template #actions><el-button :loading="activityLoading" :disabled="!techniques.length" @click="loadActivity">{{ t('attack.refreshActivity') }}</el-button><el-button :loading="attackLoading" @click="computeAttackCov">{{ t('attack.refreshCoverage') }}</el-button></template>
     </PageHeader>
-    <el-card shadow="never" style="margin-bottom:14px">
-      <div style="display:flex;gap:20px;align-items:center;flex-wrap:wrap">
-        <div><div style="font-size:12px;color:var(--ns-text-3)">{{ t('attack.detectionCoverage') }}</div><div style="font-size:30px;font-weight:700;color:var(--ns-accent-fg)">{{ attackCov ? attackCov.coverage : t('time.notAvailable') }}<span v-if="attackCov">%</span></div></div>
-        <div><div style="font-size:12px;color:var(--ns-text-3)">{{ t('attack.coveredTotal') }}</div><div style="font-size:18px;font-weight:600">{{ attackCov ? attackCov.coveredTechniques : t('time.notAvailable') }} / {{ attackCov ? attackCov.totalTechniques : t('time.notAvailable') }}</div></div>
-        <el-select v-model="attackTech" :placeholder="t('attack.allTactics')" clearable style="width:170px">
+    <el-card shadow="never" class="attack-card">
+      <div class="attack-summary">
+        <div><div class="attack-metric-label">{{ t('attack.detectionCoverage') }}</div><div class="attack-metric-hero">{{ attackCov ? attackCov.coverage : t('time.notAvailable') }}<span v-if="attackCov">%</span></div></div>
+        <div><div class="attack-metric-label">{{ t('attack.coveredTotal') }}</div><div class="attack-metric-value">{{ attackCov ? attackCov.coveredTechniques : t('time.notAvailable') }} / {{ attackCov ? attackCov.totalTechniques : t('time.notAvailable') }}</div></div>
+        <el-select v-model="attackTech" :placeholder="t('attack.allTactics')" clearable class="attack-filter">
           <el-option v-for="tactic in tactics" :key="tactic.id" :label="tactic.name" :value="tactic.id" />
         </el-select>
       </div>
-      <div v-if="attackCov && attackCov.uncovered.length" style="margin-top:10px">
-        <span style="color:var(--ns-text-3);font-size:12px">{{ t('attack.uncoveredLabel') }}</span>
-        <el-tag v-for="technique in attackCov.uncovered.slice(0, 24)" :key="technique" size="small" type="info" style="margin:2px">{{ technique }}</el-tag>
+      <div v-if="attackCov && attackCov.uncovered.length" class="attack-uncovered">
+        <span class="attack-uncovered-label">{{ t('attack.uncoveredLabel') }}</span>
+        <el-tag v-for="technique in attackCov.uncovered.slice(0, 24)" :key="technique" size="small" type="info">{{ technique }}</el-tag>
       </div>
     </el-card>
-    <el-card shadow="never" style="margin-bottom:14px">
+    <el-card shadow="never" class="attack-card">
       <template #header>{{ t('attack.matrixTitle') }}</template>
       <p v-if="catalogLoading" role="status">{{ t('common.loading') }}</p>
       <p v-if="techniques.length" class="attack-activity-scope">{{ t('attack.activityScope') }} {{ t('attack.activityCalculated', { value: activityTime }) }}</p>
@@ -214,7 +214,7 @@ onUnmounted(() => {
       <div class="attack-matrix">
         <div v-for="column in attackMatrix" :key="column.tac.id" class="am-col">
           <div class="am-head">{{ column.tac.name }}<span class="am-cov">{{ attackCov ? column.covered : t('time.notAvailable') }}/{{ column.total }}</span></div>
-          <div v-for="technique in column.techs" :key="technique.id" class="am-cell" :style="techStyle(technique)" role="button" :tabindex="technique.url ? 0 : -1" :aria-disabled="technique.url ? undefined : 'true'" @click="openUrl(technique.url)" @keydown.enter.space.prevent="openUrl(technique.url)" :title="technique.id + ' ' + technique.name" :aria-label="cellAria(technique)">
+          <div v-for="technique in column.techs" :key="technique.id" class="am-cell" :class="techClass(technique)" role="button" :tabindex="technique.url ? 0 : -1" :aria-disabled="technique.url ? undefined : 'true'" @click="openUrl(technique.url)" @keydown.enter.space.prevent="openUrl(technique.url)" :title="technique.id + ' ' + technique.name" :aria-label="cellAria(technique)">
             <span class="am-id">{{ technique.id }}</span><span v-if="technique.count" class="am-badge">{{ technique.count }}</span>
           </div>
         </div>
@@ -232,7 +232,7 @@ onUnmounted(() => {
     <el-dialog v-model="techniqueDialogVisible" :before-close="noteGuard.beforeClose" :title="t('attack.editTitle', { id: editingTechniqueId })" width="640px">
       <p>{{ t('forms.standardReadOnly') }}</p><p v-if="noteError" role="alert">{{ noteError }}</p><el-button v-if="!noteLoaded && noteError" link :loading="noteLoading" @click="loadTechniqueNote">{{ t('common.retry') }}</el-button><el-form label-position="top">
         <el-form-item :label="t('attack.name')" required><el-input disabled v-model="techniqueForm.name" /></el-form-item>
-        <el-form-item :label="t('attack.tactic')"><el-select disabled v-model="techniqueForm.tactic" style="width: 240px"><el-option v-for="tactic in tactics" :key="tactic.id" :label="tactic.name" :value="tactic.id" /></el-select></el-form-item>
+        <el-form-item :label="t('attack.tactic')"><el-select disabled v-model="techniqueForm.tactic" class="attack-dialog-tactic"><el-option v-for="tactic in tactics" :key="tactic.id" :label="tactic.name" :value="tactic.id" /></el-select></el-form-item>
         <el-form-item :label="t('attack.detailUrl')"><el-input disabled v-model="techniqueForm.url" /></el-form-item>
         <el-form-item :label="t('common.description')"><el-input disabled v-model="techniqueForm.description" type="textarea" :rows="4" /></el-form-item>
         <el-form-item :label="t('forms.note')"><el-input :readonly="!canWrite" v-model="noteText" type="textarea" :rows="5" maxlength="4000" :disabled="noteLoading || !noteLoaded" /></el-form-item>

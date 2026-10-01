@@ -1,4 +1,4 @@
-import { del, get, patch, post, put } from './core'
+import { del, get, patch, post, put, type ApiRequestOptions } from './core'
 
 export interface SoarPlaybook {
   id: string; name: string; description?: string; owner?: string; status: string
@@ -53,22 +53,22 @@ export interface SoarTemplate {
   requiredConnectors: string[]; risk: string; attackTags: string[]
 }
 
-export const listPlaybooks = (page = 0, size = 20) =>
-  get<SoarPage<SoarPlaybook>>(`/soar-web/api/playbooks?page=${page}&size=${size}`)
+export const listPlaybooks = (page = 0, size = 20, options?: ApiRequestOptions) =>
+  get<SoarPage<SoarPlaybook>>(`/soar-web/api/playbooks?page=${page}&size=${size}`, options)
 export const createPlaybook = (p: { name: string; description?: string; tags?: string[] }) =>
   post<SoarPlaybook>('/soar-web/api/playbooks', p)
 export const importPlaybook = (p: { name: string; description?: string; tags?: string[]; definition: unknown; layout?: unknown }) =>
   post<SoarVersion & { imported?: boolean }>('/soar-web/api/playbooks/import', p)
-export const listRuns = (page = 0, size = 20) =>
-  get<SoarPage<SoarRun>>(`/soar-web/api/runs?page=${page}&size=${size}`)
+export const listRuns = (page = 0, size = 20, options?: ApiRequestOptions) =>
+  get<SoarPage<SoarRun>>(`/soar-web/api/runs?page=${page}&size=${size}`, options)
 export const queueRun = (p: { requestId: string; playbookVersionId: string; subject?: Record<string, unknown>; inputs?: Record<string, unknown> }) =>
   post<SoarRun>('/soar-web/api/runs', p)
 export const cancelWorkflowRun = (id: string, reason?: string) =>
   post<SoarRun>(`/soar-web/api/runs/${encodeURIComponent(id)}/cancel`, { reason })
-export const listApprovals = () => get<SoarApproval[]>('/soar-web/api/approvals')
+export const listApprovals = (options?: ApiRequestOptions) => get<SoarApproval[]>('/soar-web/api/approvals', options)
 export const approve = (id: string, reason?: string) => post<SoarApproval>(`/soar-web/api/approvals/${encodeURIComponent(id)}/approve`, { reason })
 export const reject = (id: string, reason?: string) => post<SoarApproval>(`/soar-web/api/approvals/${encodeURIComponent(id)}/reject`, { reason })
-export const listTemplates = () => get<SoarTemplate[]>('/soar-web/api/templates')
+export const listTemplates = (options?: ApiRequestOptions) => get<SoarTemplate[]>('/soar-web/api/templates', options)
 export const installTemplate = (id: string) => post(`/soar-web/api/templates/${encodeURIComponent(id)}/install`)
 export const retryRun = (id: string, reason?: string) => post<SoarRun>(`/soar-web/api/runs/${encodeURIComponent(id)}/retry`, { reason })
 export const rerunRun = (id: string, reason?: string) => post<SoarRun>(`/soar-web/api/runs/${encodeURIComponent(id)}/rerun`, { reason, confirm: true })
@@ -96,13 +96,13 @@ export const rollbackVersion = (playbookId: string, version: number) =>
   post<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}/rollback`)
 export const exportVersion = (playbookId: string, version: number) =>
   get<SoarVersion & { format?: string; exportedAt?: string }>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}/export`)
-export const getRun = (id: string) => get<SoarRun>(`/soar-web/api/runs/${encodeURIComponent(id)}`)
-export const listNodes = (runId: string) => get<SoarNodeRun[]>(`/soar-web/api/runs/${encodeURIComponent(runId)}/nodes`)
-export const listNodeAttempts = (nodeRunId: string, page = 0, size = 20) =>
-  get<SoarPage<SoarAttempt>>(`/soar-web/api/node-runs/${encodeURIComponent(nodeRunId)}/attempts?page=${page}&size=${size}`)
-export const listEvents = (runId: string, after = 0, page = 0, size = 100) =>
-  get<SoarPage<SoarEvent>>(`/soar-web/api/runs/${encodeURIComponent(runId)}/events?after=${after}&page=${page}&size=${size}`)
-export const listArtifacts = (runId: string) => get<SoarArtifact[]>(`/soar-web/api/runs/${encodeURIComponent(runId)}/artifacts`)
+export const getRun = (id: string, options?: ApiRequestOptions) => get<SoarRun>(`/soar-web/api/runs/${encodeURIComponent(id)}`, options)
+export const listNodes = (runId: string, options?: ApiRequestOptions) => get<SoarNodeRun[]>(`/soar-web/api/runs/${encodeURIComponent(runId)}/nodes`, options)
+export const listNodeAttempts = (nodeRunId: string, page = 0, size = 20, options?: ApiRequestOptions) =>
+  get<SoarPage<SoarAttempt>>(`/soar-web/api/node-runs/${encodeURIComponent(nodeRunId)}/attempts?page=${page}&size=${size}`, options)
+export const listEvents = (runId: string, after = 0, page = 0, size = 100, options?: ApiRequestOptions) =>
+  get<SoarPage<SoarEvent>>(`/soar-web/api/runs/${encodeURIComponent(runId)}/events?after=${after}&page=${page}&size=${size}`, options)
+export const listArtifacts = (runId: string, options?: ApiRequestOptions) => get<SoarArtifact[]>(`/soar-web/api/runs/${encodeURIComponent(runId)}/artifacts`, options)
 export const uploadArtifact = (runId: string, content: unknown, options?: { nodeRunId?: string; mediaType?: string; classification?: string }) => {
   const params = new URLSearchParams()
   if (options?.nodeRunId) params.set('nodeRunId', options.nodeRunId)
@@ -151,8 +151,8 @@ export interface SoarStats {
   runsByStatus: Record<string, number>; dispatchBacklog: number; signalBacklog: number; generatedAt?: string
 }
 
-export const listAutomationRules = (page = 0, size = 50) =>
-  get<SoarPage<SoarAutomationRule>>(`/soar-web/api/automation-rules?page=${page}&size=${size}`)
+export const listAutomationRules = (page = 0, size = 50, options?: ApiRequestOptions) =>
+  get<SoarPage<SoarAutomationRule>>(`/soar-web/api/automation-rules?page=${page}&size=${size}`, options)
 export const createAutomationRule = (rule: {
   name: string; triggerType: string; priority?: number; enabled?: boolean
   conditions?: unknown; actions: unknown; suppression?: unknown; rowVersion?: number
@@ -164,9 +164,9 @@ export const setAutomationRuleEnabled = (id: string, enabled: boolean) =>
 export const testAutomationRules = (event: Record<string, unknown>) =>
   post<Record<string, unknown>[]>('/soar-web/api/automation-rules/test', event)
 
-export const listConnections = (page = 0, size = 50) =>
-  get<SoarPage<SoarConnection>>(`/soar-web/api/connections?page=${page}&size=${size}`)
-export const listActions = () => get<SoarActionDescriptor[]>('/soar-web/api/actions')
+export const listConnections = (page = 0, size = 50, options?: ApiRequestOptions) =>
+  get<SoarPage<SoarConnection>>(`/soar-web/api/connections?page=${page}&size=${size}`, options)
+export const listActions = (options?: ApiRequestOptions) => get<SoarActionDescriptor[]>('/soar-web/api/actions', options)
 export const setConnectionEnabled = (id: string, enabled: boolean) =>
   post<SoarConnection>(`/soar-web/api/connections/${encodeURIComponent(id)}/${enabled ? 'enable' : 'disable'}`)
 export const testConnection = (id: string) =>
@@ -178,10 +178,10 @@ export const createConnection = (connection: {
   allowedHosts: string[]; enabled?: boolean; rowVersion?: number
 }) => post<SoarConnection>('/soar-web/api/connections', connection)
 
-export const listManualTasksPage = (pendingOnly = true, page = 0, size = 50) =>
-  get<SoarPage<SoarManualTask>>(`/soar-web/api/manual-tasks?pendingOnly=${pendingOnly}&page=${page}&size=${size}`)
-export const getStats = () => get<SoarStats>('/soar-web/api/stats')
-export const listDeadDispatches = () => get<SoarDeadLetter[]>('/soar-web/api/operations/dead-dispatches')
+export const listManualTasksPage = (pendingOnly = true, page = 0, size = 50, options?: ApiRequestOptions) =>
+  get<SoarPage<SoarManualTask>>(`/soar-web/api/manual-tasks?pendingOnly=${pendingOnly}&page=${page}&size=${size}`, options)
+export const getStats = (options?: ApiRequestOptions) => get<SoarStats>('/soar-web/api/stats', options)
+export const listDeadDispatches = (options?: ApiRequestOptions) => get<SoarDeadLetter[]>('/soar-web/api/operations/dead-dispatches', options)
 export const requeueDeadDispatch = (id: string, reason?: string) =>
   post<Record<string, unknown>>(`/soar-web/api/operations/dead-dispatches/${encodeURIComponent(id)}/requeue`, { reason })
 export const discardDeadDispatch = (id: string, reason: string) =>
