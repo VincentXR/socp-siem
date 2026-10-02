@@ -13,6 +13,7 @@ import 'element-plus/es/components/drawer/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
 import SchemaInputForm from '../SchemaInputForm.vue'
+import SoarCatalogPager from './SoarCatalogPager.vue'
 const showRuleTest = ref(false)
 const editingRule = ref<SoarAutomationRule | null>(null)
 const selectedTask = ref<SoarManualTask | null>(null)
@@ -60,12 +61,20 @@ import {
   type SoarConnection,
   type SoarDeadLetter,
   type SoarManualTask,
+  type SoarPlaybook,
   type SoarStats,
 } from '../../api'
 import type { FieldDef, RuleCondition, SoarPage } from '../../api'
 
 export type SoarControlPlaneSection = 'rules' | 'tasks' | 'connections-and-ops'
 type Tab = 'rules' | 'connections' | 'tasks' | 'operations'
+type CatalogTab = Exclude<Tab, 'operations'>
+const catalogPageSize = 25
+const catalogPages = reactive({
+  rules: { page: 0, total: 0, totalPages: 0 },
+  connections: { page: 0, total: 0, totalPages: 0 },
+  tasks: { page: 0, total: 0, totalPages: 0 },
+})
 
 const props = withDefaults(defineProps<{
   hideTabs?: boolean
@@ -130,7 +139,24 @@ const automationFields: FieldDef[] = [
   { id: 'automation-host', fieldName: 'host', fieldLabel: 'Host', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'Host associated with the event' },
   { id: 'automation-entity', fieldName: 'entity', fieldLabel: 'Entity', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'User, host, IP, or other entity' },
 ]
-const publishedVersionOptions = ref<Array<{ id: string; playbookName: string; version: number; status: string }>>([])
+const rulePlaybooks = ref<SoarPlaybook[]>([])
+const rulePlaybookPage = reactive({ page: 0, total: 0, totalPages: 0 })
+const rulePlaybooksLoading = ref(false)
+const rulePlaybooksError = ref('')
+const selectedRulePlaybook = ref<SoarPlaybook | null>(null)
+const rulePlaybookOptions = computed(() => selectedRulePlaybook.value && !rulePlaybooks.value.some(item => item.id === selectedRulePlaybook.value?.id)
+  ? [selectedRulePlaybook.value, ...rulePlaybooks.value] : rulePlaybooks.value)
+const currentVersionOptions = ref<Array<{ id: string; label: string }>>([])
+// Only retain metadata for selected versions, rather than accumulating every
+// playbook visited. Existing rule IDs remain visible without a catalog scan.
+const selectedVersionLabels = ref<Record<string, string>>({})
+const publishedVersionOptions = computed(() => [
+  ...ruleForm.playbookVersionIds.filter(id => !currentVersionOptions.value.some(version => version.id === id))
+    .map(id => ({ id, label: selectedVersionLabels.value[id] || id })),
+  ...currentVersionOptions.value,
+])
+let rulePlaybooksController: AbortController | null = null
+let versionsController: AbortController | null = null
 const versionOptionsLoading = ref(false)
 const versionOptionsError = ref('')
 /** A new rule starts on the engine's recommended suppression window, not an empty object. */
@@ -139,6 +165,11 @@ const ruleForm = reactive({
   name: '', triggerType: 'alert.created', priority: 100, playbookVersionIds: [] as string[],
   conditions: '{}', suppression: defaultSuppressionJson,
 })
+watch([() => ruleForm.playbookVersionIds, currentVersionOptions], () => {
+  selectedVersionLabels.value = Object.fromEntries(ruleForm.playbookVersionIds.map(id => [id,
+    currentVersionOptions.value.find(version => version.id === id)?.label || selectedVersionLabels.value[id] || id,
+  ]))
+}, { deep: true, flush: 'sync' })
 const connectionForm = reactive({
   name: '', connectorType: 'http.webhook', endpoint: '', authSecretRef: '', allowedHosts: '', enabled: true,
 })
@@ -176,36 +207,74 @@ function parseJson(value: string, fallback: unknown = {}) {
   try { return value.trim() ? JSON.parse(value) : fallback } catch { throw new Error(t('soar.invalidJsonPayload')) }
 }
 
-async function load() {
+/** A deletion may move the last page backwards; never walk or preload a catalog. */
+async function readCatalogPage<T>(fetchPage: (page: number) => Promise<SoarPage<T>>, requestedPage: number, isCurrent: () => boolean) {
+  let page = requestedPage
+  let result = await fetchPage(page)
+  while (isCurrent()) {
+    const lastPage = Math.max(0, (result.totalPages ?? Math.ceil(result.total / catalogPageSize)) - 1)
+    if (page <= lastPage) return result
+    page = lastPage
+    result = await fetchPage(page)
+  }
+  return null
+}
+
+function pageMetadata(page: SoarPage<unknown>) {
+  return { page: page.page, total: page.total, totalPages: page.totalPages ?? Math.ceil(page.total / catalogPageSize) }
+}
+
+function changeCatalogPage(catalog: CatalogTab, page: number) {
+  if (disposed || tab.value !== catalog || page < 0 || page >= catalogPages[catalog].totalPages || page === catalogPages[catalog].page) return
+  catalogPages[catalog].page = page
+  if (catalog === 'rules') rules.value = []
+  if (catalog === 'connections') connections.value = []
+  if (catalog === 'tasks') tasks.value = []
+  void load(true)
+}
+
+async function load(catalogOnly = false) {
   if (disposed) return
   loadController?.abort()
   const controller = new AbortController()
   loadController = controller
   const options = { signal: controller.signal }
+  const isCurrent = () => !disposed && !controller.signal.aborted && loadController === controller
   loading.value = true
   clearFeedback()
   const showRules = tab.value === 'rules'
   const showConnections = tab.value === 'connections'
   const showTasks = tab.value === 'tasks'
   const showOperations = tab.value === 'operations'
-  const emptyConnections: SoarPage<SoarConnection> = {
-    page: 0, size: 100, total: 0, totalPages: 0, items: [],
-  }
   const results = await Promise.allSettled([
-    showRules ? listAutomationRules(0, 100, options) : Promise.resolve(null),
-    showConnections && props.canViewConnections ? listConnections(0, 100, options) : Promise.resolve(emptyConnections),
-    showConnections ? listActions(options) : Promise.resolve([] as SoarActionDescriptor[]),
-    showTasks ? listManualTasksPage(true, 0, 100, options) : Promise.resolve(null),
-    showOperations && props.canOperate ? listDeadDispatches(options) : Promise.resolve([] as SoarDeadLetter[]),
+    showRules ? readCatalogPage(page => listAutomationRules(page, catalogPageSize, options), catalogPages.rules.page, isCurrent) : Promise.resolve(null),
+    showConnections && props.canViewConnections ? readCatalogPage(page => listConnections(page, catalogPageSize, options), catalogPages.connections.page, isCurrent) : Promise.resolve(null),
+    showConnections && !catalogOnly ? listActions(options) : Promise.resolve(null),
+    showTasks ? readCatalogPage(page => listManualTasksPage(true, page, catalogPageSize, options), catalogPages.tasks.page, isCurrent) : Promise.resolve(null),
+    showOperations && props.canOperate ? listDeadDispatches(options) : Promise.resolve(null),
     showOperations ? getStats(options) : Promise.resolve(null),
   ])
-  if (disposed || controller.signal.aborted || loadController !== controller) return
+  if (!isCurrent()) return
   const [ruleResult, connectionResult, actionResult, taskResult, deadResult, statsResult] = results
-  if (ruleResult.status === 'fulfilled' && ruleResult.value) rules.value = ruleResult.value.items
-  if (connectionResult.status === 'fulfilled') connections.value = connectionResult.value.items
-  if (actionResult.status === 'fulfilled') actions.value = actionResult.value
-  if (taskResult.status === 'fulfilled' && taskResult.value) tasks.value = taskResult.value.items
-  if (deadResult.status === 'fulfilled') deadLetters.value = deadResult.value
+  if (ruleResult.status === 'fulfilled' && ruleResult.value) {
+    rules.value = ruleResult.value.items
+    Object.assign(catalogPages.rules, pageMetadata(ruleResult.value))
+  }
+  if (connectionResult.status === 'fulfilled' && connectionResult.value) {
+    connections.value = connectionResult.value.items
+    Object.assign(catalogPages.connections, pageMetadata(connectionResult.value))
+  }
+  if (showConnections && !props.canViewConnections) {
+    connections.value = []
+    Object.assign(catalogPages.connections, { page: 0, total: 0, totalPages: 0 })
+  }
+  if (actionResult.status === 'fulfilled' && actionResult.value) actions.value = actionResult.value
+  if (taskResult.status === 'fulfilled' && taskResult.value) {
+    tasks.value = taskResult.value.items
+    Object.assign(catalogPages.tasks, pageMetadata(taskResult.value))
+  }
+  if (deadResult.status === 'fulfilled' && deadResult.value) deadLetters.value = deadResult.value
+  if (showOperations && !props.canOperate) deadLetters.value = []
   if (statsResult.status === 'fulfilled' && statsResult.value) stats.value = statsResult.value
   const failures = results.filter(item => item.status === 'rejected')
   if (failures.length) loadError.value = failureText(failures[0].reason)
@@ -213,28 +282,83 @@ async function load() {
   loadController = null
 }
 
-async function loadPublishedVersionOptions(): Promise<void> {
-  if (versionOptionsLoading.value) return
+function stopRuleCatalogRequests() {
+  rulePlaybooksController?.abort()
+  versionsController?.abort()
+  rulePlaybooksController = null
+  versionsController = null
+  rulePlaybooksLoading.value = false
+  versionOptionsLoading.value = false
+}
+
+watch(showRuleForm, visible => { if (!visible) stopRuleCatalogRequests() }, { flush: 'sync' })
+watch([() => props.canWrite, tab], ([canWrite, section]) => {
+  if (!canWrite || section !== 'rules') {
+    showRuleForm.value = false
+    stopRuleCatalogRequests()
+  }
+}, { flush: 'sync' })
+
+function openRuleCatalog() {
+  stopRuleCatalogRequests()
+  rulePlaybooks.value = []
+  Object.assign(rulePlaybookPage, { page: 0, total: 0, totalPages: 0 })
+  selectedRulePlaybook.value = null
+  currentVersionOptions.value = []
+  selectedVersionLabels.value = {}
+  versionOptionsError.value = ''
+  void loadRulePlaybooks(0)
+}
+
+async function loadRulePlaybooks(page: number) {
+  if (disposed || !props.canWrite || tab.value !== 'rules' || !showRuleForm.value) return
+  rulePlaybooksController?.abort()
+  const controller = new AbortController()
+  rulePlaybooksController = controller
+  const isCurrent = () => !disposed && showRuleForm.value && !controller.signal.aborted && rulePlaybooksController === controller
+  rulePlaybooksLoading.value = true
+  rulePlaybooksError.value = ''
+  rulePlaybooks.value = []
+  rulePlaybookPage.page = page
+  try {
+    const result = await readCatalogPage(index => listPlaybooks(index, catalogPageSize, { signal: controller.signal }), page, isCurrent)
+    if (!isCurrent() || !result) return
+    rulePlaybooks.value = result.items
+    Object.assign(rulePlaybookPage, pageMetadata(result))
+  } catch (failure) {
+    if (isCurrent()) rulePlaybooksError.value = failureText(failure)
+  } finally {
+    if (isCurrent()) {
+      rulePlaybooksLoading.value = false
+      rulePlaybooksController = null
+    }
+  }
+}
+
+async function selectRulePlaybook(id: string) {
+  if (disposed || !props.canWrite || tab.value !== 'rules' || !showRuleForm.value) return
+  const playbook = rulePlaybookOptions.value.find(item => item.id === id)
+  if (!playbook) return
+  versionsController?.abort()
+  const controller = new AbortController()
+  versionsController = controller
+  const isCurrent = () => !disposed && showRuleForm.value && !controller.signal.aborted && versionsController === controller
+  selectedRulePlaybook.value = playbook
+  currentVersionOptions.value = []
   versionOptionsLoading.value = true
   versionOptionsError.value = ''
   try {
-    const page = await listPlaybooks(0, 100)
-    const results = await Promise.allSettled(page.items.map(async playbook => {
-      const versions = await listVersions(playbook.id)
-      return versions
-        .filter(version => version.status === 'PUBLISHED')
-        .map(version => ({ id: version.id, playbookName: playbook.name, version: version.version, status: version.status }))
-    }))
-    publishedVersionOptions.value = results
-      .filter((result): result is PromiseFulfilledResult<Array<{ id: string; playbookName: string; version: number; status: string }>> => result.status === 'fulfilled')
-      .flatMap(result => result.value)
-    if (!publishedVersionOptions.value.length && results.some(result => result.status === 'rejected')) {
-      versionOptionsError.value = t('soar.versionCatalogUnavailable')
-    }
+    const versions = await listVersions(id, { signal: controller.signal })
+    if (!isCurrent()) return
+    currentVersionOptions.value = versions.filter(version => version.status === 'PUBLISHED')
+      .map(version => ({ id: version.id, label: `${playbook.name} · Revision ${version.version}` }))
   } catch (failure) {
-    versionOptionsError.value = failureText(failure)
+    if (isCurrent()) versionOptionsError.value = failureText(failure)
   } finally {
-    versionOptionsLoading.value = false
+    if (isCurrent()) {
+      versionOptionsLoading.value = false
+      versionsController = null
+    }
   }
 }
 
@@ -299,7 +423,7 @@ function openRuleForm(): void {
   Object.assign(ruleForm, { name: '', triggerType: 'alert.created', priority: 100, playbookVersionIds: [], conditions: '{}', suppression: defaultSuppressionJson })
   showRuleForm.value = true
   syncRuleConditionRows()
-  void loadPublishedVersionOptions()
+  openRuleCatalog()
 }
 
 function toggleRuleForm(): void {
@@ -362,7 +486,7 @@ function editRule(rule: SoarAutomationRule) {
   })
   syncRuleConditionRows()
   showRuleForm.value = true
-  void loadPublishedVersionOptions()
+  openRuleCatalog()
 }
 function openTask(task: SoarManualTask) {
   formError.value = ''
@@ -541,7 +665,7 @@ async function discard(letter: SoarDeadLetter) {
 const { t } = useI18n()
 const { confirmDanger } = useConfirm()
 onMounted(() => { void load() })
-onUnmounted(() => { disposed = true; loadController?.abort() })
+onUnmounted(() => { disposed = true; loadController?.abort(); stopRuleCatalogRequests() })
 
 function statusLabel(status: string): string {
   return tOr(t, 'soar.status.' + status, status)
@@ -570,7 +694,7 @@ function controlSubtitle(): string {
           <strong>{{ controlTitle() }}</strong>
           <span class="soar-subtitle">{{ controlSubtitle() }}</span>
         </div>
-        <el-button size="small" :loading="loading" @click="load">{{ t('common.refresh') }}</el-button>
+        <el-button size="small" :loading="loading" @click="load()">{{ t('common.refresh') }}</el-button>
       </div>
     </template>
 
@@ -601,10 +725,18 @@ function controlSubtitle(): string {
             <FormField :label="t('soar.priority')" :hint="t('soar.priorityHint')">
               <el-input-number v-model="ruleForm.priority" :min="0" :max="10000" />
             </FormField>
-            <FormField :label="t('soar.publishedVersions')" :error="versionOptionsError" full>
-              <el-select v-model="ruleForm.playbookVersionIds" multiple filterable default-first-option collapse-tags :loading="versionOptionsLoading" :placeholder="t('soar.publishedVersionsPlaceholder')">
-                <el-option v-for="version in publishedVersionOptions" :key="version.id" :label="`${version.playbookName} · Revision ${version.version}`" :value="version.id"><div class="soar-version-option"><b>{{ version.playbookName }} · Revision {{ version.version }}</b><small>{{ version.id }}</small></div></el-option>
+            <FormField :label="t('soar.playbook')" :error="rulePlaybooksError" full>
+              <el-select class="soar-rule-playbook-select" :model-value="selectedRulePlaybook?.id" filterable :loading="rulePlaybooksLoading" :placeholder="t('soar.playbook')" :aria-label="t('soar.playbook')" @change="selectRulePlaybook">
+                <el-option v-for="playbook in rulePlaybookOptions" :key="playbook.id" :label="playbook.name" :value="playbook.id" />
               </el-select>
+              <SoarCatalogPager v-bind="rulePlaybookPage" :loading="rulePlaybooksLoading" :disabled="ruleFormBusy" :label="t('soar.playbooks')" @change="loadRulePlaybooks" />
+              <el-button v-if="rulePlaybooksError" size="small" @click="loadRulePlaybooks(rulePlaybookPage.page)">{{ t('common.refresh') }}</el-button>
+            </FormField>
+            <FormField :label="t('soar.publishedVersions')" :error="versionOptionsError" full>
+              <el-select class="soar-rule-version-select" v-model="ruleForm.playbookVersionIds" multiple filterable default-first-option collapse-tags :loading="versionOptionsLoading" :placeholder="t('soar.publishedVersionsPlaceholder')">
+                <el-option v-for="version in publishedVersionOptions" :key="version.id" :label="version.label" :value="version.id"><div class="soar-version-option"><b>{{ version.label }}</b><small>{{ version.id }}</small></div></el-option>
+              </el-select>
+              <el-button v-if="versionOptionsError && selectedRulePlaybook" size="small" @click="selectRulePlaybook(selectedRulePlaybook.id)">{{ t('common.refresh') }}</el-button>
             </FormField>
           </FormGrid>
         </FormSection>
@@ -636,6 +768,7 @@ function controlSubtitle(): string {
       </el-drawer>
       <el-dialog v-if="props.canWrite" v-model="showRuleTest" :title="t('forms.test')" width="720px"><div v-if="formError" role="alert" class="soar-feedback error">{{ formError }}</div><div class="soar-test-box"><el-input type="textarea" v-model="ruleEventText" :rows="3" spellcheck="false" :aria-label="t('soar.actionTestEvent')"  /><pre v-if="ruleTestResult">{{ JSON.stringify(ruleTestResult, null, 2) }}</pre></div><template #footer><el-button :loading="ruleTestBusy" @click="testRules">{{ t('forms.test') }}</el-button></template></el-dialog>
       <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.name') }}</th><th>{{ t('soar.triggerType') }}</th><th>{{ t('soar.priority') }}</th><th>{{ t('soar.revision') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.publishedVersions') }}</th><th v-if="props.canWrite || props.canPublish">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="rule in rules" :key="rule.id"><td><b>{{ rule.name }}</b><small>{{ rule.id }}</small></td><td>{{ rule.triggerType }}</td><td>{{ rule.priority }}</td><td>{{ rule.revision || 1 }}</td><td><el-tag size="small" :type="rule.enabled ? 'success' : 'info'">{{ statusLabel(rule.enabled ? 'ENABLED' : 'DISABLED') }}</el-tag></td><td class="mono">{{ JSON.stringify(rule.actions) }}</td><td v-if="props.canWrite || props.canPublish" class="nowrap"><el-button v-if="props.canPublish" link size="small" :loading="ruleAction[rule.id] === 'toggle'" :disabled="Boolean(ruleAction[rule.id])" @click="toggleRule(rule)">{{ rule.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button v-if="props.canWrite" link size="small" @click="editRule(rule)">{{ t('common.edit') }}</el-button></td></tr></tbody></table><div v-if="!loading && !rules.length" class="soar-empty">{{ t('soar.noAutomationRules') }}</div></div>
+      <SoarCatalogPager v-bind="catalogPages.rules" :loading="loading" :label="controlTitle()" @change="page => changeCatalogPage('rules', page)" />
     </section>
 
     <section v-else-if="tab === 'connections'" class="soar-control-section">
@@ -659,11 +792,13 @@ function controlSubtitle(): string {
         </template>
       </el-dialog>
       <div class="soar-table-scroll"><table><thead><tr><th>{{ t('common.name') }}</th><th>{{ t('common.type') }}</th><th>{{ t('soar.httpsEndpoint') }}</th><th>{{ t('common.status') }}</th><th>{{ t('soar.connectionTest') }}</th><th v-if="props.canWrite">{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="connection in connections" :key="connection.id"><td><b>{{ connection.name }}</b><small>{{ connection.id }}</small></td><td>{{ connection.connectorType }}</td><td class="mono">{{ connection.endpoint }}</td><td><el-tag size="small" :type="connection.status === 'HEALTHY' ? 'success' : connection.enabled ? 'warning' : 'info'">{{ statusLabel(connection.status) }}</el-tag></td><td>{{ connection.lastTestAt || '-' }}<small>{{ connection.lastTestError || '' }}</small></td><td v-if="props.canWrite" class="nowrap"><el-button link size="small" :loading="connectionAction[connection.id] === 'test'" :disabled="Boolean(connectionAction[connection.id])" @click="testConnection(connection)">{{ t('soar.connectionTest') }}</el-button><el-button link size="small" :loading="connectionAction[connection.id] === 'enable'" :disabled="Boolean(connectionAction[connection.id])" @click="toggleConnection(connection)">{{ connection.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" :loading="connectionAction[connection.id] === 'delete'" :disabled="Boolean(connectionAction[connection.id])" @click="removeConnection(connection)">{{ t('common.delete') }}</el-button></td></tr></tbody></table><div v-if="!loading && !connections.length" class="soar-empty">{{ t('soar.noConnections') }}</div></div>
+      <SoarCatalogPager v-bind="catalogPages.connections" :loading="loading" :label="controlTitle()" @change="page => changeCatalogPage('connections', page)" />
     </section>
 
     <section v-else-if="tab === 'tasks'" class="soar-control-section">
       <div class="soar-section-toolbar"><div><b>{{ t('soar.humanTasks') }}</b><small>{{ t('soar.humanTasksHint') }}</small></div></div>
       <div class="soar-table-scroll"><table><thead><tr><th>{{ t('forms.task') }}</th><th>{{ t('soar.runNode') }}</th><th>{{ t('forms.assign') }}</th><th>{{ t('soar.due') }}</th><th>{{ t('common.actions') }}</th></tr></thead><tbody><tr v-for="task in tasks" :key="task.id"><td><b>{{ task.id }}</b><small>{{ statusLabel(task.status) }}</small></td><td class="mono">{{ task.runId }} / {{ task.nodeId }}</td><td>{{ task.assignee || t('soar.anyApprover') }}</td><td>{{ task.dueAt || '-' }}</td><td><el-button size="small" type="primary" plain @click="openTask(task)">{{ t('forms.task') }}</el-button></td></tr></tbody></table><div v-if="!loading && !tasks.length" class="soar-empty">{{ t('soar.noPendingTasks') }}</div></div>
+      <SoarCatalogPager v-bind="catalogPages.tasks" :loading="loading" :label="controlTitle()" @change="page => changeCatalogPage('tasks', page)" />
     </section>
 
     <section v-else class="soar-control-section">

@@ -23,6 +23,7 @@ import { watch, computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import SoarControlPlane from '../components/soar/SoarControlPlane.vue'
+import SoarCatalogPager from '../components/soar/SoarCatalogPager.vue'
 import SoarEditor from '../components/soar/SoarEditor.vue'
 import SoarRunInspector from '../components/soar/SoarRunInspector.vue'
 import type { RunHighlightRow, RunOpenRequest } from '../components/soar/editor/runHighlight'
@@ -31,12 +32,10 @@ import {
   installTemplate as installTemplateApi,
   listApprovals,
   listPlaybooks,
-  listRuns,
   listTemplates,
   reject,
   type SoarApproval,
   type SoarPlaybook,
-  type SoarRun,
   type SoarTemplate,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
@@ -60,7 +59,10 @@ type SoarTab = 'playbooks' | 'rules' | 'runs' | 'approvals' | 'connections'
 const activeTab = ref<SoarTab>('playbooks')
 
 const playbooks = ref<SoarPlaybook[]>([])
-const runs = ref<SoarRun[]>([])
+const playbookPage = ref(0)
+const playbookPageSize = 25
+const playbookTotal = ref(0)
+const playbookTotalPages = ref(0)
 const approvals = ref<SoarApproval[]>([])
 const templates = ref<SoarTemplate[]>([])
 const showEditor = ref(Boolean(route.meta.editor))
@@ -157,16 +159,25 @@ async function loadBaseData(): Promise<void> {
   loading.value = true
   loadError.value = ''
   try {
-    const [playbookResult, runResult, templateResult] = await Promise.allSettled([
-      listPlaybooks(0, 100, { signal: controller.signal }),
-      listRuns(0, 20, { signal: controller.signal }),
+    const [playbookResult, templateResult] = await Promise.allSettled([
+      listPlaybooks(playbookPage.value, playbookPageSize, { signal: controller.signal }),
       listTemplates({ signal: controller.signal }),
     ])
     if (disposed || controller.signal.aborted || baseController !== controller) return
-    if (playbookResult.status === 'fulfilled') playbooks.value = playbookResult.value.items
-    if (runResult.status === 'fulfilled') runs.value = runResult.value.items
+    if (playbookResult.status === 'fulfilled') {
+      const page = playbookResult.value
+      playbookTotal.value = page.total
+      playbookTotalPages.value = page.totalPages ?? Math.ceil(page.total / playbookPageSize)
+      const lastPage = Math.max(0, playbookTotalPages.value - 1)
+      if (playbookPage.value > lastPage) {
+        playbookPage.value = lastPage
+        await loadBaseData()
+        return
+      }
+      playbooks.value = page.items
+    }
     if (templateResult.status === 'fulfilled') templates.value = templateResult.value
-    const firstFailure = [playbookResult, runResult, templateResult].find(result => result.status === 'rejected')
+    const firstFailure = [playbookResult, templateResult].find(result => result.status === 'rejected')
     if (firstFailure?.status === 'rejected') loadError.value = firstFailure.reason instanceof Error ? firstFailure.reason.message : 'Unable to load SOAR data'
   } finally {
     if (baseController === controller) { baseController = null; loading.value = false }
@@ -265,14 +276,11 @@ async function openEditorForPlaybook(id: string): Promise<void> {
   showEditor.value = true
 }
 
-function playbookName(id: string): string {
-  return playbooks.value.find(playbook => playbook.id === id)?.name || id
-}
-
-function lastRun(playbookId: string): SoarRun | undefined {
-  return runs.value
-    .filter(run => run.playbookId === playbookId)
-    .sort((left, right) => String(right.createdAt || '').localeCompare(String(left.createdAt || '')))[0]
+function changePlaybookPage(page: number): void {
+  if (page === playbookPage.value) return
+  playbookPage.value = page
+  playbooks.value = []
+  void loadBaseData()
 }
 
 function runTag(status?: string): 'success' | 'warning' | 'danger' | 'info' | 'primary' {
@@ -286,12 +294,6 @@ function runTag(status?: string): 'success' | 'warning' | 'danger' | 'info' | 'p
 function statusLabel(status: string): string {
   return tOr(t, 'soar.status.' + status, status)
 }
-
-const statusSummary = computed(() => {
-  const summary: Record<string, number> = {}
-  for (const run of runs.value) summary[run.status] = (summary[run.status] || 0) + 1
-  return summary
-})
 
 watch(() => route.fullPath, () => {
   showEditor.value = Boolean(route.meta.editor)
@@ -392,11 +394,12 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
               </el-table-column>
               <el-table-column :label="t('soar.lastRun')" min-width="190">
                 <template #default="{ row }">
-                  <template v-if="lastRun(row.id)">
-                    <el-tag size="small" :type="runTag(lastRun(row.id)?.status)">{{ statusLabel(lastRun(row.id)?.status || '') }}</el-tag>
-                    <small class="soar-version-note">{{ lastRun(row.id)?.createdAt || '—' }}</small>
+                  <template v-if="row.latestRun">
+                    <el-tag size="small" :type="runTag(row.latestRun.status)">{{ statusLabel(row.latestRun.status || '') }}</el-tag>
+                    <small class="soar-version-note">{{ row.latestRun.createdAt || '—' }}</small>
                   </template>
-                  <span v-else class="soar-text-muted">{{ t('soar.noRuns') }}</span>
+                  <span v-else-if="row.latestRun === null" class="soar-text-muted">{{ t('soar.noRetainedRuns') }}</span>
+                  <span v-else class="soar-text-muted">—</span>
                 </template>
               </el-table-column>
               <el-table-column prop="updatedAt" :label="t('soar.updatedAt')" width="190" show-overflow-tooltip />
@@ -406,6 +409,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
                 </template>
               </el-table-column>
             </el-table>
+            <SoarCatalogPager :page="playbookPage" :total="playbookTotal" :total-pages="playbookTotalPages" :loading="loading" :label="t('soar.playbooks')" @change="changePlaybookPage" />
           </el-card>
         </div>
       </el-tab-pane>

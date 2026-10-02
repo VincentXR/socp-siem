@@ -4,6 +4,8 @@ export interface SoarPlaybook {
   id: string; name: string; description?: string; owner?: string; status: string
   latestPublishedVersion?: number | null; draftVersion?: number | null
   tags: string[]; createdAt?: string; updatedAt?: string
+  /** Latest retained run across all revisions; null means no retained history. */
+  latestRun?: Pick<SoarRun, 'runId' | 'status' | 'createdAt'> | null
 }
 export interface SoarVersion {
   id: string; playbookId: string; version: number; status: string; schemaVersion: string
@@ -80,7 +82,7 @@ export const dryRunVersion = (playbookId: string, version: number, subject?: Rec
 export const getPlaybook = (id: string) => get<SoarPlaybook>(`/soar-web/api/playbooks/${encodeURIComponent(id)}`)
 export const updatePlaybook = (id: string, changes: { name?: string; description?: string; tags?: string[]; status?: 'ACTIVE' | 'ARCHIVED'; rowVersion?: number }) =>
   patch<SoarPlaybook>(`/soar-web/api/playbooks/${encodeURIComponent(id)}`, changes)
-export const listVersions = (playbookId: string) => get<SoarVersion[]>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions`)
+export const listVersions = (playbookId: string, options?: ApiRequestOptions) => get<SoarVersion[]>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions`, options)
 export const createVersion = (playbookId: string) => post<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions`)
 export const createDraft = (playbookId: string) => post<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/drafts`)
 export const getVersion = (playbookId: string, version: number) =>

@@ -32,7 +32,7 @@ final class SoarQueryService {
 
     Page<Map<String, Object>> listPlaybooks(Pageable pageable) {
         String tenant = owner.tenant();
-        return owner.playbooks.findByTenantId(tenant, pageable).map(owner::playbookView);
+        return playbookPage(owner.playbooks.findByTenantId(tenant, pageable));
     }
 
     Page<Map<String, Object>> listPlaybooks(Pageable pageable, String status,
@@ -45,8 +45,7 @@ final class SoarQueryService {
         String normalizedTag = SoarService.normalizeFilter(tag);
         String normalizedRisk = SoarService.normalizeFilter(risk);
         if (normalizedTag == null && normalizedRisk == null) {
-            return owner.playbooks.searchByTenant(owner.tenant(), normalizedStatus, normalizedOwner, null, pageable)
-                    .map(owner::playbookView);
+            return playbookPage(owner.playbooks.searchByTenant(owner.tenant(), normalizedStatus, normalizedOwner, null, pageable));
         }
         List<SoarPlaybookEntity> candidates = owner.playbooks.findByTenantId(owner.tenant()).stream()
                 .filter(row -> normalizedStatus == null || normalizedStatus.equalsIgnoreCase(row.getStatus()))
@@ -54,14 +53,31 @@ final class SoarQueryService {
                 .filter(row -> normalizedTag == null || owner.hasTag(row, normalizedTag))
                 .filter(row -> normalizedRisk == null || owner.riskMatches(row, normalizedRisk))
                 .sorted(Comparator.comparing(SoarPlaybookEntity::getUpdatedAt,
-                        Comparator.nullsLast(Comparator.reverseOrder())))
+                        Comparator.nullsLast(Comparator.reverseOrder())).thenComparing(SoarPlaybookEntity::getId))
                 .toList();
         int pageNumber = Math.max(0, pageable.getPageNumber());
         int from = Math.min(candidates.size(), pageNumber * pageable.getPageSize());
         int to = Math.min(candidates.size(), from + pageable.getPageSize());
-        List<Map<String, Object>> content = candidates.subList(from, to).stream()
-                .map(owner::playbookView).toList();
-        return new PageImpl<>(content, pageable, candidates.size());
+        return playbookPage(new PageImpl<>(candidates.subList(from, to), pageable, candidates.size()));
+    }
+
+    private Page<Map<String, Object>> playbookPage(Page<SoarPlaybookEntity> page) {
+        if (page.isEmpty()) return page.map(owner::playbookView);
+        Map<String, Map<String, Object>> latestByPlaybook = new LinkedHashMap<>();
+        owner.runs.findLatestByTenantIdAndPlaybookIds(owner.tenant(),
+                page.getContent().stream().map(SoarPlaybookEntity::getId).toList()).forEach(run -> {
+                    Map<String, Object> latest = new LinkedHashMap<>();
+                    latest.put("runId", run.getId());
+                    latest.put("status", run.getStatus());
+                    latest.put("createdAt", run.getCreatedAt());
+                    latestByPlaybook.put(run.getPlaybookId(), latest);
+                });
+        return page.map(playbook -> {
+            Map<String, Object> view = owner.playbookView(playbook);
+            // Null means no retained history, not necessarily never executed.
+            view.put("latestRun", latestByPlaybook.get(playbook.getId()));
+            return view;
+        });
     }
 
     Map<String, Object> getPlaybook(String id) {

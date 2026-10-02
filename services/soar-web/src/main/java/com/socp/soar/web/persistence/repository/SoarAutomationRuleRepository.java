@@ -19,6 +19,8 @@ public interface SoarAutomationRuleRepository extends TenantScopedRepository<Soa
     Optional<SoarAutomationRuleEntity> findByTenantIdAndIdForUpdate(@Param("tenantId") String tenantId,
                                                                       @Param("id") String id);
     List<SoarAutomationRuleEntity> findByTenantIdOrderByPriorityAscUpdatedAtDesc(String tenantId);
+    @Query("select r from SoarAutomationRuleEntity r where r.tenantId = :tenantId "
+            + "order by r.priority asc, r.updatedAt desc, r.id asc")
     Page<SoarAutomationRuleEntity> findByTenantIdOrderByPriorityAscUpdatedAtDesc(String tenantId,
                                                                                   Pageable pageable);
     List<SoarAutomationRuleEntity> findByTenantIdAndEnabledTrueOrderByPriorityAsc(String tenantId);

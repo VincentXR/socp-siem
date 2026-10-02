@@ -40,6 +40,12 @@ paths:
   /api/playbooks:
     get:
       tags: [Playbooks]
+      description: >-
+        Tenant-scoped, zero-based catalog pages (size capped at 200), ordered by updatedAt
+        descending and id ascending. Each item includes latestRun (runId, status, createdAt)
+        for its newest retained run across all revisions, or null when no run remains.
+        Equal run creation timestamps are resolved by descending run ID. Retention may
+        remove historical runs; null does not imply the playbook has never executed.
       parameters:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Size'}

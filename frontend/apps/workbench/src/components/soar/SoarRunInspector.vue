@@ -19,6 +19,7 @@ import { useConfirm } from '../../composables/useConfirm'
 import { useFormDialog } from '../../composables/useFormDialog'
 import { useI18n } from '../../composables/useI18n'
 import RowActivate from '../RowActivate.vue'
+import SoarCatalogPager from './SoarCatalogPager.vue'
 import { tOr } from '../../utils/i18nLabel'
 import {
   cancelWorkflowRun,
@@ -56,7 +57,11 @@ const emit = defineEmits<{ 'open-in-editor': [payload: RunOpenRequest] }>()
 const { t } = useI18n()
 const { confirmDanger, promptInput } = useConfirm()
 
+const catalogPageSize = 25
 const runs = ref<SoarRun[]>([])
+const runsPage = ref(0)
+const runsTotal = ref(0)
+const runsTotalPages = ref(0)
 const selectedRunId = ref('')
 const run = ref<SoarRun | null>(null)
 const nodes = ref<SoarNodeRun[]>([])
@@ -66,6 +71,7 @@ const attempts = ref<SoarAttempt[]>([])
 const selectedNodeRunId = ref('')
 const loading = ref(false)
 const runsLoading = ref(false)
+const runsError = ref('')
 const errorMessage = ref('')
 const streamState = ref<'closed' | 'live' | 'polling'>('closed')
 const queueDialogVisible = ref(false)
@@ -73,6 +79,14 @@ const queueLoading = ref(false)
 const queueError = ref('')
 const queueMessage = ref('')
 const controlBusy = ref<'cancel' | 'retry' | 'rerun' | 'resolve' | ''>('')
+const queuePlaybooks = ref<SoarPlaybook[]>([])
+const queuePlaybooksPage = ref(0)
+const queuePlaybooksTotal = ref(0)
+const queuePlaybooksTotalPages = ref(0)
+const queueCatalogLoading = ref(false)
+const queueVersionsLoading = ref(false)
+const queueCatalogError = ref('')
+const queuePlaybook = ref<SoarPlaybook | null>(null)
 const publishedVersions = ref<Array<{ version: SoarVersion; playbook: SoarPlaybook }>>([])
 const queueForm = ref({
   playbookVersionId: '',
@@ -89,6 +103,14 @@ let runController: AbortController | null = null
 let projectionController: AbortController | null = null
 let projectionPending = false
 let attemptController: AbortController | null = null
+let queueCatalogController: AbortController | null = null
+let queueVersionsController: AbortController | null = null
+
+// Keep the selected identity visible while browsing another page. Only the
+// current page and one selected item are retained, never the whole catalog.
+const queuePlaybookOptions = computed(() => queuePlaybook.value && !queuePlaybooks.value.some(item => item.id === queuePlaybook.value!.id)
+  ? [queuePlaybook.value, ...queuePlaybooks.value] : queuePlaybooks.value)
+const selectedRunOffPage = computed(() => selectedRunId.value && !runs.value.some(item => item.runId === selectedRunId.value))
 
 const selectedNode = computed(() => nodes.value.find(node => node.id === selectedNodeRunId.value))
 const lastSequence = computed(() => events.value.reduce((max, item) => Math.max(max, item.sequence || 0), 0))
@@ -105,44 +127,108 @@ function newRequestId(): string {
   return `workbench-${suffix}`
 }
 
-async function loadPublishedVersions(): Promise<void> {
-  queueError.value = ''
+function queueReadsActive(): boolean {
+  return !disposed && props.active && props.canExecute && queueDialogVisible.value
+}
+
+function cancelQueueReads(): void {
+  queueCatalogController?.abort()
+  queueVersionsController?.abort()
+  queueCatalogController = null
+  queueVersionsController = null
+  queueCatalogLoading.value = false
+  queueVersionsLoading.value = false
+}
+
+async function loadQueuePlaybooks(): Promise<void> {
+  if (!queueReadsActive()) return
+  queueCatalogController?.abort()
+  const controller = new AbortController()
+  queueCatalogController = controller
+  queueCatalogLoading.value = true
+  queueCatalogError.value = ''
   try {
-    const page = await listPlaybooks(0, 100)
-    const results = await Promise.allSettled(page.items.map(async playbook => {
-      const versions = await listVersions(playbook.id)
-      return versions
-        .filter(version => version.status === 'PUBLISHED')
-        .map(version => ({ version, playbook }))
-    }))
-    publishedVersions.value = results
-      .filter((result): result is PromiseFulfilledResult<Array<{ version: SoarVersion; playbook: SoarPlaybook }>> => result.status === 'fulfilled')
-      .flatMap(result => result.value)
-    if (!publishedVersions.value.length) {
-      queueError.value = t('soar.noPublishedVersions')
+    const result = await listPlaybooks(queuePlaybooksPage.value, catalogPageSize, { signal: controller.signal })
+    if (!queueReadsActive() || controller.signal.aborted || queueCatalogController !== controller) return
+    queuePlaybooksTotal.value = result.total
+    queuePlaybooksTotalPages.value = result.totalPages ?? Math.ceil(result.total / catalogPageSize)
+    const lastPage = Math.max(0, queuePlaybooksTotalPages.value - 1)
+    if (queuePlaybooksPage.value > lastPage) {
+      queuePlaybooksPage.value = lastPage
+      await loadQueuePlaybooks()
       return
     }
-    if (!publishedVersions.value.some(item => item.version.id === queueForm.value.playbookVersionId)) {
-      queueForm.value.playbookVersionId = publishedVersions.value[0].version.id
+    queuePlaybooks.value = result.items
+    if (!queuePlaybook.value) {
+      const first = result.items.find(item => item.latestPublishedVersion != null) ?? result.items[0]
+      if (first) void selectQueuePlaybook(first.id, true)
     }
   } catch (failure) {
-    publishedVersions.value = []
+    if (!queueReadsActive() || controller.signal.aborted || queueCatalogController !== controller) return
+    queueCatalogError.value = failureText(failure)
+  } finally {
+    if (queueCatalogController === controller) { queueCatalogController = null; queueCatalogLoading.value = false }
+  }
+}
+
+function changeQueuePlaybooksPage(page: number): void {
+  if (!queueReadsActive() || queueLoading.value || page < 0 || page >= queuePlaybooksTotalPages.value) return
+  queuePlaybooksPage.value = page
+  queuePlaybooks.value = []
+  void loadQueuePlaybooks()
+}
+
+async function selectQueuePlaybook(id: string, automatic = false): Promise<void> {
+  if (!queueReadsActive() || queueLoading.value) return
+  const selected = queuePlaybookOptions.value.find(item => item.id === id)
+  if (!selected) return
+  const pristine = automatic && !queueGuard.dirty.value
+  queueVersionsController?.abort()
+  const controller = new AbortController()
+  queueVersionsController = controller
+  queuePlaybook.value = selected
+  publishedVersions.value = []
+  queueForm.value.playbookVersionId = ''
+  queueVersionsLoading.value = true
+  queueError.value = ''
+  try {
+    const versions = await listVersions(selected.id, { signal: controller.signal })
+    if (!queueReadsActive() || controller.signal.aborted || queueVersionsController !== controller) return
+    publishedVersions.value = versions.filter(version => version.status === 'PUBLISHED').map(version => ({ version, playbook: selected }))
+    // Automatic defaults should not create a phantom unsaved-change prompt.
+    const stillPristine = pristine && !queueGuard.dirty.value
+    queueForm.value.playbookVersionId = publishedVersions.value[0]?.version.id ?? ''
+    if (stillPristine) queueGuard.markSaved()
+    if (!publishedVersions.value.length) queueError.value = t('soar.noPublishedVersionsForPlaybook')
+  } catch (failure) {
+    if (!queueReadsActive() || controller.signal.aborted || queueVersionsController !== controller) return
     queueError.value = failureText(failure)
+  } finally {
+    if (queueVersionsController === controller) { queueVersionsController = null; queueVersionsLoading.value = false }
   }
 }
 
 function openQueueDialog(): void {
-  if (!props.canExecute) return
+  if (!props.canExecute || !props.active || queueLoading.value) return
+  cancelQueueReads()
   queueMessage.value = ''
   queueError.value = ''
+  queueCatalogError.value = ''
+  queuePlaybooksPage.value = 0
+  queuePlaybooksTotal.value = 0
+  queuePlaybooksTotalPages.value = 0
+  queuePlaybooks.value = []
+  queuePlaybook.value = null
+  publishedVersions.value = []
   queueForm.value = {
-    playbookVersionId: publishedVersions.value[0]?.version.id ?? '',
+    playbookVersionId: '',
     requestId: newRequestId(),
     subject: '{}',
     inputs: '{\n  "eventId": "workbench-manual-run",\n  "eventType": "manual.test"\n}',
   }
   queueDialogVisible.value = true
-  void loadPublishedVersions()
+  queueGuard.markSaved()
+  void loadQueuePlaybooks()
 }
 
 function parseObject(value: string, label: string): Record<string, unknown> {
@@ -153,10 +239,10 @@ function parseObject(value: string, label: string): Record<string, unknown> {
 }
 
 async function submitQueue(): Promise<void> {
-  if (!props.canExecute || queueLoading.value) return
+  if (!queueReadsActive() || queueLoading.value || queueVersionsLoading.value) return
   queueError.value = ''
   queueMessage.value = ''
-  if (!queueForm.value.playbookVersionId) {
+  if (!publishedVersions.value.some(item => item.version.id === queueForm.value.playbookVersionId)) {
     queueError.value = t('soar.choosePublishedVersion')
     return
   }
@@ -210,25 +296,41 @@ function json(value: unknown): string {
   try { return JSON.stringify(value) } catch { return String(value) }
 }
 
-async function loadRuns() {
+async function loadRuns(refreshSelected = true) {
   if (disposed || !props.active) return
   runsController?.abort()
   const controller = new AbortController()
   runsController = controller
   runsLoading.value = true
+  runsError.value = ''
   try {
-    const result = await listRuns(0, 100, { signal: controller.signal })
+    const result = await listRuns(runsPage.value, catalogPageSize, { signal: controller.signal })
     if (disposed || !props.active || controller.signal.aborted || runsController !== controller) return
+    runsTotal.value = result.total
+    runsTotalPages.value = result.totalPages ?? Math.ceil(result.total / catalogPageSize)
+    const lastPage = Math.max(0, runsTotalPages.value - 1)
+    if (runsPage.value > lastPage) {
+      runsPage.value = lastPage
+      await loadRuns(refreshSelected)
+      return
+    }
     runs.value = result.items
     if (!selectedRunId.value && runs.value[0]) {
       selectedRunId.value = runs.value[0].runId
-    } else if (selectedRunId.value) await refreshRun()
+    } else if (refreshSelected && selectedRunId.value) await refreshRun()
   } catch (failure) {
     if (disposed || !props.active || controller.signal.aborted || runsController !== controller) return
-    errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadRuns')
+    runsError.value = failure instanceof Error ? failure.message : t('soar.unableLoadRuns')
   } finally {
     if (runsController === controller) { runsController = null; runsLoading.value = false }
   }
+}
+
+function changeRunsPage(page: number): void {
+  if (disposed || !props.active || controlBusy.value || page < 0 || page >= runsTotalPages.value) return
+  runsPage.value = page
+  runs.value = []
+  void loadRuns(false)
 }
 
 // Guards against a late response for a previous run overwriting the current
@@ -248,6 +350,14 @@ async function refreshRun() {
   runController = controller
   const options = { signal: controller.signal }
   const runId = selectedRunId.value
+  if (run.value?.runId !== runId) {
+    run.value = null
+    nodes.value = []
+    events.value = []
+    artifacts.value = []
+    attempts.value = []
+    selectedNodeRunId.value = ''
+  }
   loading.value = true
   errorMessage.value = ''
   try {
@@ -457,7 +567,24 @@ async function viewArtifact(artifact: SoarArtifact) {
   }
 }
 
-watch(selectedRunId, () => { void refreshRun() })
+watch(selectedRunId, () => {
+  if (selectedRunId.value) { void refreshRun(); return }
+  loadGeneration++
+  runController?.abort()
+  projectionController?.abort()
+  attemptController?.abort()
+  closeStream()
+  run.value = null
+  nodes.value = []
+  events.value = []
+  artifacts.value = []
+  attempts.value = []
+  selectedNodeRunId.value = ''
+  loading.value = false
+  streamState.value = 'closed'
+}, { flush: 'sync' })
+watch(queueDialogVisible, visible => { if (!visible) cancelQueueReads() }, { flush: 'sync' })
+watch(() => props.canExecute, canExecute => { if (!canExecute) queueDialogVisible.value = false })
 watch(selectedNodeRunId, () => { void loadAttempts() })
 
 function startPolling(): void {
@@ -470,6 +597,7 @@ function stopPolling(): void {
 watch(() => props.active, active => {
   if (!active) {
     cancelReads()
+    queueDialogVisible.value = false
     stopPolling()
     closeStream()
     streamState.value = 'closed'
@@ -492,6 +620,7 @@ onUnmounted(() => {
 })
 
 function cancelReads(): void {
+  cancelQueueReads()
   loadGeneration++
   projectionPending = false
   runsController?.abort()
@@ -528,13 +657,16 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
           <el-button v-if="props.canExecute" size="small" type="primary" plain @click="openQueueDialog">{{ t('soar.queueRun') }}</el-button>
           <select v-model="selectedRunId" :disabled="Boolean(controlBusy)" :aria-label="t('soar.selectRun')">
             <option value="">{{ t('soar.selectRun') }}</option>
+            <option v-if="selectedRunOffPage" :value="selectedRunId">{{ selectedRunId }}<template v-if="run?.runId === selectedRunId"> · {{ statusLabel(run.status) }}</template></option>
             <option v-for="item in runs" :key="item.runId" :value="item.runId">{{ item.runId }} · {{ statusLabel(item.status) }}</option>
           </select>
-          <el-button size="small" :loading="loading || runsLoading" @click="loadRuns">{{ t('common.refresh') }}</el-button>
+          <el-button size="small" :loading="loading || runsLoading" @click="loadRuns()">{{ t('common.refresh') }}</el-button>
         </div>
       </div>
+      <SoarCatalogPager class="soar-runs-pager" :page="runsPage" :total="runsTotal" :total-pages="runsTotalPages" :loading="runsLoading" :disabled="Boolean(controlBusy)" :label="t('soar.selectRun')" @change="changeRunsPage" />
     </template>
 
+    <div v-if="runsError" class="soar-inspector-error" role="alert">{{ runsError }}</div>
     <div v-if="errorMessage" class="soar-inspector-error" role="alert">{{ errorMessage }}</div>
     <template v-if="run">
       <div class="soar-run-summary">
@@ -597,9 +729,16 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
 
     <el-dialog v-if="props.canExecute" v-model="queueDialogVisible" :before-close="queueGuard.beforeClose" :title="t('soar.queuePublishedRun')" width="520px" :close-on-click-modal="false">
       <p class="soar-dialog-hint">{{ t('soar.queueHint') }}</p>
-      <el-form label-position="top">
+      <el-form label-position="top" :disabled="queueLoading">
+        <el-form-item :label="t('soar.playbooks')" required>
+          <el-select class="soar-queue-playbook" :model-value="queuePlaybook?.id ?? ''" filterable :loading="queueCatalogLoading" style="width: 100%" @change="selectQueuePlaybook">
+            <el-option v-for="item in queuePlaybookOptions" :key="item.id" :value="item.id" :label="item.name" />
+          </el-select>
+          <SoarCatalogPager class="soar-queue-playbooks-pager" :page="queuePlaybooksPage" :total="queuePlaybooksTotal" :total-pages="queuePlaybooksTotalPages" :loading="queueCatalogLoading" :disabled="queueLoading" :label="t('soar.playbooks')" @change="changeQueuePlaybooksPage" />
+          <div v-if="queueCatalogError" class="soar-inspector-error" role="alert">{{ queueCatalogError }}</div>
+        </el-form-item>
         <el-form-item :label="t('soar.publishedPlaybookVersion')" required>
-          <el-select v-model="queueForm.playbookVersionId" filterable :loading="publishedVersions.length === 0 && !queueError" :placeholder="t('soar.selectPublishedVersion')" style="width: 100%">
+          <el-select v-model="queueForm.playbookVersionId" filterable :loading="queueVersionsLoading" :disabled="queueVersionsLoading || !queuePlaybook" :placeholder="t('soar.selectPublishedVersion')" style="width: 100%">
             <el-option
               v-for="item in publishedVersions"
               :key="item.version.id"
@@ -624,7 +763,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
       <div v-if="queueError" class="soar-inspector-error" role="alert">{{ queueError }}</div>
       <template #footer>
         <el-button @click="queueGuard.cancel">{{ t('common.cancel') }}</el-button>
-        <el-button type="primary" :loading="queueLoading" :disabled="!publishedVersions.length" @click="submitQueue">{{ t('soar.acceptAndQueue') }}</el-button>
+        <el-button type="primary" :loading="queueLoading" :disabled="queueVersionsLoading || !queueForm.playbookVersionId" @click="submitQueue">{{ t('soar.acceptAndQueue') }}</el-button>
       </template>
     </el-dialog>
   </el-card>
@@ -635,7 +774,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
 .soar-inspector-header { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
 .soar-subtitle { display: block; margin-top: 4px; color: var(--ns-text-3); font-size: 11px; }
 .soar-readonly-note { display: block; margin-top: 6px; color: var(--ns-warning); font-size: 11px; line-height: 1.4; }
-.soar-run-select { display: flex; gap: 8px; align-items: center; }
+.soar-run-select { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .soar-run-select select { min-width: 290px; min-height: 30px; padding: 5px 8px; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg); color: var(--ns-text); font: inherit; font-size: 11px; }
 .soar-dialog-hint { margin: 0 0 14px; color: var(--ns-text-2); font-size: 12px; line-height: 1.5; }
 .soar-option-id { display: block; margin-top: 2px; color: var(--ns-text-3); font-family: ui-monospace, monospace; font-size: 10px; }

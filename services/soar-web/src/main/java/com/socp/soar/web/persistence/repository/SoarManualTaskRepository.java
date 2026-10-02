@@ -16,9 +16,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 public interface SoarManualTaskRepository extends TenantScopedRepository<SoarManualTaskEntity, String> {
     List<SoarManualTaskEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId);
+    @Query("select t from SoarManualTaskEntity t where t.tenantId = :tenantId order by t.createdAt desc, t.id asc")
     Page<SoarManualTaskEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId, Pageable pageable);
     List<SoarManualTaskEntity> findByTenantIdAndStatusOrderByDueAtAsc(String tenantId, String status);
     /** Database-side paging for pending task dashboards; never materialize a tenant queue. */
+    @Query("select t from SoarManualTaskEntity t where t.tenantId = :tenantId and t.status = :status "
+            + "order by t.dueAt asc, t.id asc")
     Page<SoarManualTaskEntity> findByTenantIdAndStatusOrderByDueAtAsc(String tenantId, String status,
                                                                        Pageable pageable);
     Optional<SoarManualTaskEntity> findByTenantIdAndId(String tenantId, String id);

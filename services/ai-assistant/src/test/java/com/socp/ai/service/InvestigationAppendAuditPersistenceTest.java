@@ -37,6 +37,8 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -150,40 +152,61 @@ class InvestigationAppendAuditPersistenceTest {
     void concurrentControllerRequestsCommitOneTargetWithoutHoldingAnOuterAuditTransaction()
             throws Exception {
         repository.saveAndFlush(investigation("INV-RACE", "AL-RACE"));
+        CountDownLatch noteEntered = new CountDownLatch(1);
+        CountDownLatch releaseNote = new CountDownLatch(1);
         given(incidents.addNote(anyString(), anyString(), anyString(), eq("INV-RACE")))
-                .willAnswer(invocation -> successfulNote(invocation.getArgument(0)));
+                .willAnswer(invocation -> {
+                    noteEntered.countDown();
+                    assertThat(releaseNote.await(60, TimeUnit.SECONDS))
+                            .as("the test must release the in-flight remote append")
+                            .isTrue();
+                    return successfulNote(invocation.getArgument(0));
+                });
 
-        CountDownLatch start = new CountDownLatch(1);
         try (var pool = Executors.newFixedThreadPool(2)) {
-            var first = pool.submit(() -> appendAfter(start, "CASE-A"));
-            var second = pool.submit(() -> appendAfter(start, "CASE-B"));
-            start.countDown();
-            Object firstResult = first.get();
-            Object secondResult = second.get();
+            var first = pool.submit(() -> append("CASE-A"));
+            Future<Object> second = null;
+            try {
+                assertThat(noteEntered.await(30, TimeUnit.SECONDS))
+                        .as("CASE-A must reach its remote call with a committed append claim")
+                        .isTrue();
+                // Hold the winner open: a request after completion is a valid duplicate,
+                // so releasing two threads together alone does not prove contention.
+                second = pool.submit(() -> append("CASE-B"));
+                Object secondResult = second.get(30, TimeUnit.SECONDS);
+                assertThat(secondResult).isInstanceOfSatisfying(ApiException.class,
+                        failure -> assertThat(failure.getCode()).isEqualTo(409));
 
-            long successes = java.util.stream.Stream.of(firstResult, secondResult)
-                    .filter(Map.class::isInstance).count();
-            long conflicts = java.util.stream.Stream.of(firstResult, secondResult)
-                    .filter(ApiException.class::isInstance)
-                    .map(ApiException.class::cast)
-                    .filter(failure -> failure.getCode() == 409).count();
-            assertThat(successes).isOne();
-            assertThat(conflicts).isOne();
+                releaseNote.countDown();
+                Object firstResult = first.get(30, TimeUnit.SECONDS);
+                long successes = java.util.stream.Stream.of(firstResult, secondResult)
+                        .filter(Map.class::isInstance).count();
+                long conflicts = java.util.stream.Stream.of(firstResult, secondResult)
+                        .filter(ApiException.class::isInstance)
+                        .map(ApiException.class::cast)
+                        .filter(failure -> failure.getCode() == 409).count();
+                assertThat(successes).isOne();
+                assertThat(conflicts).isOne();
 
-            InvestigationEntity stored = repository.findByIdAndTenantId(
-                    "INV-RACE", "tenant-a").orElseThrow();
-            assertThat(stored.getIncidentId()).isIn("CASE-A", "CASE-B");
-            assertThat(stored.getAppendedAt()).isNotNull();
-            Map<?, ?> receipt = (Map<?, ?>) java.util.stream.Stream.of(firstResult, secondResult)
-                    .filter(Map.class::isInstance).findFirst().orElseThrow();
-            assertThat(receipt.get("incidentId")).isEqualTo(stored.getIncidentId());
-            verify(incidents, times(1)).addNote(
-                    eq(stored.getIncidentId()), anyString(), anyString(), eq("INV-RACE"));
+                InvestigationEntity stored = repository.findByIdAndTenantId(
+                        "INV-RACE", "tenant-a").orElseThrow();
+                assertThat(stored.getIncidentId()).isEqualTo("CASE-A");
+                assertThat(stored.getAppendedAt()).isNotNull();
+                Map<?, ?> receipt = (Map<?, ?>) firstResult;
+                assertThat(receipt.get("incidentId")).isEqualTo(stored.getIncidentId());
+                verify(incidents, times(1)).addNote(
+                        eq(stored.getIncidentId()), anyString(), anyString(), eq("INV-RACE"));
+                verify(incidents, times(1)).addNote(
+                        anyString(), anyString(), anyString(), eq("INV-RACE"));
+            } finally {
+                releaseNote.countDown();
+                first.cancel(true);
+                if (second != null) second.cancel(true);
+            }
         }
     }
 
-    private Object appendAfter(CountDownLatch start, String incidentId) throws Exception {
-        start.await();
+    private Object append(String incidentId) {
         try (TenantContext.Scope ignored = TenantContext.open("tenant-a")) {
             try {
                 return controller.appendToIncident(

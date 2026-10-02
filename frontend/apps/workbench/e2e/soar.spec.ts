@@ -45,8 +45,10 @@ function envelope<T>(data: T): string {
   return JSON.stringify({ code: 0, message: 'OK', data })
 }
 
-function pageData<T>(items: T[]) {
-  return { page: 0, size: 100, total: items.length, items }
+function pageData<T>(items: T[], url?: URL) {
+  const page = Number(url?.searchParams.get('page') || 0)
+  const size = Number(url?.searchParams.get('size') || 25)
+  return { page, size, total: items.length, totalPages: Math.ceil(items.length / size), items: items.slice(page * size, (page + 1) * size) }
 }
 
 function runFixture() {
@@ -106,7 +108,7 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst
     let data: unknown = {}
 
     if (method === 'GET' && api === 'soar-web/api/playbooks' && parts.length === 3) {
-      data = pageData(state.playbooks)
+      data = pageData(state.playbooks, url)
     } else if (method === 'POST' && api === 'soar-web/api/playbooks' && parts.length === 3) {
       const body = request.postDataJSON() as { name?: string; description?: string; tags?: string[] }
       const playbook = {
@@ -142,7 +144,7 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst
       if (playbook) Object.assign(playbook, { latestPublishedVersion: Number(parts[5]), draftVersion: null })
       data = version || {}
     } else if (method === 'GET' && api === 'soar-web/api/runs' && parts.length === 3) {
-      data = pageData(state.runs)
+      data = pageData(state.runs, url)
     } else if (method === 'POST' && api === 'soar-web/api/runs' && parts.length === 3) {
       const body = request.postDataJSON() as { requestId?: string; playbookVersionId?: string; subject?: unknown; inputs?: unknown }
       const queued = {
@@ -179,7 +181,7 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst
     } else if (method === 'GET' && api === 'soar-web/api/actions' && parts.length === 3) {
       data = []
     } else if (method === 'GET' && api === 'soar-web/api/manual-tasks' && parts.length === 3) {
-      data = pageData(state.tasks)
+      data = pageData(state.tasks, url)
     } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'manual-tasks' && parts.length === 5 && parts[4] === 'complete') {
       state.tasks = state.tasks.filter(task => task.id !== parts[3])
       data = { id: parts[3], status: 'COMPLETED' }
@@ -409,4 +411,34 @@ test('SOAR repeated save shortcuts submit once and a delayed save preserves newe
   await expect(page.getByRole('button', { name: 'Save draft' })).toBeEnabled()
   const persisted = state.versions['pb-existing'][0].definition as typeof EDITED_DEFINITION
   expect(persisted.nodes[0].name).toBe('Browser start')
+})
+
+
+test('SOAR catalog reaches later pages and retains truthful run history through navigation', async ({ page }, testInfo) => {
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  const state = await installSoarMocks(page, 'admin')
+  state.playbooks = Array.from({ length: 137 }, (_, index) => ({
+    ...EXISTING_PLAYBOOK, id: `pb-${index}`, name: `Catalog playbook ${index}`,
+    latestRun: index === 125 ? { runId: 'run-old', status: 'SUCCEEDED', createdAt: '2025-01-01T00:00:00Z' } : null,
+  }))
+  await page.goto('/soar')
+  const catalog = page.locator('.soar-view > .soar-tabs').getByRole('tabpanel', { name: 'Playbooks', exact: true })
+  const pager = catalog.locator('.soar-catalog-pager')
+  await expect(pager).toContainText('137')
+  for (let index = 0; index < 5; index++) {
+    await pager.getByRole('button', { name: 'Next', exact: true }).click()
+    await expect(catalog.locator('.soar-playbook-name').first()).toHaveText(`Catalog playbook ${(index + 1) * 25}`)
+  }
+  await expect(catalog.locator('.soar-playbook-name')).toHaveCount(12)
+  await expect(catalog).toContainText('2025-01-01T00:00:00Z')
+  await expect(catalog).toContainText('No retained runs')
+  await expect(pager.getByRole('button', { name: 'Next', exact: true })).toBeDisabled()
+  await page.screenshot({ path: testInfo.outputPath('soar-later-catalog-page.png'), fullPage: true })
+  await page.getByRole('tab', { name: 'Runs', exact: true }).click()
+  await expect(page.locator('.soar-run-summary')).toContainText('run-1')
+  await page.getByRole('tab', { name: 'Playbooks', exact: true }).click()
+  await expect(catalog.locator('.soar-playbook-name').first()).toHaveText('Catalog playbook 125')
+  await pager.getByRole('button', { name: 'Previous', exact: true }).click()
+  await expect(catalog.locator('.soar-playbook-name').first()).toHaveText('Catalog playbook 100')
+  expect(state.unknown).toEqual([])
 })
