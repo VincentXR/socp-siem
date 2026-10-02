@@ -45,6 +45,22 @@ class RuleDryRunControllerTest {
     }
 
     @Test
+    void futureSimulationKeepsEventTimeOutsideLiveIngressGuard() throws Exception {
+        try (var ignored = TenantContext.open("dry-run-tenant")) {
+            var future = new java.util.LinkedHashMap<>(event("forged"));
+            future.put("timestamp", "2100-01-01T00:00:00Z");
+            mvc.perform(post("/api/v1/rules/test").contentType(MediaType.APPLICATION_JSON)
+                            .content(mapper.writeValueAsString(Map.of(
+                                    "rules", List.of(rule("threshold", "eq", "admin")),
+                                    "events", List.of(future, future)))))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].alerts.length()").value(1))
+                    .andExpect(jsonPath("$.data[0].alerts[0].evidence[0].timestamp")
+                            .value(org.hamcrest.Matchers.is(4_102_444_800L), Long.class));
+        }
+    }
+
+    @Test
     void evaluatesWindowsWithFreshStateOnEveryRequest() throws Exception {
         try (var ignored = TenantContext.open("dry-run-tenant")) {
             var rules = List.of(rule("threshold", "eq", "admin"));

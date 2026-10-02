@@ -12,9 +12,14 @@ import com.socp.platform.auth.security.RequestBodyLimit;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.Alert;
+import com.socp.rule.model.SecurityEvent;
+import com.socp.rule.time.EventTimePolicy;
+import com.socp.rule.time.SourceEventTimePolicy;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import jakarta.validation.Validator;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,6 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -40,12 +46,23 @@ public class DetectionRuntimeController {
     private final DetectEngineService engine;
     private final AlertStreamHub streamHub;
     private final Validator validator;
+    private final SourceEventTimePolicy sourceEventTimePolicy;
 
     public DetectionRuntimeController(DetectEngineService engine, AlertStreamHub streamHub,
                                       Validator validator) {
+        this(engine, streamHub, validator, true, "30s");
+    }
+
+    @Autowired
+    public DetectionRuntimeController(DetectEngineService engine, AlertStreamHub streamHub,
+                                      Validator validator,
+                                      @Value("${socp.ingest.event-time.enabled:true}") boolean eventTimeCheckEnabled,
+                                      @Value("${socp.ingest.event-time.max-future-skew:30s}") String maxFutureSkew) {
         this.engine = engine;
         this.streamHub = streamHub;
         this.validator = validator;
+        this.sourceEventTimePolicy = new SourceEventTimePolicy(
+                eventTimeCheckEnabled, EventTimePolicy.parseDuration(maxFutureSkew));
     }
 
     /** Local HTTP ingress for verification; production events normally arrive through Kafka. */
@@ -61,7 +78,7 @@ public class DetectionRuntimeController {
             @RequestHeader(value = "Idempotency-Key", required = false)
             String idempotencyKey) {
         String fallback = normalizedIdempotencyKey(idempotencyKey);
-        boolean accepted = engine.ingest(request.toSecurityEvent(TenantContext.require(), fallback));
+        boolean accepted = engine.ingest(ingressEvent(request, fallback));
         Object queueLoad = engine.stats().get("queueLoad");
         if (!accepted) {
             return ResponseEntity.status(503).header("Retry-After", "2")
@@ -109,7 +126,7 @@ public class DetectionRuntimeController {
                     DetectionIngestRequest request = MAPPER.readValue(payload, DetectionIngestRequest.class);
                     if (!validator.validate(request).isEmpty()) {
                         rejected++;
-                    } else if (engine.ingest(request.toSecurityEvent(TenantContext.require(),
+                    } else if (engine.ingest(ingressEvent(request,
                             requestKey == null ? null : requestKey + ":" + currentLine))) accepted++;
                     else rejected++;
                 } catch (Exception malformed) {
@@ -160,6 +177,17 @@ public class DetectionRuntimeController {
     @GetMapping("/stats")
     public ApiResult<Map<String, Object>> stats() {
         return ApiResult.ok(engine.stats());
+    }
+
+    private SecurityEvent ingressEvent(DetectionIngestRequest request, String fallbackEventId) {
+        Instant receivedAt = Instant.now();
+        SecurityEvent event = request.toSecurityEvent(TenantContext.require(), fallbackEventId, receivedAt);
+        try {
+            sourceEventTimePolicy.validate(event.timestamp(), receivedAt);
+        } catch (IllegalArgumentException invalidTime) {
+            throw com.socp.platform.error.exception.ApiException.badRequest(invalidTime.getMessage());
+        }
+        return event;
     }
 
     private static String normalizedIdempotencyKey(String value) {

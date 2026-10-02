@@ -143,6 +143,61 @@ payload. A present but invalid configured timestamp is a parse failure rather
 than silently becoming the receipt time. Sources without a usable configured
 event time retain the explicit generated-time fallback marker.
 
+### Future source clock skew
+
+**The default 30-second allowance rejects the two-minute clock error that
+would suppress the shipped one-minute `AUTH-BRUTE` rule.** It does not exceed
+the shortest shipped stateful window or `DROP` lateness budget (both 30
+seconds). This is bounded source-skew protection, not a universal guarantee
+for custom shorter windows or delayed sources. An explicitly widened `5m`
+allowance admits that two-minute error and can reintroduce the missed alert.
+**Direct Kafka producers bypass this
+HTTP ingress check** and must enforce equivalent trusted validation themselves.
+
+New Search ingress checks the resolved source timestamp against one server
+receipt instant, also persisted as `ingested_at`. The default maximum future
+skew is **30 seconds**, inclusive. An event beyond that allowance becomes a
+durable parse-failure quarantine entry with its original raw line and reason;
+it is not published to Detection and cannot advance a grouping-key watermark.
+The batch response counts it in `parseFailed` and `quarantined`, not `accepted`.
+It counts as `acknowledged` only after quarantine persistence succeeds;
+quarantine storage failure remains a retryable 503.
+
+Configure `SOCP_INGEST_MAX_FUTURE_SKEW` (for example `30s`, `5m`, or `PT10M`)
+to tighten or expand the allowance. Zero permits no future skew; a negative or
+invalid duration fails startup. `SOCP_INGEST_EVENT_TIME_ENABLED=false`
+explicitly disables the check for a controlled synthetic/future-dated import.
+These map to `socp.ingest.event-time.max-future-skew` and
+`socp.ingest.event-time.enabled`. They are deployment-owned settings, never
+collector-controlled fields. Set them consistently across Search API replicas
+and Detection workers when using the optional local HTTP ingress.
+
+The same default applies to Detection's local `/api/v1/ingest` endpoint (400
+on a rejected timestamp) and `/api/v1/ingest/bulk` (`rejected` count per line).
+Rule dry runs deliberately permit future-dated simulation. Neither ingress
+path clips accepted timestamps, limits historical age, or changes event IDs.
+Configured source time fields and timezones are resolved before validation;
+collector-supplied `ingested_at` remains quarantined user evidence.
+
+This guard bounds tolerated clock error, not event-time lateness. Review the
+shortest active rule window **and** the smallest `DROP` allowed-lateness
+budget; keep the ingress allowance within both budgets, leaving room for
+expected ingestion delay and out-of-order delivery, and synchronize source
+clocks. Source clock skew **plus** normal delivery delay consumes these
+budgets: the 30-second default leaves no delay margin at the shortest shipped
+30-second window, so delayed sources may need a tighter allowance or an
+explicitly reviewed rule-time policy. This is configurable risk reduction,
+not a general guarantee: an accepted future timestamp can
+still make sufficiently delayed records late or expire window evidence.
+Existing Kafka deliveries,
+durable journal replay and snapshots keep their original event-time semantics
+and do not consult a new wall clock or the current ingress setting. Already
+poisoned snapshots are not repaired by this change. Historical imports into an
+existing live key still obey its monotonic watermark and late-event policy;
+use isolated detection state/dry runs when independent historical evaluation
+is required. Direct broker producers must enforce equivalent trusted ingress
+validation; the HTTP guard is not a broker admission or ACL boundary.
+
 ## Identity and retry contract
 
 The ingest endpoint accepts `Idempotency-Key` for clients that cannot attach an

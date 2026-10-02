@@ -268,6 +268,38 @@ class RuleControllerTest {
     }
 
     @Test
+    void futureTimestampIsAnExplicitClientErrorBeforeEngineAdmission() throws Exception {
+        String future = java.time.Instant.now().plusSeconds(120).toString();
+        mvc.perform(post("/api/v1/ingest").header("Authorization", BEARER).header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(json.writeValueAsString(Map.of("eventId", "future", "timestamp", future,
+                                "fields", Map.of("ingested_at", future)))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("event timestamp exceeds maximum future clock skew of PT30S"));
+        org.mockito.Mockito.verifyNoInteractions(engine);
+    }
+
+    @Test
+    void bulkIngressCountsFutureClockFailureAndKeepsValidHistoricalEvents() throws Exception {
+        given(engine.ingest(any())).willReturn(true);
+        given(engine.stats()).willReturn(Map.of("queueLoad", 0));
+        String future = java.time.Instant.now().plusSeconds(120).toString();
+        String body = json.writeValueAsString(Map.of("eventId", "future", "timestamp", future))
+                + "\n{\"eventId\":\"historical\",\"timestamp\":\"2020-01-01T00:00:00Z\"}"
+                + "\n{\"eventId\":\"current\"}";
+        mvc.perform(post("/api/v1/ingest/bulk").header("Authorization", BEARER).header("X-Role", "analyst")
+                        .contentType(MediaType.APPLICATION_NDJSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.accepted").value(2))
+                .andExpect(jsonPath("$.data.rejected").value(1));
+        verify(engine, times(2)).ingest(any());
+        verify(engine).ingest(org.mockito.ArgumentMatchers.argThat(event ->
+                event.id().equals("historical")
+                        && event.timestamp().equals(java.time.Instant.parse("2020-01-01T00:00:00Z"))));
+    }
+
+    @Test
     void bulkIngestCountsMalformedAndBackpressuredRows() throws Exception {
         given(engine.ingest(any())).willReturn(true, false);
         given(engine.stats()).willReturn(Map.of("queueLoad", 2));

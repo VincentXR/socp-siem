@@ -21,6 +21,11 @@ spring:
 
 # 告警转发目标（ALERT 告警库）
 socp:
+  # Applies to local HTTP ingress, not Kafka delivery, replay, or rule dry run.
+  ingest:
+    event-time:
+      enabled: ${SOCP_INGEST_EVENT_TIME_ENABLED:true}
+      max-future-skew: ${SOCP_INGEST_MAX_FUTURE_SKEW:30s}
   health:
     required-endpoints: ${SOCP_HEALTH_REQUIRED_ENDPOINTS:kafka=localhost:9092,alert=localhost:18080}
     connect-timeout-ms: ${SOCP_HEALTH_CONNECT_TIMEOUT_MS:500}

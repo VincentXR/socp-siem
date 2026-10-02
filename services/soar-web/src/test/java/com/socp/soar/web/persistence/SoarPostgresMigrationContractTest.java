@@ -48,7 +48,7 @@ class SoarPostgresMigrationContractTest {
 
         try (var connection = DriverManager.getConnection(url, POSTGRES.getUsername(), POSTGRES.getPassword());
              var statement = connection.createStatement()) {
-            assertEquals(26, scalar(statement,
+            assertEquals(27, scalar(statement,
                     "SELECT MAX(installed_rank) FROM flyway_schema_history"));
             assertEquals(1, scalar(statement,
                     "SELECT COUNT(*) FROM information_schema.columns "

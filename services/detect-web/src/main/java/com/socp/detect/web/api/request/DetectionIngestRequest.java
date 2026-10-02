@@ -31,18 +31,23 @@ public record DetectionIngestRequest(
      * caller supplied an Idempotency-Key and omitted eventId.
      */
     public SecurityEvent toSecurityEvent(String tenantId, String fallbackEventId) {
+        return toSecurityEvent(tenantId, fallbackEventId, Instant.now());
+    }
+
+    /** One trusted receipt instant for timestamp fallback and ingress validation. */
+    public SecurityEvent toSecurityEvent(String tenantId, String fallbackEventId, Instant receivedAt) {
         Map<String, String> normalizedFields = new LinkedHashMap<>();
         if (fields != null) normalizedFields.putAll(fields);
         com.socp.rule.partition.DetectionDelivery.quarantineInputMetadata(normalizedFields);
         com.socp.rule.partition.DetectionDelivery.quarantineField(normalizedFields, "ingested_at");
         com.socp.rule.partition.DetectionDelivery.quarantineField(normalizedFields, "event_time_generated");
-        normalizedFields.put("ingested_at", Instant.now().toString());
+        normalizedFields.put("ingested_at", receivedAt.toString());
         if (tenantId != null && !tenantId.isBlank() && !tenantId.equals(normalizedFields.get("tenant_id"))) {
             normalizedFields.put("tenant_id", tenantId);
         }
         if (msg != null && !normalizedFields.containsKey("msg")) normalizedFields.put("msg", msg);
 
-        return new SecurityEvent(normalizeEventId(eventId, requestIdentity(fallbackEventId)), parseTimestamp(timestamp),
+        return new SecurityEvent(normalizeEventId(eventId, requestIdentity(fallbackEventId)), parseTimestamp(timestamp, receivedAt),
                 fallback(source, "unknown"), fallback(host, "unknown"),
                 raw == null ? fallback(msg, "") : raw, normalizedFields, parseSeverity(severity));
     }
@@ -77,12 +82,12 @@ public record DetectionIngestRequest(
                 payload.toString().getBytes(StandardCharsets.UTF_8));
     }
 
-    private static Instant parseTimestamp(String value) {
-        if (value == null || value.isBlank()) return Instant.now();
+    private static Instant parseTimestamp(String value, Instant receivedAt) {
+        if (value == null || value.isBlank()) return receivedAt;
         try {
             return Instant.parse(value);
         } catch (Exception ignored) {
-            return Instant.now();
+            return receivedAt;
         }
     }
 

@@ -140,3 +140,29 @@ for Kubernetes or `vault://` for Vault); environment fallback is disabled.
 Secret values are never persisted in definitions, Temporal payloads, logs, or
 API responses. The `/health` payload reports the selected resolver without
 exposing its configuration or values.
+
+
+## Workbench catalog paging and retained run history (V27)
+
+The playbook catalog, run picker, automation rules, connections and manual-task
+lists use bounded, zero-based server pages. Workbench pages contain 25 items;
+operators can navigate past the former first-100 cutoff. Playbook/version
+pickers first select a page of playbooks and only request versions for the
+selected playbook. Hidden or replaced reads cannot overwrite newer selections.
+Catalog order includes an ID tie-breaker so equally dated rows remain stable.
+Offset pages are live views rather than snapshots: concurrent inserts or edits
+can shift rows between pages, and Refresh reloads the current page.
+
+The playbook catalog's `latestRun` comes from retained history for that playbook
+across all revisions, independent of the most recent tenant-wide runs. A null
+summary means no retained runs, not proof that the playbook never ran. Clients
+that receive no summary field from an older server show an unknown marker rather
+than inferring history from a partial run list. Run retention policy is unchanged.
+
+V27 adds the tenant/playbook/created-at/ID lookup index for the bounded summary
+query; it does not change run records or authentication. Apply it with the normal
+SOAR Flyway migration before rollout and budget index-build time for large run
+histories. The H2 repository regression fixture includes 137 rows per catalog,
+old retained runs absent from the latest 20 results, tied sort values, soft-deleted
+connections and a second tenant. PostgreSQL migration/query behavior still needs
+the existing PostgreSQL contract checks in deployment validation.

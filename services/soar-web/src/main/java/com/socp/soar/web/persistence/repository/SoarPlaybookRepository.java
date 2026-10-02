@@ -17,6 +17,7 @@ public interface SoarPlaybookRepository extends TenantScopedRepository<SoarPlayb
     @Query("select p from SoarPlaybookEntity p where p.tenantId = :tenantId and p.id = :id")
     Optional<SoarPlaybookEntity> findByTenantIdAndIdForUpdate(@Param("tenantId") String tenantId,
                                                                @Param("id") String id);
+    @Query("select p from SoarPlaybookEntity p where p.tenantId = :tenantId order by p.updatedAt desc, p.id asc")
     Page<SoarPlaybookEntity> findByTenantId(String tenantId, Pageable pageable);
 
     /**
@@ -35,7 +36,7 @@ public interface SoarPlaybookRepository extends TenantScopedRepository<SoarPlayb
             + "and (:owner is null or lower(coalesce(p.owner, '')) = :owner) "
             + "and (cast(:tag as string) is null or lower(coalesce(p.tagsJson, '')) "
             + "like concat('%', cast(:tag as string), '%')) "
-            + "order by p.updatedAt desc")
+            + "order by p.updatedAt desc, p.id asc")
     Page<SoarPlaybookEntity> searchByTenant(@Param("tenantId") String tenantId,
                                             @Param("status") String status,
                                             @Param("owner") String owner,

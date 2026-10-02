@@ -169,6 +169,24 @@ The threshold and correlation state snapshots persist this watermark. A
 missing policy is normalized to one rule window plus `DROP`, so old content
 does not silently reopen an expired window.
 
+Source clock sanity is a separate [trusted-ingress check](ingestion-parsing.md#future-source-clock-skew):
+new HTTP events more than 30 seconds ahead of server receipt are rejected or
+durably quarantined by default, before they can advance a rule watermark.
+This rejects the two-minute-ahead timestamp that suppresses the shipped
+one-minute `AUTH-BRUTE` rule; an explicit `5m` allowance reintroduces that risk.
+The default does not exceed the shortest shipped stateful window or `DROP`
+allowed-lateness budget (both 30 seconds). Tune source skew **plus** normal
+delivery delay against both budgets: the shortest shipped window has no
+delay margin at the default, and custom shorter/delayed-source rules may need
+a tighter allowance. This is not a universal watermark guarantee. Direct
+Kafka producers bypass the HTTP check and require their own trusted validation.
+`SOCP_INGEST_MAX_FUTURE_SKEW` overrides the allowance and
+`SOCP_INGEST_EVENT_TIME_ENABLED=false` explicitly disables it. Historical
+events and accepted source timestamps are not clipped. Kafka/routed delivery,
+journal replay, snapshot restore, and isolated rule dry runs do not revalidate
+against the current wall clock. The ingress guard does not repair previously
+poisoned state or supersede per-rule late-event handling.
+
 Each Kafka `(topic, partition, state shard)` is also a durable state unit. The
 Detection runtime claims `t_detection_state_owner` with a lease and monotonic
 `fencing_epoch`. A revoke invalidates the old token immediately; the next

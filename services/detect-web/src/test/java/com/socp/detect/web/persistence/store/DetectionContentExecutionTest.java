@@ -8,6 +8,8 @@ import com.socp.rule.engine.Watchlists;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.time.EventTimePolicy;
+import com.socp.rule.time.SourceEventTimePolicy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -22,9 +24,76 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /** Executes every versioned manifest vector against the real Java rule engine. */
 class DetectionContentExecutionTest {
+
+    @Test
+    void defaultIngressSkewDoesNotExceedShippedStatefulWindowOrDropLatenessBudget() {
+        Duration allowance = SourceEventTimePolicy.defaults().maxFutureSkew();
+        Duration shortestWindow = null;
+        Duration shortestDropLateness = null;
+        for (Object item : (List<?>) DetectionContentCatalog.manifest().get("rules")) {
+            RuleSpec spec = new RuleSpec(DetectionContentCatalog.enrich(
+                    objectMap(((Map<?, ?>) item).get("spec"))));
+            if (!spec.enabled || !List.of("threshold", "correlation", "correlation-set", "baseline", "rare")
+                    .contains(spec.type)) continue;
+            assertTrue(allowance.compareTo(spec.window) <= 0,
+                    spec.id + " window must cover the default ingress clock skew");
+            if (shortestWindow == null || spec.window.compareTo(shortestWindow) < 0) shortestWindow = spec.window;
+            if (spec.eventTimePolicy.handling() == EventTimePolicy.LateEventHandling.DROP) {
+                Duration lateness = spec.eventTimePolicy.allowedLateness();
+                assertTrue(allowance.compareTo(lateness) <= 0,
+                        spec.id + " DROP lateness must cover the default ingress clock skew");
+                if (shortestDropLateness == null || lateness.compareTo(shortestDropLateness) < 0) {
+                    shortestDropLateness = lateness;
+                }
+            }
+        }
+        assertEquals(Duration.ofSeconds(30), allowance);
+        assertEquals(allowance, shortestWindow);
+        assertEquals(allowance, shortestDropLateness);
+    }
+
+    @Test
+    void defaultIngressGuardProtectsShippedAuthBruteFromTwoMinuteClockError() {
+        RuleSpec spec = ((List<?>) DetectionContentCatalog.manifest().get("rules")).stream()
+                .map(item -> (Map<?, ?>) item)
+                .filter(item -> "AUTH-BRUTE".equals(item.get("id")))
+                .map(item -> new RuleSpec(DetectionContentCatalog.enrich(objectMap(item.get("spec")))))
+                .findFirst().orElseThrow();
+        Instant receivedAt = Instant.parse("2026-10-02T12:00:00Z");
+        SecurityEvent future = authFailure("future", receivedAt.plusSeconds(120));
+        List<SecurityEvent> normal = java.util.stream.IntStream.range(0, spec.threshold)
+                .mapToObj(index -> authFailure("normal-" + index, receivedAt.plusSeconds(index))).toList();
+        assertEquals(Duration.ofSeconds(60), spec.window);
+        assertEquals(5, spec.threshold);
+        try (var poisoned = spec.toRule(); var protectedRule = spec.toRule()) {
+            new SourceEventTimePolicy(true, Duration.ofMinutes(5)).validate(future.timestamp(), receivedAt);
+            poisoned.accept(future);
+            normal.forEach(poisoned::accept);
+            assertTrue(poisoned.drain().isEmpty(), "widening the allowance can suppress AUTH-BRUTE");
+
+            var policy = SourceEventTimePolicy.defaults();
+            assertThrows(IllegalArgumentException.class, () -> policy.validate(future.timestamp(), receivedAt));
+            normal.forEach(event -> {
+                policy.validate(event.timestamp(), receivedAt);
+                protectedRule.accept(event);
+            });
+            var alerts = protectedRule.drain();
+            assertEquals(1, alerts.size());
+            assertEquals("AUTH-BRUTE", alerts.getFirst().ruleId());
+            assertEquals(normal.stream().map(SecurityEvent::id).toList(),
+                    alerts.getFirst().evidence().stream().map(SecurityEvent::id).toList());
+        }
+    }
+
+    private static SecurityEvent authFailure(String id, Instant timestamp) {
+        return new SecurityEvent(id, timestamp, "auth", "ssh-1", "Failed password",
+                Map.of("tenant_id", "clock-test", "src_ip", "198.51.100.10", "msg", "Failed password"),
+                Severity.INFO);
+    }
 
     @AfterEach
     void clearWatchlists() {

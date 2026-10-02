@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SoarView from '../src/views/SoarView.vue'
+import SoarCatalogPager from '../src/components/soar/SoarCatalogPager.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 
 const mocks = vi.hoisted(() => ({
@@ -117,6 +118,65 @@ describe('soar approvals lifecycle', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('Latest catalog')
     expect(wrapper.text()).not.toContain('Stale catalog')
+    wrapper.unmount()
+  })
+
+  it('navigates beyond 100 playbooks and uses the authoritative retained-run summary', async () => {
+    const catalog = Array.from({ length: 137 }, (_, index) => ({
+      id: `pb-${index}`, name: `Playbook ${index}`, status: 'ACTIVE', tags: [],
+      latestRun: index === 125 ? { runId: 'old-run', status: 'SUCCEEDED', createdAt: '2025-01-01T00:00:00Z' } : null,
+    }))
+    mocks.listPlaybooks.mockImplementation((page: number, size: number) => Promise.resolve({
+      page, size, total: catalog.length, totalPages: Math.ceil(catalog.length / size), items: catalog.slice(page * size, (page + 1) * size),
+    }))
+    const { wrapper } = await mountSoar('/soar')
+    expect(mocks.listPlaybooks.mock.calls[0].slice(0, 2)).toEqual([0, 25])
+    expect(wrapper.findAll('.soar-playbook-name')).toHaveLength(25)
+    wrapper.findComponent(SoarCatalogPager).vm.$emit('change', 5)
+    await flushPromises()
+    expect(mocks.listPlaybooks.mock.calls.at(-1)!.slice(0, 2)).toEqual([5, 25])
+    expect(wrapper.text()).toContain('Playbook 136')
+    expect(wrapper.text()).toContain('2025-01-01T00:00:00Z')
+    expect(wrapper.findAll('.soar-playbook-name')).toHaveLength(12)
+    expect(mocks.listRuns).not.toHaveBeenCalled()
+    wrapper.findComponent(SoarCatalogPager).vm.$emit('change', 0)
+    await flushPromises()
+    expect(wrapper.findAll('.soar-playbook-name')[0].text()).toBe('Playbook 0')
+    wrapper.unmount()
+  })
+
+  it('does not present a failed page read as rows from the preceding page', async () => {
+    mocks.listPlaybooks.mockResolvedValueOnce({ ...emptyPage, total: 101, totalPages: 5,
+      items: [{ id: 'page-zero', name: 'Previous page row', status: 'ACTIVE', latestRun: null }],
+    })
+    const { wrapper } = await mountSoar('/soar')
+    expect(wrapper.text()).toContain('Previous page row')
+    mocks.listPlaybooks.mockRejectedValueOnce(new Error('Page unavailable'))
+    wrapper.findComponent(SoarCatalogPager).vm.$emit('change', 1)
+    await flushPromises()
+    expect(wrapper.text()).toContain('Page unavailable')
+    expect(wrapper.text()).not.toContain('Previous page row')
+    expect(wrapper.findComponent(SoarCatalogPager).props('page')).toBe(1)
+    wrapper.unmount()
+  })
+
+  it('corrects an emptied last page after refresh without looping or showing stale rows', async () => {
+    mocks.listPlaybooks.mockImplementation((page: number, size: number) => Promise.resolve({
+      page, size, total: 101, totalPages: 5, items: [{ id: `pb-${page}`, name: `Page ${page}`, status: 'ACTIVE', latestRun: null }],
+    }))
+    const { wrapper } = await mountSoar('/soar')
+    wrapper.findComponent(SoarCatalogPager).vm.$emit('change', 4)
+    await flushPromises()
+    mocks.listPlaybooks.mockImplementation((page: number, size: number) => Promise.resolve({
+      page, size, total: 1, totalPages: 1, items: page === 0 ? [{ id: 'remaining', name: 'Remaining', status: 'ACTIVE', latestRun: null }] : [],
+    }))
+    const refresh = wrapper.findAllComponents({ name: 'ElButton' }).find(button => button.text() === '刷新')!
+    refresh.vm.$emit('click', new MouseEvent('click'))
+    await flushPromises()
+    expect(mocks.listPlaybooks.mock.calls.slice(-2).map(call => call[0])).toEqual([4, 0])
+    expect(wrapper.findComponent(SoarCatalogPager).props('page')).toBe(0)
+    expect(wrapper.text()).toContain('Remaining')
+    expect(wrapper.text()).not.toContain('Page 4')
     wrapper.unmount()
   })
 

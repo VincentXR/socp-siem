@@ -19,8 +19,11 @@ public interface SoarConnectorRepository extends TenantScopedRepository<SoarConn
     Optional<SoarConnectorEntity> findByTenantIdAndIdForUpdate(@Param("tenantId") String tenantId,
                                                                 @Param("id") String id);
     List<SoarConnectorEntity> findByTenantIdOrderByNameAsc(String tenantId);
+    @Query("select c from SoarConnectorEntity c where c.tenantId = :tenantId order by c.name asc, c.id asc")
     Page<SoarConnectorEntity> findByTenantIdOrderByNameAsc(String tenantId, Pageable pageable);
     /** Page only live connectors so soft-deleted rows cannot skew totals. */
+    @Query("select c from SoarConnectorEntity c where c.tenantId = :tenantId and c.deletedAt is null "
+            + "order by c.name asc, c.id asc")
     Page<SoarConnectorEntity> findByTenantIdAndDeletedAtIsNullOrderByNameAsc(String tenantId,
                                                                                Pageable pageable);
 }

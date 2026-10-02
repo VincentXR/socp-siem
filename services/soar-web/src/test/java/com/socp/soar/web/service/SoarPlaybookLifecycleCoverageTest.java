@@ -10,6 +10,7 @@ import com.socp.soar.web.domain.DefinitionValidationResult;
 import com.socp.soar.web.domain.SoarPlaybookVersionStatus;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
 import com.socp.soar.web.persistence.entity.SoarPlaybookEntity;
+import com.socp.soar.web.persistence.entity.SoarRunEntity;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
 import com.socp.soar.web.persistence.repository.SoarActionAttemptRepository;
 import com.socp.soar.web.persistence.repository.SoarApprovalRepository;
@@ -242,6 +243,30 @@ class SoarPlaybookLifecycleCoverageTest {
                 .containsEntry("owner", "operator");
         assertThat(page.getContent().get(0).get("draftVersion")).isNull();
         verify(playbooks).findByTenantId("tenant-a", pageable);
+    }
+
+    @Test
+    void playbookPageIncludesLatestRetainedRunFromOneTenantScopedBatch() {
+        Pageable pageable = PageRequest.of(4, 25);
+        given(playbooks.searchByTenant("tenant-a", null, null, null, pageable))
+                .willReturn(new PageImpl<>(List.of(playbook("pb-old", "Old run"),
+                        playbook("pb-never", "No history")), pageable, 102));
+        SoarRunEntity oldRun = new SoarRunEntity();
+        oldRun.setId("retained-run");
+        oldRun.setPlaybookId("pb-old");
+        oldRun.setStatus("SUCCEEDED");
+        oldRun.setCreatedAt(Instant.parse("2025-01-01T00:00:00Z"));
+        given(runs.findLatestByTenantIdAndPlaybookIds("tenant-a", List.of("pb-old", "pb-never")))
+                .willReturn(List.of(oldRun));
+
+        Page<Map<String, Object>> page = service.listPlaybooks(pageable, null, null, null, null);
+
+        assertThat(page.getTotalElements()).isEqualTo(102);
+        assertThat(page.getNumber()).isEqualTo(4);
+        assertThat(page.getContent().getFirst().get("latestRun")).isEqualTo(Map.of(
+                "runId", "retained-run", "status", "SUCCEEDED", "createdAt", oldRun.getCreatedAt()));
+        assertThat(page.getContent().get(1)).containsEntry("latestRun", null);
+        verify(runs).findLatestByTenantIdAndPlaybookIds("tenant-a", List.of("pb-old", "pb-never"));
     }
 
     @Test

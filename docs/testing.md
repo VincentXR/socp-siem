@@ -108,6 +108,43 @@ deletion of persistent data follow the authorization boundary in `AGENTS.md`.
 
 ## Local checks
 
+### Durable rule-state serialization measurement
+
+Before replacing rollback snapshots or changing checkpoint boundaries, measure
+the existing event path with the opt-in, bounded benchmark:
+
+```bash
+bash build/mvnw.sh -pl platform/socp-rule -am test \
+  -Dtest=RuleEngineSerializationBenchmarkTest \
+  -Dsurefire.failIfNoSpecifiedTests=false \
+  -Dsocp.benchmark.serialization=true -DargLine=-Xmx512m
+```
+
+The report is `platform/socp-rule/target/durable-state-serialization-benchmark.json`.
+It uses the real `RuleEngine.ingestAndAwait` and `ThresholdRule` at 100, 1,000,
+and 5,000 populated keys, with 50 warm-up events and 100 measured events for
+both matching and nonmatching input. A result-aware in-memory sink verifies
+state-change digests and completion. Matching events grow existing buckets;
+initial and final state bytes are both reported. Nonmatching input leaves
+state unchanged, so it also measures the cost paid before a matcher returns.
+
+Snapshot instrumentation records calls, bytes and time in the engine's actual
+state-lock critical path. End-to-end latency also includes queue handoff,
+state digesting, assertions and completion. The current implementation takes
+two complete snapshots per selected stateful rule per durable event: the
+rollback image before evaluation and the digest image afterward. The test
+asserts that count, but intentionally asserts no timing budget.
+
+Run separate JVMs at least three times on otherwise idle hardware and retain
+the JSON together with the exact commit and command in local or CI evidence.
+This is a diagnostic of serialization scaling, not JMH, a database benchmark,
+or a production-throughput claim. It excludes Kafka, database and checkpoint
+I/O. A future optimization must retain rule-level and whole-event rollback,
+state-change evidence, replay equivalence and durable-position/checkpoint
+ordering; smaller timings alone are not correctness evidence.
+
+### Repository check commands
+
 ```bash
 # Java reactor tests
 bash build/mvnw.sh test -Dsurefire.failIfNoSpecifiedTests=false
@@ -832,6 +869,27 @@ a different case must return the original target without a second note. The
 same proxy-backed suite races two controller requests for different cases and
 requires one successful receipt, one conflict, one persisted target, and one
 remote note while the controller audit boundary remains non-transactional.
+
+### Ingress source clock skew
+
+Run `bash build/mvnw.sh -pl services/search-config,services/detect-web -am test -Dtest=SourceEventTimePolicyTest,IngestSourceEventTimeTest,IngestEventNormalizerTest,IngestPipelineTest,ConfiguredEventTimePersistenceTest,RuleControllerTest,DetectionEventTimeConfigurationTest,RuleDryRunControllerTest,StatefulRuleBehaviorTest,StatefulRuleSnapshotTest,DetectionRecordProcessorTest,DetectionContentExecutionTest -Dsurefire.failIfNoSpecifiedTests=false`.
+The regression first reproduces same-tenant/key threshold suppression with the
+future-time guard disabled, then proves a quarantined future record cannot
+suppress the following valid burst. A separate regression deliberately proves
+that an explicitly widened five-minute allowance admits a two-minute-ahead event and
+still loses the following normal burst in a one-minute threshold window;
+the default 30-second allowance quarantines that event and restores the
+expected alert. The shipped-content contract checks the default against the
+minimum active stateful window and `DROP` lateness budgets and executes the
+same clock-error regression against the real `AUTH-BRUTE` definition. This is
+not a universal guarantee for custom short windows or delayed sources. It
+covers the inclusive 30-second skew boundary,
+trusted receipt time, configured source timezone, historical/out-of-order
+snapshot replay, unchanged content identity, quarantine failure remaining 503,
+explicit Detection HTTP 400/bulk rejection, operator overrides and unrestricted
+isolated dry-run simulations. Existing persistence and delivery tests cover the
+unchanged durable payload/routing boundaries. This is local executable evidence,
+not a broker-admission or multi-replica deployment claim.
 
 ### Ingest configuration cache bounds
 

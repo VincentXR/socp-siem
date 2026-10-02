@@ -91,6 +91,10 @@ socp:
   detect:
     url: ${SOCP_DETECT_URL:http://localhost:18082}
   ingest:
+    # Only new ingress is checked; stored event time and replay are unchanged.
+    event-time:
+      enabled: ${SOCP_INGEST_EVENT_TIME_ENABLED:true}
+      max-future-skew: ${SOCP_INGEST_MAX_FUTURE_SKEW:30s}
     limits:
       max-body-bytes: ${SOCP_INGEST_MAX_BODY_BYTES:16777216}
       max-events: ${SOCP_INGEST_MAX_EVENTS:1000}
