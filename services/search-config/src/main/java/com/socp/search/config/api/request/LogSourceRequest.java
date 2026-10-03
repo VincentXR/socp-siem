@@ -37,19 +37,23 @@ public record LogSourceRequest(
         @Size(max = 128) String groupId) {
 
     public LogSource toNewDomain() {
-        return LogSource.createFull(name, type, format, path, address, topic, env, enabled,
+        LogSource source = LogSource.createFull(name, type, format, path, address, topic, env, enabled,
                 readFrom, multiline, sinkTargetId, parseRuleIds, description,
                 protocol, charset, timeField, timezone, tags, frequency, ignoreOlderSeconds,
                 categoryId, groupId);
+        source.requireReady();
+        return source;
     }
 
     public LogSource toDomain(String id, Instant createdAt) {
-        return new LogSource(id, name, type, format, path, address, topic, env, enabled,
+        LogSource source = new LogSource(id, name, type, format, path, address, topic, env, enabled,
                 readFrom, multiline, sinkTargetId,
                 parseRuleIds == null ? List.of() : List.copyOf(parseRuleIds), description,
                 protocol, charset, timeField, timezone,
                 tags == null ? List.of() : List.copyOf(tags), frequency, ignoreOlderSeconds,
                 categoryId, groupId,
                 createdAt);
+        source.requireReady();
+        return source;
     }
 }

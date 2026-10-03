@@ -414,6 +414,15 @@ public class NotificationDispatcher {
                 .map(NotificationDispatcher::fromLogEntity);
     }
 
+    public Page<Map<String, Object>> log(Pageable pageable, String status) {
+        if (status == null || status.isBlank()) return log(pageable);
+        if (!java.util.Set.of("sent", "failed", "unknown", "pending", "requeued").contains(status)) {
+            throw com.socp.platform.error.exception.ApiException.badRequest("Unsupported delivery status");
+        }
+        return dispatchLogs.findByTenantIdAndStatusOrderByCreatedAtDesc(tenant(), status, pageable)
+                .map(NotificationDispatcher::fromLogEntity);
+    }
+
     private static Map<String, Object> fromLogEntity(NotificationDispatchLogEntity row) {
         try {
             Map<String, Object> out = new LinkedHashMap<>(MAPPER.readValue(row.getResultJson(), MAP_TYPE));

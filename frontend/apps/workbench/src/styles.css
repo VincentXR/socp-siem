@@ -5,6 +5,16 @@
 /* 单一主题令牌块：同主题只允许出现一次，后写块不得再重复定义（历史上双块导致
    同一屏出现两套 success/warning/danger）。以生效值为基准，前块独有且仍生效的
    --el-* 变体保留在此。 */
+.workflow-guide { margin: 0 0 16px; padding: 14px 16px; border: 1px solid var(--ns-border); border-radius: 8px; background: var(--ns-bg-subtle); color: var(--ns-text-2); line-height: 1.7; }
+.workflow-guide p { margin: 6px 0 10px; }
+.workflow-time-range { display: flex; gap: 12px; flex-wrap: wrap; margin: 8px 0; }
+.workflow-time-range label { display: grid; gap: 4px; color: var(--ns-text-2); font-size: 12px; }
+.workflow-time-range input { color: var(--ns-text); background: var(--ns-surface); border: 1px solid var(--ns-border); border-radius: 6px; padding: 6px 8px; font: inherit; }
+.case-object-link { display: inline-flex; gap: 8px; flex-wrap: wrap; align-items: center; text-align: left; }
+@media (max-width: 640px) {
+  .el-descriptions__table tr { display: flex; flex-wrap: wrap; }
+  .el-descriptions__table td { flex: 1 1 100%; overflow-wrap: anywhere; }
+}
 :root,
 [data-theme='light'] {
   color-scheme: light;
@@ -55,7 +65,7 @@
   --ns-border-strong: #cbd1d9;
   --ns-text: #111827;
   --ns-text-2: #667085;
-  --ns-text-3: #98a2b3;
+  --ns-text-3: #667085;
   --ns-accent: #2563eb;
   --ns-accent-hover: #1d4ed8;
   --ns-accent-subtle: #eff6ff;
@@ -130,7 +140,7 @@
   --ns-border-strong: #3a4654;
   --ns-text: #e7edf4;
   --ns-text-2: #9aa7b5;
-  --ns-text-3: #748294;
+  --ns-text-3: #94a3b8;
   --ns-accent: #60a5fa;
   --ns-accent-hover: #82b8fb;
   --ns-accent-subtle: rgba(96, 165, 250, .14);
@@ -546,6 +556,11 @@ body.el-popup-parent--hidden .socp-content { overflow: hidden; }
 .el-table .el-table__row:hover td:first-child { box-shadow: inset 2px 0 0 var(--ns-accent); }
 .el-table__inner-wrapper::before { display: none; }
 .el-table--striped .el-table__body tr.el-table__row--striped td { background: transparent; }
+/* Sticky columns must be opaque or horizontally scrolled text shows through actions. */
+.el-table td.el-table__cell.el-table-fixed-column--left,
+.el-table td.el-table__cell.el-table-fixed-column--right { background: var(--ns-surface) !important; }
+.el-table .el-table__row:hover > td.el-table__cell.el-table-fixed-column--left,
+.el-table .el-table__row:hover > td.el-table__cell.el-table-fixed-column--right { background: var(--ns-hover) !important; }
 .el-table .el-table__cell .mono { font-variant-numeric: tabular-nums; }
 .el-table .cell { min-width: 0; line-height: 1.4; }
 .table-text {
@@ -1004,9 +1019,14 @@ body {
 .data-table-content { min-width: 0; min-height: 120px; overflow-x: auto; }
 .el-pagination { margin-top: 12px; }
 
-/* SeverityTag 内联定义 color/background/padding/font-size/line-height/display，
-   这里只声明它没有覆盖的盒模型属性，避免依赖被压制的死声明。 */
+/* Workbench severity badges share one theme-aware, readable box model. */
 .sev-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
   min-height: 21px;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -1016,7 +1036,7 @@ body {
 .sev-medium { color: var(--ns-on-warning); background: var(--ns-warning); border-color: var(--ns-warning); }
 .sev-low, .sev-info { color: var(--ns-on-info); background: var(--ns-info); border-color: var(--ns-info); }
 
-/* SeverityTag renders an inline color; these theme-aware rules keep badges readable in both modes. */
+/* Theme colors cover canonical and aliased severity levels. */
 .sev-badge[data-tone='critical'], .sev-badge[data-tone='high'] {
   color: var(--ns-on-danger) !important;
   background: var(--ns-danger) !important;

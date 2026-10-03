@@ -89,8 +89,21 @@ public class AlarmRepositoryImpl implements AlarmRepositoryCustom {
         if (query.rule() != null) {
             predicates.add(cb.equal(root.<String>get("ruleId"), query.rule()));
         }
-        if (query.status() != null) {
+        if ("ACTIVE".equals(query.status())) {
+            predicates.add(root.<String>get("status").in("OPEN", "INVESTIGATING"));
+        } else if (query.status() != null) {
             predicates.add(cb.equal(root.<String>get("status"), query.status()));
+        }
+        if (query.from() != null) predicates.add(cb.greaterThanOrEqualTo(root.get("occurredAt"), query.from()));
+        if (query.to() != null) predicates.add(cb.lessThanOrEqualTo(root.get("occurredAt"), query.to()));
+        if (query.assignee() != null) {
+            Subquery<Integer> assigned = owner.subquery(Integer.class);
+            var disposition = assigned.from(com.socp.alert.persistence.entity.DispositionEntity.class);
+            assigned.select(cb.literal(1));
+            assigned.where(cb.equal(disposition.get("tenantId"), tenant),
+                    cb.equal(disposition.get("alarmId"), root.get("id")),
+                    cb.equal(disposition.get("assignee"), query.assignee()));
+            predicates.add(cb.exists(assigned));
         }
         if (query.text() != null) {
             String pattern = "%" + escapeLike(query.text().toLowerCase(Locale.ROOT)) + "%";

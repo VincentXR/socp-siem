@@ -247,7 +247,7 @@ public class ReportService {
             Object id = values.get("ruleId");
             Object count = values.get("count");
             if (count instanceof Number number) {
-                result.add(new ReportSummary.RuleCount(String.valueOf(id), number.intValue()));
+                result.add(new ReportSummary.RuleCount(String.valueOf(id), number.intValue(), id == null ? null : String.valueOf(id)));
             }
         }
         return result;
@@ -258,7 +258,7 @@ public class ReportService {
         for (String row : rows) {
             String[] parts = row.split("\\t");
             if (parts.length >= 3) {
-                result.add(new ReportSummary.RuleCount(parts[0] + " " + parts[1], parseCount(parts[2])));
+                result.add(new ReportSummary.RuleCount(parts[0] + " " + parts[1], parseCount(parts[2]), parts[0]));
             }
         }
         return result;

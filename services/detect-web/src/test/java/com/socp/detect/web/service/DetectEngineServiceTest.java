@@ -66,6 +66,20 @@ class DetectEngineServiceTest {
     private DetectionPerformanceMetrics performanceMetrics;
 
     @Test
+    void techniqueLookupDoesNotStartOrMutateTheDetectionEngine() {
+        var result = new org.springframework.data.domain.PageImpl<Map<String, Object>>(
+                List.of(Map.of("id", "rule-a", "status", "ACTIVE")));
+        when(store.byTechnique("T1110", 2, 20)).thenReturn(result);
+        var service = new DetectEngineService(store, new RecentAlertSink(10, null, null), forwarder, rulePublisher);
+        try {
+            assertEquals(result, service.rulesByTechnique("T1110", 2, 20));
+            org.mockito.Mockito.verifyNoInteractions(forwarder, rulePublisher);
+        } finally {
+            service.stop();
+        }
+    }
+
+    @Test
     void startupInitializesDefaultEngineInsideTenantScope() {
         when(store.list("default")).thenAnswer(invocation -> {
             assertEquals("default", TenantContext.require());

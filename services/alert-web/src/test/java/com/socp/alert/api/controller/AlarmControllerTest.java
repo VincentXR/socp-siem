@@ -70,6 +70,30 @@ class AlarmControllerTest {
     }
 
     @Test
+    void ownerAndAbsoluteTimeReachBothListAndExport() throws Exception {
+        var from = java.time.Instant.parse("2026-09-01T00:00:00Z");
+        var to = from.plusSeconds(3600);
+        Alarm alarm = new Alarm("R-1", "Scoped alarm", Severity.HIGH, "login", "host-a");
+        alarm.setId("owned-alarm");
+        given(service.page(null, null, "ACTIVE", null, "occurredAt", "descending", 1, 20, "alice", from, to))
+                .willReturn(new PageImpl<>(List.of(alarm)));
+        for (boolean paged : List.of(true, false)) {
+            var request = get("/api/alarms").param("status", "ACTIVE").param("assignee", "alice")
+                    .param("from", from.toString()).param("to", to.toString());
+            if (paged) request.param("page", "1");
+            mvc.perform(request).andExpect(status().isOk()).andExpect(content().string(containsString("owned-alarm")));
+        }
+        given(service.count(null, null, "ACTIVE", null, "occurredAt", "descending", "alice", from, to)).willReturn(1L);
+        given(service.page(null, null, "ACTIVE", null, "occurredAt", "descending", 1, 500, "alice", from, to))
+                .willReturn(new PageImpl<>(List.of(alarm)));
+        mvc.perform(get("/api/alarms/export").param("format", "json").param("status", "ACTIVE")
+                        .param("assignee", "alice").param("from", from.toString()).param("to", to.toString()))
+                .andExpect(status().isOk()).andExpect(content().string(containsString("owned-alarm")));
+        verify(service).count(null, null, "ACTIVE", null, "occurredAt", "descending", "alice", from, to);
+        verify(service).page(null, null, "ACTIVE", null, "occurredAt", "descending", 1, 500, "alice", from, to);
+    }
+
+    @Test
     void exportUsesTheSameStatusAndSortAsTheList() throws Exception {
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", "203.0.113.10");

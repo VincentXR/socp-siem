@@ -35,12 +35,15 @@ import { useFocusReturn } from '../composables/useFocusReturn'
 import { exportSearch, listAlarmsByEvent, listFields, splSearch, type Alarm, type FieldDef, type SearchEvent, type SearchResult } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
+import { stageDetectionSample } from '../lib/detection-sample'
+import { useWriteAccess } from '../composables/useWriteAccess'
+import { localDateTime, utcInstant, validTimeWindow } from '../lib/time-range'
 import { appendSearchFilter, splitPipeline } from '../lib/search-query'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
-type TimeRangeKey = '15m' | '30m' | '1h' | '6h' | '24h' | 'all'
+type TimeRangeKey = '15m' | '30m' | '1h' | '6h' | '24h' | 'all' | 'custom'
 type EventSortOrder = 'ascending' | 'descending'
 
 const routeQuery = typeof route.query.q === 'string' ? route.query.q : ''
@@ -48,7 +51,11 @@ const routeRange = typeof route.query.range === 'string' ? route.query.range : '
 const eventSortFields = ['timestamp', 'source', 'host', 'severity', 'msg'] as const
 const routeSort = typeof route.query.sort === 'string' && eventSortFields.includes(route.query.sort as typeof eventSortFields[number]) ? route.query.sort : ''
 const routeOrder = route.query.order === 'ascending' || route.query.order === 'descending' ? route.query.order as EventSortOrder : null
-const validTimeRanges: TimeRangeKey[] = ['15m', '30m', '1h', '6h', '24h', 'all']
+const validTimeRanges: TimeRangeKey[] = ['15m', '30m', '1h', '6h', '24h', 'all', 'custom']
+const canWrite = useWriteAccess()
+const customFrom = ref(localDateTime(typeof route.query.from === 'string' ? route.query.from : ''))
+const customTo = ref(localDateTime(typeof route.query.to === 'string' ? route.query.to : ''))
+const activeFrom = ref('')
 const query = ref(routeQuery || '*')
 const result = ref<SearchResult | null>(null)
 const loading = ref(false)
@@ -66,6 +73,7 @@ const timeRangeOptions: Array<{ key: TimeRangeKey; label: string; durationMs?: n
   { key: '6h', label: 'search.timeRanges.last6Hours', durationMs: 6 * 60 * 60_000 },
   { key: '24h', label: 'search.timeRanges.last24Hours', durationMs: 24 * 60 * 60_000 },
   { key: 'all', label: 'search.timeRanges.all' },
+  { key: 'custom', label: 'workflow.customTime' },
 ]
 const selectedTimeRange = ref<TimeRangeKey>(validTimeRanges.includes(routeRange as TimeRangeKey) ? routeRange as TimeRangeKey : '30m')
 const activeTimeRange = ref<TimeRangeKey>(selectedTimeRange.value)
@@ -73,7 +81,9 @@ const activeQuery = ref('')
 const activeRawQuery = ref(query.value.trim() || '*')
 const activeEndAt = ref(Date.now())
 const queryInput = ref<InstanceType<typeof ElInput>>()
-const hasDraftChanges = computed(() => (query.value.trim() || '*') !== activeRawQuery.value)
+const hasDraftChanges = computed(() => (query.value.trim() || '*') !== activeRawQuery.value
+  || selectedTimeRange.value !== activeTimeRange.value
+  || selectedTimeRange.value === 'custom' && (utcInstant(customFrom.value) !== activeFrom.value || Date.parse(customTo.value) !== activeEndAt.value))
 const eventSortProp = ref<string>(routeSort)
 const eventSortOrder = ref<EventSortOrder | null>(routeOrder)
 const fieldDefs = ref<FieldDef[]>([])
@@ -87,7 +97,7 @@ const relatedAlarms = ref<Alarm[]>([])
 const relatedAlarmsLoading = ref(false)
 const relatedAlarmsError = ref('')
 let eventLineageToken = 0
-const savedQueries = ref<Array<{ id: string; name: string; query: string; range: TimeRangeKey }>>([])
+const savedQueries = ref<Array<{ id: string; name: string; query: string; range: TimeRangeKey; from?: string; to?: string }>>([])
 const selectedSavedQueryId = ref('')
 const saveDialogVisible = ref(false)
 const savedQueryName = ref('')
@@ -128,9 +138,9 @@ const visibleFields = computed(() => {
 function buildScopedQuery(rawQuery: string, range: TimeRangeKey, endAt = Date.now()): string {
   const normalized = rawQuery.trim() || '*'
   const option = timeRangeOptions.find(candidate => candidate.key === range)
-  if (!option?.durationMs) return normalized
+  if (!option?.durationMs && range !== 'custom') return normalized
   const { filter, pipeline } = splitPipeline(normalized)
-  const from = new Date(endAt - option.durationMs).toISOString()
+  const from = range === 'custom' ? activeFrom.value : new Date(endAt - option!.durationMs!).toISOString()
   const to = new Date(endAt).toISOString()
   const scopedFilter = `(${filter.trim() || '*'}) AND timestamp>=${from} AND timestamp<=${to}`
   return pipeline ? `${scopedFilter} ${pipeline}` : scopedFilter
@@ -148,7 +158,7 @@ function sourceLabel(source: string | null | undefined): string {
 
 // Only applied state belongs in a result link; drafts never alter its query.
 function routeKey(params: Record<string, unknown>): string {
-  return JSON.stringify(['q', 'range', 'to', 'page', 'size', 'sort', 'order'].map(key => params[key] ?? null))
+  return JSON.stringify(['q', 'range', 'from', 'to', 'page', 'size', 'sort', 'order'].map(key => params[key] ?? null))
 }
 
 async function syncUrl(page = 1, history: 'push' | 'replace' = 'replace'): Promise<void> {
@@ -157,6 +167,7 @@ async function syncUrl(page = 1, history: 'push' | 'replace' = 'replace'): Promi
     ...route.query,
     q: activeRawQuery.value,
     range: activeTimeRange.value,
+    from: activeTimeRange.value === 'custom' ? activeFrom.value : undefined,
     to: activeTimeRange.value === 'all' ? undefined : new Date(activeEndAt.value).toISOString(),
     size: pageSize.value !== 50 ? String(pageSize.value) : undefined,
     sort: eventSortProp.value || undefined,
@@ -168,6 +179,8 @@ async function syncUrl(page = 1, history: 'push' | 'replace' = 'replace'): Promi
 }
 
 function readRoute(): void {
+  customFrom.value = localDateTime(typeof route.query.from === 'string' ? route.query.from : '')
+  customTo.value = localDateTime(typeof route.query.to === 'string' ? route.query.to : '')
   query.value = typeof route.query.q === 'string' ? route.query.q : '*'
   selectedTimeRange.value = validTimeRanges.includes(route.query.range as TimeRangeKey) ? route.query.range as TimeRangeKey : '30m'
   pageSize.value = pageSizes.includes(Number(route.query.size)) ? Number(route.query.size) : 50
@@ -283,6 +296,14 @@ function openRelatedAlarm(alarmId: string): void {
   void router.push({ name: 'alarms', query: { q: selectedEvent.value?.eventId || undefined, alarmId } })
 }
 
+function useAsDetectionSample(): void {
+  if (!selectedEvent.value || !canWrite.value) return
+  try {
+    const sample = stageDetectionSample(selectedEvent.value)
+    void router.push({ name: 'rule-new', query: { sample } })
+  } catch (error) { ElMessage.error(String(error)) }
+}
+
 function saveQuery(): void {
   const name = savedQueryName.value.trim()
   const value = query.value.trim() || '*'
@@ -291,8 +312,9 @@ function saveQuery(): void {
   if (existing) {
     existing.query = value
     existing.range = selectedTimeRange.value
+    existing.from = customFrom.value; existing.to = customTo.value
   } else {
-    savedQueries.value.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name, query: value, range: selectedTimeRange.value })
+    savedQueries.value.unshift({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name, query: value, range: selectedTimeRange.value, from: customFrom.value, to: customTo.value })
     savedQueries.value = savedQueries.value.slice(0, 20)
   }
   persistSavedQueries()
@@ -306,6 +328,7 @@ function applySavedQuery(id: string): void {
   if (!saved) return
   query.value = saved.query
   selectedTimeRange.value = saved.range
+  customFrom.value = saved.from || ''; customTo.value = saved.to || ''
   selectedSavedQueryId.value = ''
   void search()
 }
@@ -353,14 +376,19 @@ async function fetchPage(page: number, pageCursor: string | null): Promise<void>
   }
 }
 
-async function search(targetPage = 1, endAt = Date.now(), history: 'push' | 'replace' = 'push', rawQuery = query.value): Promise<void> {
+async function search(targetPage = 1, endAt = Date.now(), history: 'push' | 'replace' = 'push', rawQuery = query.value, range = selectedTimeRange.value, from = customFrom.value, to = customTo.value): Promise<void> {
+  if (range === 'custom') {
+    if (!validTimeWindow(from, to)) { error.value = t('workflow.invalidTimeRange'); return }
+    activeFrom.value = utcInstant(from)
+    endAt = Date.parse(to)
+  }
   const sequence = ++requestSequence
   requestController?.abort()
   const controller = new AbortController()
   requestController = controller
   activeRawQuery.value = rawQuery.trim() || '*'
   activeEndAt.value = endAt
-  activeTimeRange.value = selectedTimeRange.value
+  activeTimeRange.value = range
   activeQuery.value = buildScopedQuery(activeRawQuery.value, activeTimeRange.value, activeEndAt.value)
   currentPage.value = 1
   pageCursors.value = [null]
@@ -416,9 +444,9 @@ async function nextPage(): Promise<void> {
   await fetchPage(currentPage.value + 1, nextCursor)
 }
 
-async function changePageSize(): Promise<void> { await search(1, activeEndAt.value, 'replace', activeRawQuery.value) }
+async function changePageSize(): Promise<void> { await search(1, activeEndAt.value, 'replace', activeRawQuery.value, activeTimeRange.value, activeFrom.value, new Date(activeEndAt.value).toISOString()) }
 function runExample(example: string): void { query.value = example; void search() }
-function setTimeRange(range: TimeRangeKey): void { selectedTimeRange.value = range; void search() }
+function setTimeRange(range: TimeRangeKey): void { selectedTimeRange.value = range; if (range !== 'custom') void search() }
 
 function onQueryEnter(event: Event | KeyboardEvent): void {
   if (!(event instanceof KeyboardEvent) || event.isComposing || event.shiftKey) return
@@ -497,6 +525,7 @@ onMounted(() => {
             <div class="search-time-filter-buttons">
               <el-button v-for="option in timeRangeOptions" :key="option.key" size="small" :type="selectedTimeRange === option.key ? 'primary' : ''" :aria-pressed="selectedTimeRange === option.key" @click="setTimeRange(option.key)">{{ t(option.label) }}</el-button>
             </div>
+            <div v-if="selectedTimeRange === 'custom'" class="workflow-time-range"><label>{{ t('workflow.timeFrom') }}<input v-model="customFrom" type="datetime-local" step="0.001" :aria-label="t('workflow.timeFrom')" /></label><label>{{ t('workflow.timeTo') }}<input v-model="customTo" type="datetime-local" step="0.001" :aria-label="t('workflow.timeTo')" /></label></div>
             <span class="search-time-filter-applied">{{ t('search.timeRangeApplied', { range: activeTimeRangeLabel }) }}<span v-if="activeTimeRange !== 'all'"> · {{ t('search.rangeEndingAt', { time: new Date(activeEndAt).toISOString() }) }}</span></span>
           </div>
           <div class="search-examples"><el-tag v-for="example in examples" :key="example" size="small" role="button" tabindex="0" :aria-label="example" @click="runExample(example)" @keydown.enter.space.prevent="runExample(example)">{{ example }}</el-tag></div>
@@ -559,6 +588,7 @@ onMounted(() => {
             </div>
           </div>
         </div>
+        <el-button v-if="canWrite" type="primary" plain @click="useAsDetectionSample">{{ t('workflow.detectionSample') }}</el-button>
         <details class="search-event-raw" open><summary>{{ t('search.rawEvent') }}</summary><pre>{{ JSON.stringify(selectedEvent, null, 2) }}</pre></details>
       </template>
     </el-drawer>

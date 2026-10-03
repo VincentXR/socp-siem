@@ -148,12 +148,23 @@ public class NotifyController {
                 request.alarmId(), request.reason(), request.confirmUnknown()));
     }
 
+    @GetMapping("/channels/{id}")
+    public ApiResult<Channel> channel(@PathVariable String id) {
+        return ApiResult.ok(requireChannel(id));
+    }
+
     /** 分发日志：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */
+    public ApiResult<PageResponse<Map<String, Object>>> log(int page, int size) {
+        return log(page, size, null);
+    }
+
     @GetMapping("/dispatch-log")
     public ApiResult<PageResponse<Map<String, Object>>> log(@RequestParam(defaultValue = "1") int page,
-                                                            @RequestParam(defaultValue = "500") int size) {
+                                                            @RequestParam(defaultValue = "500") int size,
+                                                            @RequestParam(required = false) String status) {
         requireValidRange(page, size);
-        var result = dispatcher.log(org.springframework.data.domain.PageRequest.of(page - 1, size));
+        var pageable = org.springframework.data.domain.PageRequest.of(page - 1, size);
+        var result = status == null || status.isBlank() ? dispatcher.log(pageable) : dispatcher.log(pageable, status);
         return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
                 page, size, result.getTotalPages()));
     }

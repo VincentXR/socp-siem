@@ -53,7 +53,7 @@ export type ReportSource = 'clickhouse' | 'clickhouse+alert-web' | 'alert-web' |
 export interface ReportSummary {
   date: string; total: number
   bySeverity: Record<string, number>
-  byRule: Array<{ rule: string; count: number }>
+  byRule: Array<{ rule: string; count: number; ruleId?: string | null }>
   source: ReportSource
   degraded: boolean
   freshness: string | null
@@ -91,7 +91,7 @@ export interface AiResult {
 }
 
 export interface InvestigationCitation {
-  id: string; source: string; type: string; label?: string; value?: string
+  id: string; source: string; type?: string; label?: string; value?: string; locator?: string; description?: string
 }
 export interface InvestigationTimelineItem {
   timestamp: string; type: string; message: string; citation: string

@@ -14,6 +14,9 @@ const alarmKeyword = query.alarmKeyword
 const alarmSeverity = query.alarmSeverity
 const alarmStatus = query.alarmStatus
 const alarmRule = query.alarmRule
+const alarmAssignee = query.alarmAssignee
+const alarmFrom = query.alarmFrom
+const alarmTo = query.alarmTo
 const alarmPageNum = query.alarmPageNum
 const alarmPageSize = query.alarmPageSize
 const filteredAlarms = computed(() => query.filteredAlarms.value)
@@ -44,6 +47,9 @@ function exportWithCurrentFilters(format: 'csv' | 'json') {
     severity: alarmSeverity.value || undefined,
     status: alarmStatus.value || undefined,
     rule: alarmRule.value.trim() || undefined,
+    assignee: alarmAssignee.value.trim() || undefined,
+    from: alarmFrom.value || undefined,
+    to: alarmTo.value || undefined,
     sort: query.alarmSort.value,
     order: query.alarmOrder.value,
   })
@@ -56,6 +62,10 @@ function exportWithCurrentFilters(format: 'csv' | 'json') {
     v-model:severity="alarmSeverity"
     v-model:status="alarmStatus"
     v-model:rule="alarmRule"
+    v-model:assignee="alarmAssignee"
+    v-model:from="alarmFrom"
+    v-model:to="alarmTo"
+    :current-user="state.currentUser.value"
     v-model:page-num="alarmPageNum"
     :filtered-alarms="filteredAlarms"
     :alarm-page-data="alarmPageData"

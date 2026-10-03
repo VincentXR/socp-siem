@@ -106,6 +106,18 @@ public class RuleController {
         return ApiResult.ok(engine.lookupRules(request.ids().stream().distinct().toList()));
     }
 
+    @GetMapping("/rules/by-technique")
+    public ApiResult<?> byTechnique(@RequestParam String technique,
+                                    @RequestParam(defaultValue = "1") int page,
+                                    @RequestParam(defaultValue = "20") int size) {
+        if (!technique.matches("T[0-9]{4}(?:\\.[0-9]{3})?") || page < 1 || size < 1 || size > 100) {
+            throw com.socp.platform.error.exception.ApiException.badRequest("Invalid technique or pagination");
+        }
+        var result = engine.rulesByTechnique(technique, page, size);
+        return ApiResult.ok(com.socp.platform.error.api.PageResponse.of(
+                result.getContent(), result.getTotalElements(), page, size, result.getTotalPages()));
+    }
+
     @GetMapping("/rules/active-techniques")
     public ApiResult<List<String>> activeTechniques() {
         return ApiResult.ok(engine.activeRuleTechniques());

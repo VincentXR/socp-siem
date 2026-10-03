@@ -46,6 +46,9 @@ import { useDebouncedWatch } from '../composables/useDebouncedWatch'
 import { useLatestRequest } from '../composables/useLatestRequest'
 import { useListQuery } from '../composables/useListQuery'
 import { useFocusReturn } from '../composables/useFocusReturn'
+import { addCaseNote } from '../api/incidents'
+import { getAlarm } from '../api/alarms'
+import type { Alarm } from '../api/models'
 import { caseApi, type CaseInfo, type TimelineEvent } from '../api/domains'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
@@ -72,8 +75,11 @@ const timelinePage = ref(1)
 const timelineSize = ref(20)
 const timelineTotal = ref(0)
 const associatedAlarms = ref<string[]>([])
+const alarmDetails = ref<Record<string, Alarm>>({})
+const noteDraft = ref('')
+let noteIdentity: { id: string; content: string; key: string } | null = null
 const associatedAlarmPage = ref(1)
-const associatedAlarmPageSize = ref(50)
+const associatedAlarmPageSize = ref(20)
 const associatedAlarmTotal = ref(0)
 const associatedAlarmError = ref('')
 const associatedRules = ref<string[]>([])
@@ -140,6 +146,8 @@ async function loadDetail() {
   latestAlarms.cancel(); latestRules.cancel()
   const id = selectedId.value
   detail.value = null
+  noteDraft.value = ''; noteIdentity = null; alarmDetails.value = {}
+  noteGuard.markSaved()
   newStatus.value = ''; detailAssignee.value = ''
   detailGuard.markSaved()
   timeline.value = []; timelineError.value = ''; timelineLoading.value = false
@@ -172,9 +180,35 @@ async function loadAlarms() {
     const result = await caseApi.alarms(id, associatedAlarmPage.value, associatedAlarmPageSize.value, { signal: request.signal })
     if (!request.isCurrent()) return
     associatedAlarms.value = result.items; associatedAlarmTotal.value = result.total
+    alarmDetails.value = {}
+    // Bound fan-out to one page, in batches of four; keep IDs usable when a detail read fails.
+    for (let offset = 0; offset < result.items.length; offset += 4) {
+      if (!request.isCurrent()) return
+      const details = await Promise.allSettled(result.items.slice(offset, offset + 4).map(alarmId => getAlarm(alarmId, { signal: request.signal })))
+      if (!request.isCurrent()) return
+      for (const item of details) if (item.status === 'fulfilled') alarmDetails.value[item.value.id] = item.value
+      if (details.some(item => item.status === 'rejected')) associatedAlarmError.value = t('workflow.partialAlarmDetails')
+    }
   } catch (failure) {
     if (request.isCurrent()) associatedAlarmError.value = String(failure)
   }
+}
+
+async function saveNote() {
+  const id = detail.value?.id
+  const content = noteDraft.value.trim()
+  if (!id || !content || !canWrite.value || actionBusy.value) return
+  if (noteIdentity?.id !== id || noteIdentity.content !== content) noteIdentity = { id, content, key: crypto.randomUUID() }
+  const key = noteIdentity.key
+  await mutation.run(async () => {
+    await addCaseNote(id, content, key)
+    if (selectedId.value !== id) return
+    noteDraft.value = ''; noteIdentity = null
+    noteGuard.markSaved()
+    timelinePage.value = 1
+    await loadTimeline()
+    ElMessage.success(t('common.updated'))
+  })
 }
 
 async function loadRules() {
@@ -281,8 +315,9 @@ async function saveCase() {
 
 const createDialogVisibleGuard = useFormDialog(createDialogVisible, () => caseForm.value, () => actionBusy.value)
 const detailGuard = useFormDialog(drawerVisible, () => ({ status: newStatus.value, assignee: detailAssignee.value }), () => actionBusy.value)
+const noteGuard = useFormDialog(drawerVisible, () => noteDraft.value, () => actionBusy.value)
 onBeforeRouteUpdate(async (to, from) => to.query.caseId === from.query.caseId
-  || await createDialogVisibleGuard.canLeave() && await detailGuard.canLeave())
+  || await createDialogVisibleGuard.canLeave() && await detailGuard.canLeave() && await noteGuard.canLeave())
 onMounted(loadCases)
 watch([page, size], () => { listQuery.sync(); void loadCases() })
 useDebouncedWatch([keyword, statusFilter], () => {
@@ -367,7 +402,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status], (
       </template>
     </el-dialog>
 
-    <el-drawer :model-value="drawerVisible" :before-close="closeDetail" :title="`${t('cases.title')} · ${detail?.title ?? selectedId}`" size="min(520px, 96vw)" @closed="restoreDrawerFocus">
+    <el-drawer :model-value="drawerVisible" :before-close="closeDetail" :title="`${t('cases.title')} · ${detail?.title ?? selectedId}`" size="min(840px, 96vw)" @closed="restoreDrawerFocus">
       <p v-if="detailLoading" role="status">{{ t('common.loading') }}</p>
       <ActionFeedback :error="detailError" />
       <el-button v-if="detailError" @click="loadDetail">{{ t('common.retry') }}</el-button>
@@ -393,7 +428,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status], (
           </el-descriptions-item>
           <el-descriptions-item :label="t('cases.associatedAlarms')" :span="2">
             <ActionFeedback :error="associatedAlarmError" />
-            <div v-if="associatedAlarms.length" class="case-object-list"><button v-for="alarmId in associatedAlarms" :key="alarmId" type="button" class="case-object-link mono" @click="openAlarm(alarmId)">{{ alarmId }}</button></div>
+            <div v-if="associatedAlarms.length" class="case-object-list"><button v-for="alarmId in associatedAlarms" :key="alarmId" type="button" class="case-object-link mono" @click="openAlarm(alarmId)">{{ alarmDetails[alarmId]?.title || alarmId }}<template v-if="alarmDetails[alarmId]"><SevBadge :value="alarmDetails[alarmId].severity" /><small>{{ d(alarmDetails[alarmId].occurredAt) }} · {{ tOr(t, 'statuses.' + alarmDetails[alarmId].status, alarmDetails[alarmId].status) }}</small></template></button></div>
             <span v-else>—</span>
             <PagerBar v-if="associatedAlarmTotal > associatedAlarmPageSize" v-model:current-page="associatedAlarmPage" v-model:page-size="associatedAlarmPageSize" :total="associatedAlarmTotal" />
           </el-descriptions-item>
@@ -407,6 +442,10 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status], (
           <p class="drawer-readonly-hint">{{ t('forms.changeStatus') }} + {{ t('forms.assign') }}</p>
         </template>
         <el-divider content-position="left">{{ t('cases.timeline') }}</el-divider>
+        <el-form v-if="canWrite" label-position="top" :disabled="actionBusy">
+          <FormField :label="t('common.notes')"><el-input v-model="noteDraft" type="textarea" :rows="3" maxlength="10000" show-word-limit /></FormField>
+          <el-button type="primary" :loading="actionBusy" :disabled="!noteDraft.trim()" @click="saveNote">{{ t('workflow.addCaseNote') }}</el-button>
+        </el-form>
         <section class="case-timeline" :aria-label="t('cases.timeline')" :aria-busy="timelineLoading">
           <p v-if="timelineLoading" role="status">{{ t('common.loading') }}</p>
           <ActionFeedback :error="timelineError" />

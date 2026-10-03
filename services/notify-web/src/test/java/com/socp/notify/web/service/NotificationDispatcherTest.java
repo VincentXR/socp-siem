@@ -58,6 +58,17 @@ class NotificationDispatcherTest {
     }
 
     @Test
+    void historyStatusFilteringIsTenantScopedAndRejectsUnknownFilters() {
+        TenantContext.set("tenant-a");
+        var pageable = org.springframework.data.domain.PageRequest.of(1, 20);
+        given(dispatchLogs.findByTenantIdAndStatusOrderByCreatedAtDesc("tenant-a", "failed", pageable))
+                .willReturn(org.springframework.data.domain.Page.empty(pageable));
+        assertTrue(dispatcher().log(pageable, "failed").isEmpty());
+        verify(dispatchLogs).findByTenantIdAndStatusOrderByCreatedAtDesc("tenant-a", "failed", pageable);
+        assertThrows(com.socp.platform.error.exception.ApiException.class, () -> dispatcher().log(pageable, "invented"));
+    }
+
+    @Test
     void selectedChannelTestDoesNotCreateAlarmDeliveryReceiptsOrFanOut() {
         TenantContext.set("tenant-a");
         Channel selected = new Channel("CH-TEST", "Selected", "LOG", "local", false, "");

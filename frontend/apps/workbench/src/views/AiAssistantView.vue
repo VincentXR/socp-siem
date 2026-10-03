@@ -67,6 +67,16 @@ async function ask(queryText?: string) {
   }
 }
 
+function citationRoute(id: string) {
+  const [kind, ...parts] = id.split(':')
+  const value = parts.join(':')
+  if (!value) return undefined
+  if (kind === 'alert') return { name: 'alarms', query: { alarmId: value } }
+  if (kind === 'incident') return { name: 'case', query: { caseId: value } }
+  if (kind === 'search' || kind === 'evidence') return { name: 'search', query: { q: `eventId=${JSON.stringify(value)}`, range: 'all' } }
+  return undefined
+}
+
 function clear() {
   askRequest.cancel()
   loading.value = false
@@ -171,7 +181,7 @@ watch(contextAlarmId, id => {
 </script>
 
 <template>
-  <div class="page-pad view-enter">
+  <div class="page-pad view-enter" :class="{ 'ai-context-layout': contextAlarmId }">
     <PageHeader :eyebrow="t('menuGroup.analyticsAndAi')" :title="t('ai.title')" :description="t('ai.description')" />
     <el-card shadow="never" class="ai-panel">
       <div class="ai-ask-row">
@@ -243,11 +253,12 @@ watch(contextAlarmId, id => {
       <div v-if="investigationError" role="alert" class="ai-error">{{ investigationError }}</div>
       <div v-if="investigation" class="ai-result">
         <div class="ai-investigation-meta">
-          <el-tag size="small" :type="investigation.status === 'COMPLETED' ? 'success' : 'warning'">{{ investigation.status }}</el-tag>
+          <el-tag size="small" :type="investigation.status === 'COMPLETED' ? 'success' : 'warning'">{{ tOr(t, 'workflow.' + investigation.status, investigation.status) }}</el-tag>
           <span class="ai-muted">{{ investigation.investigationId }}</span>
           <el-tag size="small" effect="plain">{{ t('ai.investigation.revision', { revision: investigation.revision }) }}</el-tag>
           <el-tag v-if="investigation.duplicate" size="small" effect="plain">{{ t('ai.investigation.replayedReceipt') }}</el-tag>
         </div>
+        <p v-if="investigation.degradedSources?.length" role="alert" class="workflow-guide">{{ t('workflow.aiDegraded', { sources: investigation.degradedSources.join(', ') }) }}</p>
         <div class="ai-analysis">{{ investigation.analysis }}</div>
         <div class="ai-section">
           <div class="ai-section-title">{{ t('ai.investigation.evidenceTimeline') }}</div>
@@ -259,6 +270,7 @@ watch(contextAlarmId, id => {
         <div class="ai-section">
           <div class="ai-section-title">{{ t('ai.investigation.recommendedSpl') }}</div>
           <code class="ai-result-code">{{ investigation.recommendedSpl }}</code>
+          <el-button v-if="investigation.recommendedSpl" link type="primary" @click="router.push({ name: 'search', query: { q: investigation.recommendedSpl, range: 'all' } })">{{ t('workflow.runSearch') }}</el-button>
         </div>
         <div v-if="investigation.hypotheses?.length" class="ai-section">
           <div class="ai-section-title">{{ t('ai.investigation.hypotheses') }}</div>
@@ -277,12 +289,19 @@ watch(contextAlarmId, id => {
           <el-button type="success" plain :loading="appendTarget === investigation.investigationId" :disabled="appendLoading || investigation.summaryAppended" @click="appendToIncident">
             {{ investigation.summaryAppended ? t('ai.investigation.appendedToIncident') : t('ai.investigation.appendSummaryToIncident') }}
           </el-button>
-          <span v-if="investigation.incidentId" class="ai-muted">{{ investigation.incidentId }}</span>
+          <el-button v-if="investigation.incidentId" link type="primary" @click="router.push({ name: 'case', query: { caseId: investigation.incidentId } })">{{ t('drawer.goToCase') }} · {{ investigation.incidentId }}</el-button>
         </div>
         <div v-if="investigation.citations?.length" class="ai-citations ai-muted">
-          {{ t('ai.investigation.citations') }}{{ investigation.citations.map(citation => citation.id).join(', ') }}
+          {{ t('ai.investigation.citations') }}
+          <div v-for="citation in investigation.citations" :key="citation.id"><router-link v-if="citationRoute(citation.id)" :to="citationRoute(citation.id)!">{{ citation.description || citation.label || citation.id }}</router-link><span v-else>{{ citation.description || citation.id }}</span><small> · {{ citation.id }} · {{ citation.source }}</small></div>
         </div>
       </div>
     </el-card>
   </div>
 </template>
+
+<style scoped>
+.ai-context-layout { display: flex; flex-direction: column; }
+.ai-context-layout > .ai-panel { order: 2; }
+.ai-context-layout > .ai-investigation-panel { order: 1; }
+</style>

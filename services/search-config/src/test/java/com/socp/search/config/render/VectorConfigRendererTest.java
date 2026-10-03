@@ -25,9 +25,28 @@ class VectorConfigRendererTest {
     private static final String INGEST_URI = "http://search:18081/search-config/api/v1/ingest";
 
     @Test
+    void refusesUnsupportedBulkProtocolAndMissingEnabledTargets() {
+        LogSource source = LogSource.create("audit", SourceType.FILE, ParseFormat.JSON,
+                "/var/log/audit.log", null, null, "test", true);
+        SinkTarget bulk = SinkTarget.create("bulk", "OPENSEARCH", "http://localhost:9200/_bulk", null, true);
+        assertThrows(com.socp.platform.error.exception.ApiException.class,
+                () -> new VectorConfigRenderer(null).render(List.of(source), ignored -> bulk));
+        LogSource incomplete = LogSource.create("draft", SourceType.FILE, ParseFormat.JSON,
+                null, null, null, "test", true);
+        assertThrows(com.socp.platform.error.exception.ApiException.class, incomplete::requireReady);
+        LogSource draft = LogSource.create("draft", SourceType.FILE, ParseFormat.JSON,
+                null, null, null, "test", false);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(draft::requireReady);
+        SinkTarget custom = SinkTarget.create("custom ingest", "GLS_INGEST", "https://example.test/ingest", null, true);
+        String rendered = new VectorConfigRenderer("isolated-test-platform-token").render(List.of(source), ignored -> custom, true);
+        assertFalse(rendered.contains("Authorization"));
+        assertFalse(rendered.contains("isolated-test-platform-token"));
+    }
+
+    @Test
     void builtInIngestSinkUsesConfiguredCollectorCredentialOnlyForSecretCallers() {
         LogSource src = fileSource("auth-log", null);
-        SinkTarget builtInIngest = platformIngest("enabled-without-token");
+        SinkTarget builtInIngest = platformIngest(com.socp.search.config.persistence.store.SinkTargetStore.PLATFORM_INGEST_ID);
 
         String redacted = new VectorConfigRenderer("collector-secret")
                 .render(List.of(src), sinkTargetId -> builtInIngest);

@@ -140,6 +140,7 @@ public class IngestTaskController {
                 s.parseRuleIds(), s.description(), s.protocol(), s.charset(), s.timeField(),
                 s.timezone(), s.tags(), s.frequency(), s.ignoreOlderSeconds(), s.categoryId(),
                 s.groupId(), s.createdAt());
+        updated.requireReady();
         store.save(updated);
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("id", id);

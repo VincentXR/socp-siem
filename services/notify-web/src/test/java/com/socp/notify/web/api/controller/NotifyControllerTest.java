@@ -29,6 +29,23 @@ import static org.mockito.Mockito.verify;
 @ExtendWith(MockitoExtension.class)
 class NotifyControllerTest {
 
+    @Test
+    void exactChannelLookupAndFilteredHistoryPreserveTheRequestedScope() {
+        var channel = new Channel("off-page", "Ops", "LOG", "local", false, "");
+        given(channels.get("off-page")).willReturn(channel);
+        assertSame(channel, controller().channel("off-page").data());
+        assertThatThrownBy(() -> controller().channel("missing")).isInstanceOf(ApiException.class)
+                .hasFieldOrPropertyWithValue("code", 404);
+        var pageable = org.springframework.data.domain.PageRequest.of(1, 20);
+        var receipt = Map.<String, Object>of("channelId", "off-page", "status", "unknown");
+        given(dispatcher.log(pageable, "unknown")).willReturn(new org.springframework.data.domain.PageImpl<>(
+                List.of(receipt), pageable, 21));
+        var result = controller().log(2, 20, "unknown").data();
+        assertEquals(21, result.total());
+        assertEquals(2, result.page());
+        assertEquals(List.of(receipt), result.items());
+    }
+
     @Test void countOnlyCompatibilityDoesNotLoadTheCatalogueAndOverflowIsRejected() {
         given(channels.count()).willReturn(1200L);
         assertEquals(1200, controller().channels(1, 0).data().total());

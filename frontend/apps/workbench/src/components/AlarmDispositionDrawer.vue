@@ -23,8 +23,8 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import { computed, ref, watch } from 'vue'
 import SevBadge from './SevBadge.vue'
-import type { Alarm, AlarmDeliveryStatus, AlarmEvidenceResponse, CaseInfo, Disposition, Ioc } from '../api'
-import { addAlarmNote, assignAlarm, getAlarmDeliveries, getAlarmEvidence, getDisposition, requeueAlarmDelivery, setDispositionStatus } from '../api/alarms'
+import type { AlarmFeedback, AlarmFeedbackKind, Alarm, AlarmDeliveryStatus, AlarmEvidenceResponse, CaseInfo, Disposition, Ioc } from '../api'
+import { listAlarmFeedback, saveAlarmFeedback, addAlarmNote, assignAlarm, getAlarmDeliveries, getAlarmEvidence, getDisposition, requeueAlarmDelivery, setDispositionStatus } from '../api/alarms'
 import { createCaseFromAlarm, getCaseByAlarm } from '../api/incidents'
 import { ApiError } from '../api/core'
 import { useI18n } from '../composables/useI18n'
@@ -58,7 +58,7 @@ const drawerVisible = computed({
 })
 const restoreDrawerFocus = useFocusReturn(drawerVisible)
 
-const { t } = useI18n()
+const { t, d } = useI18n()
 const { confirmDanger, promptInput } = useConfirm()
 
 const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
@@ -81,8 +81,15 @@ const noteBusy = ref(false)
 const creatingCase = ref(false)
 const actionError = ref('')
 const activeTab = ref('summary')
+const feedback = ref<AlarmFeedback[]>([])
+const feedbackError = ref('')
+const feedbackKind = ref<AlarmFeedbackKind>('FALSE_POSITIVE')
+const feedbackReason = ref('')
+const feedbackBusy = ref(false)
+const feedbackLoading = ref(false)
+let feedbackLoadVersion = 0
 const actionPending = computed(() => statusBusy.value || assignBusy.value || noteBusy.value
-  || creatingCase.value || Boolean(requeueBusy.value))
+  || creatingCase.value || feedbackBusy.value || Boolean(requeueBusy.value))
 let loadToken = 0
 let actionToken = 0
 // Retrying the same unsent note must reuse its key so the backend set-once
@@ -133,6 +140,8 @@ async function loadDetails(alarm: Alarm) {
   newAssignee.value = ''
   newNote.value = ''
   noteKey = ''
+  feedbackLoadVersion++; feedbackLoading.value = false
+  feedback.value = []; feedbackError.value = ''; feedbackReason.value = ''
   const [disp, ev, linkedCase, deliveryResult] = await Promise.allSettled([
     getDisposition(alarm.id), getAlarmEvidence(alarm.id), getCaseByAlarm(alarm.id), getAlarmDeliveries(alarm.id),
   ])
@@ -147,6 +156,23 @@ async function loadDetails(alarm: Alarm) {
   if (deliveryResult.status === 'fulfilled') deliveries.value = deliveryResult.value
   else deliveriesError.value = t('drawer.loadDeliveriesFailed')
 }
+
+async function loadFeedback() {
+  const id = props.alarm?.id
+  if (activeTab.value !== 'feedback' || !props.modelValue || !id) return
+  const version = ++feedbackLoadVersion
+  const current = () => version === feedbackLoadVersion && props.modelValue && props.alarm?.id === id
+  feedbackLoading.value = true; feedbackError.value = ''
+  try {
+    const result = await listAlarmFeedback(id)
+    if (current()) feedback.value = result
+  } catch (error) {
+    if (current()) feedbackError.value = String(error)
+  } finally {
+    if (current()) feedbackLoading.value = false
+  }
+}
+watch(() => [activeTab.value, props.modelValue, props.alarm?.id] as const, () => { void loadFeedback() })
 
 function retryDetails(): void {
   if (props.alarm) void loadDetails(props.alarm)
@@ -164,10 +190,30 @@ watch(() => props.alarm?.id, () => {
   noteBusy.value = false
   creatingCase.value = false
   requeueBusy.value = ''
+  feedbackBusy.value = false
 })
 
 function actionStillTargets(alarmId: string, token: number): boolean {
   return props.modelValue && props.alarm?.id === alarmId && token === actionToken
+}
+
+async function submitFeedback() {
+  const id = props.alarm?.id
+  if (!id || !props.canWrite || actionPending.value || feedbackLoading.value || !feedbackReason.value.trim()) return
+  const token = ++actionToken
+  feedbackBusy.value = true; feedbackError.value = ''
+  try {
+    const saved = await saveAlarmFeedback(id, { kind: feedbackKind.value, reason: feedbackReason.value.trim() })
+    if (!actionStillTargets(id, token)) return
+    feedbackLoadVersion++
+    feedback.value = [...feedback.value.filter(item => item.kind !== saved.kind), saved]
+    feedbackReason.value = ''
+    ElMessage.success(t('common.updated'))
+  } catch (error) {
+    if (actionStillTargets(id, token)) feedbackError.value = String(error)
+  } finally {
+    if (actionStillTargets(id, token)) feedbackBusy.value = false
+  }
 }
 
 function beforeClose(done: () => void): void {
@@ -316,7 +362,7 @@ function openEvidenceSearch() {
         </div>
         <div class="alarm-action-buttons">
           <el-button v-if="evidence?.query" size="small" :disabled="actionPending" @click="openEvidenceSearch">{{ t('drawer.openSearch') }}</el-button>
-          <el-button v-if="relatedCase" size="small" :disabled="actionPending" @click="drawerVisible = false; props.goCase(relatedCase.id)">{{ t('drawer.goToCase') }}</el-button>
+          <el-button v-if="relatedCase" size="small" :disabled="actionPending" @click="props.goCase(relatedCase.id)">{{ t('drawer.goToCase') }}</el-button>
           <el-button v-else-if="props.canWrite && !relatedCaseError" size="small" type="primary" plain :loading="creatingCase" :disabled="actionPending" @click="createCase">{{ t('drawer.createCase') }}</el-button>
           <el-button v-if="props.goAi && props.canWrite" size="small" type="primary" plain :disabled="actionPending" @click="props.goAi(props.alarm.id)">{{ t('drawer.openAiInvestigation') }}</el-button>
           <el-button v-if="props.goSoar" size="small" type="warning" plain :disabled="actionPending" @click="props.goSoar(props.alarm.id)">{{ t('drawer.openSoarResponse') }}</el-button>
@@ -353,7 +399,7 @@ function openEvidenceSearch() {
                 <strong>{{ relatedCase.title }}</strong>
                 <span>{{ relatedCase.id }} · {{ statusLabel(relatedCase.status) }} · {{ relatedCase.entity }} · {{ t('drawer.alarmCount', { count: relatedCase.alarmCount ?? relatedCase.alarmIds.length }) }}</span>
               </div>
-              <el-button link type="primary" size="small" @click="drawerVisible = false; props.goCase(relatedCase.id)">{{ t('drawer.goToCase') }}</el-button>
+              <el-button link type="primary" size="small" :disabled="actionPending" @click="props.goCase(relatedCase.id)">{{ t('drawer.goToCase') }}</el-button>
             </el-card>
             <el-alert v-else-if="detailsLoading" :title="t('common.loading')" type="info" :closable="false" />
             <el-alert v-else-if="relatedCaseError" :title="relatedCaseError" type="error" :closable="false" show-icon>
@@ -403,11 +449,25 @@ function openEvidenceSearch() {
             <div v-if="detailsLoading" class="drawer-loading-hint">{{ t('common.loading') }}</div>
             <el-alert v-else-if="dispositionError" :title="dispositionError" type="error" :closable="false" />
             <div v-else-if="disposition && disposition.notes.length" class="alarm-note-list">
-              <article v-for="(note, index) in disposition.notes" :key="index"><small>{{ note.author }} · {{ note.at }}</small><p>{{ note.content }}</p></article>
+              <article v-for="(note, index) in disposition.notes" :key="index"><small>{{ note.author }} · {{ d(note.at) }}</small><p>{{ note.content }}</p></article>
             </div>
             <el-empty v-else-if="disposition" :description="t('drawer.noNotes')" :image-size="50" />
             <div v-if="props.canWrite && !detailsLoading && !dispositionError" class="alarm-form-row alarm-note-form"><el-input v-model="newNote" :placeholder="t('drawer.addNotePlaceholder')" @keyup.enter="doAddNote" /><el-button type="success" :loading="noteBusy" :disabled="actionPending" @click="doAddNote">{{ t('common.add') }}</el-button></div>
           </section>
+        </el-tab-pane>
+
+        <el-tab-pane :label="t('workflow.verdict')" name="feedback">
+          <p class="drawer-readonly-hint">{{ t('workflow.verdictHint') }}</p>
+          <p v-if="feedbackLoading" role="status">{{ t('common.loading') }}</p>
+          <el-alert v-if="feedbackError" :title="feedbackError" type="error" :closable="false" />
+          <el-button v-if="feedbackError" size="small" :disabled="actionPending" @click="loadFeedback">{{ t('common.retry') }}</el-button>
+          <article v-for="item in feedback" :key="item.id" class="alarm-tab-section"><h3>{{ t('workflow.' + item.kind) }}</h3><p>{{ item.reason }}</p><small>{{ item.actor }} · {{ item.createdAt ? d(item.createdAt) : '—' }}</small></article>
+          <el-empty v-if="!feedback.length && !feedbackError && !feedbackLoading" :description="t('common.empty')" :image-size="50" />
+          <div v-if="props.canWrite" class="alarm-tab-section">
+            <el-select v-model="feedbackKind" :disabled="actionPending" :aria-label="t('workflow.verdict')"><el-option v-for="kind in ['FALSE_POSITIVE', 'RULE_EXCEPTION']" :key="kind" :label="t('workflow.' + kind)" :value="kind" /></el-select>
+            <el-input v-model="feedbackReason" type="textarea" :rows="3" maxlength="2000" :disabled="actionPending" :aria-label="t('workflow.verdictReason')" :placeholder="t('workflow.verdictReason')" />
+            <el-button type="primary" :loading="feedbackBusy" :disabled="actionPending || feedbackLoading || !feedbackReason.trim()" @click="submitFeedback">{{ t('common.save') }}</el-button>
+          </div>
         </el-tab-pane>
 
         <el-tab-pane :label="t('drawer.tabs.delivery')" name="delivery">
@@ -417,7 +477,7 @@ function openEvidenceSearch() {
             <el-empty v-else-if="!detailsLoading && !deliveries.length" :description="t('drawer.noDeliveries')" :image-size="50" />
             <div v-else class="delivery-list">
               <el-card v-for="delivery in deliveries" :key="delivery.deliveryId" shadow="never" class="delivery-card">
-                <div class="delivery-heading"><strong>{{ delivery.destination }}</strong><el-tag size="small" :type="delivery.status === 'DELIVERED' ? 'success' : delivery.status === 'DEAD' ? 'danger' : 'warning'">{{ delivery.status }}</el-tag></div>
+                <div class="delivery-heading"><strong>{{ tOr(t, 'workflow.' + delivery.destination, delivery.destination) }}</strong><el-tag size="small" :type="delivery.status === 'DELIVERED' ? 'success' : delivery.status === 'DEAD' ? 'danger' : 'warning'">{{ tOr(t, 'workflow.' + delivery.status, delivery.status) }}</el-tag></div>
                 <div class="drawer-readonly-hint">{{ t('drawer.deliveryAttempts', { count: delivery.attempts }) }} · {{ delivery.deliveredAt || delivery.nextAttemptAt || '—' }}</div>
                 <div v-if="delivery.lastError" class="delivery-error">{{ delivery.lastError }}</div>
                 <el-button v-if="props.canAdmin && delivery.status === 'DEAD'" size="small" type="warning" plain :loading="requeueBusy === delivery.deliveryId" :disabled="actionPending" @click="requeueDelivery(delivery)">{{ t('drawer.requeueDelivery') }}</el-button>

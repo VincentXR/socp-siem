@@ -66,6 +66,11 @@ class RequestValidationTest {
         var source = request.toNewDomain();
         assertTrue(source.id() != null && !source.id().isBlank());
         assertTrue(source.createdAt() != null);
+        var edited = request.toDomain(source.id(), source.createdAt());
+        assertEquals(source.id(), edited.id());
+        assertEquals(source.createdAt(), edited.createdAt());
+        assertEquals("event_time", edited.timeField());
+        assertEquals("UTC", edited.timezone());
     }
 
     @Test

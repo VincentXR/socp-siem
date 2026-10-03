@@ -37,6 +37,39 @@ class SinkTargetStoreTest {
         assertFalse(store.delete(SinkTargetStore.PLATFORM_INGEST_ID));
     }
 
+    @Test
+    void editingPreservesIdentityAndRotatesOnlyTheSelectedTenantCredential() {
+        SinkTargetStore store = new SinkTargetStore();
+        TenantContext.set("tenant-a");
+        SinkTarget original = store.save(SinkTarget.create("a", "HTTP", "https://example.test/old", "isolated-test-token", true));
+        var body = new com.socp.search.config.api.request.SinkTargetRequest("edited", "HTTP", "https://example.test/new", null, true);
+        var keep = new com.socp.search.config.api.request.SinkTargetUpdateRequest(body,
+                com.socp.search.config.api.request.SinkTargetUpdateRequest.CredentialAction.KEEP);
+        SinkTarget updated = store.update(original.id(), keep);
+        assertEquals(original.id(), updated.id());
+        assertEquals(original.createdAt(), updated.createdAt());
+        assertEquals(original.authToken(), updated.authToken());
+        assertEquals("https://example.test/new", updated.uri());
+        assertThrows(ApiException.class, () -> store.update(SinkTargetStore.PLATFORM_INGEST_ID, keep));
+        TenantContext.set("tenant-b");
+        assertThrows(ApiException.class, () -> store.update(original.id(), keep));
+        TenantContext.set("tenant-a");
+        var replace = new com.socp.search.config.api.request.SinkTargetUpdateRequest(body,
+                com.socp.search.config.api.request.SinkTargetUpdateRequest.CredentialAction.REPLACE);
+        assertThrows(ApiException.class, () -> store.update(original.id(), replace));
+        var replacement = new com.socp.search.config.api.request.SinkTargetRequest(
+                "rotated", "HTTP", "https://example.test/new", "isolated-rotated-token", true);
+        var rotated = store.update(original.id(), new com.socp.search.config.api.request.SinkTargetUpdateRequest(
+                replacement, com.socp.search.config.api.request.SinkTargetUpdateRequest.CredentialAction.REPLACE));
+        assertEquals("isolated-rotated-token", rotated.authToken());
+        assertEquals(original.id(), rotated.id());
+        assertEquals(original.createdAt(), rotated.createdAt());
+        assertEquals(1, store.list().size());
+        var cleared = store.update(original.id(), new com.socp.search.config.api.request.SinkTargetUpdateRequest(body,
+                com.socp.search.config.api.request.SinkTargetUpdateRequest.CredentialAction.CLEAR));
+        org.junit.jupiter.api.Assertions.assertNull(cleared.authToken());
+    }
+
     private static SinkTarget target(String name) {
         return SinkTarget.create(name, "HTTP", "https://example.test/ingest", null, true);
     }

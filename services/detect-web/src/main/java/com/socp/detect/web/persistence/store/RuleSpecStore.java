@@ -502,6 +502,12 @@ public class RuleSpecStore {
         return ids.isEmpty() ? List.of() : repo.lookup(tenant, ids);
     }
 
+    public Page<Map<String, Object>> byTechnique(String technique, int page, int size) {
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        return repo.byTechnique(tenant, "\n" + technique + "\n", "\n", PageRequest.of(page - 1, size));
+    }
+
     public List<String> activeTechniques() {
         String tenant = tenant();
         ensureTenantContent(tenant);

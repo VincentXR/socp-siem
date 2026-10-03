@@ -352,7 +352,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
     </div>
 
     <el-button v-if="showEditor" @click="router.push({ name: 'soar' })">{{ t('forms.back') }}</el-button>
-    <SoarEditor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-execute="soarAccess.canExecute.value" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id } })" />
+    <SoarEditor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-execute="soarAccess.canExecute.value" @automate="versionId => router.push({ name: 'soar', query: { tab: 'rules', versionId } })" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id } })" />
     <el-dialog v-model="chooseTemplate" :title="t('forms.selectTemplate')" width="640px" :close-on-click-modal="false">
       <el-button v-if="canWrite" type="primary" @click="openEditorForCreate">{{ t('forms.blank') }}</el-button>
       <div v-for="template in templates" :key="template.id" class="template-choice"><div><b>{{ template.name }}</b><p>{{ template.description }}</p></div><el-button v-if="canWrite" :loading="installingTemplateId === String(template.id)" :disabled="Boolean(installingTemplateId)" @click="installTemplate(String(template.id))">{{ t('soar.installDraft') }}</el-button></div>
@@ -417,7 +417,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
       <!-- 14.2 自动化规则 (Automation Rules) -->
       <el-tab-pane :label="t('soar.tabRules')" name="rules" lazy>
         <div class="soar-tab-content">
-          <SoarControlPlane section="rules" :hide-tabs="true" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-view-connections="soarAccess.canViewConnections.value" :can-operate="soarAccess.canOperate.value" />
+          <SoarControlPlane :initial-version-id="typeof route.query.versionId === 'string' ? route.query.versionId : undefined" section="rules" :hide-tabs="true" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-view-connections="soarAccess.canViewConnections.value" :can-operate="soarAccess.canOperate.value" />
         </div>
       </el-tab-pane>
 

@@ -41,6 +41,32 @@ SOAR's unversioned compatibility routes retain their historical 0-based
 `page`, `size`, `total`, `totalPages`, and `items` metadata; callers must use
 `totalPages` rather than inferring continuation from the returned item count.
 
+### Workbench workflow query and edit contracts
+
+- Alarm list and export accept the same optional `assignee`, `from`, and `to`
+  filters. Times are ISO-8601 instants, inclusive, evaluated against `occurredAt`;
+  reversed ranges are rejected. `status=ACTIVE` means OPEN or INVESTIGATING.
+  Owner matching is exact and joins disposition by both tenant and alarm ID.
+- `GET /notify-web/api/v1/dispatch-log?page=1&size=20&status=failed`
+  filters before paging/counting; omit status for all receipts.
+  `GET /notify-web/api/v1/channels/{id}` resolves an exact tenant channel.
+  Enabled channels receive the tenant's default alarm fan-out, not per-rule subscriptions.
+- `PUT /search-config/api/v1/outputs/{id}` accepts
+  `{target:{name,type,uri,authToken,enabled},credentialAction:"KEEP"|"REPLACE"|"CLEAR"}`.
+  KEEP preserves the stored secret; REPLACE requires a nonblank new secret; CLEAR
+  removes it. ID, source bindings and creation time stay unchanged; platform
+  targets cannot be edited. Responses remain redacted. Custom targets never
+  inherit the platform collector credential.
+- Output create/update supports only GLS_INGEST and HTTP (NDJSON POST).
+  Existing OPENSEARCH/KAFKA/SEARCH records remain readable, but rendering rejects
+  unsupported protocols. Edit to a real supported receiver and reapply collector
+  configuration; an OpenSearch `/_bulk` URL is not an NDJSON receiver.
+- `GET /detect-web/api/v1/rules/by-technique?technique=T1110&page=1&size=20`
+  returns paged compact rule metadata, with exact technique matching (not prefix
+  matching of sub-techniques), scoped by the service tenant; size is at most 100.
+- Daily report `byRule` entries add nullable `ruleId` for exact alarm pivots.
+  Historical archived entries without it remain displayable, not guessed from labels.
+
 ### Alarm list and export migration
 
 `GET /api/v1/alarms` is the canonical paged alarm read when `page` is supplied;

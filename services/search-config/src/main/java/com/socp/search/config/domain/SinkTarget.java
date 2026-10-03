@@ -8,7 +8,7 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * 输出目标——解析后的事件投递到哪（SEARCH ingest / OpenSearch / 任意 HTTP）。
+ * 输出目标——SEARCH ingest 或兼容当前 NDJSON 编码的 HTTP 接收器。
  * 空 id 的默认目标为 SEARCH 自身 ingest（渲染器兜底）。
  */
 public record SinkTarget(
@@ -17,7 +17,7 @@ public record SinkTarget(
         String name,
         @NotBlank @Size(max = 32)
         String type,
-        /** 完整 URL，如 http://localhost:18081/search-config/api/v1/ingest 或 http://os:9200/_bulk */
+        /** 完整 HTTP(S) URL；保留旧记录的反序列化兼容，写入和渲染入口拒绝不支持的协议。 */
         @NotBlank @Size(max = 2048)
         @Pattern(regexp = "(?i)^(https?|kafka|opensearch)://.*$")
         String uri,

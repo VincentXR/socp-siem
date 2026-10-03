@@ -34,6 +34,31 @@ abstract class AlarmTechniqueCountsContract {
     }
 
     @Test
+    void ownerAndTimeFiltersApplyBeforePagingAndCountingWithoutCrossTenantDispositionMatches() {
+        Instant at = Instant.parse("2026-09-01T12:00:00Z");
+        TenantContext.set("tenant-a");
+        Alarm mine = new Alarm("R1", "Rule", Severity.HIGH, "message", "entity");
+        mine.setTenantId("tenant-a"); mine.setSourceAlertId(UUID.randomUUID().toString()); mine.setOccurredAt(at); mine.setStatus("OPEN");
+        entityManager.persistAndFlush(mine);
+        var wrongTenant = new com.socp.alert.persistence.entity.DispositionEntity();
+        wrongTenant.setTenantId("tenant-b"); wrongTenant.setAlarmId(mine.getId()); wrongTenant.setAssignee("alice");
+        entityManager.persistAndFlush(wrongTenant);
+        var query = new com.socp.alert.domain.AlarmQuery(null, null, "ACTIVE", null,
+                com.socp.alert.domain.AlarmQuery.SortField.OCCURRED_AT, false).withScope("alice", at, at);
+        assertThat(repository.count("tenant-a", query)).isZero();
+        var disposition = new com.socp.alert.persistence.entity.DispositionEntity();
+        disposition.setTenantId("tenant-a"); disposition.setAlarmId(mine.getId()); disposition.setAssignee("alice");
+        entityManager.persistAndFlush(disposition);
+        assertThat(repository.page("tenant-a", query, org.springframework.data.domain.PageRequest.of(0, 1))
+                .getContent()).extracting(Alarm::getId).containsExactly(mine.getId());
+        assertThat(repository.count("tenant-a", query)).isEqualTo(1);
+        assertThat(repository.count("tenant-a", query.withScope("bob", at, at))).isZero();
+        assertThat(repository.count("tenant-a", query.withScope("alice", at.plusSeconds(1), null))).isZero();
+        mine.setStatus("CLOSED"); entityManager.flush();
+        assertThat(repository.count("tenant-a", query)).isZero();
+    }
+
+    @Test
     void countsBeyondOverviewSampleWithoutHydratingEntitiesOrCrossingTenantAndWindow() {
         Instant now = Instant.now();
         for (int i = 0; i < 151; i++) alarm("tenant-a", "T1110", now.minusSeconds(60));

@@ -29,6 +29,7 @@ public record ReportSummary(
                 Instant.now(), "unspecified", "unknown");
     }
 
-    public record RuleCount(String rule, int count) {
+    public record RuleCount(String rule, int count, String ruleId) {
+        public RuleCount(String rule, int count) { this(rule, count, null); }
     }
 }

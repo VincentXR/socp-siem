@@ -6,6 +6,7 @@ import com.socp.platform.error.exception.ApiException;
 import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.config.VectorProperties;
 import com.socp.search.config.domain.SinkTarget;
+import com.socp.search.config.api.request.SinkTargetUpdateRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -105,7 +106,30 @@ public class SinkTargetStore {
         });
     }
 
-    /** 平台回退元数据不可被租户删除；未知 id 不再写墓碑。 */
+    /** Stable identity and explicit credential intent keep existing source bindings intact. */
+    public SinkTarget update(String id, SinkTargetUpdateRequest request) {
+        return mutate(() -> {
+            SinkTarget existing = catalog.get(id);
+            if (existing == null || platformTarget(id) != null) {
+                throw ApiException.of(404, "Tenant output target not found");
+            }
+            var target = request.target();
+            String token = switch (request.credentialAction()) {
+                case KEEP -> existing.authToken();
+                case CLEAR -> null;
+                case REPLACE -> {
+                    if (target.authToken() == null || target.authToken().isBlank()) {
+                        throw ApiException.badRequest("Replacement credential must not be empty");
+                    }
+                    yield target.authToken();
+                }
+            };
+            return catalog.save(new SinkTarget(id, target.name(), target.type(), target.uri(),
+                    token, target.enabled(), existing.createdAt()));
+        });
+    }
+
+    /** Platform metadata is never tenant mutable. */
     public boolean delete(String id) {
         return platformTarget(id) == null && mutate(() -> catalog.delete(id));
     }
