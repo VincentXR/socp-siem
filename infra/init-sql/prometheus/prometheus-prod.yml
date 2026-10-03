@@ -1,0 +1,27 @@
+# Production-shaped Compose runs five servlet processes on container port 8080.
+# The gateway application port intentionally exposes health only.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+scrape_configs:
+  - job_name: search-config
+    metrics_path: /search-config/actuator/prometheus
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/socp_metrics_token
+    static_configs:
+      - targets: ["search-config-api:8080", "search-config-worker:8080"]
+  - job_name: detect-web
+    metrics_path: /detect-web/actuator/prometheus
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/socp_metrics_token
+    static_configs:
+      - targets: ["detect-web-api:8080", "detect-web-worker:8080"]
+  - job_name: alert-web
+    metrics_path: /alert-web/actuator/prometheus
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/socp_metrics_token
+    static_configs:
+      - targets: ["alert-web:8080"]

@@ -42,7 +42,6 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import sys
 import urllib.error
 import urllib.request
 from typing import Any, Iterable

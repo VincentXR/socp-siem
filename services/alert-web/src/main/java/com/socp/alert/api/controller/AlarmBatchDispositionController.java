@@ -39,6 +39,6 @@ public class AlarmBatchDispositionController {
         // materializing state for an alarm that does not exist.
         request.alarmIds().forEach(alarmService::get);
         return ApiResult.ok(dispositionService.batchUpdate(
-                request.alarmIds(), request.status(), request.assignee(), request.reason()));
+                request.alarmIds(), request.status(), request.assignee(), request.reason(), request.classification()));
     }
 }

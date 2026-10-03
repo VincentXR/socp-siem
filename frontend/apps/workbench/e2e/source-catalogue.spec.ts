@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { isWorkbenchBackendUrl } from './helpers'
+import { expectMobileNavigationClosed, isWorkbenchBackendUrl } from './helpers'
 
 test('source 501 is reachable through management paging and parse-rule name search', async ({ page }, testInfo) => {
   const unexpected: string[] = [], errors: string[] = [], sourceReads: Array<{ page: number; q: string }> = []
@@ -22,6 +22,9 @@ test('source 501 is reachable through management paging and parse-rule name sear
     if (path === '/auth/operators') {
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [] }) })
       return
+    }
+    if (path === '/api/v1/system/health') {
+      await route.fulfill({ json: { code: 0, message: 'OK', data: { status: 'up', services: {}, checkedAt: '2026-10-02T00:00:00Z' } } }); return
     }
     let data: unknown
     if (path === '/search-config/api/v1/sources') {
@@ -61,15 +64,16 @@ test('source 501 is reachable through management paging and parse-rule name sear
   await expect(page.getByRole('row').filter({ hasText: 'Deep Source' })).toBeVisible()
   expect(sourceReads.some(read => read.page === 1 && read.q === 'Deep')).toBe(true)
   await page.setViewportSize({ width: 390, height: 844 })
+  await expectMobileNavigationClosed(page)
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   const pagerBox = await pager.locator('..').boundingBox()
   const totalBox = await pager.locator('.el-pagination__total').boundingBox()
   expect(pagerBox && totalBox && totalBox.x >= pagerBox.x - 1
     && totalBox.x + totalBox.width <= pagerBox.x + pagerBox.width + 1).toBe(true)
-  await page.screenshot({ path: testInfo.outputPath('sources-page-mobile.png'), fullPage: true })
+  await page.screenshot({ path: testInfo.outputPath('sources-page-mobile.png'), fullPage: true, animations: 'disabled' })
 
   await page.goto('/ingest/parsers/rule-a/edit')
-  const sourceSelect = page.locator('.parser-workspace .el-form-item').filter({ hasText: 'Source' }).first().locator('.el-select')
+  const sourceSelect = page.locator('.parser-workspace .el-form-item').filter({ hasText: 'Parser applicability scope' }).first().locator('.el-select')
   await expect(sourceSelect).toContainText('Deep Source')
   const previousMatches = sourceReads.filter(read => read.q === 'Deep').length
   await sourceSelect.click()
@@ -77,7 +81,7 @@ test('source 501 is reachable through management paging and parse-rule name sear
   await expect.poll(() => sourceReads.filter(read => read.q === 'Deep' && read.page === 1).length).toBeGreaterThan(previousMatches)
   await expect(page.getByRole('option').filter({ hasText: 'Deep Source' })).toBeVisible()
   await page.goto('/ingest/parsers/new')
-  const newSourceSelect = page.locator('.parser-workspace .el-form-item').filter({ hasText: 'Source' }).first().locator('.el-select')
+  const newSourceSelect = page.locator('.parser-workspace .el-form-item').filter({ hasText: 'Parser applicability scope' }).first().locator('.el-select')
   const priorNewMatches = sourceReads.filter(read => read.q === 'Deep').length
   await newSourceSelect.click()
   await newSourceSelect.getByRole('combobox').fill('Deep')

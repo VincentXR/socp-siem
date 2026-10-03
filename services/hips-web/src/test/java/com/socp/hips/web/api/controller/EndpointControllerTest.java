@@ -71,7 +71,7 @@ class EndpointControllerTest {
 
     @Test
     void listReturnsPagedEnvelope() throws Exception {
-        given(store.page(1, 500, "")).willReturn(new org.springframework.data.domain.PageImpl<>(
+        given(store.page(1, 500, "", "")).willReturn(new org.springframework.data.domain.PageImpl<>(
                 List.of(
                         Endpoint.register("web01", "10.0.0.5", "Ubuntu 22.04", "falco-0.39"),
                         Endpoint.register("web02", "10.0.0.6", "Ubuntu 22.04", "falco-0.39")),
@@ -90,6 +90,19 @@ class EndpointControllerTest {
                 .andExpect(jsonPath("$.data.items[0].hostname").value("web01"))
                 .andExpect(jsonPath("$.data.items[0].status").value("ONLINE"))
                 .andExpect(jsonPath("$.data.items[0].agentVersion").value("falco-0.39"));
+    }
+
+    @Test
+    void listFiltersByEffectiveStatusAndRejectsUnsupportedStatus() throws Exception {
+        given(store.page(2, 20, "web", "OFFLINE")).willReturn(new org.springframework.data.domain.PageImpl<>(
+                List.of(), org.springframework.data.domain.PageRequest.of(1, 20), 20));
+        mvc.perform(get("/api/v1/endpoints").header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst").param("q", " web ").param("status", "OFFLINE")
+                        .param("page", "2").param("size", "20"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(20));
+        mvc.perform(get("/api/v1/endpoints").header(HttpHeaders.AUTHORIZATION, BEARER)
+                        .header("X-Role", "analyst").param("status", "ONLINE,OFFLINE"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test

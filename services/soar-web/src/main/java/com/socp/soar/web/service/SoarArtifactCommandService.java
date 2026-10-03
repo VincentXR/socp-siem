@@ -2,23 +2,23 @@ package com.socp.soar.web.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.soar.web.artifact.SoarArtifactStore;
-import com.socp.soar.web.persistence.entity.SoarArtifactEntity;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.persistence.entity.SoarNodeRunEntity;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
-import com.socp.soar.web.persistence.repository.SoarArtifactRepository;
+import com.socp.soar.web.persistence.entity.SoarArtifactEntity;
 import com.socp.soar.web.persistence.repository.SoarNodeRunRepository;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.socp.soar.web.persistence.repository.SoarArtifactRepository;
+import com.socp.soar.web.artifact.SoarArtifactStore;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
-
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
+import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Bounded artifact commands extracted from {@link SoarService}.  The facade
@@ -26,41 +26,46 @@ import java.util.UUID;
  * payload validation and object-store integrity checks.
  */
 final class SoarArtifactCommandService {
+    SoarArtifactCommandService(SoarNodeRunRepository nodes, ObjectMapper mapper, SoarReadModelMapper readModels,
+                SoarJson json, SoarRecords records, SoarEventWriter eventWriter) {
+        this.nodes = nodes;
+        this.mapper = mapper;
+        this.readModels = readModels;
+        this.json = json;
+        this.records = records;
+        this.eventWriter = eventWriter;
+    }
+
+    private final SoarEventWriter eventWriter;
+    private final SoarRecords records;
+    private final SoarJson json;
+    private final SoarReadModelMapper readModels;
 
     private static final Logger log = LoggerFactory.getLogger(SoarArtifactCommandService.class);
     private static final long MAX_ARTIFACT_BYTES = 10L * 1024 * 1024;
     private static final long INLINE_ARTIFACT_BYTES = 64L * 1024;
 
-    private final SoarService service;
     private final SoarNodeRunRepository nodes;
     private final ObjectMapper mapper;
     private SoarArtifactRepository artifacts;
     private SoarArtifactStore artifactStore;
 
-    SoarArtifactCommandService(SoarService service) {
-        this.service = service;
-        this.nodes = service.nodes;
-        this.mapper = service.mapper;
-        this.artifacts = service.artifacts;
-        this.artifactStore = service.artifactStore;
-    }
-
     void setArtifacts(SoarArtifactRepository artifacts) { this.artifacts = artifacts; }
     void setArtifactStore(SoarArtifactStore artifactStore) { this.artifactStore = artifactStore; }
 
-    private String tenant() { return service.tenant(); }
+    private String tenant() { return com.socp.platform.tenant.context.TenantContext.require(); }
     private static String actor() { return SoarService.actor(); }
     private static String limit(String value, int max) { return SoarService.limit(value, max); }
     private static ResponseStatusException error(HttpStatus status, String code, String message) {
         return SoarService.error(status, code, message);
     }
-    private Object redact(Object value) { return service.redact(value); }
-    private String write(Object value) { return service.write(value); }
-    private SoarRunEntity run(String id) { return service.run(id); }
-    private SoarArtifactEntity artifact(String id) { return service.artifact(id); }
-    private Map<String, Object> artifactView(SoarArtifactEntity value) { return service.artifactView(value); }
+    private Object redact(Object value) { return SoarRedaction.structured(value); }
+    private String write(Object value) { return json.write(value); }
+    private SoarRunEntity run(String id) { return records.run(id); }
+    private SoarArtifactEntity artifact(String id) { return records.artifact(id); }
+    private Map<String, Object> artifactView(SoarArtifactEntity value) { return readModels.artifactView(value); }
     private void appendEvent(String runId, String type, String actor, String summary, Map<String, Object> detail) {
-        service.appendEvent(runId, type, actor, summary, detail);
+        eventWriter.appendEvent(runId, type, actor, summary, detail);
     }
     private static String sha256(String value) { return SoarService.sha256(value); }
     private static String sha256(byte[] value) { return SoarService.sha256(value); }

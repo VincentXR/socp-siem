@@ -17,6 +17,7 @@ async function walk(directory) {
     else if (extensions.has(path.slice(path.lastIndexOf('.')))) {
       const source = await readFile(path, 'utf8')
       const name = relative(scriptRoot, path)
+      if (/\r\n/.test(source)) violations.push(`${name}: CRLF line endings; use LF`)
       const lines = source.split('\n')
       lines.forEach((line, index) => {
         if (/[ \t]+$/.test(line)) violations.push(`${name}:${index + 1}: trailing whitespace`)

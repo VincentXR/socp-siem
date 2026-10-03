@@ -42,6 +42,22 @@ class SinkTargetControllerTest {
                                 .content(target.replace("HTTP", protocol)))
                         .andExpect(status().isBadRequest());
             }
+            // Old flat payloads or missing intent must fail closed rather than clearing a saved secret.
+            mvc.perform(put("/api/v1/outputs/" + saved.id()).contentType(MediaType.APPLICATION_JSON)
+                            .content(target))
+                    .andExpect(status().isBadRequest());
+            for (String uri : java.util.List.of("https://user:secret@example.test/ingest", "https://example.test/ingest#fragment", "http:///missing-host")) {
+                String invalidTarget = target.replace("https://example.test/ingest", uri);
+                mvc.perform(put("/api/v1/outputs/" + saved.id()).contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"credentialAction\":\"KEEP\",\"target\":" + invalidTarget + "}"))
+                        .andExpect(status().isBadRequest());
+                mvc.perform(post("/api/v1/outputs/validate").contentType(MediaType.APPLICATION_JSON).content(invalidTarget))
+                        .andExpect(status().isBadRequest());
+            }
+            assertEquals("isolated-test-token", store.get(saved.id()).authToken());
+            mvc.perform(post("/api/v1/outputs/validate").contentType(MediaType.APPLICATION_JSON).content(target))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.valid").value(true))
+                    .andExpect(jsonPath("$.data.networkTested").value(false)).andExpect(jsonPath("$.data.writesEvent").value(false));
             assertEquals(1, store.list().size());
             TenantContext.set("tenant-b");
             mvc.perform(put("/api/v1/outputs/" + saved.id()).contentType(MediaType.APPLICATION_JSON)

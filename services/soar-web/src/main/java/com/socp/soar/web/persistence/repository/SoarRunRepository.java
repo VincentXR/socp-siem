@@ -52,6 +52,17 @@ public interface SoarRunRepository extends TenantScopedRepository<SoarRunEntity,
                                        @Param("createdFrom") Instant createdFrom,
                                        @Param("createdTo") Instant createdTo,
                                        Pageable pageable);
+    @Query("select r from SoarRunEntity r where r.tenantId = :tenant "
+            + "and (:alarmId is null or r.originAlarmId = :alarmId) "
+            + "and (:caseId is null or r.originCaseId = :caseId) "
+            + "and (:status is null or r.status = :status) "
+            + "and (:q is null or locate(:q, lower(r.id)) > 0 or exists "
+            + "(select p.id from SoarPlaybookEntity p where p.tenantId = :tenant and p.id = r.playbookId and locate(:q, lower(p.name)) > 0)) "
+            + "order by r.createdAt desc, r.id desc")
+    Page<SoarRunEntity> searchInvestigation(@Param("tenant") String tenant,
+            @Param("alarmId") String alarmId, @Param("caseId") String caseId,
+            @Param("status") String status, @Param("q") String q, Pageable pageable);
+
     /** One latest retained run per requested playbook, bounded by the catalog page. */
     @Query("select r from SoarRunEntity r where r.tenantId = :tenantId "
             + "and r.playbookId in :playbookIds "
@@ -61,6 +72,22 @@ public interface SoarRunRepository extends TenantScopedRepository<SoarRunEntity,
             + "or (newer.createdAt = r.createdAt and newer.id > r.id)))")
     List<SoarRunEntity> findLatestByTenantIdAndPlaybookIds(@Param("tenantId") String tenantId,
                                                         @Param("playbookIds") Collection<String> playbookIds);
+
+    @Query("select r.id as id, r.playbookId as playbookId, r.status as status, r.createdAt as createdAt from SoarRunEntity r where r.tenantId = :tenantId "
+            + "and r.playbookId in :playbookIds "
+            + "and not exists (select newer.id from SoarRunEntity newer "
+            + "where newer.tenantId = :tenantId and newer.playbookId = r.playbookId "
+            + "and (newer.createdAt > r.createdAt "
+            + "or (newer.createdAt = r.createdAt and newer.id > r.id)))")
+    List<LatestRunMetadata> findLatestMetadataByTenantIdAndPlaybookIds(@Param("tenantId") String tenantId,
+                                                        @Param("playbookIds") Collection<String> playbookIds);
+    interface LatestRunMetadata {
+        String getId();
+        String getPlaybookId();
+        String getStatus();
+        Instant getCreatedAt();
+    }
+
 
     List<SoarRunEntity> findTop100ByStatusOrderByUpdatedAtAsc(String status);
     @Query("select r from SoarRunEntity r where r.status = 'CANCELLING' "

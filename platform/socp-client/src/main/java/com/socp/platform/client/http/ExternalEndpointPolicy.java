@@ -31,12 +31,8 @@ public class ExternalEndpointPolicy {
     }
 
     /**
-     * 校验并把解析结果钉住到当前线程（默认外部出口配置）。
-     *
-     * <p>与 {@link #validate(String)} 相同的规则；通过后，直到 {@link PinnedEndpoint#close()}
-     * 为止，当前线程对该主机的任何 DNS 解析——包括 {@code java.net.http.HttpClient}
-     * 建连时的隐式解析——都只会返回已校验的地址，消除 validate-then-connect 的
-     * DNS 重绑定（TOCTOU）窗口。URL 保持原主机名，SNI 与证书域名校验不受影响。
+     * Validate and capture addresses. Callers must pass the snapshot to PinnedHttpTransport;
+     * thread-local compatibility resolution does not secure JDK HttpClient worker threads.
      */
     public PinnedEndpoint validatePinned(String rawUrl) {
         return validatePinned(rawUrl, properties.getExternalAllowedHosts(),

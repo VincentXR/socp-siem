@@ -1,6 +1,13 @@
-{{- $runtimeConfig := deepCopy .Values.runtime.config | mergeOverwrite .Values.runtime.extraConfig }}
+{{- $runtimeConfig := mergeOverwrite (deepCopy .Values.runtime.config) .Values.runtime.extraConfig }}
 {{- if hasKey $runtimeConfig "SOCP_AUTH_SIGNING_JWK" }}
 {{- fail "SOCP_AUTH_SIGNING_JWK must never be placed in runtime.config or runtime.extraConfig; use runtime.gatewaySigningSecret" }}
+{{- end }}
+{{- range $name, $workload := .Values.workloads }}
+{{- range $key, $_ := ($workload.secretEnv | default dict) }}
+{{- if hasKey $runtimeConfig $key }}
+{{- fail (printf "%s must be supplied through workload secretEnv, never the shared ConfigMap" $key) }}
+{{- end }}
+{{- end }}
 {{- end }}
 apiVersion: v1
 kind: ConfigMap

@@ -24,6 +24,10 @@ test('situation retains failed metrics and keeps the stream pause separate from 
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ code: 503, message: `${failEngine && path.includes('/detect-web') ? 'Engine' : 'Ingest'} unavailable` }) })
       return
     }
+    if (path === '/api/v1/system/health') {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 0, data: { status: 'up', services: { 'detect-web': 'up' }, checkedAt: new Date().toISOString() } }) })
+      return
+    }
     let data: unknown
     if (path === '/alert-web/api/alarms/stats') data = { total: 12, bySeverity: {}, trend7d: {}, topRules: [], byRiskLevel: { HIGH: 3 }, avgRisk: 68, topRisk: [] }
     else if (path === '/detect-web/api/v1/stats') data = { rules: 2, eventCount: 91, alertCount: 7, dropCount: 2, suppressedCount: 4, queueLoad: 0.3 }

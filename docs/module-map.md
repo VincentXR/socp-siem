@@ -32,15 +32,15 @@ tests and artifact checks are under `frontend/apps/workbench/scripts`.
 | `detect-web` (`detect-web-api` + `detect-web-worker` in prod) | 18082 (API) | Rule CRUD, hot reload, detection, backpressure, partition restore, shared entity risk, durable Alert Web hand-off, and secondary alert analysis | Detection H2/PG + independent secondary-analysis H2/PG/Flyway persistence unit + in-process hot engine + journal/outbox/risk projections |
 | `alert-web` | 18080 | Alert facts, enrichment, disposition, idempotency, and Alert Outbox | PostgreSQL |
 | `incident-web` | 18097 | Incident creation, merge, and timeline | PostgreSQL |
-| `soar-web` | 18083 | Playbook CRUD and execution | H2 + durable execution projection + optional Temporal |
+| `soar-web` | 18083 | Playbook CRUD and execution | H2/PG + durable execution projection + Temporal (required in prod) |
 | `report-web` | 18084 | Daily and trend reporting | ClickHouse + optional MinIO |
 | `soc-base` | 18086 | Tenant, overview, compliance, and audit views | PostgreSQL |
 | `threat-web` | 18094 | IOC and threat-intelligence lookup | PostgreSQL |
-| `attack-web` | 18095 | ATT&CK catalog and detection coverage | H2 |
-| `notify-web` | 18096 | Notification channels and delivery records | H2 |
-| `asset-web` | 18085 | Asset inventory, imports, and asset collection ingress | H2 |
-| `hips-web` | 18087 | Endpoint registration, heartbeat state, and event ingress | H2 |
-| `ai-assistant` | 18088 | Evidence-bounded investigation with deterministic fallback and optional LLM analysis | H2 + optional external LLM |
+| `attack-web` | 18095 | ATT&CK catalog and detection coverage | H2/PG |
+| `notify-web` | 18096 | Notification channels and delivery records | H2/PG |
+| `asset-web` | 18085 | Asset inventory, imports, and asset collection ingress | H2/PG |
+| `hips-web` | 18087 | Endpoint registration, heartbeat state, and event ingress | H2/PG |
+| `ai-assistant` | 18088 | Evidence-bounded investigation with deterministic fallback and optional LLM analysis | H2/PG + optional external LLM |
 
 The services with `application-integration.yml` import their
 `application-pg.yml` overlay when the `integration` profile is active. Flyway

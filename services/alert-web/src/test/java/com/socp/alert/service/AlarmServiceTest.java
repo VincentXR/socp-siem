@@ -235,16 +235,16 @@ class AlarmServiceTest {
         Alarm fresh = new Alarm("AUTH-PRIVESC", "Privilege escalation", Severity.HIGH,
                 "fresh", "host-fresh");
         fresh.setAlertCreatedAt(Instant.parse("2026-08-19T14:00:00Z"));
-        given(repository.list(org.mockito.ArgumentMatchers.eq("tenant-a"),
-                org.mockito.ArgumentMatchers.any(AlarmQuery.class)))
-                .willReturn(List.of(legacy, fresh));
+        given(repository.page(org.mockito.ArgumentMatchers.eq("tenant-a"),
+                org.mockito.ArgumentMatchers.any(AlarmQuery.class), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class)))
+                .willReturn(new org.springframework.data.domain.PageImpl<>(List.of(legacy, fresh)));
 
-        List<Alarm> result = new AlarmQueryService(repository).query(null, null, null, null,
-                "alertCreatedAt", "descending");
+        List<Alarm> result = new AlarmQueryService(repository).page(null, null, null, null,
+                "alertCreatedAt", "descending", 1, 20).getContent();
 
         assertEquals(List.of(legacy, fresh), result);
         ArgumentCaptor<AlarmQuery> query = ArgumentCaptor.forClass(AlarmQuery.class);
-        verify(repository).list(org.mockito.ArgumentMatchers.eq("tenant-a"), query.capture());
+        verify(repository).page(org.mockito.ArgumentMatchers.eq("tenant-a"), query.capture(), org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class));
         assertEquals(AlarmQuery.SortField.ALERT_CREATED_AT, query.getValue().sort());
         assertEquals(false, query.getValue().ascending());
     }

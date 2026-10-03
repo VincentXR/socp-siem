@@ -123,8 +123,8 @@ Vector transform
 ```
 
 Enabled FILE sources require a nonblank path, and SOCKET/SYSLOG require a
-listen address. KAFKA requires a topic (the current generated collector uses
-its deployment's `kafka:9092` broker). Disabled configurations may remain drafts;
+listen address. KAFKA requires a topic and explicit reachable bootstrap servers;
+the renderer does not silently assume a deployment broker. Disabled configurations may remain drafts;
 enabling and rendering validate them again. The workbench sample parse is a
 non-ingesting preview: it does not prove the remote collector is running or
 trigger detection. After saving, validate and manually apply the generated

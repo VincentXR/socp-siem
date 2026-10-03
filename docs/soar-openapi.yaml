@@ -148,10 +148,14 @@ paths:
         - {name: requestedBy, in: query, schema: {type: string}}
         - {name: createdFrom, in: query, schema: {type: string, format: date-time}}
         - {name: createdTo, in: query, schema: {type: string, format: date-time}}
-      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+        - {name: alarmId, in: query, schema: {type: string, maxLength: 255}, description: Exact tenant-scoped originating alarm ID}
+        - {name: caseId, in: query, schema: {type: string, maxLength: 255}, description: Exact tenant-scoped originating case ID}
+        - {name: q, in: query, schema: {type: string, maxLength: 255}, description: Literal case-insensitive run ID or playbook name search}
+      description: Investigation alarmId/caseId/q filters may combine with status but not playbookVersionId/triggerType/requestedBy/createdFrom/createdTo. Run projections include originAlarmId and originCaseId when known.
+      responses: {'200': {$ref: '#/components/responses/ApiResult'}, '400': {$ref: '#/components/responses/Error'}}
     post:
       tags: [Runs]
-      description: Accepts a published version and returns 202. requestId is idempotent per tenant.
+      description: Accepts a published version and returns 202. requestId is idempotent per tenant and bound to version, subject and inputs; different content with the same key returns 409. When the immutable version declares inputSchema, inputs must satisfy it before a run or dispatch is written.
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RunRequest'}}}}
       responses: {'202': {$ref: '#/components/responses/ApiResult'}, '200': {description: Existing idempotent run}, '409': {$ref: '#/components/responses/Error'}}
   /api/runs/{runId}/events:
@@ -468,7 +472,18 @@ components:
     RunRequest:
       type: object
       required: [requestId, playbookVersionId]
-      properties: {requestId: {type: string, maxLength: 128}, playbookVersionId: {type: string}, subject: {type: object}, inputs: {type: object}}
+      properties:
+        requestId: {type: string, maxLength: 128}
+        playbookVersionId: {type: string}
+        subject:
+          type: object
+          maxProperties: 8
+          properties:
+            type: {type: string}
+            id: {type: string, maxLength: 255}
+            alarmId: {type: string, maxLength: 255}
+            caseId: {type: string, maxLength: 255}
+        inputs: {type: object, description: Validated against the selected immutable version's optional inputSchema}
     EventEnvelope:
       type: object
       required: [schemaVersion, eventId, eventType, tenantId, occurredAt, producer, subject, data, trace]

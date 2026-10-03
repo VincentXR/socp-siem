@@ -62,3 +62,6 @@ tooling/
 # ---- Python 缓存 ----
 __pycache__/
 *.pyc
+
+# Local Prometheus authentication material
+infra/secrets/

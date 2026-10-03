@@ -70,10 +70,12 @@ class SoarConnectorCoverageTest {
     @BeforeEach
     void setUp() {
         TenantContext.set("tenant-a");
+        var secretProperties = new com.socp.soar.web.config.SoarSecretProperties();
+        secretProperties.setTenantGrants("{\"tenant-a\":[\"secret://vault/soar/edr\"]}");
         service = new SoarConnectorService(connectors, mapper,
                 new SoarConnectorRegistry(alert, incident, notify, search, threat, http,
                         new EnvironmentSecretResolver(), mapper),
-                new EnvironmentSecretResolver(), versions);
+                new EnvironmentSecretResolver(secretProperties), versions);
     }
 
     @AfterEach
@@ -209,7 +211,7 @@ class SoarConnectorCoverageTest {
         assertThatThrownBy(() -> service.create("Uploaded", "http.webhook", "https://hooks.example.com/x",
                 "s3cr3t-inline-value", List.of("hooks.example.com"), true))
                 .isInstanceOf(ResponseStatusException.class)
-                .hasMessageContaining("authSecretRef must be a secret:// reference");
+                .hasMessageContaining("SOAR_SECRET_REFERENCE_FORBIDDEN");
     }
 
     @Test

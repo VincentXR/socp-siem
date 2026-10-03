@@ -3,6 +3,7 @@ package com.socp.asset.web.api.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.asset.web.domain.Asset;
 import com.socp.asset.web.persistence.store.AssetStore;
+import com.socp.asset.web.persistence.store.AssetCollectionStore;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.http.SocpHttpClient;
 import com.socp.platform.client.service.SocpService;
@@ -44,17 +45,20 @@ class AssetCollectionControllerTest {
     private AssetStore store;
 
     @MockitoBean
+    private AssetCollectionStore collectionStore;
+
+    @MockitoBean
     private SocpHttpClient http;
 
     @Test
     void collectionPersistsInOwningDomainAndForwardsCanonicalTenant() throws Exception {
         Asset saved = Asset.create("web-03", "SERVER", "10.0.0.30", "Linux", "sec", "HIGH");
-        given(store.upsertByIp(org.mockito.ArgumentMatchers.any(Asset.class))).willReturn(saved);
+        given(collectionStore.upsertByIp(org.mockito.ArgumentMatchers.any(Asset.class))).willReturn(saved);
         given(store.count()).willReturn(1L);
         given(http.post(eq(SocpService.SEARCH), eq("/api/v1/ingest"),
                 org.mockito.ArgumentMatchers.anyString(), eq(SocpHttpClient.NDJSON), eq(5000)))
                 .willReturn(new ServiceCall(SocpService.SEARCH, "http://search", true, 202,
-                        "accepted", null, 1, false, 1));
+                        "{\"code\":0,\"data\":{\"accepted\":1,\"persisted\":1,\"acknowledged\":1,\"parseFailed\":0,\"quarantined\":0,\"skipped\":0}}", null, 1, false, 1));
 
                 mvc.perform(post("/api/v1/collect")
                         .header("Authorization", "Bearer test-token")
@@ -71,6 +75,27 @@ class AssetCollectionControllerTest {
 
         verify(http).post(eq(SocpService.SEARCH), eq("/api/v1/ingest"),
                 contains("\"tenantId\":\"tenant-a\""), eq(SocpHttpClient.NDJSON), eq(5000));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+        "{\"code\":4294967296,\"data\":{\"accepted\":1,\"persisted\":1,\"acknowledged\":1,\"parseFailed\":0,\"quarantined\":0,\"skipped\":0}}",
+        "{\"code\":0,\"data\":{\"accepted\":1,\"persisted\":1,\"acknowledged\":1,\"parseFailed\":0,\"quarantined\":0,\"skipped\":0}} {}",
+        "{\"code\":500,\"code\":0,\"data\":{\"accepted\":1,\"persisted\":1,\"acknowledged\":1,\"parseFailed\":0,\"quarantined\":0,\"skipped\":0}}",
+        "{}", "<html>ok</html>", "{\"code\":500,\"data\":{\"accepted\":1}}",
+        "{\"code\":0,\"data\":{\"accepted\":0,\"persisted\":0,\"acknowledged\":1,\"parseFailed\":1,\"quarantined\":1,\"skipped\":0}}",
+        "{\"code\":0,\"data\":{\"accepted\":2,\"persisted\":2,\"acknowledged\":2,\"parseFailed\":0,\"quarantined\":0,\"skipped\":0}}",
+        "{\"code\":0,\"data\":{\"accepted\":1}}"
+    })
+    void transportSuccessDoesNotInventExactAdmission(String body) throws Exception {
+        given(collectionStore.upsertByIp(org.mockito.ArgumentMatchers.any(Asset.class)))
+                .willReturn(Asset.create("fixture", "SERVER", "203.0.113.9", "Linux", "sec", "HIGH"));
+        given(http.post(eq(SocpService.SEARCH), eq("/api/v1/ingest"), org.mockito.ArgumentMatchers.anyString(),
+                eq(SocpHttpClient.NDJSON), eq(5000))).willReturn(new ServiceCall(SocpService.SEARCH, "http://search", true, 200, body, null, 1, false, 1));
+        mvc.perform(post("/api/v1/collect").header("Authorization", "Bearer test-token").header("X-Role", "analyst").header("X-Tenant-Id", "tenant-a")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"fixture\",\"ip\":\"203.0.113.9\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.accepted").value(true))
+                .andExpect(jsonPath("$.data.forwarded").value(false));
     }
 
     @Test

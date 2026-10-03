@@ -26,6 +26,22 @@ class AuthSessionApplicationTest {
 
     @Autowired
     private WebTestClient client;
+    @Autowired private AuthController auth;
+
+    @Test
+    void viewerCanLogoutOwnSessionOnlyWithApprovedCookieOrigin() {
+        String token = auth.sign("viewer", "viewer", "tenant-a", "en-US");
+        client.post().uri("/auth/logout").cookie(AuthController.SESSION_COOKIE, token)
+                .header(HttpHeaders.ORIGIN, "https://attacker.invalid").exchange().expectStatus().isForbidden();
+        client.get().uri("/auth/session").cookie(AuthController.SESSION_COOKIE, token)
+                .exchange().expectStatus().isOk();
+        client.post().uri("/auth/logout").cookie(AuthController.SESSION_COOKIE, token)
+                .header(HttpHeaders.ORIGIN, "http://localhost:5173").exchange().expectStatus().isNoContent()
+                .expectHeader().value(HttpHeaders.SET_COOKIE, value ->
+                        org.assertj.core.api.Assertions.assertThat(value).contains("Max-Age=0"));
+        client.get().uri("/auth/session").cookie(AuthController.SESSION_COOKIE, token)
+                .exchange().expectStatus().isUnauthorized();
+    }
 
     @Test
     void rejectsMissingCredentialsAndForgedIdentityHeaders() {

@@ -197,7 +197,7 @@ class SoarConnectorRegistryBranchCoverageTest {
         ConnectionContext context = new ConnectionContext("tenant-a", "conn-1", 1, "http.webhook",
                 "https://hooks.example.test/x", Map.of(), Map.of("auth", "vault://token"), secrets,
                 Duration.ofSeconds(5));
-        given(secrets.resolve("vault://token")).willReturn(Optional.of("tok"));
+        given(secrets.resolveForTenant("tenant-a", "vault://token")).willReturn(Optional.of("tok"));
         given(http.getExternalOnce(eq("https://hooks.example.test/x"), anyInt(),
                 eq(Map.of("Authorization", "Bearer tok")), any()))
                 .willReturn(ok("{}"));
@@ -211,7 +211,7 @@ class SoarConnectorRegistryBranchCoverageTest {
     void webhookExecuteSerializesParametersAndMapsExternalReceipt() {
         ConnectionContext context = new ConnectionContext("tenant-a", "conn-1", 1, "http.webhook",
                 "https://hooks.example.test/x", Map.of(), Map.of(), secrets, Duration.ofSeconds(5));
-        given(http.postExternal(eq("https://hooks.example.test/x"), eq("{}"), eq(SocpHttpClient.JSON),
+        given(http.postExternalOnce(eq("https://hooks.example.test/x"), eq("{}"), eq(SocpHttpClient.JSON),
                 anyInt(), any(), any()))
                 .willReturn(ok("{\"operationId\":\"op-1\"}"));
 

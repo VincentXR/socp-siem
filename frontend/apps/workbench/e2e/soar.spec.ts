@@ -86,6 +86,10 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [{ id: role }] }) })
       return
     }
+    if (url.pathname === '/api/v1/system/health') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: envelope({ status: 'up', services: {}, checkedAt: '2026-10-02T00:00:00Z' }) })
+      return
+    }
     if (!url.pathname.startsWith('/soar-web/')) {
       state.unknown.push(`${request.method()} ${url.pathname}`)
       await route.abort()
@@ -119,6 +123,8 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst
       state.versions[playbook.id] = []
       data = playbook
       status = 201
+    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 4 && state.playbooks.some(playbook => playbook.id === parts[3])) {
+      data = state.playbooks.find(playbook => playbook.id === parts[3])
     } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 5 && parts[4] === 'versions') {
       data = state.versions[parts[3]] || []
     } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 5 && parts[4] === 'versions') {
@@ -244,6 +250,9 @@ test('SOAR workbench covers draft lifecycle, run inspection and human controls',
   await expect(queueDialog.getByRole('button', { name: 'Accept and queue' })).toBeEnabled()
   await queueDialog.getByLabel('Inputs JSON').fill('{"eventId":"browser-queued","eventType":"manual.test"}')
   await queueDialog.getByRole('button', { name: 'Accept and queue' }).click()
+  const executeConfirm = page.locator('.el-message-box')
+  await expect(executeConfirm).toContainText('Live execution: revision')
+  await executeConfirm.getByRole('button', { name: /Confirm|确认/ }).click()
   await expect(page.locator('.soar-queue-message')).toContainText('run-browser-queued')
   await expect(page.locator('.soar-stream-state')).toHaveClass(/polling/)
   await page.getByRole('button', { name: /Open in visual editor|在可视化编辑器中打开/ }).click()
@@ -293,6 +302,9 @@ test('SOAR run queue reports an explicit permission denial', async ({ page }) =>
   const queueDialog = page.getByRole('dialog', { name: 'Queue a published playbook run' })
   await expect(queueDialog.getByRole('button', { name: 'Accept and queue' })).toBeEnabled()
   await queueDialog.getByRole('button', { name: 'Accept and queue' }).click()
+  const executeConfirm = page.locator('.el-message-box')
+  await expect(executeConfirm).toContainText('Live execution: revision')
+  await executeConfirm.getByRole('button', { name: /Confirm|确认/ }).click()
   await expect(queueDialog.getByRole('alert')).toContainText('SOAR execute permission required')
   expect(state.unknown).toEqual([])
 })
@@ -437,8 +449,34 @@ test('SOAR catalog reaches later pages and retains truthful run history through 
   await page.getByRole('tab', { name: 'Runs', exact: true }).click()
   await expect(page.locator('.soar-run-summary')).toContainText('run-1')
   await page.getByRole('tab', { name: 'Playbooks', exact: true }).click()
+  await expect(page).toHaveURL(url => url.searchParams.get('tab') === 'playbooks' && url.searchParams.get('runId') === 'run-1')
   await expect(catalog.locator('.soar-playbook-name').first()).toHaveText('Catalog playbook 125')
   await pager.getByRole('button', { name: 'Previous', exact: true }).click()
   await expect(catalog.locator('.soar-playbook-name').first()).toHaveText('Catalog playbook 100')
   expect(state.unknown).toEqual([])
+})
+
+
+test('SOAR editor route switches invalidate delayed version loads before any save can target the new identity', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  const state = await installSoarMocks(page, 'admin')
+  state.playbooks.push({ ...EXISTING_PLAYBOOK, id: 'pb-second', name: 'Second playbook' })
+  state.versions['pb-existing'] = [{ ...EXISTING_VERSION, status: 'DRAFT' }]
+  state.versions['pb-second'] = [{ ...EXISTING_VERSION, id: 'ver-second', playbookId: 'pb-second', status: 'DRAFT', definition: { ...SIMPLE_DEFINITION, nodes: [{ ...SIMPLE_DEFINITION.nodes[0], name: 'Second identity' }, SIMPLE_DEFINITION.nodes[1]] } }]
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/soar-web/api/playbooks/pb-existing/versions/1', async route => {
+    if (route.request().method() === 'GET') await gate
+    await route.fallback()
+  })
+  try {
+    await page.goto('/soar/playbooks/pb-existing/edit')
+    await page.getByRole('button', { name: 'Back to list', exact: true }).click()
+    await page.locator('tr').filter({ hasText: 'Second playbook' }).getByRole('button', { name: 'View', exact: true }).click()
+    await expect(page.locator('.vue-flow__node[data-id="start"]')).toContainText('Second identity')
+    release()
+    await expect(page.locator('.vue-flow__node[data-id="start"]')).toContainText('Second identity')
+    await expect(page.getByRole('button', { name: 'Save draft' })).toBeDisabled()
+    expect(state.requests.filter(request => request.method === 'PUT')).toEqual([])
+  } finally { release() }
 })

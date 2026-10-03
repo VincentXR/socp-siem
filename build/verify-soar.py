@@ -118,7 +118,13 @@ def main() -> int:
     graph_validator = read("services/soar-web/src/main/java/com/socp/soar/web/definition/SoarGraphValidator.java")
     manual_validator = read("services/soar-web/src/main/java/com/socp/soar/web/definition/SoarManualFormValidator.java")
     check("SOAR query projections are isolated", "final class SoarQueryService" in query_service
-          and "new SoarQueryService(this)" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java"))
+          and "new SoarQueryService(playbooks," in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarService.java")
+          and "SoarService owner" not in query_service and "SoarService service" not in query_service)
+    helpers = ["SoarPlaybookCommandService", "SoarRunCommandService", "SoarArtifactCommandService",
+               "SoarApprovalCommandService", "SoarOutboxCommandService", "SoarDefinitionPolicy", "SoarQueryService"]
+    check("SOAR helpers have no owning facade dependency", all(
+        not re.search(r"SoarService\s+(?:owner|service)", read(
+            f"services/soar-web/src/main/java/com/socp/soar/web/service/{helper}.java")) for helper in helpers))
     check("SOAR automation matching and event normalization are isolated",
           "final class SoarAutomationRuleMatcher" in matcher
           and "matcher.normalizeEvent" in read("services/soar-web/src/main/java/com/socp/soar/web/service/SoarAutomationRuleService.java"))

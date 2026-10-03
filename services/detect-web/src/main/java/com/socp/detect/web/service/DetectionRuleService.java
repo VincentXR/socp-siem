@@ -40,6 +40,11 @@ final class DetectionRuleService {
         return store.search(page, size, keyword, status, reference, alias);
     }
 
+    org.springframework.data.domain.Page<Map<String, Object>> searchRulesByTechnique(int page, int size, String keyword, String status,
+            String reference, String alias, String technique) {
+        return store.searchTechnique(page, size, keyword, status, reference, alias, technique);
+    }
+
     Page<Map<String, Object>> ruleOptions(int page, int size, String keyword) {
         return store.options(page, size, keyword);
     }

@@ -26,7 +26,7 @@ and sections needed for the current change.
 
 - [API compatibility](api-contract.md)
 - [Tenant isolation](tenant-isolation.md)
-- [Hardening and evidence](hardening-evidence.md)
+- [Hardening and evidence](production-readiness.md#hardening-and-evidence-contract)
 - [Idempotency](idempotency-contract.md)
 - [Endpoint forwarding and recovery](operations/endpoint-forwarding.md)
 - [Event-path observability and tracing](observability-stage-metrics.md)

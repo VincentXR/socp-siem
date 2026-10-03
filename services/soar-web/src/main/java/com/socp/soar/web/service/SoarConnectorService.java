@@ -19,7 +19,6 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
-
 import java.net.InetAddress;
 import java.net.URI;
 import java.time.Instant;
@@ -91,8 +90,8 @@ public class SoarConnectorService {
         }
         validateAllowedHosts(allowedHosts);
         validateEndpoint(endpoint, allowedHosts);
-        if (secretRef != null && !secretRef.isBlank() && !validSecretRef(secretRef)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "authSecretRef must be a secret:// reference");
+        if (secretRef != null && !secretRef.isBlank() && !secrets.isAuthorized(tenant, secretRef.trim())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "SOAR_SECRET_REFERENCE_FORBIDDEN: secret reference is not granted to this tenant");
         }
         Instant now = Instant.now();
         SoarConnectorEntity row = new SoarConnectorEntity();
@@ -185,8 +184,8 @@ public class SoarConnectorService {
         }
         validateAllowedHosts(allowedHosts);
         validateEndpoint(endpoint, allowedHosts);
-        if (secretRef != null && !secretRef.isBlank() && !validSecretRef(secretRef)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "authSecretRef must be a secret:// reference");
+        if (secretRef != null && !secretRef.isBlank() && !secrets.isAuthorized(tenant, secretRef.trim())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "SOAR_SECRET_REFERENCE_FORBIDDEN: secret reference is not granted to this tenant");
         }
         row.setName(name.trim()); row.setConnectorType(type.trim().toUpperCase()); row.setEndpoint(endpoint.trim());
         // A missing secret field means "leave the existing reference" for
@@ -478,10 +477,6 @@ public class SoarConnectorService {
         Map<String, Object> out = new LinkedHashMap<>();
         readStringMap(value).forEach((key, ref) -> out.put(key, ref == null ? "" : "[REFERENCE]"));
         return out;
-    }
-
-    private static boolean validSecretRef(String value) {
-        return value != null && value.matches("secret://[A-Za-z_][A-Za-z0-9_./-]{0,254}");
     }
 
     private void requireControlPlane() {

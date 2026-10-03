@@ -44,11 +44,19 @@ SOAR's unversioned compatibility routes retain their historical 0-based
 ### Workbench workflow query and edit contracts
 
 - Alarm list and export accept the same optional `assignee`, `from`, and `to`
-  filters. Times are ISO-8601 instants, inclusive, evaluated against `occurredAt`;
-  reversed ranges are rejected. `status=ACTIVE` means OPEN or INVESTIGATING.
-  Owner matching is exact and joins disposition by both tenant and alarm ID.
+  filters. Times are ISO-8601 instants evaluated against `occurredAt`; reversed
+  ranges are rejected. Plain assignee/time queries retain inclusive endpoints.
+  Investigation queries using `owner`, `entity`, `technique`, or `severityGroup`
+  retain the half-open `[from,to)` window. Filter families may be combined;
+  an investigation filter selects the half-open contract for that request.
+  `status=ACTIVE` means OPEN or INVESTIGATING using the effective disposition.
+  Exact `assignee` and `owner=mine|unassigned` restrictions are both honored,
+  and disposition joins include the tenant and alarm ID.
 - `GET /notify-web/api/v1/dispatch-log?page=1&size=20&status=failed`
-  filters before paging/counting; omit status for all receipts.
+  filters before paging/counting, with exact `alarmId` and channel-name filters.
+  Results use stable `createdAt,id` descending ordering and default size 20.
+  Status accepts `sent`, `logged`, `failed`, `unknown`, `pending`, `requeued`,
+  or `skipped`; unknown nonblank values are rejected. Omit status for all receipts.
   `GET /notify-web/api/v1/channels/{id}` resolves an exact tenant channel.
   Enabled channels receive the tenant's default alarm fan-out, not per-rule subscriptions.
 - `PUT /search-config/api/v1/outputs/{id}` accepts
@@ -507,3 +515,43 @@ conflicts at most five times. An update that loses a race with deletion returns
 404 instead of recreating the row. Concurrent edits to different mutable
 properties of the same item still use last-writer-wins; the API does not yet
 expose a conditional version or ETag.
+
+
+### Case analyst workspace commands
+
+`GET /incident-web/api/v1/incidents` accepts `queue=mine|unassigned` in addition
+ to the existing `q`, `status`, `page` and `size` filters. `mine` is resolved from
+ the authenticated principal; the caller cannot supply a different queue owner.
+ Case metadata includes `rowVersion` for optimistic conflict checks.
+
+- `POST /incidents/{id}/changes` accepts JSON `status`, optional `assignee`,
+  `expectedVersion`, and `idempotencyKey`. An omitted assignee preserves the
+  current owner; an empty string releases ownership. Moving into `RESOLVED` or
+  `CLOSED` requires `classification` (`TRUE_POSITIVE`, `FALSE_POSITIVE`, `BENIGN`,
+  or `INCONCLUSIVE`), `result`, `reason`, `evidence`, and `remainingActions`.
+- `POST /incidents/{id}/claim` accepts `expectedVersion` and `idempotencyKey`;
+  the authenticated actor becomes the owner only if the case is unassigned or
+  already theirs. It never silently takes another analyst's case.
+- JSON `POST /incidents/{id}/notes` accepts `content` and `idempotencyKey`.
+  The legacy query-parameter note route remains available to service callers.
+- Command responses include `case`, `changed`, and `duplicate`. A stale version
+  or reuse of a key for another actor/operation/payload returns HTTP 409. A replay
+  returns current metadata without reapplying an earlier command, including a
+  command that originally made no change. Keys are scoped to tenant and case.
+- Versioned workspace commands lock the tenant's case row and persist metadata,
+  append-only actor/history and replay receipts in one transaction, joining the
+  existing transactional audit outbox boundary. Case closure does not implicitly
+  change linked alarm dispositions. Migration V9 adds `t_case_mutation` and the
+  owner-queue index. Receipts are retained with the case; pruning them separately
+  would end the corresponding idempotency guarantee.
+
+The paths above use the `/incident-web/api/v1` prefix. Existing status/assignee
+ service integrations remain compatible; new interactive clients should use the
+ versioned workspace commands. On conflict the workbench keeps unsaved input and
+ offers a confirmed reload so the analyst can review newer state before retrying.
+
+`GET /incidents/{id}/export` downloads a bounded JSON summary with metadata,
+ up to 500 timeline entries and up to 500 alarm/rule references each. Explicit
+ totals and `truncated` describe omissions; raw evidence is not embedded. The
+ all-case export remains a bounded metadata archive. Exports use a consistent
+ read snapshot and private/no-store caching, and require an analyst/admin role.

@@ -24,6 +24,41 @@ Alarm evidence links carry their event query directly and use `range=all`,
 so historical evidence is not hidden by the default recent-time window.
 Search controls precede the field dictionary on narrow screens.
 
+## Analyst investigation and response
+
+Alarm links preserve the selected alarm, drawer tab, filters, and return route.
+Exact entity, rule and ATT&CK technique pivots are tenant-scoped server filters;
+`severityGroup=high` means HIGH plus CRITICAL and cannot be combined with an
+individual `severity`. Alarm time filters use inclusive `from` and exclusive
+`to`. Current owner/status come from disposition state, including status sort
+and export. Claim uses the authenticated actor. Analyst single/batch closure
+requires a classification and reason/evidence; replay must preserve notes and
+tags. False-positive feedback has its own explicit expiry and is separate from
+closing an alarm.
+
+Search supports `range=custom` with UTC `from`/`to`. AI-suggested SPL uses the
+`draft` query key, so navigation alone does not execute generated queries.
+Citations resolve through known same-origin evidence APIs, never arbitrary
+model-generated URLs. An AI investigation URL can carry `jobId` to resume
+polling without creating duplicate work; an old result cannot replace a newer
+alarm selection. A completed analysis is not proof of containment.
+
+The published response picker is separate from the playbook builder. Live
+execution shows the immutable version, origin alarm/case, declared effects,
+policy and exactly the inputs it submits. JSON Schema defaults and explicitly
+declared context fields are materialized into the displayed form. Invalid
+form drafts block execution. Changing editor identity invalidates pending
+reads and write results; a late save never replaces newer graph edits or
+retargets a different playbook.
+
+Run links carry `runId`, with alarm/case context retained through navigation.
+The receipt panel offers bounded latest events and separate history pages.
+SSE hints coalesce into bounded REST refreshes; only durable REST receipts
+advance the cursor, and periodic reads repair missed stream events. Approval
+requires loaded immutable run/action context, a reason, current permission,
+and an unexpired request. Terminal run status is displayed alongside action
+receipts rather than inferred from submission success.
+
 ## Keyboard and modal behavior
 
 The shell's first keyboard link moves focus past navigation into the main
@@ -461,3 +496,14 @@ loads the requested ID rather than a list. Source binding uses remote rule
 search with a visible first-50 overflow hint; it resolves already selected
 rule IDs separately so changing the search never turns a known name into an
 opaque ID. A failed selected-rule lookup leaves the IDs visible with an error.
+
+## Semantic lint boundary
+
+`pnpm lint` parses Vue 3 templates and TypeScript with ESLint. It includes
+type-aware invalid-await and object-spread checks, Vue mutation/duplicate
+attribute rules, unsafe optional chaining, and debugger/console restrictions.
+Comments and string literals do not count as executable statements.
+`pnpm test` runs a mutation fixture proving the rules reject broken TypeScript
+and Vue while accepting harmless explanatory text. `pnpm format:check` retains
+LF, indentation and trailing-space checks separately. The added ESLint,
+TypeScript-ESLint and Vue ESLint packages are development-only dependencies.

@@ -23,6 +23,8 @@ import java.util.Optional;
 public class KubernetesSecretResolver implements SecretResolver {
     private static final int MAX_SECRET_BYTES = 64 * 1024;
     private final Path root;
+    private TenantSecretAuthorizer authorizer = new TenantSecretAuthorizer("{}");
+    @Override public boolean isAuthorized(String tenantId, String reference) { return authorizer.allows(tenantId, reference); }
     private final boolean allowEnvironmentFallback;
     private final SecretResolver environment = new EnvironmentSecretResolver();
 
@@ -30,6 +32,7 @@ public class KubernetesSecretResolver implements SecretResolver {
     public KubernetesSecretResolver(SoarSecretProperties properties) {
         this(properties == null ? null : properties.getKubernetesMountPath(),
                 properties == null || properties.isAllowEnvironmentFallback());
+        authorizer = new TenantSecretAuthorizer(properties == null ? "{}" : properties.getTenantGrants());
     }
 
     KubernetesSecretResolver(String mountPath) {
@@ -76,7 +79,12 @@ public class KubernetesSecretResolver implements SecretResolver {
             if (!realCandidate.startsWith(realRoot)) return Optional.empty();
             long size = Files.size(candidate);
             if (size <= 0 || size > MAX_SECRET_BYTES) return Optional.empty();
-            String secret = Files.readString(candidate, StandardCharsets.UTF_8);
+            String secret;
+            try (var input = Files.newInputStream(realCandidate)) {
+                byte[] bytes = input.readNBytes(MAX_SECRET_BYTES + 1);
+                if (bytes.length > MAX_SECRET_BYTES) return Optional.empty();
+                secret = new String(bytes, StandardCharsets.UTF_8);
+            }
             return secret.isBlank() ? Optional.empty() : Optional.of(secret);
         } catch (IOException | SecurityException failure) {
             return Optional.empty();

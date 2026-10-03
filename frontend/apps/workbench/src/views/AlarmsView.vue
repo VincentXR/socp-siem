@@ -18,6 +18,7 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import { localDateTime, utcInstant } from '../lib/time-range'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import InvestigationReadiness from '../components/InvestigationReadiness.vue'
 import AlarmDispositionDrawer from '../components/AlarmDispositionDrawer.vue'
 import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -39,14 +40,14 @@ const props = defineProps<{
   loading: boolean
   error: string
   onSearch: () => void
-  loadPage: () => void
+  loadPage: () => void | Promise<void>
   onSortChange: (field: 'occurredAt' | 'severity' | 'ruleName' | 'entity' | 'status' | 'riskScore', order: 'ascending' | 'descending') => void
   exportCsv: () => Promise<void>
   exportJson: () => Promise<void>
   goCase: (caseId?: string) => void
   goSearch: (query?: string) => void
-  goAi?: (alarmId: string) => void
-  goSoar?: (alarmId: string) => void
+  goAi?: (alarmId: string, caseId?: string) => void
+  goSoar?: (alarmId: string, caseId?: string) => void
   assigneeOptions?: string[]
   canWrite?: boolean
   canAdmin?: boolean
@@ -61,20 +62,25 @@ onUnmounted(() => { disposed = true })
 const keyword = defineModel<string>('keyword', { default: '' })
 const severity = defineModel<string>('severity', { default: '' })
 const status = defineModel<string>('status', { default: '' })
+const owner = defineModel<string>('owner', { default: '' })
 const rule = defineModel<string>('rule', { default: '' })
 const assignee = defineModel<string>('assignee', { default: '' })
 const from = defineModel<string>('from', { default: '' })
 const to = defineModel<string>('to', { default: '' })
 const fromInput = computed({ get: () => localDateTime(from.value), set: value => { from.value = utcInstant(value) } })
 const toInput = computed({ get: () => localDateTime(to.value), set: value => { to.value = utcInstant(value) } })
+function searchOwner() { assignee.value = ''; props.onSearch() }
+function searchAssignee() { owner.value = ''; props.onSearch() }
 function myQueue() {
-  assignee.value = props.currentUser || ''; status.value = 'ACTIVE'; props.onSearch()
+  owner.value = ''; assignee.value = props.currentUser || ''; status.value = 'ACTIVE'; props.onSearch()
 }
 const pageNum = defineModel<number>('pageNum', { default: 1 })
 const drawerVisible = ref(false)
 const currentAlarm = ref<Alarm | null>(null)
 const selectedAlarms = ref<Alarm[]>([])
 const batchStatus = ref('')
+const batchReason = ref('')
+const batchClassification = ref('UNDETERMINED')
 const batchOperation = ref<'assign' | 'status'>('assign')
 const pageSize = defineModel<number>('pageSize', { default: 20 })
 const batchAssignee = ref('')
@@ -94,7 +100,8 @@ const deepLinkRequests = useLatestRequest()
 const deepLinkLoading = ref(false)
 const deepLinkError = ref('')
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('alarms')
-const DISP_STATUSES = ['ACTIVE', 'OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
+const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
+const FILTER_STATUSES = ['ACTIVE', ...DISP_STATUSES]
 
 async function loadRuleOptions(keyword = ''): Promise<void> {
   const request = ruleOptionRequests.start()
@@ -137,10 +144,11 @@ function handleSelectionChange(rows: Alarm[]): void {
 
 async function handleBatchUpdate(): Promise<void> {
   if (!props.canWrite || batchBusy.value || batchConfirming.value || disposed || !selectedAlarms.value.length) return
-  if (batchOperation.value === 'assign' ? !batchAssignee.value.trim() : !batchStatus.value) return
+  if (batchOperation.value === 'assign' ? !batchAssignee.value.trim() : !DISP_STATUSES.includes(batchStatus.value)) return
   const ids = selectedAlarms.value.map(alarm => alarm.id)
   const operation = batchOperation.value
-  const payload = operation === 'assign' ? { assignee: batchAssignee.value.trim() } : { status: batchStatus.value }
+  const payload: { assignee?: string; status?: string; reason?: string; classification?: string } = { ...(operation === 'assign' ? { assignee: batchAssignee.value.trim() } : { status: batchStatus.value }), reason: batchReason.value.trim() || undefined, ...(['RESOLVED', 'CLOSED'].includes(batchStatus.value) ? { classification: batchClassification.value } : {}) }
+  if (operation === 'status' && ['RESOLVED', 'CLOSED'].includes(batchStatus.value) && !payload.reason) { batchError.value = t('analystJourney.batchClosureRequired'); return }
   batchConfirming.value = true
   let confirmed: boolean
   try {
@@ -241,9 +249,9 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
           <el-option v-for="item in SEVERITIES" :key="item" :label="tOr(t, 'severities.' + item, item)" :value="item" />
         </el-select>
         <el-select v-model="status" :placeholder="t('alarms.statusFilter')" clearable style="width:150px" @change="props.onSearch">
-          <el-option v-for="item in DISP_STATUSES" :key="item" :label="tOr(t, 'statuses.' + item, item)" :value="item" />
+          <el-option v-for="item in FILTER_STATUSES" :key="item" :label="tOr(t, 'statuses.' + item, item)" :value="item" />
         </el-select>
-        <el-select v-model="assignee" clearable filterable :placeholder="t('cases.assignee')" style="width:160px" @change="props.onSearch"><el-option v-for="owner in props.assigneeOptions" :key="owner" :label="owner" :value="owner" /></el-select>
+        <el-select v-model="assignee" clearable filterable :placeholder="t('cases.assignee')" style="width:160px" @change="searchAssignee"><el-option v-for="owner in props.assigneeOptions" :key="owner" :label="owner" :value="owner" /></el-select>
         <el-button v-if="props.currentUser" size="small" @click="myQueue">{{ t('workflow.myQueue') }}</el-button>
         <el-button size="small" @click="props.onSearch">{{ t('common.search') }}</el-button>
         <small v-if="ruleCatalogError" class="alarm-catalog-hint" :title="ruleCatalogError">{{ t('alarms.ruleCatalogUnavailable') }}</small>
@@ -260,6 +268,13 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
       </div>
     </div>
 
+    <div class="alarm-toolbar-actions">
+      <el-select v-model="owner" :aria-label="t('analystJourney.workQueue')" @change="searchOwner">
+        <el-option :label="t('analystJourney.allWork')" value="" /><el-option :label="t('analystJourney.myWork')" value="mine" /><el-option :label="t('analystJourney.unassigned')" value="unassigned" />
+      </el-select>
+      <span v-if="route.query.entity">{{ t('analystJourney.exactEntity', { entity: String(route.query.entity) }) }} </span>
+      <span v-if="route.query.from || route.query.to">{{ route.query.from || '…' }} → {{ route.query.to || '…' }}</span>
+    </div>
     <div v-if="props.canWrite && selectedAlarms.length" class="alarm-batchbar">
       <strong>{{ selectedAlarms.length }} {{ t('alarms.selected') }}</strong>
       <span>{{ t('alarms.batchHint') }}</span>
@@ -270,6 +285,8 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
       <el-select v-else v-model="batchAssignee" :disabled="batchConfirming || batchBusy" filterable default-first-option clearable size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px">
         <el-option v-for="assignee in props.assigneeOptions ?? []" :key="assignee" :label="assignee" :value="assignee" />
       </el-select>
+      <select v-if="batchOperation === 'status' && ['RESOLVED', 'CLOSED'].includes(batchStatus)" v-model="batchClassification" :aria-label="t('analystJourney.batchClassification')"><option value="TRUE_POSITIVE">{{ t('analystJourney.truePositive') }}</option><option value="FALSE_POSITIVE">{{ t('analystJourney.falsePositive') }}</option><option value="BENIGN">{{ t('analystJourney.benign') }}</option><option value="UNDETERMINED">{{ t('analystJourney.undetermined') }}</option></select>
+      <el-input v-model="batchReason" :aria-label="t('analystJourney.batchReason')" :placeholder="t('analystJourney.batchReasonPlaceholder')" :disabled="batchConfirming || batchBusy" />
       <el-button size="small" type="primary" :loading="batchBusy" :disabled="batchConfirming" @click="handleBatchUpdate">{{ t('common.update') }}</el-button>
       <span v-if="batchError" class="alarm-batch-error" role="alert">{{ batchError }}</span>
     </div>
@@ -295,12 +312,13 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
         <el-table-column prop="title" column-key="title" :label="t('alarms.alertTitle')" :width="columnWidth('title', 220)" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.title || row.ruleName || row.ruleId }}</template></el-table-column>
         <el-table-column prop="ruleName" column-key="ruleName" :label="t('alarms.ruleName')" :width="columnWidth('ruleName')" min-width="180" sortable="custom" show-overflow-tooltip><template #default="{ row }">{{ row.ruleName || row.ruleId }}</template></el-table-column>
         <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity')" min-width="150" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="assignee" :label="t('assets.owner')" min-width="130"><template #default="{ row }">{{ row.assignee || t('analystJourney.unassigned') }}</template></el-table-column>
         <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 125)" sortable="custom"><template #default="{ row }"><span class="alarm-status" :class="(row.status || 'OPEN').toLowerCase()">{{ tOr(t, 'statuses.' + (row.status || 'OPEN'), row.status ?? '') }}</span></template></el-table-column>
         <el-table-column prop="riskScore" column-key="riskScore" :label="t('alarms.riskScore')" :width="columnWidth('riskScore', 90)" sortable="custom"><template #default="{ row }">{{ row.riskScore ?? '—' }}</template></el-table-column>
         <el-table-column prop="message" column-key="message" :label="t('common.message')" :width="columnWidth('message')" min-width="260" show-overflow-tooltip />
         <el-table-column :label="t('common.actions')" width="78" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click.stop="openAlarmRow(row)">{{ t('alarms.triage') }}</el-button></template></el-table-column>
         <template #empty>
-          <EmptyState v-if="!props.loading && !props.error" :title="t('alarms.noAlarmsFound')" :description="t('alarms.adjustFiltersHint')" />
+          <EmptyState v-if="!props.loading && !props.error" :title="t('alarms.noAlarmsFound')" :description="t('alarms.adjustFiltersHint')"><template #action><InvestigationReadiness :can-inspect="Boolean(props.canWrite)" /></template></EmptyState>
         </template>
       </el-table>
     </el-card>

@@ -29,7 +29,7 @@ class SoarMigrationTest {
                     "SELECT MAX(\"installed_rank\") FROM \"flyway_schema_history\"");
                  var migrationResult = migration.executeQuery()) {
                 migrationResult.next();
-                assertEquals(27, migrationResult.getInt(1));
+                assertEquals(29, migrationResult.getInt(1));
             }
             try (var recoveryIndexes = connection.prepareStatement(
                     "SELECT COUNT(*) FROM information_schema.indexes WHERE index_name IN "

@@ -102,9 +102,30 @@ def check_service_defaults(errors: list[str]) -> None:
                 )
 
 
+def check_deployment_credentials(errors: list[str]) -> None:
+    core = HELM_VALUES.read_text(encoding="utf-8")
+    product = (HELM_CHART / "values-product.yaml").read_text(encoding="utf-8")
+    for workload, text, keys in (
+        ("search-config-api", core, ("SOCP_INGEST_TOKEN", "SOCP_VECTOR_TOKEN")),
+        ("search-config-worker", core, ("SOCP_INGEST_TOKEN", "SOCP_VECTOR_TOKEN")),
+        ("hips-web", product, ("SOCP_INGEST_TOKEN",)),
+        ("report-web", product, ("SOCP_MINIO_ACCESS", "SOCP_MINIO_SECRET")),
+    ):
+        block = re.search(rf"(?ms)^  {workload}:\n.*?(?=^  [a-z0-9-]+:|\Z)", text.split("\nworkloads:\n", 1)[-1])
+        for key in keys:
+            if block is None or re.search(rf"(?m)^      {key}: {key}$", block.group()) is None:
+                errors.append(f"Helm {workload} must explicitly map Secret {key}")
+    worker = re.search(r"(?ms)^  detect-web-worker:.*?(?=^  [a-z0-9-]+:|\Z)", core)
+    partitions = re.search(r"(?m)^  detectionPartitions: ([0-9]+)$", core)
+    maximum = re.search(r"maxReplicas: ([0-9]+)", worker.group()) if worker else None
+    if not partitions or not maximum or not 0 < int(maximum.group(1)) <= int(partitions.group(1)):
+        errors.append("Detection worker HPA must be bounded by the existing positive routed partition count")
+
+
 def main() -> int:
     errors: list[str] = []
     check_service_defaults(errors)
+    check_deployment_credentials(errors)
     runtime_domains = runtime_domain_membership()
     if not DOCKERFILE.is_file():
         errors.append("missing deploy/docker/Dockerfile.jvm")

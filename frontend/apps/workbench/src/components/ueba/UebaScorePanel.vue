@@ -34,7 +34,8 @@ const props = defineProps<{
   techniques?: Array<{ id: string; name: string }>
   techniquesLoading?: boolean
 }>()
-const emit = defineEmits<{ calculate: [] }>()
+const emit = defineEmits<{ calculate: []; 'update:form': [value: ScoreForm] }>()
+function updateField<K extends keyof ScoreForm>(key: K, value: ScoreForm[K]): void { emit('update:form', { ...props.form, [key]: value }) }
 const { t } = useI18n()
 const techniqueOptions = computed(() => {
   const options = [...(props.techniques ?? [])]
@@ -60,19 +61,19 @@ function riskColor(level: string) {
         <template #header>{{ t('ueba.scoreInputs') }}</template>
         <el-form label-position="top" size="small">
           <el-form-item :label="t('ueba.severityBaseline')">
-            <el-select v-model="form.severity" @change="emit('calculate')" style="width:160px">
+            <el-select :model-value="form.severity" @update:model-value="value => updateField('severity', String(value))" @change="emit('calculate')" style="width:160px">
               <el-option v-for="severity in severities" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" />
             </el-select>
           </el-form-item>
           <el-form-item :label="t('ueba.attackTechnique')">
-            <el-select v-model="form.mitre" filterable clearable :loading="techniquesLoading" :placeholder="t('ueba.attackTechniquePlaceholder')" style="width:100%" @change="emit('calculate')">
+            <el-select :model-value="form.mitre" @update:model-value="value => updateField('mitre', String(value))" filterable clearable :loading="techniquesLoading" :placeholder="t('ueba.attackTechniquePlaceholder')" style="width:100%" @change="emit('calculate')">
               <el-option v-for="technique in techniqueOptions" :key="technique.id" :label="`${technique.id} · ${technique.name}`" :value="technique.id" />
             </el-select>
             <span class="field-hint">{{ techniques?.length ? t('ueba.attackTechniqueHint') : t('ueba.noTechniques') }}</span>
           </el-form-item>
-          <el-form-item :label="t('ueba.threatIntelHits')"><el-slider v-model="form.tiHits" :min="0" :max="5" show-stops @change="emit('calculate')" /></el-form-item>
-          <el-form-item :label="t('ueba.recentEntityAlerts')"><el-slider v-model="form.recentAlerts" :min="0" :max="20" @change="emit('calculate')" /></el-form-item>
-          <el-form-item :label="t('ueba.assetCriticality')"><el-slider v-model="form.assetCriticality" :min="0" :max="3" show-stops @change="emit('calculate')" /></el-form-item>
+          <el-form-item :label="t('ueba.threatIntelHits')"><el-slider :model-value="form.tiHits" @update:model-value="value => updateField('tiHits', Number(value))" :min="0" :max="5" show-stops @change="emit('calculate')" /></el-form-item>
+          <el-form-item :label="t('ueba.recentEntityAlerts')"><el-slider :model-value="form.recentAlerts" @update:model-value="value => updateField('recentAlerts', Number(value))" :min="0" :max="20" @change="emit('calculate')" /></el-form-item>
+          <el-form-item :label="t('ueba.assetCriticality')"><el-slider :model-value="form.assetCriticality" @update:model-value="value => updateField('assetCriticality', Number(value))" :min="0" :max="3" show-stops @change="emit('calculate')" /></el-form-item>
         </el-form>
       </el-card>
     </el-col>

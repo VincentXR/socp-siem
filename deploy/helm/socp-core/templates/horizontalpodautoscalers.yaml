@@ -1,6 +1,9 @@
 {{- if .Values.autoscaling.enabled }}
 {{- $root := . }}
 {{- range $name, $workload := .Values.workloads }}
+{{- if and (eq $name "detect-web-worker") (gt (int $workload.autoscaling.maxReplicas) (int $root.Values.runtime.detectionPartitions)) }}
+{{- fail "detect-web-worker maxReplicas exceeds runtime.detectionPartitions; verify existing topic ownership before raising the bound" }}
+{{- end }}
 ---
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

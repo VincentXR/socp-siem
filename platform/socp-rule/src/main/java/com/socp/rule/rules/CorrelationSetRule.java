@@ -79,6 +79,7 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
 
         State st = states.get(key, State::new);
         synchronized (st) {
+            states.invalidateSnapshot(key);
             if (eventTimePolicy.isLate(event.timestamp(), st.watermark)
                     && eventTimePolicy.handling() == EventTimePolicy.LateEventHandling.DROP) {
                 return;
@@ -130,21 +131,18 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
 
     @Override
     public byte[] snapshotState() {
-        Map<String, Object> out = new java.util.LinkedHashMap<>();
-        states.forEach((key, state) -> {
-            synchronized (state) {
-                Map<String, Object> value = new java.util.LinkedHashMap<>();
-                value.put("bits", state.bits.toLongArray());
-                value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
-                value.put("watermark", state.watermark == null ? null : state.watermark.toString());
-                Map<String, Object> evidence = new java.util.LinkedHashMap<>();
-                state.evidence.forEach((index, event) -> evidence.put(String.valueOf(index), StateSnapshotCodec.event(event)));
-                value.put("evidence", evidence);
-                out.put(key, value);
-            }
+        return states.snapshot(state -> {
+            Map<String, Object> value = new java.util.LinkedHashMap<>();
+            value.put("bits", state.bits.toLongArray());
+            value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
+            value.put("watermark", state.watermark == null ? null : state.watermark.toString());
+            Map<String, Object> evidence = new java.util.LinkedHashMap<>();
+            state.evidence.forEach((index, event) -> evidence.put(String.valueOf(index), StateSnapshotCodec.event(event)));
+            value.put("evidence", evidence);
+            return value;
         });
-        return StateSnapshotCodec.write(out);
     }
+
 
     @Override
     public void restoreState(byte[] serializedState) {

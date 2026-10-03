@@ -135,6 +135,7 @@ public class IngestTaskController {
 
     private ApiResult<Map<String, Object>> toggle(String id, boolean enabled) {
         LogSource s = require(id);
+        if (enabled) com.socp.search.config.render.VectorConfigRenderer.requireReady(s);
         LogSource updated = new LogSource(s.id(), s.name(), s.type(), s.format(), s.path(), s.address(),
                 s.topic(), s.env(), enabled, s.readFrom(), s.multiline(), s.sinkTargetId(),
                 s.parseRuleIds(), s.description(), s.protocol(), s.charset(), s.timeField(),
@@ -164,6 +165,8 @@ public class IngestTaskController {
         m.put("enabled", s.enabled());
         m.put("desiredState", s.enabled() ? "ENABLED" : "DISABLED");
         m.put("applyState", s.enabled() ? "MANUAL_APPLY_REQUIRED" : "DISABLED");
+        m.put("appliedState", "UNKNOWN");
+        m.put("telemetryScope", "CURRENT_API_REPLICA_AND_COLLECTOR_TAG");
         m.put("collector", s.collectorTag());
         m.put("target", target(s));
         m.put("env", s.env());

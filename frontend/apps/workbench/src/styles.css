@@ -65,6 +65,7 @@
   --ns-border-strong: #cbd1d9;
   --ns-text: #111827;
   --ns-text-2: #667085;
+  --ns-text-decorative: #98a2b3;
   --ns-text-3: #667085;
   --ns-accent: #2563eb;
   --ns-accent-hover: #1d4ed8;
@@ -140,7 +141,8 @@
   --ns-border-strong: #3a4654;
   --ns-text: #e7edf4;
   --ns-text-2: #9aa7b5;
-  --ns-text-3: #94a3b8;
+  --ns-text-decorative: #748294;
+  --ns-text-3: #a0adbf;
   --ns-accent: #60a5fa;
   --ns-accent-hover: #82b8fb;
   --ns-accent-subtle: rgba(96, 165, 250, .14);
@@ -1547,3 +1549,6 @@ body {
   .live-dot { animation: none; box-shadow: none; }
   .am-cell:hover { transform: none; }
 }
+
+/* Operational qualifiers must remain readable at compact table density. */
+.metric-card-hint, .el-table th.el-table__cell, .el-form-item__label { font-size: 12px; }

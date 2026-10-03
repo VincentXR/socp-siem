@@ -490,6 +490,16 @@ public class RuleSpecStore {
                 .map(this::representation);
     }
 
+    public Page<Map<String, Object>> searchTechnique(int page, int size, String keyword, String status,
+                                            String reference, String alias, String technique) {
+        String tenant = tenant();
+        ensureTenantContent(tenant);
+        return repo.searchTechnique(tenant, keyword.toLowerCase(java.util.Locale.ROOT), status,
+                reference.isEmpty() ? "" : RuleCatalogMetadata.referenceToken(reference),
+                alias.isEmpty() ? "" : RuleCatalogMetadata.referenceToken(alias), technique.isEmpty() ? "" : "\n" + technique + "\n",
+                PageRequest.of(page - 1, size, Sort.by("ruleId"))).map(this::representation);
+    }
+
     public Page<Map<String, Object>> options(int page, int size, String keyword) {
         String tenant = tenant();
         ensureTenantContent(tenant);

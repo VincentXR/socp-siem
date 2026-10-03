@@ -134,4 +134,20 @@ describe('parse editor route ownership', () => {
     expect(mocks.updateParseRule).not.toHaveBeenCalled()
     wrapper.unmount()
   })
+  it('marks an in-flight preview stale when the sample is edited before it returns', async () => {
+    let complete!: (value: { matched: boolean; fields: Record<string, string> }) => void
+    mocks.getParseRule.mockResolvedValue(rules[0])
+    mocks.previewParseDraft.mockReturnValueOnce(new Promise(resolve => { complete = resolve }))
+    const { wrapper } = await openEditor('/parsers/a/edit')
+    const sample = wrapper.find('.parser-preview textarea')
+    await sample.setValue('old sample')
+    await wrapper.find('.parser-preview button').trigger('click')
+    await flushPromises()
+    await sample.setValue('new sample')
+    complete({ matched: true, fields: { message: 'old sample' } }); await flushPromises()
+    expect(wrapper.text()).toContain('配置已变更，请重新测试')
+    expect(wrapper.find('.preview-fields').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
 })

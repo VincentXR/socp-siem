@@ -7,7 +7,6 @@ import com.socp.alert.domain.AlarmQuery;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
-import java.util.List;
 
 /** Database-side filtering and deterministic sorting for alarm reads. */
 public interface AlarmRepositoryCustom {
@@ -17,5 +16,4 @@ public interface AlarmRepositoryCustom {
     /** Count a filtered tenant view without materialising the matching alarms. */
     long count(String tenant, AlarmQuery query);
 
-    List<Alarm> list(String tenant, AlarmQuery query);
 }

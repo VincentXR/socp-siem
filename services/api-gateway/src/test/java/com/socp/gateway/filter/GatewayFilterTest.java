@@ -69,6 +69,20 @@ class GatewayFilterTest {
     }
 
     @Test
+    void viewerCanUseExactReadOnlyPostRoute() {
+        GatewayFilter filter = new GatewayFilter(jwtValidator);
+        JWTClaimsSet claims = new JWTClaimsSet.Builder().subject("viewer-user")
+                .claim("role", "viewer").claim("tenant", "tenant-a").build();
+        given(jwtValidator.validate("viewer-token")).willReturn(claims);
+        given(jwtValidator.extractTenant(claims)).willReturn("tenant-a");
+        given(chain.filter(org.mockito.ArgumentMatchers.any())).willReturn(Mono.empty());
+        var exchange = MockServerWebExchange.from(MockServerHttpRequest.post("/detect-web/api/v1/rules/lookup")
+                .header("Authorization", "Bearer viewer-token").build());
+        filter.filter(exchange, chain).block(Duration.ofSeconds(1));
+        verify(chain).filter(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void forwardsValidatedTenantAndTraceHeaders() {
         GatewayFilter filter = new GatewayFilter(jwtValidator);
         JWTClaimsSet claims = new JWTClaimsSet.Builder()

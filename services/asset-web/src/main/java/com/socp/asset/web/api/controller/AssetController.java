@@ -4,6 +4,7 @@ import com.socp.asset.web.api.request.AssetCollectionRequest;
 import com.socp.asset.web.api.request.CreateAssetRequest;
 import com.socp.asset.web.domain.Asset;
 import com.socp.asset.web.persistence.store.AssetStore;
+import com.socp.asset.web.persistence.store.AssetCollectionStore;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -35,11 +36,13 @@ import jakarta.validation.constraints.Size;
 public class AssetController {
 
     private final AssetStore store;
+    private final AssetCollectionStore collectionStore;
     private final int maxListSize;
 
-    public AssetController(AssetStore store,
+    public AssetController(AssetStore store, AssetCollectionStore collectionStore,
                            @Value("${socp.web.list-max-size:500}") int maxListSize) {
         this.store = store;
+        this.collectionStore = collectionStore;
         this.maxListSize = maxListSize;
     }
 
@@ -48,9 +51,17 @@ public class AssetController {
     @GetMapping
     public ApiResult<PageResponse<Asset>> list(@RequestParam(defaultValue = "1") int page,
                                                @RequestParam(defaultValue = "500") int size,
-                                               @RequestParam(defaultValue = "") String q) {
+                                               @RequestParam(defaultValue = "") String q,
+                                               @RequestParam(defaultValue = "") String type,
+                                               @RequestParam(defaultValue = "") String criticality,
+                                               @RequestParam(defaultValue = "") String owner) {
         requireValidRange(page, size);
-        Page<Asset> result = store.page(page, size, normalizeQuery(q));
+        String normalizedType = normalizeFilter(type, 32);
+        String normalizedCriticality = normalizeFilter(criticality, 16);
+        String normalizedOwner = normalizeFilter(owner, 64);
+        Page<Asset> result = normalizedType.isEmpty() && normalizedCriticality.isEmpty() && normalizedOwner.isEmpty()
+                ? store.page(page, size, normalizeQuery(q))
+                : store.page(page, size, normalizeQuery(q), normalizedType, normalizedCriticality, normalizedOwner);
         return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
                 result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
@@ -115,7 +126,7 @@ public class AssetController {
         return ApiResult.ok(store.save(new Asset(id, req.name(), req.type(), req.ip(), req.os(), req.owner(), req.criticality(), existing.createdAt())));
     }
 
-    /** 托管采集器经兼容入口上报新资产——按 name 去重，已存在则更新。 */
+    /** 托管采集器经兼容入口上报新资产——按租户和非空规范化 IP 去重，已存在则更新。 */
     @RequireRole({"admin", "analyst"})
     @PostMapping("/collect")
     public ApiResult<Map<String, Object>> collect(@Valid @RequestBody AssetCollectionRequest request) {
@@ -125,7 +136,7 @@ public class AssetController {
         String os = valueOr(request.os(), "");
         String owner = valueOr(request.owner(), "collect");
         String criticality = valueOr(request.criticality(), "HIGH");
-        Asset saved = store.upsertByIp(Asset.create(name, type, ip, os, owner, criticality));
+        Asset saved = collectionStore.upsertByIp(Asset.create(name, type, ip, os, owner, criticality));
         return ApiResult.ok(Map.of("accepted", true, "assetId", saved.id(), "total", store.count()));
     }
 
@@ -152,6 +163,12 @@ public class AssetController {
         if (normalized.length() > 128) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "q length must not exceed 128 characters");
         }
+        return normalized;
+    }
+
+    private static String normalizeFilter(String value, int max) {
+        String normalized = value == null ? "" : value.trim();
+        if (normalized.length() > max) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "filter too long");
         return normalized;
     }
 

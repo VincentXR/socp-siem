@@ -33,9 +33,9 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import PagerBar from '../components/PagerBar.vue'
-import { useRouter } from 'vue-router'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import PagerBar from '../components/PagerBar.vue'
 import PageHeader from '../components/PageHeader.vue'
 import FormField from '../components/FormField.vue'
 import FormGrid from '../components/FormGrid.vue'
@@ -44,6 +44,7 @@ import { getChannel, updateChannel, testChannel, createChannel, deleteChannel, d
 import { useI18n } from '../composables/useI18n'
 
 const { t, d } = useI18n()
+const route = useRoute()
 const router = useRouter()
 const channelPage = ref(1)
 const channelSize = ref(20)
@@ -52,12 +53,54 @@ const logPage = ref(1)
 const logSize = ref(20)
 const logTotal = ref(0)
 const logStatus = ref('')
-watch([channelPage, channelSize, logPage, logSize], () => { void loadNotify() })
-watch(logStatus, () => { logPage.value = 1; void loadNotify() })
+const logAlarmId = ref('')
+const logChannel = ref('')
+const logsError = ref('')
+function readLogRoute() {
+  const requestedChannelPage = Number(route.query.channelPage)
+  channelPage.value = Number.isSafeInteger(requestedChannelPage) && requestedChannelPage > 0 && requestedChannelPage <= Math.floor(2147483647 / 50) ? requestedChannelPage : 1
+  const requestedChannelSize = Number(route.query.channelSize)
+  channelSize.value = [10, 20, 50].includes(requestedChannelSize) ? requestedChannelSize : 20
+  const page = Number(route.query.logPage)
+  logPage.value = Number.isSafeInteger(page) && page > 0 && page <= Math.floor(2147483647 / 50) ? page : 1
+  const size = Number(route.query.logSize)
+  logSize.value = [10, 20, 50].includes(size) ? size : 20
+  logStatus.value = typeof route.query.logStatus === 'string' ? route.query.logStatus : ''
+  logAlarmId.value = typeof route.query.alarmId === 'string' ? route.query.alarmId : ''
+  logChannel.value = typeof route.query.channel === 'string' ? route.query.channel : ''
+}
+readLogRoute()
+async function syncChannelPage(reset = false) {
+  if (reset) channelPage.value = 1
+  const previous = route.fullPath
+  await router.replace({ query: { ...route.query, channelPage: channelPage.value > 1 ? String(channelPage.value) : undefined,
+    channelSize: channelSize.value !== 20 ? String(channelSize.value) : undefined } })
+  if (route.fullPath === previous) { readLogRoute(); await loadNotify() }
+}
+async function syncLogFilters(reset = true) {
+  if (reset) logPage.value = 1
+  const previous = route.fullPath
+  await router.replace({ query: { ...route.query, logPage: logPage.value > 1 ? String(logPage.value) : undefined,
+    logSize: logSize.value !== 20 ? String(logSize.value) : undefined,
+    logStatus: logStatus.value || undefined, alarmId: logAlarmId.value.trim() || undefined, channel: logChannel.value.trim() || undefined } })
+  // The route watcher owns changed queries; a repeat Apply still retries a failed read.
+  if (route.fullPath === previous) { readLogRoute(); await loadNotify() }
+}
+function openReceipt(value: unknown) {
+  const row = value as DispatchLogEntry
+  if (row.alarmId && !row.alarmId.startsWith('test')) void router.push({ name: 'alarms', query: { alarmId: row.alarmId, tab: 'delivery', deliveryId: row.deliveryId || undefined } })
+}
+watch(() => route.query, () => { if (route.name === 'notify' || route.path === '/notify') { readLogRoute(); void loadNotify() } })
+
 async function editLogChannel(id: string) {
+  if (!canWrite.value || actionBusy.value || disposed) return
   await mutation.run(async () => {
     const channel = await getChannel(id)
-    if (!disposed) { editingId.value = channel.id; form.value = { ...channel }; dialogError.value = ''; fieldErrors.value = {}; testState.value = 'idle'; dialogVisible.value = true }
+    if (disposed) return
+    editingId.value = channel.id
+    form.value = { ...channel }
+    dialogError.value = ''; fieldErrors.value = {}; testState.value = 'idle'
+    dialogVisible.value = true
   })
 }
 const latestRead = useLatestRequest()
@@ -138,19 +181,29 @@ function onChannelTypeChange(type: string) {
 }
 
 async function loadNotify() {
+  if (disposed) return
   const request = latestRead.start()
   loading.value = true
   try {
     const [channelResult, logResult] = await Promise.allSettled([
-      listChannels({ signal: request.signal }, channelPage.value, channelSize.value), dispatchLog({ signal: request.signal }, logPage.value, logSize.value, logStatus.value || undefined),
+      listChannels({ signal: request.signal }, channelPage.value, channelSize.value), dispatchLog({ signal: request.signal }, { page: logPage.value, size: logSize.value, status: logStatus.value || undefined, alarmId: logAlarmId.value.trim() || undefined, channel: logChannel.value.trim() || undefined }),
     ])
     if (!request.isCurrent()) return
     const failures: string[] = []
-    if (channelResult.status === 'fulfilled') { channels.value = channelResult.value.items; channelTotal.value = channelResult.value.total; channelPage.value = Math.min(channelPage.value, Math.max(1, Math.ceil(channelTotal.value / channelSize.value))) }
+    if (channelResult.status === 'fulfilled') { channels.value = channelResult.value.items; channelTotal.value = channelResult.value.total }
     else failures.push(String(channelResult.reason))
-    if (logResult.status === 'fulfilled') { logs.value = logResult.value.items; logTotal.value = logResult.value.total; logPage.value = Math.min(logPage.value, Math.max(1, Math.ceil(logTotal.value / logSize.value))) }
-    else failures.push(String(logResult.reason))
+    logsError.value = ''
+    if (logResult.status === 'fulfilled') { logs.value = logResult.value.items; logTotal.value = logResult.value.total }
+    else { logsError.value = String(logResult.reason); failures.push(logsError.value) }
     loadError.value = failures.join(' · ')
+    const lastChannelPage = channelResult.status === 'fulfilled' ? Math.max(1, Math.ceil(channelTotal.value / channelSize.value)) : channelPage.value
+    const lastLogPage = logResult.status === 'fulfilled' ? Math.max(1, Math.ceil(logTotal.value / logSize.value)) : logPage.value
+    if (channelPage.value > lastChannelPage || logPage.value > lastLogPage) {
+      // Keep the URL and both result sets consistent after the last row on a page disappears.
+      await router.replace({ query: { ...route.query,
+        channelPage: Math.min(channelPage.value, lastChannelPage) > 1 ? String(Math.min(channelPage.value, lastChannelPage)) : undefined,
+        logPage: Math.min(logPage.value, lastLogPage) > 1 ? String(Math.min(logPage.value, lastLogPage)) : undefined } })
+    }
   } finally {
     if (request.isCurrent()) loading.value = false
   }
@@ -285,21 +338,27 @@ onMounted(loadNotify)
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 120)"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
         <el-table-column column-key="target" :label="t('notify.target')" :width="columnWidth('target')" min-width="200" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ displayTarget(row as Channel) }}</span></template></el-table-column>
         <el-table-column column-key="enabled" :label="t('common.enable')" :width="columnWidth('enabled', 90)"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.enabled') : t('common.disabled') }}</el-tag></template></el-table-column>
-        <el-table-column v-if="canWrite" :label="t('common.actions')" width="260" :resizable="false"><template #default="{ row }"><el-button link size="small" :disabled="actionBusy" @click="openChannel(row as Channel)">{{ t('common.edit') }}</el-button><el-button link size="small" :disabled="actionBusy" @click="sendTest(row as Channel)">{{ t('forms.test') }}</el-button><el-button link type="primary" size="small" :disabled="actionBusy" @click="toggle(row.id)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" :disabled="actionBusy" @click="removeChannel(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
+        <el-table-column v-if="canWrite" :label="t('common.actions')" width="180" :resizable="false"><template #default="{ row }"><el-button link size="small" :disabled="actionBusy" @click="openChannel(row as Channel)">{{ t('common.edit') }}</el-button><details class="notify-more"><summary>{{ t('experience.more') }}</summary><el-button link size="small" :disabled="actionBusy" @click="sendTest(row as Channel)">{{ t('forms.test') }}</el-button><el-button link type="primary" size="small" :disabled="actionBusy" @click="toggle(row.id)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" :disabled="actionBusy" @click="removeChannel(row.id)">{{ t('common.delete') }}</el-button></details></template></el-table-column>
       </el-table>
-      <PagerBar v-model:current-page="channelPage" v-model:page-size="channelSize" :total="channelTotal" />
+      <PagerBar v-model:current-page="channelPage" v-model:page-size="channelSize" :total="channelTotal" @update:current-page="syncChannelPage()" @update:page-size="syncChannelPage(true)" />
     </el-card>
 
     <el-card shadow="never">
-      <template #header>{{ t('notify.dispatchLogsLive') }}</template>
-      <el-select v-model="logStatus" clearable :aria-label="t('common.status')" :placeholder="t('common.status')"><el-option v-for="status in ['sent', 'failed', 'unknown', 'pending', 'requeued']" :key="status" :value="status" :label="dispatchStatusLabel(status)" /></el-select>
+      <template #header>{{ t('experience.delivery') }}</template>
+      <div class="notify-log-filters">
+        <el-input v-model="logAlarmId" clearable :placeholder="t('experience.alarmId')" :aria-label="t('experience.alarmId')" @change="syncLogFilters()" />
+        <el-input v-model="logChannel" clearable :placeholder="t('notify.channel')" :aria-label="t('notify.channel')" @change="syncLogFilters()" />
+        <el-select v-model="logStatus" clearable :placeholder="t('experience.deliveryStatus')" :aria-label="t('experience.deliveryStatus')" @change="syncLogFilters()"><el-option v-for="status in ['sent', 'logged', 'failed', 'unknown', 'pending', 'requeued', 'skipped']" :key="status" :label="dispatchStatusLabel(status)" :value="status" /></el-select>
+        <el-button v-if="logAlarmId || logStatus || logChannel" @click="logAlarmId = ''; logStatus = ''; logChannel = ''; syncLogFilters()">{{ t('experience.clearFilters') }}</el-button>
+      </div>
       <p class="dialog-hint">{{ t('workflow.notificationRecovery') }}</p>
+      <ActionFeedback :error="logsError" />
       <el-table v-loading="loading" :data="logs" size="small" border :empty-text="t('common.empty')">
         <el-table-column type="expand"><template #default="{ row }">
           <div class="notify-receipt-detail">
-            <div><b>{{ t('notify.alarmId') }}</b><el-button v-if="row.alarmId" link type="primary" @click="router.push({ name: 'alarms', query: { alarmId: row.alarmId } })">{{ row.alarmId }}</el-button></div>
+            <div><b>{{ t('notify.alarmId') }}</b><el-button v-if="row.alarmId && !row.alarmId.startsWith('test')" link type="primary" @click="openReceipt(row)">{{ row.alarmId }}</el-button><span v-else>{{ row.alarmId || '—' }}</span></div>
             <div v-if="canWrite && row.channelId"><el-button link type="primary" :disabled="actionBusy" @click="editLogChannel(row.channelId)">{{ t('workflow.editChannel') }}</el-button></div>
-            <div><b>{{ t('notify.deliveryId') }}</b><span class="mono">{{ row.deliveryId || '—' }}</span></div>
+            <div><b>{{ t('notify.deliveryId') }}</b><el-button v-if="row.deliveryId && row.alarmId && !row.alarmId.startsWith('test')" link type="primary" @click="openReceipt(row)">{{ row.deliveryId }}</el-button><span v-else>{{ row.deliveryId || '—' }}</span></div>
             <div><b>{{ t('notify.httpStatus') }}</b><span>{{ row.httpStatus ?? '—' }}</span></div>
             <div><b>{{ t('notify.retryClass') }}</b><span>{{ row.retryable === true ? t('notify.retryable') : row.retryable === false ? t('notify.notRetryable') : '—' }}</span></div>
             <div><b>{{ t('notify.errorCode') }}</b><span class="mono">{{ row.errorCode || '—' }}</span></div>
@@ -309,11 +368,11 @@ onMounted(loadNotify)
         <el-table-column prop="ts" :label="t('common.timestamp')" width="210"><template #default="{ row }">{{ d(row.ts) }}</template></el-table-column>
         <el-table-column prop="channel" :label="t('notify.channel')" min-width="150" show-overflow-tooltip />
         <el-table-column prop="type" :label="t('common.type')" width="110"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
-        <el-table-column prop="ruleId" :label="t('notify.rule')" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="ruleId" :label="t('notify.rule')" min-width="200"><template #default="{ row }"><el-button v-if="row.ruleId && row.ruleId !== 'operator-recovery'" link type="primary" @click="router.push({ name: 'detect', query: { ruleId: row.ruleId } })">{{ row.ruleId }}</el-button><span v-else>{{ row.ruleId || '—' }}</span></template></el-table-column>
         <el-table-column prop="errorCode" :label="t('notify.errorCode')" min-width="180" show-overflow-tooltip />
         <el-table-column :label="t('common.status')" width="100"><template #default="{ row }"><el-tag :type="dispatchStatusType(row.status)" size="small">{{ dispatchStatusLabel(row.status) }}</el-tag></template></el-table-column>
       </el-table>
-      <PagerBar v-model:current-page="logPage" v-model:page-size="logSize" :total="logTotal" />
+      <PagerBar v-model:current-page="logPage" v-model:page-size="logSize" :total="logTotal" @update:current-page="syncLogFilters(false)" @update:page-size="syncLogFilters()" />
     </el-card>
 
     <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="editingId ? t('common.edit') : t('notify.createChannel')" width="640px" :close-on-click-modal="false"><ActionFeedback :error="dialogError" />
@@ -352,4 +411,11 @@ onMounted(loadNotify)
 .notify-receipt-detail span { overflow-wrap:anywhere }
 .notify-receipt-detail-full { grid-column:1 / -1 }
 @media (max-width: 720px) { .notify-receipt-detail { grid-template-columns:1fr } .notify-receipt-detail-full { grid-column:auto } }
+</style>
+
+<style scoped>
+.notify-log-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.notify-log-filters > * { max-width: 250px; }
+.notify-more { display: inline-block; margin-left: 8px; vertical-align: top; }
+.notify-more summary { cursor: pointer; color: var(--ns-text-2); }
 </style>

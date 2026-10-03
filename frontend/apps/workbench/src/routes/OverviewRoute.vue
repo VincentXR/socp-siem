@@ -42,6 +42,8 @@ function goSoar(): void {
 
 <template>
   <OverviewView
+    :availability="overview.availability.value"
+    :health-state="overview.healthStatus.value"
     :stat="stat"
     :sit-stats="sitStats"
     :filtered-alarms="alarms"

@@ -52,21 +52,27 @@ export function getVisibleMenuGroups(role = 'viewer', t: (key: string) => string
     {
       group: t('menuGroup.context'),
       items: [
+        { key: 'endpoints', label: t('experience.endpointAgents'), icon: 'endpoints' },
         { key: 'assets', label: t('menu.assets'), icon: 'assets' },
         { key: 'threat-intel', label: t('menu.threat'), icon: 'threat' },
         { key: 'attack', label: t('menu.attack'), icon: 'attack' },
       ],
     },
     {
-      group: t('menuGroup.platform'),
+      group: t('experience.configuration'),
       defaultCollapsed: true,
       secondary: true,
       items: [
-        { key: 'endpoints', label: t('menu.endpoints'), icon: 'endpoints' },
-        { key: 'refset', label: t('menu.refset'), icon: 'refset' },
+        { key: 'refset', label: t('experience.enrichmentSets'), icon: 'refset' },
         { key: 'ingest', label: t('menu.ingest'), icon: 'ingest' },
-        { key: 'meta', label: t('menu.meta'), icon: 'meta' },
+        { key: 'meta', label: t('experience.fieldDictionary'), icon: 'meta' },
         { key: 'notify', label: t('menu.notify'), icon: 'notify' },
+      ],
+    },
+    {
+      group: t('experience.coverage'),
+      defaultCollapsed: true,
+      items: [
         { key: 'compliance', label: t('menu.compliance'), icon: 'compliance' },
         { key: 'report', label: t('menu.report'), icon: 'report' },
       ],

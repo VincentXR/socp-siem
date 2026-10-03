@@ -27,8 +27,12 @@ export interface AlarmQueryParams {
   sort: AlarmSortField
   order: AlarmSortOrder
   assignee?: string
+  owner?: string
+  entity?: string
   from?: string
   to?: string
+  technique?: string
+  severityGroup?: string
   signal: AbortSignal
 }
 
@@ -53,12 +57,14 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
     params.sort,
     params.order,
     { signal: params.signal },
-    { assignee: params.assignee, from: params.from, to: params.to },
+    { assignee: params.assignee, owner: params.owner, entity: params.entity, from: params.from, to: params.to, technique: params.technique, severityGroup: params.severityGroup },
   ))
   const alarmSeverity = ref('')
   const alarmKeyword = ref('')
   const alarmStatus = ref('')
   const alarmRule = ref('')
+  const alarmOwner = ref('')
+  const investigationFilters = ref<{entity?: string; technique?: string; severityGroup?: string}>({})
   const alarmAssignee = ref('')
   const alarmFrom = ref('')
   const alarmTo = ref('')
@@ -80,6 +86,8 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
     alarmSeverity.value = typeof query.severity === 'string' ? query.severity : ''
     alarmStatus.value = typeof query.status === 'string' ? query.status : ''
     alarmRule.value = typeof query.rule === 'string' ? query.rule : ''
+    alarmOwner.value = typeof query.owner === 'string' ? query.owner : ''
+    investigationFilters.value = Object.fromEntries(['entity', 'technique', 'severityGroup'].filter(key => typeof query[key] === 'string').map(key => [key, query[key]]))
     alarmAssignee.value = typeof query.assignee === 'string' ? query.assignee : ''
     alarmFrom.value = typeof query.from === 'string' ? query.from : ''
     alarmTo.value = typeof query.to === 'string' ? query.to : ''
@@ -106,7 +114,9 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
     const query: Record<string, unknown> = { ...route.query }
     query.q = alarmKeyword.value.trim() || undefined
     query.severity = alarmSeverity.value || undefined
+    if (alarmSeverity.value) { query.severityGroup = undefined; investigationFilters.value.severityGroup = undefined }
     query.status = alarmStatus.value || undefined
+    query.owner = alarmOwner.value || undefined
     query.rule = alarmRule.value.trim() || undefined
     query.assignee = alarmAssignee.value.trim() || undefined
     query.from = alarmFrom.value || undefined
@@ -148,6 +158,8 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
       to: alarmTo.value || undefined,
       sort: alarmSort.value,
       order: alarmOrder.value,
+      owner: alarmOwner.value || undefined,
+      ...investigationFilters.value,
       signal,
     }))
   }
@@ -167,7 +179,7 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
   }
 
   return {
-    alarmSeverity, alarmKeyword, alarmStatus, alarmRule, alarmAssignee, alarmFrom, alarmTo,
+    alarmSeverity, alarmKeyword, alarmStatus, alarmRule, alarmOwner, investigationFilters, alarmAssignee, alarmFrom, alarmTo,
     alarmPageNum, alarmPageSize, alarmSort, alarmOrder, alarmPageData, filteredAlarms,
     loading: request.loading, error: request.error,
     loadAlarmPage, onAlarmSearch, onAlarmSortChange,

@@ -419,6 +419,17 @@ def check_helm_parity(errors: list[str]) -> None:
         errors.append("Helm detect-web-api readiness must not depend on alert-web (no synchronous call exists)")
 
 
+def check_metrics(errors: list[str], base: dict, overlay: dict, effective: dict) -> None:
+    token_file = overlay.get("secrets", {}).get("socp_metrics_token", {}).get("file", "")
+    if not str(token_file).startswith("${SOCP_METRICS_TOKEN_FILE:?"):
+        errors.append("production Prometheus must require SOCP_METRICS_TOKEN_FILE")
+    prometheus = services_of(effective).get("prometheus", {})
+    if "socp_metrics_token" not in str(prometheus.get("secrets", "")):
+        errors.append("production Prometheus must mount socp_metrics_token")
+    if "--config.file=/etc/prometheus/prometheus-prod.yml" not in str(prometheus.get("command", "")):
+        errors.append("production Prometheus must use container-target scrape configuration")
+
+
 def compose_binary() -> list[str] | None:
     docker = shutil.which("docker")
     if docker is None:
@@ -464,6 +475,7 @@ def main() -> int:
     check_kafka(errors, base, overlay, effective)
     check_redis(errors, base, overlay, effective)
     check_helm_parity(errors)
+    check_metrics(errors, base, overlay, effective)
 
     rendered_note = "static merge model"
     command = compose_binary()

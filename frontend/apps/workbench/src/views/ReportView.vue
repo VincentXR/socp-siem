@@ -52,6 +52,9 @@ const archiveError = archiveRequest.error
 const archiveBusy = ref(false)
 const generatedArchiveKey = ref('')
 const archiveDate = ref('')
+const archiveName = ref('')
+const archiveObjects = computed(() => (archiveInfo.value?.objects || []).filter(item => item.key.toLowerCase().includes(archiveName.value.trim().toLowerCase())))
+function openArchive() { document.getElementById('report-snapshots')?.scrollIntoView({ block: 'start' }) }
 const archiveRoot = ref('')
 const chartError = ref('')
 const downloadKey = ref('')
@@ -227,8 +230,11 @@ onUnmounted(() => {
 <template>
   <div class="page-pad view-enter">
     <PageHeader :title="t('report.title')" :description="t('report.description')">
-      <template #actions><el-button size="small" :loading="reportLoading" @click="loadReport">{{ t('common.refresh') }}</el-button><el-button v-if="canWrite" type="primary" size="small" :loading="archiveBusy" @click="doArchive">{{ t('report.generateReport') }}</el-button></template>
+      <template #actions><el-button size="small" :loading="reportLoading" @click="loadReport">{{ t('common.refresh') }}</el-button><el-button v-if="canWrite" type="primary" size="small" :loading="archiveBusy" :disabled="!report || Boolean(reportError)" @click="doArchive">{{ t('experience.saveSnapshot') }}</el-button><el-button size="small" @click="openArchive">{{ t('experience.snapshots') }}</el-button></template>
     </PageHeader>
+    <p>{{ t('experience.snapshotScope') }} · {{ report?.date || '—' }} · {{ sourceLabel(report?.source) }}</p>
+    <p v-if="report" class="report-snapshot-context">{{ t('common.timestamp') }}: {{ report.generatedAt || '—' }} · {{ t('experience.lastObserved') }}: {{ report.freshness || '—' }}</p>
+    <details v-if="report"><summary>{{ t('experience.snapshotPreview') }}</summary><p>{{ report.date }} · {{ report.total }} {{ t('report.todayAlarms') }}</p><ul><li v-for="level in severityKeys" :key="level">{{ severityLabel(level) }}: {{ report.bySeverity[level] || 0 }}</li></ul><pre class="snapshot-json">{{ JSON.stringify(report, null, 2) }}</pre></details>
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('report.readOnly') }}</div>
     <el-alert v-if="archiveError" :title="archiveError.message" type="error" :closable="false" />
     <div class="report-toolbar-meta">
@@ -265,17 +271,22 @@ onUnmounted(() => {
       <template #header>{{ t('report.topRules') }}</template>
       <el-table :data="report.byRule" size="small" border><el-table-column prop="rule" :label="t('common.rule')" show-overflow-tooltip><template #default="{ row }"><el-button v-if="row.ruleId && report.queryWindow === 'today'" link type="primary" @click="openRuleAlarms(row.ruleId)">{{ row.rule }}</el-button><span v-else>{{ row.rule }}</span></template></el-table-column><el-table-column prop="count" :label="t('report.alarmCount')" width="120" /></el-table>
     </el-card>
-    <el-card shadow="never" style="margin-top:14px" class="report-storage-card">
-      <template #header><div class="report-storage-head"><strong>{{ t('report.savedReports') }}</strong><span>{{ t('report.storageHint') }}</span></div></template>
-      <div v-if="generatedArchiveKey" class="report-generated" role="status"><span>{{ t('report.generatedSnapshot', { day: reportDate(generatedArchiveKey) }) }}</span><el-button type="primary" plain :loading="downloadKey === generatedArchiveKey" :disabled="Boolean(downloadKey)" @click="downloadArchive(generatedArchiveKey)">{{ t('report.downloadGenerated') }}</el-button></div>
-      <div class="report-archive-filter"><el-input v-model="archiveDate" type="date" :disabled="!archiveRoot || archiveBusy" :placeholder="t('report.allDates')" :aria-label="t('report.archiveDate')" clearable /><el-button :loading="archiveLoading" @click="loadArchive">{{ t('common.refresh') }}</el-button></div>
+    <el-card shadow="never" style="margin-top:14px" id="report-snapshots" class="report-storage-card">
+      <template #header><div class="report-storage-head"><strong>{{ t('experience.snapshots') }}</strong><span>{{ t('report.storageHint') }}</span></div></template>
+      <div v-if="generatedArchiveKey" class="report-generated" role="status"><span>{{ t('report.generatedSnapshot', { day: reportDate(generatedArchiveKey) }) }}</span><el-button type="primary" plain :loading="downloadKey === generatedArchiveKey" :disabled="Boolean(downloadKey)" @click="downloadArchive(generatedArchiveKey)">{{ t('experience.downloadJson') }}</el-button></div>
+      <div class="report-archive-filter"><el-input v-model="archiveName" clearable :placeholder="t('experience.snapshotName')" :aria-label="t('experience.snapshotName')" /><el-input v-model="archiveDate" type="date" :disabled="!archiveRoot || archiveBusy" :placeholder="t('report.allDates')" :aria-label="t('report.archiveDate')" clearable /><el-button :loading="archiveLoading" @click="loadArchive">{{ t('common.refresh') }}</el-button></div>
       <el-alert v-if="archiveInfo?.truncated" type="warning" :title="t('report.archiveTruncated', { limit: archiveInfo.limit })" :closable="false" />
       <EmptyState v-if="!archiveInfo?.objects.length" :title="archiveLoading ? t('common.loading') : t('common.empty')" />
-      <el-table v-if="archiveInfo?.objects.length" :data="archiveInfo.objects" size="small" border>
+      <el-table v-if="archiveInfo?.objects.length" :data="archiveObjects" size="small" border>
         <el-table-column :label="t('report.reportFile')" min-width="240" show-overflow-tooltip><template #default="{ row }"><strong>{{ reportName(row.key) }}</strong><span class="report-file-date">{{ reportDate(row.key) }}</span><details class="report-storage-details"><summary>{{ t('report.storageDetails') }}</summary><span class="mono">{{ row.key }}</span></details></template></el-table-column>
         <el-table-column prop="size" :label="t('report.size')" width="120"><template #default="{ row }">{{ reportSize(row.size) }}</template></el-table-column>
-        <el-table-column :label="t('common.actions')" width="90" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" :loading="downloadKey === row.key" :disabled="Boolean(downloadKey)" @click="downloadArchive(row.key)">{{ t('report.download') }}</el-button></template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="90" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" :loading="downloadKey === row.key" :disabled="Boolean(downloadKey)" @click="downloadArchive(row.key)">{{ t('experience.downloadJson') }}</el-button></template></el-table-column>
       </el-table>
     </el-card>
   </div>
 </template>
+
+<style scoped>
+.snapshot-json { white-space: pre-wrap; overflow-wrap: anywhere; }
+.report-snapshot-context { color: var(--ns-text-2); font-size: 12px; }
+</style>

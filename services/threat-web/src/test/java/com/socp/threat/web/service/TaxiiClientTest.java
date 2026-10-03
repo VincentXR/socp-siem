@@ -27,6 +27,25 @@ class TaxiiClientTest {
     }
 
     @Test
+    void actualPaginatedFetchCarriesPinnedResolutionToEveryConnection() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var hits = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext("/collection", exchange -> {
+            hits.incrementAndGet();
+            respond(exchange, exchange.getRequestURI().getQuery() == null
+                    ? "{\"objects\":[],\"next\":\"/collection?page=2\"}" : "{\"objects\":[]}");
+        }); server.start();
+        String host = "taxii-pinned-fixture.invalid";
+        com.socp.platform.client.http.PinnedDnsResolverProvider.pin(host,
+                new java.net.InetAddress[] { java.net.InetAddress.getByName("127.0.0.1") });
+        try {
+            var pages = new TaxiiClient(Duration.ofSeconds(2), true, localPolicy(host))
+                    .fetchCollection(URI.create("http://" + host + ":" + server.getAddress().getPort() + "/collection"), null);
+            assertThat(pages).hasSize(2); assertThat(hits).hasValue(2);
+        } finally { com.socp.platform.client.http.PinnedDnsResolverProvider.unpin(host); }
+    }
+
+    @Test
     void followsBoundedSameHostPaginationAndSendsTaxiiHeaders() throws Exception {
         AtomicReference<String> authorization = new AtomicReference<>();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
@@ -45,6 +64,17 @@ class TaxiiClientTest {
 
         assertThat(pages).hasSize(2).allMatch(body -> body.contains("indicator--"));
         assertThat(authorization).hasValue("Bearer test-token");
+    }
+
+    @Test
+    void invalidJsonRetainsSanitizedProtocolFailureRatherThanTransportFailure() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/collection", exchange -> respond(exchange, "not-json-with-private-content"));
+        server.start();
+        URI collection = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/collection");
+        assertThatThrownBy(() -> new TaxiiClient(Duration.ofSeconds(3), true, localPolicy("127.0.0.1"))
+                .fetchCollection(collection, null)).isInstanceOf(IllegalArgumentException.class)
+                .hasMessage("invalid TAXII response JSON");
     }
 
     @Test

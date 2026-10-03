@@ -39,6 +39,12 @@ final class SoarControllerReadSupport {
                 createdFrom, createdTo);
     }
 
+    Page<Map<String, Object>> investigationRuns(Pageable pageable, String alarmId, String caseId, String status, String q) {
+        if (runQueries == null) throw new org.springframework.web.server.ResponseStatusException(
+                org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE, "SOAR investigation query unavailable");
+        return runQueries.investigationRuns(pageable, alarmId, caseId, status, q);
+    }
+
     Map<String, Object> run(String id) {
         return runQueries == null ? service.getRun(id) : runQueries.getRun(id);
     }

@@ -55,9 +55,18 @@ public class InMemoryOidcStateStore implements OidcStateStore {
     }
 
     @Override
-    public Mono<Entry> consume(String state) {
+    public Mono<Entry> consume(String state, String browserBinding) {
         return Mono.defer(() -> {
-            StoredEntry stored = states.remove(state);
+            if (state == null || browserBinding == null) return Mono.empty();
+            java.util.concurrent.atomic.AtomicReference<StoredEntry> consumed = new java.util.concurrent.atomic.AtomicReference<>();
+            states.computeIfPresent(state, (key, stored) -> {
+                if (stored.expiresAt() <= clock.getAsLong()) return null;
+                if (!java.security.MessageDigest.isEqual(browserBinding.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                        stored.entry().browserBinding().getBytes(java.nio.charset.StandardCharsets.UTF_8))) return stored;
+                consumed.set(stored);
+                return null;
+            });
+            StoredEntry stored = consumed.get();
             if (stored == null || stored.expiresAt() <= clock.getAsLong()
                     || stored.entry().expiresAt() <= clock.getAsLong()) {
                 return Mono.empty();

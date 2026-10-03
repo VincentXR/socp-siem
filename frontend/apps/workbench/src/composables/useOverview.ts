@@ -1,8 +1,9 @@
-import { computed, type Ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, type Ref } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
-import { alarmStats, caseStats, getHealthSnapshot, listAlarmsPaged } from '../api'
+import { healthState } from '../lib/health-state'
+import { HEALTH_TARGETS, alarmStats, caseStats, getHealthSnapshot, listAlarmsPaged } from '../api'
 
-export function useOverview(enabled: Ref<boolean>) {
+export function useOverview(enabled: Ref<boolean>, healthEnabled: Ref<boolean> = enabled) {
   const alarmsQuery = useQuery({
     queryKey: ['overview', 'alarms'],
     // The overview only renders recent alarms. Keep its frequent refresh bounded
@@ -17,7 +18,7 @@ export function useOverview(enabled: Ref<boolean>) {
   const healthQuery = useQuery({
     queryKey: ['overview', 'health'],
     queryFn: ({ signal }) => getHealthSnapshot({ signal, timeoutMs: 5_000 }),
-    enabled,
+    enabled: healthEnabled,
     refetchInterval: 30_000,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: false,
@@ -40,6 +41,15 @@ export function useOverview(enabled: Ref<boolean>) {
     refetchOnWindowFocus: false,
   })
 
+  const observedNow = ref(Date.now())
+  let healthClock: ReturnType<typeof setInterval> | undefined
+  onMounted(() => { healthClock = setInterval(() => { observedNow.value = Date.now() }, 15_000) })
+  onUnmounted(() => { if (healthClock !== undefined) clearInterval(healthClock) })
+  const availability = computed(() => ({ alarms: Boolean(alarmsQuery.data.value), stats: Boolean(statsQuery.data.value), cases: Boolean(casesQuery.data.value) }))
+  const healthStatus = computed(() => healthState(healthQuery.data.value?.services ?? {}, HEALTH_TARGETS, {
+    fetching: healthQuery.isFetching.value, failed: healthQuery.isError.value, updatedAt: Math.min(healthQuery.dataUpdatedAt.value, Date.parse(healthQuery.data.value?.checkedAt ?? '') || healthQuery.dataUpdatedAt.value), now: observedNow.value,
+  }))
+  const healthUpdatedAt = healthQuery.dataUpdatedAt
   const alarms = computed(() => alarmsQuery.data.value?.items ?? [])
   const healths = computed(() => healthQuery.data.value?.services ?? {})
   const sitStats = computed(() => statsQuery.data.value ?? null)
@@ -76,5 +86,5 @@ export function useOverview(enabled: Ref<boolean>) {
     await statsQuery.refetch().catch(() => undefined)
   }
 
-  return { alarms, healths, sitStats, stat, loading, refreshing, updatedAt, error, refreshOverview, loadOverviewStats }
+  return { availability, healthStatus, healthUpdatedAt, alarms, healths, sitStats, stat, loading, refreshing, updatedAt, error, refreshOverview, loadOverviewStats }
 }

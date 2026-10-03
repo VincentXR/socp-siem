@@ -28,7 +28,7 @@ public record ConnectionContext(String tenantId, String connectionId, int revisi
     public String resolveSecret(String name) {
         String ref = secretRefs.get(name);
         if (ref == null || ref.isBlank()) return null;
-        return secretResolver.resolve(ref).orElseThrow(() ->
+        return secretResolver.resolveForTenant(tenantId, ref).orElseThrow(() ->
                 new IllegalStateException("SOAR_SECRET_RESOLUTION_FAILED: " + name));
     }
 

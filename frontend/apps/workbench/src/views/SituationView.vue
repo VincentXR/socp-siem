@@ -29,6 +29,7 @@ import {
   type AlarmStats, type GasAlert, type GasStats, type IngestSummary,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { coalescedRefresh } from '../lib/coalesced-refresh'
 import { tOr } from '../utils/i18nLabel'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
@@ -60,6 +61,7 @@ interface SituationSnapshot {
   recent: GasAlert[]
   ingest: IngestSummary | null
   recentAvailable: boolean
+  recentUpdatedAt: number
   ingestFresh: boolean
   stale: boolean
   errors: string[]
@@ -88,6 +90,7 @@ const situationQuery = useQuery({
       recent: recent.status === 'fulfilled' ? recent.value : previous?.recent ?? [],
       ingest: ingest.status === 'fulfilled' ? ingest.value : previous?.ingest ?? null,
       recentAvailable: recent.status === 'fulfilled' || (previous?.recentAvailable ?? false),
+      recentUpdatedAt: recent.status === 'fulfilled' ? Date.now() : previous?.recentUpdatedAt ?? 0,
       ingestFresh: ingest.status === 'fulfilled',
       stale: (stats.status === 'rejected' && !!previous?.stats)
         || (engine.status === 'rejected' && !!previous?.engine)
@@ -106,6 +109,8 @@ const sitIngest = computed<IngestSummary | null>(() => situationQuery.data.value
 const situationErrors = computed(() => situationQuery.data.value?.errors ?? [])
 const situationStale = computed(() => situationQuery.data.value?.stale ?? false)
 const recentAvailable = computed(() => situationQuery.data.value?.recentAvailable ?? false)
+const lastStreamEventAt = ref(0)
+const lastEventObservation = computed(() => Math.max(lastStreamEventAt.value, situationQuery.data.value?.recentUpdatedAt ?? 0))
 const situationFetching = computed(() => situationQuery.isFetching.value)
 
 function cssToken(variable: string, fallback: string) {
@@ -176,13 +181,14 @@ function openAlertStream(): void {
       try {
         const value = JSON.parse(event.data)
         if (value && value.ruleId) {
+          lastStreamEventAt.value = Date.now()
           mergeFeed([{
             id: value.id ?? `sse-${value.ruleId}-${value.timestamp}`,
             timestamp: value.timestamp ?? new Date().toISOString(),
             ruleId: value.ruleId, ruleName: value.ruleName ?? '', title: value.title ?? value.ruleName ?? '', severity: value.severity ?? 'INFO',
             message: value.message ?? '', entity: value.entity ?? '',
           }])
-          void loadSituation()
+          streamRefresh.request()
         }
       } catch { /* 忽略异常帧 */ }
     })
@@ -205,7 +211,8 @@ function closeAlertStream(): void {
   if (alertStream) { alertStream.close(); alertStream = null }
   alertStreamState.value = 'off'
 }
-async function loadSituation() { await situationQuery.refetch() }
+async function loadSituation() { await situationQuery.refetch({ cancelRefetch: false }) }
+const streamRefresh = coalescedRefresh(loadSituation, 5_000)
 function mergeFeed(incoming: GasAlert[]) {
   const known = new Set(liveFeed.value.map(alert => alert.id))
   const fresh = incoming.filter(alert => !known.has(alert.id)).map(alert => ({ ...alert, _new: true }))
@@ -272,6 +279,7 @@ onMounted(() => {
   document.addEventListener('visibilitychange', onVisibilityChange)
 })
 onUnmounted(() => {
+  streamRefresh.dispose()
   renderToken++
   closeAlertStream(); window.removeEventListener('resize', onResize)
   document.removeEventListener('visibilitychange', onVisibilityChange)
@@ -296,6 +304,7 @@ onUnmounted(() => {
       class="situation-data-warning"
     />
 
+    <p class="situation-feed-observation" role="status">{{ t('experience.lastObserved') }}: {{ lastEventObservation ? d(new Date(lastEventObservation), 'dateTime') : t('experience.state.unknown') }} · {{ t(alertStreamState === 'connected' ? 'experience.liveFeed' : 'experience.pollingFeed') }}</p>
     <div class="sit-kpis">
             <div class="sit-kpi">
               <div class="k-num">{{ sitEngine?.eventCount ?? t('time.notAvailable') }}</div><div class="k-label">{{ t('situation.engineEvents') }}</div>
@@ -360,7 +369,7 @@ onUnmounted(() => {
             <el-col :xs="24" :lg="13">
               <el-card shadow="never" class="sit-card">
                 <template #header>
-                  <div style="display:flex;align-items:center;gap:10px">
+                  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px">
                     <span class="live-dot" :class="{ off: !liveOn || alertStreamState !== 'connected', reconnecting: alertStreamState === 'reconnecting' }" />
                     <span>{{ t('situation.liveEventStream') }}</span>
                     <span class="live-status">{{ t(`situation.stream${alertStreamState.charAt(0).toUpperCase()}${alertStreamState.slice(1)}`) }}</span>
@@ -414,3 +423,11 @@ onUnmounted(() => {
         </div>
 
 </template>
+
+<style scoped>
+.situation-feed-observation { color: var(--ns-text-2); font-size: 12px; }
+@media (max-width: 720px) {
+  .sit-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sit-kpi { min-width: 0; }
+}
+</style>

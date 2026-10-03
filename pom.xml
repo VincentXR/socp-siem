@@ -42,6 +42,9 @@
              artifacts until the fixed 2.4.20 line is GA. -->
         <kotlin.version>2.4.10</kotlin.version>
         <commons-lang3.version>3.18.0</commons-lang3.version>
+        <!-- First stable fix for CVE-2026-54399 and CVE-2026-54428;
+             HttpClient 5.5.2 supports the HttpCore 5.4 line. -->
+        <httpcore5.version>5.4.3</httpcore5.version>
         <re2j.version>1.8</re2j.version>
         <!-- JWT 校验（socp-auth）：Spring Boot BOM 不管理该坐标，必须自己钉版本 -->
         <nimbus-jose-jwt.version>9.48</nimbus-jose-jwt.version>
@@ -150,6 +153,17 @@
             </dependency>
 
             <!-- Direct management wins over older versions in imported BOMs. -->
+            <!-- Both Core artifacts must override the imported Boot BOM together. -->
+            <dependency>
+                <groupId>org.apache.httpcomponents.core5</groupId>
+                <artifactId>httpcore5</artifactId>
+                <version>${httpcore5.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.httpcomponents.core5</groupId>
+                <artifactId>httpcore5-h2</artifactId>
+                <version>${httpcore5.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.apache.kafka</groupId>
                 <artifactId>kafka-clients</artifactId>

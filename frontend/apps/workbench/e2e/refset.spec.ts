@@ -15,6 +15,10 @@ test('reference set drawer stays on its target until batch deletion completes', 
     if (!isWorkbenchBackendUrl(url)) { await route.continue(); return }
     const path = url.pathname
     const method = route.request().method()
+    if (path === '/api/v1/system/health') {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 0, data: { status: 'up', services: { 'detect-web': 'up' }, checkedAt: new Date().toISOString() } }) })
+      return
+    }
     let data: unknown
     if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (path === '/auth/operators') data = { items: [] }

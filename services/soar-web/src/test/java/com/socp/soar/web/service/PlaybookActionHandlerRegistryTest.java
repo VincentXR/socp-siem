@@ -16,6 +16,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 class PlaybookActionHandlerRegistryTest {
@@ -27,7 +28,7 @@ class PlaybookActionHandlerRegistryTest {
         properties.setFirewallBlockUrl("https://firewall.example.test/block");
         PlaybookActionHandlerRegistry registry = new PlaybookActionHandlerRegistry(
                 mock(NotifyClient.class), mock(IncidentClient.class), http, properties);
-        when(http.postExternal(eq("https://firewall.example.test/block"), any(),
+        when(http.postExternalOnce(eq("https://firewall.example.test/block"), any(),
                 eq(SocpHttpClient.JSON), eq(5000))).thenReturn(call("{}"));
 
         Map<String, Object> result = registry.find(PlaybookActionType.FIREWALL_BLOCK).handle(
@@ -36,6 +37,9 @@ class PlaybookActionHandlerRegistryTest {
         assertEquals("failed", result.get("status"));
         assertEquals("MISSING_CONNECTOR_RECEIPT", result.get("errorCode"));
         assertEquals("EXECUTED", result.get("mode"));
+        verify(http).postExternalOnce(eq("https://firewall.example.test/block"), any(),
+                eq(SocpHttpClient.JSON), eq(5000));
+        verifyNoMoreInteractions(http);
     }
 
     @Test
@@ -45,7 +49,7 @@ class PlaybookActionHandlerRegistryTest {
         properties.setFirewallBlockUrl("https://firewall.example.test/block");
         PlaybookActionHandlerRegistry registry = new PlaybookActionHandlerRegistry(
                 mock(NotifyClient.class), mock(IncidentClient.class), http, properties);
-        when(http.postExternal(eq("https://firewall.example.test/block"), any(),
+        when(http.postExternalOnce(eq("https://firewall.example.test/block"), any(),
                 eq(SocpHttpClient.JSON), eq(5000))).thenReturn(call(
                 "{\"accepted\":true,\"operationId\":\"fw-123\"}"));
 
@@ -55,8 +59,26 @@ class PlaybookActionHandlerRegistryTest {
         assertEquals("executed", result.get("status"));
         assertEquals("EXECUTED", result.get("mode"));
         assertEquals("fw-123", result.get("operationId"));
-        verify(http).postExternal(eq("https://firewall.example.test/block"), any(),
+        verify(http).postExternalOnce(eq("https://firewall.example.test/block"), any(),
                 eq(SocpHttpClient.JSON), eq(5000));
+        verifyNoMoreInteractions(http);
+    }
+
+    @Test
+    void webhookExecutesOnlyThroughTheSingleAttemptClient() {
+        SocpHttpClient http = mock(SocpHttpClient.class);
+        PlaybookActionHandlerRegistry registry = new PlaybookActionHandlerRegistry(
+                mock(NotifyClient.class), mock(IncidentClient.class), http);
+        PlaybookActionContext context = new PlaybookActionContext(
+                "https://hooks.example.test/notify", Map.of("id", "AL-1"), "soar-key-2", false);
+        when(http.postExternalOnce(context.action(), context.payloadJson(), SocpHttpClient.JSON, 3000))
+                .thenReturn(call("{}"));
+
+        Map<String, Object> result = registry.find(PlaybookActionType.WEBHOOK).handle(context);
+
+        assertEquals("executed", result.get("status"));
+        verify(http).postExternalOnce(context.action(), context.payloadJson(), SocpHttpClient.JSON, 3000);
+        verifyNoMoreInteractions(http);
     }
 
     @Test

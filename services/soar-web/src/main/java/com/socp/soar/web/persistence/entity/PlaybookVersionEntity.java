@@ -37,6 +37,10 @@ public class PlaybookVersionEntity implements Persistable<String> {
     private String definitionHash;
     @Column(name = "risk_summary_json", columnDefinition = "TEXT")
     private String riskSummaryJson;
+    @Column(name = "high_risk_action_count", nullable = false)
+    private int highRiskActionCount;
+    @Column(name = "action_count", nullable = false)
+    private int actionCount;
     @Column(name = "created_by", nullable = false, length = 128)
     private String createdBy;
     @Column(name = "published_by", length = 128)
@@ -71,7 +75,9 @@ public class PlaybookVersionEntity implements Persistable<String> {
     public String getDefinitionHash() { return definitionHash; }
     public void setDefinitionHash(String definitionHash) { this.definitionHash = definitionHash; }
     public String getRiskSummaryJson() { return riskSummaryJson; }
-    public void setRiskSummaryJson(String riskSummaryJson) { this.riskSummaryJson = riskSummaryJson; }
+    public void setRiskSummaryJson(String riskSummaryJson) { this.riskSummaryJson = riskSummaryJson;
+        int[] counts = com.socp.soar.web.service.SoarCatalogMetadata.riskCounts(riskSummaryJson);
+        this.highRiskActionCount = counts[0]; this.actionCount = counts[1]; }
     public String getCreatedBy() { return createdBy; }
     public void setCreatedBy(String createdBy) { this.createdBy = createdBy; }
     public String getPublishedBy() { return publishedBy; }

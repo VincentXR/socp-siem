@@ -14,6 +14,12 @@
     <description>案件与调查时间线（事件归并/调查，IR-4）</description>
 
     <dependencies>
+        <!-- Exercise the actual inter-service HTTP wire contract against this server. -->
+        <dependency>
+            <groupId>com.socp.platform</groupId>
+            <artifactId>socp-client</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

@@ -410,16 +410,20 @@ public class NotificationDispatcher {
     }
 
     public Page<Map<String, Object>> log(Pageable pageable) {
-        return dispatchLogs.findByTenantIdOrderByCreatedAtDesc(tenant(), pageable)
-                .map(NotificationDispatcher::fromLogEntity);
+        return log(pageable, "", "", "");
     }
 
     public Page<Map<String, Object>> log(Pageable pageable, String status) {
-        if (status == null || status.isBlank()) return log(pageable);
-        if (!java.util.Set.of("sent", "failed", "unknown", "pending", "requeued").contains(status)) {
+        return log(pageable, status, "", "");
+    }
+
+    public Page<Map<String, Object>> log(Pageable pageable, String status, String alarmId, String channel) {
+        String normalizedStatus = status == null ? "" : status.trim();
+        if (!normalizedStatus.isEmpty() && !java.util.Set.of("sent", "logged", "failed", "unknown", "pending", "requeued", "skipped").contains(normalizedStatus)) {
             throw com.socp.platform.error.exception.ApiException.badRequest("Unsupported delivery status");
         }
-        return dispatchLogs.findByTenantIdAndStatusOrderByCreatedAtDesc(tenant(), status, pageable)
+        return dispatchLogs.filterPage(tenant(), normalizedStatus, alarmId == null ? "" : alarmId.trim(),
+                channel == null ? "" : channel.trim(), pageable)
                 .map(NotificationDispatcher::fromLogEntity);
     }
 

@@ -61,11 +61,22 @@ class NotificationDispatcherTest {
     void historyStatusFilteringIsTenantScopedAndRejectsUnknownFilters() {
         TenantContext.set("tenant-a");
         var pageable = org.springframework.data.domain.PageRequest.of(1, 20);
-        given(dispatchLogs.findByTenantIdAndStatusOrderByCreatedAtDesc("tenant-a", "failed", pageable))
+        given(dispatchLogs.filterPage("tenant-a", "failed", "", "", pageable))
                 .willReturn(org.springframework.data.domain.Page.empty(pageable));
         assertTrue(dispatcher().log(pageable, "failed").isEmpty());
-        verify(dispatchLogs).findByTenantIdAndStatusOrderByCreatedAtDesc("tenant-a", "failed", pageable);
+        verify(dispatchLogs).filterPage("tenant-a", "failed", "", "", pageable);
         assertThrows(com.socp.platform.error.exception.ApiException.class, () -> dispatcher().log(pageable, "invented"));
+        assertThrows(com.socp.platform.error.exception.ApiException.class, () -> dispatcher().log(pageable, "invented", "alarm", "Ops"));
+    }
+
+    @Test
+    void fullHistoryFiltersIncludeLocalReceiptsAndPreserveExactScope() {
+        TenantContext.set("tenant-a");
+        var pageable = org.springframework.data.domain.PageRequest.of(1, 20);
+        given(dispatchLogs.filterPage("tenant-a", "logged", "alarm-1", "Ops", pageable))
+                .willReturn(org.springframework.data.domain.Page.empty(pageable));
+        assertTrue(dispatcher().log(pageable, " logged ", " alarm-1 ", " Ops ").isEmpty());
+        verify(dispatchLogs).filterPage("tenant-a", "logged", "alarm-1", "Ops", pageable);
     }
 
     @Test

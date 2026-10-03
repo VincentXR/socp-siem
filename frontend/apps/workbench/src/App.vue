@@ -36,7 +36,7 @@ const activeLabel = computed(() => {
 
 const { theme, initTheme, toggleTheme } = useTheme()
 const overviewEnabled = computed(() => isAuthed.value && activeMenu.value === 'overview')
-const overview = useOverview(overviewEnabled)
+const overview = useOverview(overviewEnabled, isAuthed)
 const { alarms } = overview
 const alarmQuery = useAlarmQuery()
 
@@ -134,6 +134,8 @@ onMounted(async () => {
     <LoginView v-else-if="!isAuthed" @done="onLoginDone" />
     <AppShell
       v-else
+      :health-state="overview.healthStatus.value"
+      :health-coverage="`${Object.keys(overview.healths.value).length} / 14`"
       :menu-groups="menuGroups"
       :active-menu="activeMenu"
       :active-label="activeLabel"

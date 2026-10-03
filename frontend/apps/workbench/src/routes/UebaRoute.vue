@@ -11,7 +11,7 @@ const theme = computed(() => state.theme.value)
 const router = useRouter()
 
 function goToAlarms(entity: string): void {
-  void router.push({ name: 'alarms', query: { q: entity } })
+  void router.push({ name: 'alarms', query: { entity } })
 }
 </script>
 

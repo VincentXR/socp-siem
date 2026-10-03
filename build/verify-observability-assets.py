@@ -48,24 +48,8 @@ def runbook_anchors() -> set[str]:
     return anchors
 
 
-def alerts_from_helm(text: str) -> list[dict]:
+def parse_alert_blocks(text: str) -> list[dict]:
     """Parse `- alert: Name` blocks and the annotations that follow, until the next alert."""
-    alerts: list[dict] = []
-    current: dict | None = None
-    for line in text.splitlines():
-        name = re.match(r"^\s*-\s+alert:\s*(\S+)\s*$", line)
-        if name:
-            current = {"alert": name.group(1), "runbook_url": None}
-            alerts.append(current)
-            continue
-        if current is not None:
-            url = re.match(r"^\s*runbook_url:\s*(\S+)\s*$", line)
-            if url:
-                current["runbook_url"] = url.group(1)
-    return alerts
-
-
-def alerts_from_soar(text: str) -> list[dict]:
     alerts: list[dict] = []
     current: dict | None = None
     for line in text.splitlines():
@@ -101,8 +85,8 @@ def main() -> int:
         errors.append("docs/operations/incident-response.md is missing")
 
     for path, parser, label in (
-        (RULES, alerts_from_helm, "PrometheusRule"),
-        (SOAR_RULES, alerts_from_soar, "soar-alerts.yml"),
+        (RULES, parse_alert_blocks, "PrometheusRule"),
+        (SOAR_RULES, parse_alert_blocks, "soar-alerts.yml"),
     ):
         if not path.is_file():
             errors.append(f"missing rules file {path.relative_to(ROOT)}")

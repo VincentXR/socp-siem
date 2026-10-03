@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import 'element-plus/es/components/drawer/style/css.mjs'
+import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import { useRouter } from 'vue-router'
+import { techniqueAlarms } from '../api/investigation-context'
 import PagerBar from '../components/PagerBar.vue'
 import { get } from '../api/core'
 import type { Paged, RuleOption } from '../api'
@@ -34,21 +37,32 @@ import { useI18n } from '../composables/useI18n'
 
 const { t, locale } = useI18n()
 const router = useRouter()
-const relatedTechnique = ref<Technique | null>(null)
-const techniqueRules = useRequest<Paged<RuleOption>>()
+const selectedTechnique = ref<Technique | null>(null)
+const detailRules = useRequest<Paged<RuleOption>>()
 const techniqueRulePage = ref(1)
 const techniqueRuleSize = ref(20)
 async function loadTechniqueRules() {
-  const id = relatedTechnique.value?.id
+  const id = selectedTechnique.value?.id
   if (!id || disposed) return
-  await techniqueRules.execute(signal => get<Paged<RuleOption>>(withQuery('/detect-web/api/v1/rules/by-technique', { technique: id, page: techniqueRulePage.value, size: techniqueRuleSize.value }), { signal }))
+  await detailRules.execute(signal => get<Paged<RuleOption>>(withQuery('/detect-web/api/v1/rules/by-technique', { technique: id, page: techniqueRulePage.value, size: techniqueRuleSize.value }), { signal }))
 }
-function inspectTechnique(technique: Technique) {
-  techniqueRules.reset()
-  relatedTechnique.value = technique; techniqueRulePage.value = 1
-  void loadTechniqueRules()
+function setTechniqueRulePage(page: number) { techniqueRulePage.value = page; void loadTechniqueRules() }
+function setTechniqueRuleSize(size: number) { techniqueRuleSize.value = size; techniqueRulePage.value = 1; void loadTechniqueRules() }
+const detailAlarms = useRequest<Awaited<ReturnType<typeof techniqueAlarms>>>()
+const detailNote = useRequest<{ note: string }>()
+async function openTechnique(technique: Technique) {
+  if (disposed) return
+  selectedTechnique.value = technique
+  techniqueRulePage.value = 1
+  detailRules.reset(); detailAlarms.reset(); detailNote.reset()
+  await Promise.all([
+    loadTechniqueRules(),
+    detailAlarms.execute(signal => techniqueAlarms(technique.id, { signal })),
+    detailNote.execute(signal => getTechniqueNote(technique.id, { signal })),
+  ])
 }
-watch([techniqueRulePage, techniqueRuleSize], () => { void loadTechniqueRules() })
+function closeTechnique() { selectedTechnique.value = null; detailRules.cancel(); detailAlarms.cancel(); detailNote.cancel() }
+
 type AttackCov = Awaited<ReturnType<typeof attackCoverage>>
 
 const tacticsRequest = useRequest<Tactic[]>()
@@ -135,7 +149,7 @@ const attackMatrix = computed(() => {
 })
 
 function techClass(technique: { covered: boolean; count: number }) {
-  if (technique.count > 0) return 'am-cell--hit'
+  if (!attackCov.value || coverageError.value) return 'am-cell--unknown'
   if (technique.covered) return 'am-cell--covered'
   return 'am-cell--idle'
 }
@@ -190,6 +204,7 @@ async function saveTechnique() {
     if (disposed) return
     noteGuard.markSaved()
     techniqueDialogVisible.value = false
+    if (selectedTechnique.value?.id === id) void detailNote.execute(signal => getTechniqueNote(id, { signal }))
     ElMessage.success(t('attack.updated'))
   } catch (error) {
     if (!disposed) noteSaveError.value = error instanceof Error ? error.message : t('attack.updateFailed')
@@ -202,7 +217,7 @@ watch(techniqueDialogVisible, visible => {
 onMounted(() => { void loadAttack(); void computeAttackCov() })
 onUnmounted(() => {
   disposed = true
-  techniqueRules.cancel()
+  closeTechnique()
   tacticsRequest.cancel(); techniquesRequest.cancel(); coverageRequest.cancel(); activityRequest.cancel(); noteRequest.cancel()
 })
 </script>
@@ -215,21 +230,6 @@ onUnmounted(() => {
     <PageHeader :title="t('attack.title')" :description="t('attack.description')">
       <template #actions><el-button :loading="activityLoading" :disabled="!techniques.length" @click="loadActivity">{{ t('attack.refreshActivity') }}</el-button><el-button :loading="attackLoading" @click="computeAttackCov">{{ t('attack.refreshCoverage') }}</el-button></template>
     </PageHeader>
-    <el-dialog :model-value="!!relatedTechnique" :title="relatedTechnique?.id + ' · ' + relatedTechnique?.name" width="min(720px, 96vw)" @close="relatedTechnique = null; techniqueRules.cancel()">
-      <template v-if="relatedTechnique">
-        <p>{{ relatedTechnique.description }}</p>
-        <el-button link @click="openUrl(relatedTechnique.url)">{{ t('attack.details') }} · MITRE ATT&amp;CK</el-button>
-        <h3>{{ t('workflow.relatedRules') }}</h3>
-        <ActionFeedback :error="techniqueRules.error.value?.message" />
-        <el-button v-if="techniqueRules.error.value" @click="loadTechniqueRules">{{ t('common.retry') }}</el-button>
-        <el-table :data="techniqueRules.data.value?.items || []" :empty-text="techniqueRules.loading.value ? t('common.loading') : t('common.empty')">
-          <el-table-column prop="name" :label="t('common.name')" />
-          <el-table-column prop="status" :label="t('common.status')" />
-          <el-table-column :label="t('common.actions')" min-width="200"><template #default="{ row }"><el-button link @click="router.push({ name: 'rule-edit', params: { ruleId: row.id } })">{{ t('common.details') }}</el-button><el-button link type="primary" @click="router.push({ name: 'alarms', query: { rule: row.id } })">{{ t('workflow.relatedAlarms') }}</el-button></template></el-table-column>
-        </el-table>
-        <PagerBar v-model:current-page="techniqueRulePage" v-model:page-size="techniqueRuleSize" :total="techniqueRules.data.value?.total || 0" />
-      </template>
-    </el-dialog>
     <el-card shadow="never" class="attack-card">
       <div class="attack-summary">
         <div><div class="attack-metric-label">{{ t('attack.detectionCoverage') }}</div><div class="attack-metric-hero">{{ attackCov ? attackCov.coverage : t('time.notAvailable') }}<span v-if="attackCov">%</span></div></div>
@@ -251,8 +251,10 @@ onUnmounted(() => {
       <div class="attack-matrix">
         <div v-for="column in attackMatrix" :key="column.tac.id" class="am-col">
           <div class="am-head">{{ column.tac.name }}<span class="am-cov">{{ attackCov ? column.covered : t('time.notAvailable') }}/{{ column.total }}</span></div>
-          <div v-for="technique in column.techs" :key="technique.id" class="am-cell" :class="techClass(technique)" role="button" :tabindex="0" @click="inspectTechnique(technique)" @keydown.enter.space.prevent="inspectTechnique(technique)" :title="technique.id + ' ' + technique.name" :aria-label="cellAria(technique)">
-            <span class="am-id">{{ technique.id }}</span><span v-if="technique.count" class="am-badge">{{ technique.count }}</span>
+          <div v-for="technique in column.techs" :key="technique.id" class="am-cell" :class="techClass(technique)" role="button" tabindex="0" @click="openTechnique(technique)" @keydown.enter.space.prevent="openTechnique(technique)" :title="technique.id + ' ' + technique.name" :aria-label="cellAria(technique)">
+            <span class="am-id">{{ technique.id }}</span><span class="am-name">{{ technique.name }}</span>
+            <span class="am-coverage">{{ !attackCov || coverageError ? t('experience.state.unknown') : technique.covered ? t('compliance.enabled') : t('experience.unmapped') }}</span>
+            <span class="am-badge">{{ activityRequest.data.value ? technique.count : '—' }}</span>
           </div>
         </div>
       </div>
@@ -262,10 +264,31 @@ onUnmounted(() => {
         <el-table-column prop="id" :label="t('attack.techniqueId')" width="110" />
         <el-table-column prop="name" :label="t('attack.name')" min-width="180" show-overflow-tooltip />
         <el-table-column prop="tactic" :label="t('attack.tactic')" width="130" show-overflow-tooltip />
-        <el-table-column :label="t('attack.operation')" width="125"><template #default="{ row }"><el-button link type="primary" size="small" @click="inspectTechnique(row as Technique)">{{ t('attack.details') }}</el-button><el-button link type="primary" size="small" @click="openTechniqueEdit(row as Technique)">{{ t('forms.note') }}</el-button></template></el-table-column>
+        <el-table-column :label="t('attack.operation')" width="125"><template #default="{ row }"><el-button link type="primary" size="small" @click="openTechnique(row as Technique)">{{ t('attack.details') }}</el-button><el-button link type="primary" size="small" @click="openTechniqueEdit(row as Technique)">{{ t('forms.note') }}</el-button></template></el-table-column>
       </el-table>
     </el-card>
 
+    <el-drawer :model-value="Boolean(selectedTechnique)" :title="t('experience.technique')" size="min(700px, 96vw)" @close="closeTechnique">
+      <template v-if="selectedTechnique">
+        <h2>{{ selectedTechnique.id }} · {{ selectedTechnique.name }}</h2><p>{{ selectedTechnique.description }}</p>
+        <el-button type="primary" @click="router.push({ name: 'alarms', query: { technique: selectedTechnique.id } })">{{ t('experience.matchingAlarms') }}</el-button>
+        <el-button v-if="canWrite" @click="router.push({ name: 'detect', query: { technique: selectedTechnique.id } })">{{ t('experience.configureRule') }}</el-button>
+        <h3>{{ t('experience.mappedRules') }}</h3>
+        <ActionFeedback :error="detailRules.error.value?.message || ''" />
+        <el-button v-if="detailRules.error.value" @click="loadTechniqueRules">{{ t('common.retry') }}</el-button>
+        <p v-if="detailRules.loading.value">{{ t('common.loading') }}</p>
+        <p v-else-if="detailRules.data.value && !detailRules.data.value.items.length">{{ t('experience.unmapped') }}</p>
+        <div v-for="rule in detailRules.data.value?.items || []" :key="rule.id"><el-button v-if="canWrite" link @click="router.push({ name: 'rule-edit', params: { ruleId: rule.id } })">{{ rule.name }}</el-button><span v-else>{{ rule.name }}</span> · {{ rule.status }} <el-button link type="primary" @click="router.push({ name: 'alarms', query: { rule: rule.id, technique: selectedTechnique.id } })">{{ t('workflow.relatedAlarms') }}</el-button></div>
+        <PagerBar :current-page="techniqueRulePage" :page-size="techniqueRuleSize" :total="detailRules.data.value?.total || 0" @update:current-page="setTechniqueRulePage" @update:page-size="setTechniqueRuleSize" />
+        <h3>{{ t('experience.matchingAlarms') }}</h3><ActionFeedback :error="detailAlarms.error.value?.message || ''" />
+        <p v-if="detailAlarms.loading.value">{{ t('common.loading') }}</p>
+        <p v-else-if="detailAlarms.data.value && !detailAlarms.data.value.items.length">{{ t('common.empty') }}</p>
+        <p>{{ t('experience.lastObserved') }}: {{ detailAlarms.data.value?.items[0]?.occurredAt || '—' }}</p>
+        <div v-for="alarm in detailAlarms.data.value?.items || []" :key="alarm.id"><el-button link type="primary" @click="router.push({ name: 'alarms', query: { alarmId: alarm.id } })">{{ alarm.ruleName }} · {{ alarm.entity }}</el-button></div>
+        <h3>{{ t('forms.note') }}</h3><ActionFeedback :error="detailNote.error.value?.message || ''" /><p class="technique-note">{{ detailNote.data.value?.note || '—' }}</p>
+        <el-button @click="openTechniqueEdit(selectedTechnique)">{{ t('forms.note') }}</el-button><el-button link @click="openUrl(selectedTechnique.url)">{{ t('experience.documentation') }}</el-button>
+      </template>
+    </el-drawer>
     <el-dialog v-model="techniqueDialogVisible" :before-close="noteGuard.beforeClose" :title="t('attack.editTitle', { id: editingTechniqueId })" width="640px">
       <p>{{ t('forms.standardReadOnly') }}</p><p v-if="noteError" role="alert">{{ noteError }}</p><el-button v-if="!noteLoaded && noteError" link :loading="noteLoading" @click="loadTechniqueNote">{{ t('common.retry') }}</el-button><el-form label-position="top">
         <el-form-item :label="t('attack.name')" required><el-input disabled v-model="techniqueForm.name" /></el-form-item>
@@ -278,3 +301,12 @@ onUnmounted(() => {
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.am-cell { position: relative; min-height: 90px; padding-bottom: 26px; display: flex; flex-direction: column; align-items: flex-start; }
+.am-name { font-size: 12px; line-height: 1.35; white-space: normal; }
+.am-coverage { font-size: 12px; color: var(--ns-text-2); }
+.am-badge { position: absolute; right: 5px; bottom: 5px; }
+.am-cell--unknown { background: var(--ns-surface-muted); color: var(--ns-text-2); }
+.technique-note { white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>

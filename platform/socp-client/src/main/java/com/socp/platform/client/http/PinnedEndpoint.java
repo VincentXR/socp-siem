@@ -4,18 +4,9 @@ import java.net.InetAddress;
 import java.util.Arrays;
 
 /**
- * 一次出站校验的结果，校验通过时解析结果已钉住到当前线程。
- *
- * <p>用法（配合 try-with-resources，把「校验 → 建连」整段夹住）：
- * <pre>{@code
- * try (PinnedEndpoint pinned = policy.validatePinned(url, ...)) {
- *     if (pinned.isRejected()) { ... 拒绝 ... }
- *     ... 在同一线程内用 java.net.http / 任意客户端发起请求 ...
- * } // close() 解除钉住
- * }</pre>
- *
- * <p>钉住期间，当前线程对该主机的任何 DNS 解析（包括 HTTP 客户端建连时的隐式解析）
- * 都只会返回这里携带的已校验地址；URL 主机名不变，TLS 的 SNI 与证书域名校验不受影响。
+ * Validated immutable address snapshot for one external request or bounded pagination cycle.
+ * Pass this value to {@link PinnedHttpTransport}; validation alone does not bind an asynchronous
+ * HTTP client's later DNS lookup. The legacy thread-local resolver scope is cleared by close().
  */
 public final class PinnedEndpoint implements AutoCloseable {
 

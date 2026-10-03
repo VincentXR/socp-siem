@@ -1,18 +1,18 @@
 package com.socp.soar.web.service;
 
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.domain.SoarRunStatus;
-import com.socp.soar.web.persistence.entity.SoarDispatchOutboxEntity;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
 import com.socp.soar.web.persistence.entity.SoarSignalOutboxEntity;
 import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
 import com.socp.soar.web.persistence.repository.SoarSignalOutboxRepository;
 import org.springframework.http.HttpStatus;
-
 import java.time.Instant;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
+import com.socp.soar.web.persistence.entity.SoarDispatchOutboxEntity;
+import java.util.Optional;
 
 /**
  * Operator commands for dead dispatch and signal outbox rows. The public
@@ -20,22 +20,23 @@ import java.util.Set;
  * owns the replay and terminal-state fences.
  */
 final class SoarOutboxCommandService {
+    SoarOutboxCommandService(SoarRunRepository runs, SoarDispatchOutboxRepository dispatches,
+                SoarSignalOutboxRepository signals, SoarEventWriter eventWriter) {
+        this.runs = runs;
+        this.dispatches = dispatches;
+        this.signals = signals;
+        this.eventWriter = eventWriter;
+    }
 
-    private final SoarService service;
+    private final SoarEventWriter eventWriter;
+
     private final SoarDispatchOutboxRepository dispatches;
     private final SoarRunRepository runs;
     private final SoarSignalOutboxRepository signals;
 
-    SoarOutboxCommandService(SoarService service) {
-        this.service = service;
-        this.dispatches = service.dispatches;
-        this.runs = service.runs;
-        this.signals = service.signals;
-    }
-
     Map<String, Object> requeueDead(String id, String reason) {
         String why = SoarService.redactFreeText(reason == null ? "" : reason, 1024);
-        String tenant = service.tenant();
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
         Optional<SoarDispatchOutboxEntity> dispatch = dispatches.findByTenantIdAndId(tenant, id);
         if (dispatch != null && dispatch.isPresent()) {
             SoarDispatchOutboxEntity row = dispatch.get();
@@ -101,7 +102,7 @@ final class SoarOutboxCommandService {
 
     Map<String, Object> discardDead(String id, String reason) {
         String why = SoarService.redactFreeText(SoarService.required(reason, "reason", 2048), 2048);
-        String tenant = service.tenant();
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
         Optional<SoarDispatchOutboxEntity> dispatch = dispatches.findByTenantIdAndId(tenant, id);
         if (dispatch != null && dispatch.isPresent()) {
             SoarDispatchOutboxEntity row = dispatch.get();
@@ -141,7 +142,7 @@ final class SoarOutboxCommandService {
                 }
                 lockedRun.ifPresent(run -> {
                     if (suppressRun(run, now, "SIGNAL_DISCARDED", why)) {
-                        service.appendEvent(run.getId(), "SIGNAL_DISCARDED", SoarService.actor(),
+                        eventWriter.appendEvent(run.getId(), "SIGNAL_DISCARDED", SoarService.actor(),
                                 "Dead signal discarded by operator", Map.of("signalId", id,
                                         "signalType", nullSafe(row.getSignalType())));
                     }

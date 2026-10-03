@@ -106,6 +106,7 @@ public class SoarDefinitionValidator {
             errors.add(DefinitionIssue.error("DEFINITION_LIMITS_INVALID", null, "/limits",
                     "definition limits must be an object"));
         }
+        if (root.has("inputSchema")) SoarManualFormValidator.validate(root.path("inputSchema"), "/inputSchema", errors, 0);
         SoarExecutionPolicyValidator.validateRootApprovalPolicy(root, errors);
         if (nodes.size() > MAX_NODES) {
             errors.add(DefinitionIssue.error("TOO_MANY_NODES", null, "/nodes",

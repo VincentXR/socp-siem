@@ -3,24 +3,24 @@ package com.socp.soar.web.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.socp.soar.web.connector.SoarConnectorRegistry;
 import com.socp.soar.web.domain.SoarPlaybookVersionStatus;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
 import com.socp.soar.web.persistence.entity.SoarPlaybookEntity;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
-import com.socp.soar.web.persistence.repository.SoarConnectorRepository;
 import com.socp.soar.web.persistence.repository.SoarPlaybookRepository;
+import com.socp.soar.web.persistence.repository.SoarConnectorRepository;
+import com.socp.soar.web.connector.SoarConnectorRegistry;
+import com.socp.soar.web.config.SoarRuntimeProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
-
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.LinkedHashSet;
 
 /**
  * Publication and run-admission policy for immutable playbook definitions.
@@ -28,25 +28,27 @@ import java.util.Set;
  * derived from the same definition snapshot.
  */
 final class SoarDefinitionPolicy {
+    SoarDefinitionPolicy(SoarPlaybookRepository playbooks, PlaybookVersionRepository versions, ObjectMapper mapper,
+                SoarConnectorRepository connectors, SoarConnectorRegistry connectorRegistry, SoarJson json) {
+        this.playbooks = playbooks;
+        this.versions = versions;
+        this.mapper = mapper;
+        this.connectors = connectors;
+        this.connectorRegistry = connectorRegistry;
+        this.json = json;
+    }
+
+    private final SoarJson json;
+    private SoarRuntimeProperties runtimeProperties;
 
     private static final int MAX_APPROVAL_SNAPSHOT_BYTES = 64 * 1024;
     private static final int MAX_SUB_PLAYBOOK_DEPTH = 5;
 
-    private final SoarService service;
     private final ObjectMapper mapper;
     private final SoarConnectorRepository connectors;
     private final SoarConnectorRegistry connectorRegistry;
     private final PlaybookVersionRepository versions;
     private final SoarPlaybookRepository playbooks;
-
-    SoarDefinitionPolicy(SoarService service) {
-        this.service = service;
-        this.mapper = service.mapper;
-        this.connectors = service.connectors;
-        this.connectorRegistry = service.connectorRegistry;
-        this.versions = service.versions;
-        this.playbooks = service.playbooks;
-    }
 
     void validateConnections(String definitionJson, String tenant) {
         if (connectors == null || connectorRegistry == null) {
@@ -66,8 +68,8 @@ final class SoarDefinitionPolicy {
                 if (descriptor == null) {
                     throw error(HttpStatus.BAD_REQUEST, "SOAR_ACTION_NOT_FOUND", "unknown action: " + actionRef);
                 }
-                if (service.runtimeProperties != null
-                        && "production".equalsIgnoreCase(service.runtimeProperties.getMaturity())
+                if (runtimeProperties != null
+                        && "production".equalsIgnoreCase(runtimeProperties.getMaturity())
                         && !descriptor.production()) {
                     throw error(HttpStatus.CONFLICT, "SOAR_CONNECTOR_NOT_PRODUCTION_READY",
                             "action connector is test-only until a production adapter is certified: " + actionRef);
@@ -149,7 +151,9 @@ final class SoarDefinitionPolicy {
         return health;
     }
 
-    SoarService.ApprovalContext buildApprovalContext(String definitionJson, String inputJson) {
+    record ApprovalContext(String actionRef, String inputHash, String targetSnapshotJson) { }
+
+    ApprovalContext buildApprovalContext(String definitionJson, String inputJson) {
         List<Map<String, Object>> risky = new ArrayList<>();
         try {
             JsonNode nodesJson = mapper.readTree(definitionJson == null ? "{}" : definitionJson).path("nodes");
@@ -166,7 +170,7 @@ final class SoarDefinitionPolicy {
                     row.put("nodeId", SoarService.limit(node.path("id").asText(""), 64));
                     row.put("actionRef", SoarService.limit(actionRef, 255));
                     if (node.has("target")) {
-                        row.put("target", service.redact(service.readMap(node.path("target").toString())));
+                        row.put("target", SoarRedaction.structured(json.readMap(node.path("target").toString())));
                     }
                     if (node.path("connectionRef").isTextual()
                             && !node.path("connectionRef").asText("").isBlank()) {
@@ -196,22 +200,22 @@ final class SoarDefinitionPolicy {
         } catch (JsonProcessingException ignored) {
             // The definition was already validated before admission.
         }
-        String snapshotJson = service.write(snapshot);
+        String snapshotJson = json.write(snapshot);
         int bytes = snapshotJson.getBytes(StandardCharsets.UTF_8).length;
         if (bytes > MAX_APPROVAL_SNAPSHOT_BYTES) {
-            snapshotJson = service.write(Map.of("truncated", true, "sha256", SoarService.sha256(snapshotJson),
+            snapshotJson = json.write(Map.of("truncated", true, "sha256", SoarService.sha256(snapshotJson),
                     "originalBytes", bytes, "actionCount", risky.size()));
         }
         String actionRef = risky.isEmpty() ? "" : risky.size() == 1
                 ? String.valueOf(risky.get(0).get("actionRef")) : "MULTIPLE";
-        return new SoarService.ApprovalContext(actionRef,
+        return new ApprovalContext(actionRef,
                 SoarService.sha256((inputJson == null ? "" : inputJson) + "\u0000" + snapshotJson), snapshotJson);
     }
 
     String approvalPolicyJson(String targetSnapshotJson) {
-        JsonNode snapshot = service.readTree(targetSnapshotJson);
+        JsonNode snapshot = json.readTree(targetSnapshotJson);
         JsonNode policy = snapshot.path("approvalPolicy");
-        return policy.isObject() ? service.write(policy) : null;
+        return policy.isObject() ? json.write(policy) : null;
     }
 
     void validateSubPlaybookGraph(String tenant, PlaybookVersionEntity rootVersion) {
@@ -359,4 +363,5 @@ final class SoarDefinitionPolicy {
     private static ResponseStatusException error(HttpStatus status, String code, String message) {
         return SoarService.error(status, code, message);
     }
+    void setRuntimeProperties(SoarRuntimeProperties value) { this.runtimeProperties = value; }
 }

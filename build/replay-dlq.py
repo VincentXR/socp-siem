@@ -27,10 +27,6 @@ from dlq_transport import (
     read_batch, run_process, strict_json, topic_name, validate_records, write_batch,
 )
 
-MAIN_TOPICS = (
-    "socp-events", "socp-detection-routed-v2", "socp-alarm-events",
-    "socp-alarm-original", "socp-rule-changes", "socp-audit",
-)
 DETECTION_SKIP_TOPICS = {"socp-events", "socp-detection-routed-v2"}
 HEADER_LOSS_TOPICS = {"socp-detection-routed-v2"}
 DLQ_SUFFIX = "-dlq"

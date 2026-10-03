@@ -42,4 +42,22 @@ public interface SoarPlaybookRepository extends TenantScopedRepository<SoarPlayb
                                             @Param("owner") String owner,
                                             @Param("tag") String tag,
                                             Pageable pageable);
+    /** Exact token and numeric metadata predicates; no JSON hydration before database paging. */
+    @Query("select p from SoarPlaybookEntity p where p.tenantId = :tenantId "
+            + "and (:status is null or upper(p.status) = :status) "
+            + "and (:owner is null or lower(coalesce(p.owner, '')) = :owner) "
+            + "and (:tag is null or locate(:tag, coalesce(p.tagTokens, '')) > 0) "
+            + "and (:risk is null or (:risk = 'NONE' and not exists (select v.id from PlaybookVersionEntity v "
+            + "where v.tenantId = :tenantId and v.playbookId = p.id and v.status = 'PUBLISHED')) "
+            + "or exists (select v.id from PlaybookVersionEntity v where v.tenantId = :tenantId "
+            + "and v.playbookId = p.id and v.status = 'PUBLISHED' and v.versionNo = "
+            + "(select max(v2.versionNo) from PlaybookVersionEntity v2 where v2.tenantId = :tenantId "
+            + "and v2.playbookId = p.id and v2.status = 'PUBLISHED') "
+            + "and ((:risk in ('HIGH','CRITICAL') and v.highRiskActionCount > 0) "
+            + "or (:risk in ('LOW','READ_ONLY') and v.highRiskActionCount = 0) "
+            + "or (:risk = 'MEDIUM' and v.highRiskActionCount = 0 and v.actionCount > 0) "
+            + "or (:risk = 'NONE' and v.actionCount = 0)))) order by p.updatedAt desc, p.id asc")
+    Page<SoarPlaybookEntity> searchCatalog(@Param("tenantId") String tenantId,
+            @Param("status") String status, @Param("owner") String owner,
+            @Param("tag") String tag, @Param("risk") String risk, Pageable pageable);
 }

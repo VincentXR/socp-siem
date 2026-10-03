@@ -86,7 +86,7 @@ class SoarConnectorServiceBranchCoverageTest {
 
         assertThatThrownBy(() -> service.update("c1", "conn", "http.webhook",
                 "https://hooks.example.test/x", "not-a-ref", List.of("hooks.example.test"), true))
-                .hasMessageContaining("authSecretRef must be a secret:// reference");
+                .hasMessageContaining("SOAR_SECRET_REFERENCE_FORBIDDEN");
     }
 
     @Test

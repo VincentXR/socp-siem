@@ -10,7 +10,7 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onScopeDispose, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
-import { aiAsk, appendInvestigationToIncident, investigateAlert, reanalyzeAlert, type AiResult, type InvestigationResult } from '../api'
+import { getAlarm, getAlarmEvidence, getCase, splSearch, tiMatch, aiAsk, appendInvestigationToIncident, investigateAlert, reanalyzeAlert, type AiResult, type InvestigationResult, type InvestigationCitation } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { useLatestRequest } from '../composables/useLatestRequest'
 import { tOr } from '../utils/i18nLabel'
@@ -18,6 +18,7 @@ import { tOr } from '../utils/i18nLabel'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+const investigationReturn = computed(() => typeof route.query.returnTo === 'string' && /^\/(alarms|cases)(?:[?#]|$)/.test(route.query.returnTo) ? route.query.returnTo : '')
 
 const question = ref('')
 const result = ref<AiResult | null>(null)
@@ -33,6 +34,50 @@ let investigationVersion = 0
 let disposed = false
 onScopeDispose(() => { disposed = true })
 const investigationError = ref('')
+const jobId = ref(typeof route.query.jobId === 'string' ? route.query.jobId : '')
+const selectedCitation = ref<InvestigationCitation | null>(null)
+const citationEvidence = ref<unknown>(null)
+const citationError = ref('')
+const citationLoading = ref(false)
+const citationRequest = useLatestRequest()
+const genericVisible = ref(false)
+const caseId = computed(() => typeof route.query.caseId === 'string' ? route.query.caseId : '')
+function rememberJob(id: string): void {
+  if (disposed) return
+  jobId.value = id
+  void router.replace({ query: { ...route.query, jobId: id } })
+}
+function openSuggestedSearch(q: string): void {
+  if (q.trim()) void router.push({ name: 'search', query: { draft: q, range: 'all', alarmId: alertId.value, caseId: caseId.value || undefined, returnTo: route.fullPath } })
+}
+function openCase(id: string): void { void router.push({ name: 'case', query: { caseId: id } }) }
+function openResponse(): void { void router.push({ name: 'soar', query: { tab: 'runs', alarmId: alertId.value, caseId: caseId.value || undefined, returnTo: route.fullPath } }) }
+async function inspectCitation(id: string): Promise<void> {
+  const citation = investigation.value?.citations.find(item => item.id === id)
+  selectedCitation.value = citation ?? { id, source: 'unavailable', label: t('analystJourney.missingCitationLabel') }
+  citationEvidence.value = null; citationError.value = ''; citationLoading.value = false
+  const request = citationRequest.start()
+  if (!citation) { citationError.value = t('analystJourney.missingCitation'); return }
+  citationLoading.value = true
+  try {
+    const separator = id.indexOf(':')
+    const kind = id.slice(0, separator), target = id.slice(separator + 1)
+    // Resolve only known same-origin API contracts. Never follow generated locators as URLs.
+    let evidence: unknown
+    if (kind === 'alert') evidence = await getAlarm(target, { signal: request.signal })
+    else if (kind === 'evidence') evidence = (await getAlarmEvidence(alertId.value, { signal: request.signal })).items.find(item => item.eventId === target)
+    else if (kind === 'search') evidence = (await splSearch(`eventId=${JSON.stringify(target)}`, { limit: 10, signal: request.signal })).events
+    else if (kind === 'incident') evidence = await getCase(target, { signal: request.signal })
+    else if (kind === 'ioc') evidence = await tiMatch(target, { signal: request.signal })
+    else evidence = citation.value
+    if (!request.isCurrent()) return
+    if (evidence === undefined || evidence === null) citationError.value = t('analystJourney.unavailableEvidence')
+    else citationEvidence.value = evidence
+  } catch (failure) { if (request.isCurrent()) citationError.value = failure instanceof Error ? failure.message : String(failure) }
+  finally { if (request.isCurrent()) citationLoading.value = false }
+}
+function closeCitation(): void { citationRequest.cancel(); selectedCitation.value = null; citationEvidence.value = null; citationLoading.value = false }
+
 const investigationRequest = useLatestRequest()
 
 const contextAlarmId = computed(() => {
@@ -86,6 +131,7 @@ function clear() {
 }
 
 function resetInvestigation() {
+  closeCitation()
   investigationVersion++
   investigationRequest.cancel()
   investigationLoading.value = false
@@ -101,7 +147,7 @@ async function loadInvestigation(id: string) {
   investigationLoading.value = true
   const request = investigationRequest.start()
   try {
-    const response = await investigateAlert(id, { signal: request.signal })
+    const response = await investigateAlert(id, { signal: request.signal, jobId: jobId.value || undefined, onJob: receipt => { if (request.isCurrent()) rememberJob(receipt) } })
     if (!request.isCurrent()) return
     if (response.alertId !== id) throw new Error(t('ai.investigation.contextMismatch'))
     investigation.value = response
@@ -119,7 +165,7 @@ async function investigate() {
   const version = investigationVersion
   try {
     // The route watcher owns loading after navigation, including Back/Forward.
-    const failure = await router.replace({ query: { ...route.query, alarmId: id, alertId: undefined } })
+    const failure = await router.replace({ query: { ...route.query, alarmId: id, alertId: undefined, jobId: undefined } })
     if (failure) throw failure
   } catch (error) {
     if (!disposed && version === investigationVersion)
@@ -135,7 +181,7 @@ async function reanalyze() {
   investigationLoading.value = true
   const request = investigationRequest.start()
   try {
-    const response = await reanalyzeAlert(id, baseRevision, { signal: request.signal })
+    const response = await reanalyzeAlert(id, baseRevision, { signal: request.signal, onJob: receipt => { if (request.isCurrent()) rememberJob(receipt) } })
     if (!request.isCurrent()) return
     if (response.alertId !== id) throw new Error(t('ai.investigation.contextMismatch'))
     investigation.value = response
@@ -161,7 +207,7 @@ async function appendToIncident() {
   investigationError.value = ''
   const ownsView = () => !disposed && version === investigationVersion && investigation.value?.investigationId === target
   try {
-    const updated = await appendInvestigationToIncident(target)
+    const updated = await appendInvestigationToIncident(target, caseId.value || undefined)
     if (!ownsView()) return
     if (updated.investigationId !== target || updated.alertId !== current.alertId)
       throw new Error(t('ai.investigation.contextMismatch'))
@@ -173,8 +219,15 @@ async function appendToIncident() {
   }
 }
 
-watch(contextAlarmId, id => {
+// The alert and resumable job are one navigation identity. Independent watchers
+// can each submit when navigation changes the alert and clears its previous job.
+watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]) => {
+  const nextJobId = typeof routeJobId === 'string' ? routeJobId : ''
+  // Remembering this request's receipt changes the URL without restarting it.
+  if (id === previousId && nextJobId === jobId.value) return
   alertId.value = id
+  jobId.value = nextJobId
+  selectedCitation.value = null
   resetInvestigation()
   if (id.trim()) void loadInvestigation(id.trim())
 }, { immediate: true })
@@ -182,8 +235,10 @@ watch(contextAlarmId, id => {
 
 <template>
   <div class="page-pad view-enter" :class="{ 'ai-context-layout': contextAlarmId }">
+    <el-button v-if="investigationReturn" @click="router.push(investigationReturn)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
     <PageHeader :eyebrow="t('menuGroup.analyticsAndAi')" :title="t('ai.title')" :description="t('ai.description')" />
-    <el-card shadow="never" class="ai-panel">
+    <el-button v-if="contextAlarmId" @click="genericVisible = !genericVisible">{{ t('analystJourney.generalQuestions') }}</el-button>
+    <el-card v-if="!contextAlarmId || genericVisible" shadow="never" class="ai-panel">
       <div class="ai-ask-row">
         <el-input
           v-model="question"
@@ -250,6 +305,7 @@ watch(contextAlarmId, id => {
         <el-button v-if="investigation" :disabled="investigationLoading" @click="reanalyze">{{ t('ai.investigation.reanalyze') }}</el-button>
       </div>
       <div v-if="appendLoading && appendTarget !== investigation?.investigationId" role="status" class="ai-muted">{{ t('ai.investigation.previousAppendPending') }}</div>
+      <div v-if="jobId" class="ai-context-banner"><span>{{ t('analystJourney.resumableJob', { id: jobId }) }} </span><el-button :disabled="investigationLoading" @click="loadInvestigation(alertId)">{{ t('analystJourney.resumeJob') }}</el-button></div>
       <div v-if="investigationError" role="alert" class="ai-error">{{ investigationError }}</div>
       <div v-if="investigation" class="ai-result">
         <div class="ai-investigation-meta">
@@ -264,13 +320,13 @@ watch(contextAlarmId, id => {
           <div class="ai-section-title">{{ t('ai.investigation.evidenceTimeline') }}</div>
           <div v-for="item in investigation.timeline" :key="`${item.timestamp}-${item.citation}`" class="ai-timeline-item">
             <span class="ai-muted">{{ item.timestamp }}</span> · <span class="ai-timeline-type">{{ item.type }}</span> · {{ item.message }}
-            <span class="ai-citation">[{{ item.citation }}]</span>
+            <el-button link @click="inspectCitation(item.citation)">[{{ item.citation }}]</el-button>
           </div>
         </div>
         <div class="ai-section">
           <div class="ai-section-title">{{ t('ai.investigation.recommendedSpl') }}</div>
           <code class="ai-result-code">{{ investigation.recommendedSpl }}</code>
-          <el-button v-if="investigation.recommendedSpl" link type="primary" @click="router.push({ name: 'search', query: { q: investigation.recommendedSpl, range: 'all' } })">{{ t('workflow.runSearch') }}</el-button>
+          <el-button :disabled="!investigation.recommendedSpl" @click="openSuggestedSearch(investigation.recommendedSpl)">{{ t('analystJourney.reviewQuery') }}</el-button>
         </div>
         <div v-if="investigation.hypotheses?.length" class="ai-section">
           <div class="ai-section-title">{{ t('ai.investigation.hypotheses') }}</div>
@@ -283,19 +339,28 @@ watch(contextAlarmId, id => {
           <div v-for="action in investigation.nextActions" :key="`${action.type}-${action.description}`" class="ai-list-item">
             <span class="ai-item-type">{{ action.type }}</span> · {{ action.description }}
             <span v-if="action.status" class="ai-muted"> ({{ action.status }})</span>
+            <el-button v-if="action.query" link @click="openSuggestedSearch(action.query)">{{ t('analystJourney.reviewSearch') }}</el-button>
+            <el-button v-if="/soar|response|action/i.test(action.type)" link @click="openResponse">{{ t('analystJourney.reviewResponse') }}</el-button>
           </div>
         </div>
         <div class="ai-append-row">
           <el-button type="success" plain :loading="appendTarget === investigation.investigationId" :disabled="appendLoading || investigation.summaryAppended" @click="appendToIncident">
             {{ investigation.summaryAppended ? t('ai.investigation.appendedToIncident') : t('ai.investigation.appendSummaryToIncident') }}
           </el-button>
-          <el-button v-if="investigation.incidentId" link type="primary" @click="router.push({ name: 'case', query: { caseId: investigation.incidentId } })">{{ t('drawer.goToCase') }} · {{ investigation.incidentId }}</el-button>
+          <el-button v-if="investigation.incidentId" link @click="openCase(investigation.incidentId)">{{ t('drawer.goToCase') }} · {{ investigation.incidentId }}</el-button>
         </div>
         <div v-if="investigation.citations?.length" class="ai-citations ai-muted">
           {{ t('ai.investigation.citations') }}
-          <div v-for="citation in investigation.citations" :key="citation.id"><router-link v-if="citationRoute(citation.id)" :to="citationRoute(citation.id)!">{{ citation.description || citation.label || citation.id }}</router-link><span v-else>{{ citation.description || citation.id }}</span><small> · {{ citation.id }} · {{ citation.source }}</small></div>
+          <div v-for="citation in investigation.citations" :key="citation.id">
+            <router-link v-if="citationRoute(citation.id)" :to="citationRoute(citation.id)!">{{ citation.description || citation.label || citation.id }}</router-link>
+            <span v-else>{{ citation.description || citation.label || citation.id }}</span>
+            <el-button link @click="inspectCitation(citation.id)">{{ t('analystJourney.citationEvidence') }}</el-button>
+            <small> · {{ citation.id }} · {{ citation.source }}</small>
+          </div>
         </div>
       </div>
+      <section v-if="selectedCitation" class="ai-result" :aria-label="t('analystJourney.citationEvidence')"><h4>{{ selectedCitation.label || selectedCitation.description || selectedCitation.id }}</h4><p>{{ selectedCitation.source }} · {{ selectedCitation.id }}</p><p v-if="citationLoading" role="status">{{ t('analystJourney.loadingEvidence') }}</p><p v-if="citationError" role="alert">{{ citationError }}</p><pre v-if="citationEvidence">{{ JSON.stringify(citationEvidence, null, 2) }}</pre><el-button @click="closeCitation">{{ t('analystJourney.closeEvidence') }}</el-button></section>
+      <p>{{ t('analystJourney.generatedGuidance') }}</p>
     </el-card>
   </div>
 </template>

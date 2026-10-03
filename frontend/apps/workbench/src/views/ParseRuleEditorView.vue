@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onUnmounted, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
@@ -14,12 +14,18 @@ import 'element-plus/es/components/switch/style/css.mjs'
 import PageHeader from '../components/PageHeader.vue'
 import ActionFeedback from '../components/ActionFeedback.vue'
 import { useI18n } from '../composables/useI18n'
+import { useIngestCopy } from '../composables/useIngestCopy'
+import { sourceInput } from '../lib/sourceInput'
 import { useMutation } from '../composables/useMutation'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges'
 import { useWriteAccess } from '../composables/useWriteAccess'
-import { createParseRule, updateParseRule, previewParseDraft, getParseRule, listSourcesPage, getSource, listFields, type ParseRule, type LogSource, type FieldDef } from '../api'
+import { createParseRule, updateParseRule, updateSource, previewParseDraft, getParseRule, listSourcesPage, getSource, listFields, type ParseRule, type LogSource, type FieldDef } from '../api'
 
 const { t } = useI18n()
+const copy = useIngestCopy()
+const bindStatus = ref('')
+const savedId = ref('')
+const boundSourceId = computed(() => form.value.sourceId || (typeof route.query.sourceId === 'string' ? route.query.sourceId : ''))
 const canWrite = useWriteAccess()
 const route = useRoute()
 const router = useRouter()
@@ -47,7 +53,8 @@ const mutation = useMutation()
 const { busy, error } = mutation
 const changes = useUnsavedChanges(() => ({ form: form.value, filters: filtersText.value }), () => !loading.value)
 const previewStale = ref(false)
-watch([form, filtersText, sample], () => { if (preview.value) previewStale.value = true }, { deep: true, flush: 'sync' })
+let revision = 0
+watch([form, filtersText, sample], () => { revision++; if (preview.value) previewStale.value = true }, { deep: true, flush: 'sync' })
 
 async function fetchSources(query: string) {
   if (disposed) return
@@ -99,18 +106,35 @@ async function save() {
     form.value = saved
     filtersText.value = JSON.stringify(saved.filters ?? [], null, 2)
     loadedId = saved.id
+    savedId.value = saved.id
     changes.markSaved()
-    await router.replace({ name: 'parser-edit', params: { parserId: saved.id } })
+    await router.replace({ name: 'parser-edit', params: { parserId: saved.id }, query: route.query })
   })
 }
 async function test() {
+  if (!sample.value.trim() || loading.value || loadError.value) return
   const generation = loadGeneration
+  const submittedRevision = revision
+  const submittedSample = sample.value
   await mutation.run(async () => {
     preview.value = null
-    const result = await previewParseDraft(payload(), sample.value)
+    const result = await previewParseDraft(payload(), submittedSample)
     if (generation !== loadGeneration) return
     preview.value = result
-    previewStale.value = false
+    previewStale.value = submittedRevision !== revision
+  })
+}
+async function bindSavedRule() {
+  if (!canWrite.value || !savedId.value || !boundSourceId.value || changes.dirty.value) return
+  const generation = loadGeneration
+  const ruleId = savedId.value
+  const sourceId = boundSourceId.value
+  bindStatus.value = ''
+  await mutation.run(async () => {
+    const { source } = await getSource(sourceId)
+    if (generation !== loadGeneration) return
+    await updateSource(sourceId, { ...sourceInput(source), parseRuleIds: [...new Set([...(source.parseRuleIds || []), ruleId])] })
+    if (generation === loadGeneration) bindStatus.value = copy.value.bound
   })
 }
 function addMapping(fixed = false) {
@@ -127,6 +151,8 @@ async function loadEditor() {
   loading.value = true
   loadError.value = ''
   loadedId = null
+  savedId.value = ''
+  bindStatus.value = ''
   form.value = emptyForm()
   filtersText.value = '[]'
   preview.value = null
@@ -160,11 +186,12 @@ async function loadEditor() {
       filtersText.value = JSON.stringify(rule.filters ?? [], null, 2)
     }
     loadedId = id
+    savedId.value = id
   } catch (failure) { if (generation === loadGeneration && !controller.signal.aborted) loadError.value = String(failure) }
   finally { if (generation === loadGeneration) { loading.value = false; changes.markSaved() } }
 }
-watch(() => String(route.params.parserId || ''), id => {
-  if (id !== loadedId) void loadEditor()
+watch(() => [String(route.params.parserId || ''), route.query.sourceId], () => {
+  void loadEditor()
 }, { immediate: true })
 onUnmounted(() => {
   disposed = true
@@ -187,7 +214,7 @@ onUnmounted(() => {
       <el-form label-position="top" :disabled="busy || !canWrite">
         <el-form-item :label="t('common.name')" required><el-input v-model="form.name" maxlength="128" /></el-form-item>
         <el-form-item :label="t('ingest.parseFormat')"><el-select v-model="form.format"><el-option v-for="format in ['REGEX','JSON','KV','SYSLOG','CEF','LEEF','AUTO']" :key="format" :value="format" :label="format" /></el-select></el-form-item>
-        <el-form-item :label="t('common.source')"><el-select v-model="form.sourceId" filterable remote clearable :remote-method="searchSources" :loading="sourceLoading" @change="onSourceChange"><el-option v-for="source in sources" :key="source.id" :value="source.id" :label="source.name" /><el-option v-if="form.sourceId && !sources.some(source => source.id === form.sourceId)" :value="form.sourceId" :label="selectedSource?.id === form.sourceId ? selectedSource.name : form.sourceId" /><el-option v-if="sourceTotal > 50" value="__more_sources__" :label="t('ingest.sourceSearchMore', { count: sourceTotal })" disabled /></el-select><small v-if="sourceTotal > 50" class="source-search-hint">{{ t('ingest.sourceSearchMore', { count: sourceTotal }) }}</small><ActionFeedback :error="sourceError || selectedSourceError" /></el-form-item>
+        <el-form-item :label="copy.scope"><el-select v-model="form.sourceId" filterable remote clearable :remote-method="searchSources" :loading="sourceLoading" @change="onSourceChange"><el-option v-for="source in sources" :key="source.id" :value="source.id" :label="source.name" /><el-option v-if="form.sourceId && !sources.some(source => source.id === form.sourceId)" :value="form.sourceId" :label="selectedSource?.id === form.sourceId ? selectedSource.name : form.sourceId" /><el-option v-if="sourceTotal > 50" value="__more_sources__" :label="t('ingest.sourceSearchMore', { count: sourceTotal })" disabled /></el-select><small class="source-search-hint">{{ copy.scopeHint }}</small><small v-if="sourceTotal > 50" class="source-search-hint">{{ t('ingest.sourceSearchMore', { count: sourceTotal }) }}</small><ActionFeedback :error="sourceError || selectedSourceError" /></el-form-item>
         <el-form-item v-if="form.format === 'REGEX'" :label="t('ingest.patternDescription')"><el-input v-model="form.pattern" type="textarea" :rows="4" spellcheck="false" /></el-form-item>
         <section v-for="key in (['mapping', 'setFields'] as const)" :key="key" class="editor-section">
           <div class="section-toolbar"><b>{{ t(key === 'mapping' ? 'forms.fields' : 'forms.fixedFields') }}</b><el-button v-if="canWrite" size="small" @click="addMapping(key === 'setFields')">{{ t('common.add') }}</el-button></div>
@@ -202,14 +229,18 @@ onUnmounted(() => {
         <el-form-item :label="t('common.enabled')"><el-switch v-model="form.enabled" /></el-form-item>
       </el-form>
       <aside class="parser-preview">
-        <h3>{{ t('forms.sample') }}</h3><el-input v-model="sample" type="textarea" :rows="8" />
+        <p class="source-search-hint">{{ copy.previewHint }}</p><h3>{{ copy.sample }}</h3><el-input v-model="sample" type="textarea" :rows="8" />
         <el-button style="margin-top:12px" :loading="busy" :disabled="!sample.trim()" @click="test">{{ t('forms.test') }}</el-button>
-        <h3>{{ t('forms.preview') }} <small v-if="preview && previewStale">· {{ t('forms.stalePreview') }}</small></h3>
+        <el-button style="margin-top:12px" @click="sample = 'host=example-host source=example message=synthetic-preview'">{{ copy.example }}</el-button><h3>{{ t('forms.preview') }} <small v-if="preview && previewStale">· {{ t('forms.stalePreview') }}</small></h3>
         <ActionFeedback :error="preview?.error" />
-        <p v-if="preview">{{ preview.matched ? t('common.success') : t('threat.noMatch') }}</p>
-        <dl v-if="preview" class="preview-fields"><template v-for="(value, key) in preview.fields" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></template></dl>
+        <p v-if="preview && !previewStale">{{ preview.matched ? t('common.success') : t('threat.noMatch') }}</p>
+        <dl v-if="preview && !previewStale" class="preview-fields"><template v-for="(value, key) in preview.fields" :key="key"><dt>{{ key }}</dt><dd>{{ value }}</dd></template></dl>
       </aside>
     </div>
+    <section v-if="!loading && !loadError" class="editor-section">
+      <p>{{ copy.pipelineHint }}</p><p v-if="!form.enabled">{{ copy.disabledRule }}</p>
+      <template v-if="boundSourceId"><p>{{ copy.bindFirst }} {{ boundSourceId }}</p><el-button :disabled="!canWrite || !savedId || changes.dirty.value || busy" @click="bindSavedRule">{{ copy.bind }}</el-button><el-button @click="router.push({ name: 'ingest', query: { tab: 'sources', sourceId: boundSourceId } })">{{ copy.setup }}</el-button><p v-if="bindStatus" role="status">{{ bindStatus }}</p></template>
+    </section>
     <footer v-if="!loadError && canWrite" class="editor-footer"><el-button type="primary" :loading="busy" :disabled="loading" @click="save">{{ t('common.save') }}</el-button></footer>
   </div>
 </template>

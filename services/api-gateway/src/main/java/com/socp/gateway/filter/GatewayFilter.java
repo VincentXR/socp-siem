@@ -181,7 +181,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
 
         String method = exchange.getRequest().getMethod() == null
                 ? "GET" : exchange.getRequest().getMethod().name();
-        if ("viewer".equals(role) && !("GET".equals(method) || "OPTIONS".equals(method))) {
+        if ("viewer".equals(role) && !com.socp.platform.auth.security.ReadOnlyRequests.allowed(method, path)) {
             return traced(span, exchange,
                     reject(exchange, traceId, "viewer role is read-only", HttpStatus.FORBIDDEN));
         }

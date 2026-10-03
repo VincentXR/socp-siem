@@ -39,6 +39,14 @@ public class SoarRunEntity implements Persistable<String> {
     private String subjectType;
     @Column(name = "subject_id", length = 255)
     private String subjectId;
+    @Column(name = "origin_alarm_id", length = 255)
+    private String originAlarmId;
+    @Column(name = "origin_case_id", length = 255)
+    private String originCaseId;
+    public String getOriginAlarmId() { return originAlarmId; }
+    public void setOriginAlarmId(String value) { originAlarmId = value; }
+    public String getOriginCaseId() { return originCaseId; }
+    public void setOriginCaseId(String value) { originCaseId = value; }
     @Column(nullable = false, length = 32)
     private String status;
     @Column(name = "temporal_workflow_id", length = 128)

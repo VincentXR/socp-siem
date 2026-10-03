@@ -171,9 +171,9 @@ class SoarRunQueryServiceTest {
         when(artifacts.findByTenantIdAndRunIdOrderByCreatedAtAsc(tenant, "run-1", page))
                 .thenReturn(new PageImpl<>(List.of(artifact), page, 1));
         when(artifacts.findByTenantIdAndId(tenant, "artifact-1")).thenReturn(Optional.of(artifact));
-        when(approvals.findByTenantIdOrderByCreatedAtDesc(tenant)).thenReturn(List.of(approval));
+        when(approvals.findByTenantIdOrderByCreatedAtDesc(tenant, PageRequest.of(0, 200))).thenReturn(new PageImpl<>(List.of(approval)));
         when(approvals.findByTenantIdOrderByCreatedAtDesc(tenant, page)).thenReturn(new PageImpl<>(List.of(approval), page, 1));
-        when(decisions.findByTenantIdAndApprovalIdOrderByCreatedAtAsc(tenant, "approval-1")).thenReturn(List.of(vote));
+        when(decisions.findByTenantIdAndApprovalIdInOrderByCreatedAtAsc(tenant, List.of("approval-1"))).thenReturn(List.of(vote));
         when(dispatches.countByTenantIdAndStatusAndNextAttemptAtLessThanEqual(eq(tenant), eq("PENDING"), any()))
                 .thenReturn(3L);
         when(dispatches.countByStatus("PENDING")).thenReturn(3L);

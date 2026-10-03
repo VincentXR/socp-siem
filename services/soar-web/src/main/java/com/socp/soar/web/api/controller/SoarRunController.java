@@ -104,10 +104,23 @@ public class SoarRunController {
             @RequestParam(required = false) String triggerType,
             @RequestParam(required = false) String requestedBy,
             @RequestParam(required = false) String createdFrom,
-            @RequestParam(required = false) String createdTo) {
+            @RequestParam(required = false) String createdTo,
+            @RequestParam(required = false) String alarmId,
+            @RequestParam(required = false) String caseId,
+            @RequestParam(required = false) String q) {
+        if (alarmId != null || caseId != null || q != null) {
+            if (playbookVersionId != null || triggerType != null || requestedBy != null || createdFrom != null || createdTo != null)
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Investigation filters cannot be combined with legacy run filters");
+            return ApiResult.ok(page(reads.investigationRuns(PageRequest.of(Math.max(0, page), clampSize(size)), alarmId, caseId, status, q)));
+        }
         return ApiResult.ok(page(reads.runs(PageRequest.of(Math.max(0, page), clampSize(size)), status,
                 playbookVersionId, triggerType, requestedBy, parseInstant(createdFrom, "createdFrom"),
                 parseInstant(createdTo, "createdTo"))));
+    }
+
+    public ApiResult<Map<String, Object>> listRuns(int page, int size, String status, String playbookVersionId,
+            String triggerType, String requestedBy, String createdFrom, String createdTo) {
+        return listRuns(page, size, status, playbookVersionId, triggerType, requestedBy, createdFrom, createdTo, null, null, null);
     }
 
     @GetMapping("/runs/{id}")

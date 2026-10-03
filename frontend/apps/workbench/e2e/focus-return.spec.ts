@@ -26,6 +26,7 @@ async function mockReads(page: Page) {
     '/alert-web/api/alarms/alarm-a/disposition': { status: 'OPEN', notes: [], assignee: null },
     '/alert-web/api/alarms/alarm-a/evidence': { alarmId: 'alarm-a', total: 0, complete: true, items: [] },
     '/alert-web/api/alarms/alarm-a/deliveries': [],
+    '/alert-web/api/alarms/alarm-a/similar': [],
     '/incident-web/api/v1/incidents/by-alarm': incident,
     '/incident-web/api/v1/incidents': { items: [incident], total: 1 },
     '/incident-web/api/v1/incidents/case-a': incident,

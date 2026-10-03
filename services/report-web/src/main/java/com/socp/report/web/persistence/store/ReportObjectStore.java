@@ -150,6 +150,6 @@ public class ReportObjectStore {
 
     /** 当前日期 yyyyMMdd，用于对象 key 前缀。 */
     public static String today() {
-        return ZonedDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd"));
+        return ZonedDateTime.now(java.time.ZoneOffset.UTC).format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd"));
     }
 }

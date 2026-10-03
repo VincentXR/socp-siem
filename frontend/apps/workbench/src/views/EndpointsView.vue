@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
+import 'element-plus/es/components/select/style/css.mjs'
+import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
 import 'element-plus/es/components/dropdown/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
@@ -66,9 +68,15 @@ const assetTotal = ref(0)
 const endpoints = ref<Endpoint[]>([])
 const size = ref(10)
 const endpointTotal = ref(0)
-const listQuery = useListQuery({ routeName: 'endpoints', total: endpointTotal, size })
+const listQuery = useListQuery({ routeName: 'endpoints', total: endpointTotal, size, fields: [{ key: 'status', validate: value => ['ONLINE', 'OFFLINE'].includes(value) ? value : '' }] })
 const page = listQuery.page
 const keyword = listQuery.keyword
+const statusFilter = listQuery.filters.status
+const installOpen = ref(false)
+const hasFilters = computed(() => Boolean(keyword.value.trim() || statusFilter.value))
+function applyFilters() { page.value = 1; listQuery.sync(); void loadEndpoints() }
+function clearFilters() { keyword.value = ''; statusFilter.value = ''; applyFilters() }
+function openEventSearch(event: EndpointEvent) { if (event.eventId) void router.push({ name: 'search', query: { eventId: event.eventId, range: 'all' } }) }
 const loading = ref(false)
 const latestRequest = useLatestRequest()
 const detailRequest = useLatestRequest()
@@ -169,7 +177,7 @@ async function loadEndpoints() {
   loading.value = true; loadError.value = ''; statsError.value = ''
   try {
     const [endpointResult, statResult] = await Promise.allSettled([
-      endpointApi.list(page.value, size.value, listQuery.keywordParam.value, { signal: request.signal }),
+      endpointApi.list(page.value, size.value, listQuery.keywordParam.value, { signal: request.signal }, statusFilter.value || undefined),
       endpointApi.stats({ signal: request.signal }),
     ])
     if (!request.isCurrent()) return
@@ -202,10 +210,10 @@ onMounted(loadEndpoints)
 watch(selectedId, () => { void loadDetail() }, { immediate: true })
 watch([eventPage, eventSize], () => { void loadEvents() })
 watch([assetPage, assetSize], () => { void loadAssets() })
-watch([() => route.query.q, () => route.query.page], () => {
-  const before = { page: page.value, keyword: keyword.value.trim() }
+watch([() => route.query.q, () => route.query.page, () => route.query.status], () => {
+  const before = { page: page.value, keyword: keyword.value.trim(), status: statusFilter.value }
   listQuery.applyRouteQuery()
-  if (before.page === page.value && before.keyword !== keyword.value.trim()) void loadEndpoints()
+  if (before.page === page.value && (before.keyword !== keyword.value.trim() || before.status !== statusFilter.value)) void loadEndpoints()
 })
 watch([page, size], () => { listQuery.sync(); void loadEndpoints() })
 useDebouncedWatch(keyword, () => {
@@ -217,25 +225,28 @@ useDebouncedWatch(keyword, () => {
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('endpoints.title')" :description="t('endpoints.description')">
-      <template #actions><el-button size="small" :loading="loading" @click="refresh">{{ t('common.refresh') }}</el-button></template>
+    <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('experience.endpointAgents')" :description="t('endpoints.description')">
+      <template #actions><el-button size="small" @click="installOpen = true">{{ t('experience.installAgent') }}</el-button><el-button size="small" :loading="loading" @click="refresh">{{ t('common.refresh') }}</el-button></template>
     </PageHeader>
 
     <div v-if="endpointStat" class="page-metrics">
       <MetricCard :label="t('endpoints.totalEndpoints')" tone="info">{{ endpointStat.total }}</MetricCard>
-      <MetricCard :label="t('endpoints.onlineEndpoints')" tone="success">{{ endpointStat.online }}</MetricCard>
-      <MetricCard :label="t('endpoints.offlineEndpoints')" tone="warning">{{ endpointStat.total - endpointStat.online }}</MetricCard>
+      <MetricCard :label="t('endpoints.onlineEndpoints')" tone="success" interactive @click="statusFilter = 'ONLINE'; applyFilters()">{{ endpointStat.online }}</MetricCard>
+      <MetricCard :label="t('endpoints.offlineEndpoints')" tone="warning" interactive @click="statusFilter = 'OFFLINE'; applyFilters()">{{ endpointStat.total - endpointStat.online }}</MetricCard>
       <MetricCard :label="t('endpoints.runtimeEvents')" tone="neutral">{{ endpointStat.events ?? t('time.notAvailable') }}</MetricCard>
     </div>
 
     <ActionFeedback :error="statsError" />
     <ActionFeedback :error="actionError" />
-    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="endpointTotal" :loading="loading" :error="loadError" :retry="loadEndpoints" :empty-title="t('endpoints.agentList')" :empty-description="t('endpoints.description')">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="endpointTotal" :loading="loading" :error="loadError" :retry="loadEndpoints" :empty-title="t(hasFilters ? 'experience.noMatches' : 'experience.firstUse')" :empty-description="t('endpoints.description')">
       <template #toolbar>
         <FilterToolbar :count="endpointTotal">
         <el-input v-model="keyword" :placeholder="t('endpoints.searchPlaceholder')" clearable />
+        <el-select v-model="statusFilter" clearable :placeholder="t('common.status')" :aria-label="t('common.status')" @change="applyFilters"><el-option v-for="status in ['ONLINE', 'OFFLINE']" :key="status" :label="tOr(t, 'statuses.' + status, status)" :value="status" /></el-select>
+        <el-button v-if="hasFilters" size="small" @click="clearFilters">{{ t('experience.clearFilters') }}</el-button>
         </FilterToolbar>
       </template>
+      <template #empty-actions><el-button v-if="hasFilters" @click="clearFilters">{{ t('experience.clearFilters') }}</el-button><el-button v-else @click="installOpen = true">{{ t('experience.installAgent') }}</el-button></template>
       <el-table :data="endpoints" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openDetail">
         <el-table-column prop="hostname" column-key="hostname" :label="t('endpoints.hostname')" :width="columnWidth('hostname')" min-width="180" show-overflow-tooltip />
         <el-table-column prop="ip" column-key="ip" :label="t('common.ip')" :width="columnWidth('ip', 120)" />
@@ -259,6 +270,10 @@ useDebouncedWatch(keyword, () => {
       </el-table>
     </DataTableCard>
 
+    <el-drawer v-if="installOpen" v-model="installOpen" :title="t('experience.installAgent')" size="min(620px, 96vw)">
+      <p>{{ t('experience.agentGuide') }}</p>
+      <a href="https://github.com/VincentXR/socp-siem/blob/main/docs/operations/endpoint-enrollment.md" target="_blank" rel="noopener noreferrer">{{ t('experience.agentDocs') }}</a>
+    </el-drawer>
     <el-drawer v-model="detailOpen" :title="detailEndpoint?.hostname || t('endpoints.endpointDetails')" size="min(720px, 96vw)" :before-close="closeDetail" :close-on-click-modal="!actionBusy" :close-on-press-escape="!actionBusy">
       <p v-if="detailLoading" role="status">{{ t('common.loading') }}</p>
       <ActionFeedback :error="detailError" />
@@ -287,6 +302,7 @@ useDebouncedWatch(keyword, () => {
           <div v-for="event in detailEvents" :key="String(event.eventId || `${eventType(event)}-${event.receivedAt}`)" class="endpoint-event-item">
             <div class="endpoint-event-head"><el-tag size="small" type="warning">{{ eventType(event) }}</el-tag><span class="mono">{{ formatTime(event.receivedAt) }}</span></div>
             <span v-if="eventSummary(event)" class="endpoint-event-summary">{{ eventSummary(event) }}</span>
+            <el-button v-if="event.eventId" link type="primary" @click="openEventSearch(event)">{{ t('experience.matchingEvents') }}</el-button>
             <details><summary>{{ t('common.details') }}</summary><pre>{{ JSON.stringify(event, null, 2) }}</pre></details>
           </div>
           <PagerBar v-if="!eventsError && eventTotal > 0" v-model:current-page="eventPage" v-model:page-size="eventSize" :total="eventTotal" class="endpoint-detail-pager" />
@@ -313,7 +329,7 @@ useDebouncedWatch(keyword, () => {
       </template>
       <template v-if="detailEndpoint && canWrite" #footer>
         <ActionFeedback :error="actionError" />
-        <div class="endpoint-detail-actions"><el-button type="danger" plain :loading="actionBusy" @click="removeEndpoint(detailEndpoint.id)">{{ t('endpoints.unregister') }}</el-button></div>
+        <details><summary>{{ t('experience.more') }}</summary><div class="endpoint-detail-actions"><el-button type="danger" plain :loading="actionBusy" @click="removeEndpoint(detailEndpoint.id)">{{ t('endpoints.unregister') }}</el-button></div></details>
       </template>
     </el-drawer>
   </div>

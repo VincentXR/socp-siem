@@ -78,6 +78,49 @@ class HttpLlmChatClientTest {
         assertThat(new HttpLlmChatClient(properties).chat("question")).isEmpty();
     }
 
+    @Test
+    void actualChatPathConnectsToPinnedAddressForOtherwiseUnresolvableHost() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            read(exchange); respond(exchange, 200, "{\"choices\":[{\"message\":{\"content\":\"pinned reply\"}}]}");
+        }); server.start();
+        String host = "llm-pinned-fixture.invalid";
+        var properties = new LlmProperties(); properties.setEnabled(true);
+        properties.setBaseUrl("http://" + host + ":" + server.getAddress().getPort());
+        properties.setAllowedHosts(List.of(host)); properties.setHttpsOnly(false); properties.setAllowPrivateNetworks(true);
+        com.socp.platform.client.http.PinnedDnsResolverProvider.pin(host,
+                new java.net.InetAddress[] { java.net.InetAddress.getByName("127.0.0.1") });
+        try {
+            assertThat(new HttpLlmChatClient(properties).chat("question")).contains("pinned reply");
+        } finally { com.socp.platform.client.http.PinnedDnsResolverProvider.unpin(host); }
+    }
+
+    @Test
+    void interruptionOfActualChatPreservesInterruptedFlag() throws Exception {
+        var arrived = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/chat/completions", exchange -> {
+            read(exchange); arrived.countDown();
+            try { release.await(4, java.util.concurrent.TimeUnit.SECONDS); }
+            catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            finally { exchange.close(); }
+        }); server.start();
+        var properties = new LlmProperties(); properties.setEnabled(true);
+        properties.setBaseUrl("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setAllowedHosts(List.of("127.0.0.1")); properties.setHttpsOnly(false); properties.setAllowPrivateNetworks(true);
+        var interruptedFlag = new java.util.concurrent.atomic.AtomicBoolean();
+        Thread caller = new Thread(() -> {
+            new HttpLlmChatClient(properties).chat("question");
+            interruptedFlag.set(Thread.currentThread().isInterrupted());
+        });
+        try {
+            caller.start(); assertThat(arrived.await(2, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            caller.interrupt(); caller.join(1500);
+            assertThat(caller.isAlive()).isFalse(); assertThat(interruptedFlag).isTrue();
+        } finally { release.countDown(); caller.interrupt(); }
+    }
+
     private static void read(HttpExchange exchange) throws IOException {
         try (var input = exchange.getRequestBody()) {
             input.readAllBytes();

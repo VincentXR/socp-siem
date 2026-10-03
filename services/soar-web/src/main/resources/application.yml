@@ -58,6 +58,7 @@ socp:
     sse-timeout-ms: ${SOCP_SOAR_SSE_TIMEOUT_MS:30000}
     sse-scheduler-threads: ${SOCP_SOAR_SSE_SCHEDULER_THREADS:2}
     secrets:
+      tenant-grants: ${SOAR_SECRET_TENANT_GRANTS:{}}
       # Preview keeps the env:// compatibility resolver. Production selects
       # the Kubernetes projected-volume provider (or Vault explicitly).
       backend: ${SOCP_SOAR_SECRET_BACKEND:env}

@@ -82,6 +82,7 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
 
         State st = states.get(key, State::new);
         synchronized (st) {
+            states.invalidateSnapshot(key);
             // Sequence order follows the serialized processing order. Event
             // time only bounds the correlation window, using the greatest
             // timestamp seen so a late record cannot move the window back.
@@ -154,19 +155,16 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
 
     @Override
     public byte[] snapshotState() {
-        Map<String, Object> out = new java.util.LinkedHashMap<>();
-        states.forEach((key, state) -> {
-            synchronized (state) {
-                Map<String, Object> value = new java.util.LinkedHashMap<>();
-                value.put("step", state.step);
-                value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
-                value.put("lastTs", state.lastTs == null ? null : state.lastTs.toString());
-                value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
-                out.put(key, value);
-            }
+        return states.snapshot(state -> {
+            Map<String, Object> value = new java.util.LinkedHashMap<>();
+            value.put("step", state.step);
+            value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
+            value.put("lastTs", state.lastTs == null ? null : state.lastTs.toString());
+            value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
+            return value;
         });
-        return StateSnapshotCodec.write(out);
     }
+
 
     @Override
     public void restoreState(byte[] serializedState) {

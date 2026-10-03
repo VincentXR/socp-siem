@@ -86,6 +86,7 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
 
         BucketState state = buckets.get(key, BucketState::new);
         synchronized (state) {
+            buckets.invalidateSnapshot(key);
             if (eventTimePolicy.isLate(event.timestamp(), state.watermark)
                     && eventTimePolicy.handling() == EventTimePolicy.LateEventHandling.DROP) {
                 return;
@@ -134,17 +135,14 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
 
     @Override
     public byte[] snapshotState() {
-        Map<String, Object> out = new java.util.LinkedHashMap<>();
-        buckets.forEach((key, state) -> {
-            synchronized (state) {
-                Map<String, Object> value = new java.util.LinkedHashMap<>();
-                value.put("watermark", state.watermark == null ? null : state.watermark.toString());
-                value.put("events", state.events.stream().map(StateSnapshotCodec::event).toList());
-                out.put(key, value);
-            }
+        return buckets.snapshot(state -> {
+            Map<String, Object> value = new java.util.LinkedHashMap<>();
+            value.put("watermark", state.watermark == null ? null : state.watermark.toString());
+            value.put("events", state.events.stream().map(StateSnapshotCodec::event).toList());
+            return value;
         });
-        return StateSnapshotCodec.write(out);
     }
+
 
     @Override
     public void restoreState(byte[] serializedState) {

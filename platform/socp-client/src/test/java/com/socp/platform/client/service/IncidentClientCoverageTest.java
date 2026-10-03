@@ -2,6 +2,7 @@ package com.socp.platform.client.service;
 
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.http.SocpHttpClient;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -12,6 +13,8 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 
 /** Verifies how IncidentClient maps typed calls onto the raw HTTP client. */
@@ -63,24 +66,42 @@ class IncidentClientCoverageTest {
     }
 
     @Test
-    void addNoteEncodesAuthorContentAndOptionalKeyIntoTheQuery() {
+    void addNoteUsesTheJsonMutationContractAndPreservesTheReplayKey() {
         given(http.postJson(SocpService.INCIDENT,
-                "/api/v1/incidents/c%201/notes?author=alice&content=hello%20there&idempotencyKey=key-1",
-                "{}")).willReturn(ok());
+                "/api/v1/incidents/c%201/notes?author=alice",
+                "{\"content\":\"hello there\",\"idempotencyKey\":\"key-1\"}")).willReturn(ok());
 
         ServiceCall call = client.addNote("c 1", "alice", "hello there", "key-1");
 
         assertThat(call.ok()).isTrue();
         verify(http).postJson(SocpService.INCIDENT,
-                "/api/v1/incidents/c%201/notes?author=alice&content=hello%20there&idempotencyKey=key-1", "{}");
+                "/api/v1/incidents/c%201/notes?author=alice",
+                "{\"content\":\"hello there\",\"idempotencyKey\":\"key-1\"}");
     }
 
     @Test
-    void addNoteWithoutKeyOmitsTheIdempotencyParameter() {
-        given(http.postJson(SocpService.INCIDENT,
-                "/api/v1/incidents/c1/notes?author=alice&content=hello", "{}")).willReturn(ok());
+    void addNoteWithoutKeyCreatesOneBoundedKeyForTheTransportInvocation() throws Exception {
+        given(http.postJson(eq(SocpService.INCIDENT),
+                eq("/api/v1/incidents/c1/notes?author=alice"), anyString())).willReturn(ok());
 
         assertThat(client.addNote("c1", "alice", "hello").ok()).isTrue();
+        var body = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(http).postJson(eq(SocpService.INCIDENT), eq("/api/v1/incidents/c1/notes?author=alice"), body.capture());
+        var command = new ObjectMapper().readTree(body.getValue());
+        assertThat(command.path("content").asText()).isEqualTo("hello");
+        assertThat(java.util.UUID.fromString(command.path("idempotencyKey").asText())).isNotNull();
+    }
+
+    @Test
+    void noteJsonEscapesEvidenceAndDoesNotPutItInTheRequestUri() throws Exception {
+        given(http.postJson(eq(SocpService.INCIDENT), eq("/api/v1/incidents/c1/notes"), anyString())).willReturn(ok());
+        String content = "Evidence \"quoted\"\\path\n中文\t&?\u0001";
+        assertThat(client.addNote("c1", null, content, "investigation-1").ok()).isTrue();
+        var body = org.mockito.ArgumentCaptor.forClass(String.class);
+        verify(http).postJson(eq(SocpService.INCIDENT), eq("/api/v1/incidents/c1/notes"), body.capture());
+        var command = new ObjectMapper().readTree(body.getValue());
+        assertThat(command.path("content").asText()).isEqualTo(content);
+        assertThat(command.path("idempotencyKey").asText()).isEqualTo("investigation-1");
     }
 
     @Test

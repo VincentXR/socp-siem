@@ -94,6 +94,33 @@ class AlarmControllerTest {
     }
 
     @Test
+    void investigationAndQueueFiltersReachListAndExportTogether() throws Exception {
+        var from = java.time.Instant.parse("2026-09-01T00:00:00Z");
+        var to = from.plusSeconds(3600);
+        Alarm alarm = new Alarm("R-1", "Combined alarm", Severity.CRITICAL, "login", "host-a");
+        alarm.setId("combined-alarm");
+        given(service.investigationPage(null, null, "ACTIVE", null, "occurredAt", "descending", 1, 20,
+                "mine", "host-a", from, to, "T1110", "high", "alice"))
+                .willReturn(new PageImpl<>(List.of(alarm)));
+        mvc.perform(get("/api/alarms").param("page", "1").param("owner", "mine").param("assignee", "alice")
+                        .param("status", "ACTIVE").param("entity", "host-a").param("technique", "T1110")
+                        .param("severityGroup", "high").param("from", from.toString()).param("to", to.toString()))
+                .andExpect(status().isOk()).andExpect(content().string(containsString("combined-alarm")));
+        given(service.investigationPage(null, null, "ACTIVE", null, "occurredAt", "descending", 1, 1,
+                "mine", "host-a", from, to, "T1110", "high", "alice"))
+                .willReturn(new PageImpl<>(List.of(alarm)));
+        given(service.investigationPage(null, null, "ACTIVE", null, "occurredAt", "descending", 1, 500,
+                "mine", "host-a", from, to, "T1110", "high", "alice"))
+                .willReturn(new PageImpl<>(List.of(alarm)));
+        mvc.perform(get("/api/alarms/export").param("format", "json").param("owner", "mine").param("assignee", "alice")
+                        .param("status", "ACTIVE").param("entity", "host-a").param("technique", "T1110")
+                        .param("severityGroup", "high").param("from", from.toString()).param("to", to.toString()))
+                .andExpect(status().isOk()).andExpect(content().string(containsString("combined-alarm")));
+        verify(service).investigationPage(null, null, "ACTIVE", null, "occurredAt", "descending", 1, 500,
+                "mine", "host-a", from, to, "T1110", "high", "alice");
+    }
+
+    @Test
     void exportUsesTheSameStatusAndSortAsTheList() throws Exception {
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", "203.0.113.10");
@@ -108,7 +135,6 @@ class AlarmControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString("AUTH-BRUTE")));
         verify(service).page(Severity.HIGH, "R-1", "OPEN", "login", "riskScore", "ascending", 1, 500);
-        verify(service, never()).query(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -138,7 +164,6 @@ class AlarmControllerTest {
                 .contains("\"a-0\"").contains("\"a-499\"").contains("\"alarm-tail\"").doesNotContain("a-500");
         verify(service).page(null, null, null, null, "occurredAt", "descending", 1, 500);
         verify(service).page(null, null, null, null, "occurredAt", "descending", 2, 500);
-        verify(service, never()).query(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -315,7 +340,7 @@ class AlarmControllerTest {
     void batchDispositionValidatesAlarmIdsAndReturnsItems() throws Exception {
         given(service.get("alarm-1")).willReturn(new Alarm());
         given(dispositionService.batchUpdate(anyList(), org.mockito.ArgumentMatchers.eq("RESOLVED"),
-                org.mockito.ArgumentMatchers.eq("alice"), org.mockito.ArgumentMatchers.eq("bulk triage")))
+                org.mockito.ArgumentMatchers.eq("alice"), org.mockito.ArgumentMatchers.eq("bulk triage"), org.mockito.ArgumentMatchers.eq("TRUE_POSITIVE")))
                 .willReturn(Map.of("updated", 1, "alarmIds", List.of("alarm-1"), "items", List.of()));
 
         mvc.perform(post("/api/v1/alarms/batch/disposition")
@@ -324,7 +349,7 @@ class AlarmControllerTest {
                                 "alarmIds", List.of("alarm-1"),
                                 "status", "RESOLVED",
                                 "assignee", "alice",
-                                "reason", "bulk triage"))))
+                                "reason", "bulk triage", "classification", "TRUE_POSITIVE"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.updated").value(1))
                 .andExpect(jsonPath("$.data.alarmIds[0]").value("alarm-1"));

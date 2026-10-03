@@ -177,6 +177,37 @@ class SoarRunControlCoverageTest {
         verify(approvals, never()).save(any(SoarApprovalEntity.class));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = { "alert", "alarm", "alert.created", "alarm.created",
+            "case", "incident", "case.created", "incident.created" })
+    void admissionRetainsExactTenantScopedOriginForKnownSubjectAliases(String type) {
+        given(versions.findByTenantIdAndId("tenant-a", "ver-1"))
+                .willReturn(Optional.of(version("pb-1", "ver-1", "PUBLISHED", SAFE_DEFINITION)));
+        given(playbooks.findByTenantIdAndId("tenant-a", "pb-1")).willReturn(Optional.of(playbook("pb-1", "ACTIVE")));
+        given(validator.validate(anyString())).willReturn(validation(true, 0));
+        Map<String, Object> result = service.queueManualRun("origin-request", "ver-1",
+                Map.of("type", type, "id", "exact-origin-42"), Map.of());
+        ArgumentCaptor<SoarRunEntity> saved = ArgumentCaptor.forClass(SoarRunEntity.class);
+        verify(runs).save(saved.capture());
+        assertThat(saved.getValue().getTenantId()).isEqualTo("tenant-a");
+        assertThat(saved.getValue().getSubjectId()).isEqualTo("exact-origin-42");
+        String field = type.startsWith("al") ? "originAlarmId" : "originCaseId";
+        assertThat(result).containsEntry(field, "exact-origin-42");
+    }
+
+    @Test
+    void declaredLiveInputSchemaRejectsMissingInputsBeforeAnyRunWrite() {
+        String definition = SAFE_DEFINITION.substring(0, SAFE_DEFINITION.length() - 1)
+                + ",\"inputSchema\":{\"type\":\"object\",\"required\":[\"alarmId\"],\"properties\":{\"alarmId\":{\"type\":\"string\"}}}}";
+        given(versions.findByTenantIdAndId("tenant-a", "ver-1"))
+                .willReturn(Optional.of(version("pb-1", "ver-1", "PUBLISHED", definition)));
+        given(playbooks.findByTenantIdAndId("tenant-a", "pb-1")).willReturn(Optional.of(playbook("pb-1", "ACTIVE")));
+        given(validator.validate(anyString())).willReturn(validation(true, 0));
+        assertThat(catchThrowable(() -> service.queueManualRun("schema-request", "ver-1", Map.of(), Map.of())))
+                .isInstanceOf(ResponseStatusException.class);
+        verify(runs, never()).save(any()); verify(dispatches, never()).save(any());
+    }
+
     @Test
     void queueManualRunHonorsTheExecutionFeatureFlag() {
         SoarRuntimeProperties properties = new SoarRuntimeProperties();

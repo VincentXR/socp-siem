@@ -1,8 +1,11 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { ref } from 'vue'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ComplianceView from '../src/views/ComplianceView.vue'
 import { translate } from '../src/i18n'
+import { WORKBENCH_STATE } from '../src/app/workbenchState'
 
 const api = vi.hoisted(() => ({ complianceFrameworks: vi.fn(), lookupRuleOptions: vi.fn(), complianceCoverage: vi.fn() }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...api }))
@@ -22,6 +25,26 @@ beforeEach(() => {
 })
 
 describe('compliance result ownership', () => {
+  it('links readable mapped rule names to the exact editor while preserving control details', async () => {
+    api.lookupRuleOptions.mockResolvedValue([{ id: 'R1', name: 'Readable rule name', status: 'ACTIVE' }])
+    const router = createRouter({ history: createMemoryHistory(), routes: [
+      { path: '/compliance', component: ComplianceView },
+      { path: '/detect/rules/:ruleId/edit', name: 'rule-edit', component: { template: '<p>Rule editor</p>' } },
+    ] })
+    await router.push('/compliance'); await router.isReady()
+    const wrapper = mount(ComplianceView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('analyst') } } } })
+    await flushPromises()
+    const ruleLink = wrapper.find('a[href="/detect/rules/R1/edit"]')
+    expect(ruleLink.text()).toBe('Readable rule name')
+    wrapper.findAllComponents(ElButton).find(node => node.text() === 'Control')!.vm.$emit('click'); await flushPromises()
+    expect(wrapper.text()).toContain('C1 · Control')
+    expect(wrapper.text()).toContain('Readable rule name')
+    wrapper.findAllComponents(ElButton).find(node => node.text() === 'Readable rule name')!.vm.$emit('click'); await flushPromises()
+    expect(router.currentRoute.value.name).toBe('rule-edit')
+    expect(router.currentRoute.value.params.ruleId).toBe('R1')
+    wrapper.unmount()
+  })
+
   it.each(['complianceFrameworks', 'lookupRuleOptions', 'complianceCoverage'] as const)('retains the last complete result after %s refresh fails', async stage => {
     const wrapper = mount(ComplianceView); await flushPromises()
     const metrics = () => wrapper.findAll('.metric-card-value').map(node => node.text())

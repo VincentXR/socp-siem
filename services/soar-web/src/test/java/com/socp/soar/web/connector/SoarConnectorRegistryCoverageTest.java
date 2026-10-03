@@ -295,7 +295,7 @@ class SoarConnectorRegistryCoverageTest {
 
     @Test
     void executeMapsExternalCallOutcomes() {
-        given(http.postExternal(anyString(), anyString(), anyString(), anyInt(), anyMap(), anyList()))
+        given(http.postExternalOnce(anyString(), anyString(), anyString(), anyInt(), anyMap(), anyList()))
                 .willReturn(call(200, "{\"operationId\":\"OP-9\"}"));
         ActionResult ok = registry.execute(new ActionRequest("tenant-a", "run-1", "node-1", 1,
                 "endpoint/isolate-host", "idem-1", Map.of("host", "web-1"), Map.of("id", "web-1"),
@@ -303,7 +303,7 @@ class SoarConnectorRegistryCoverageTest {
         assertThat(ok.status()).isEqualTo("SUCCEEDED");
         assertThat(ok.operationId()).isEqualTo("OP-9");
 
-        given(http.postExternal(anyString(), anyString(), anyString(), anyInt(), anyMap(), anyList()))
+        given(http.postExternalOnce(anyString(), anyString(), anyString(), anyInt(), anyMap(), anyList()))
                 .willReturn(call(200, "{\"ok\":true}"));
         ActionResult noReceipt = registry.execute(new ActionRequest("tenant-a", "run-1", "node-1", 1,
                 "endpoint/isolate-host", "idem-1", Map.of(), Map.of(),
@@ -311,7 +311,7 @@ class SoarConnectorRegistryCoverageTest {
         assertThat(noReceipt.errorCode()).isEqualTo("MISSING_CONNECTOR_RECEIPT");
         assertThat(noReceipt.retryable()).isFalse();
 
-        given(http.postExternal(anyString(), anyString(), anyString(), anyInt(), anyMap(), anyList()))
+        given(http.postExternalOnce(anyString(), anyString(), anyString(), anyInt(), anyMap(), anyList()))
                 .willReturn(new ServiceCall(null, "https://edr.example.com/api", false, -1, "",
                         "ConnectException: timeout", 7L, true, 1));
         ActionResult unknown = registry.execute(new ActionRequest("tenant-a", "run-1", "node-1", 1,

@@ -13,7 +13,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ConnectionContextCoverageTest {
 
-    private static final SecretResolver RESOLVER = reference -> Optional.of("s3cret-" + reference);
+    private static final SecretResolver RESOLVER = new SecretResolver() {
+        public Optional<String> resolve(String reference) { return Optional.of("s3cret-" + reference); }
+        public boolean isAuthorized(String tenant, String reference) {
+            return "tenant-a".equals(tenant) && "secret://vault/edr".equals(reference);
+        }
+    };
 
     @Test
     void missingTimeoutAndHostsFallBackToSafeDefaults() {

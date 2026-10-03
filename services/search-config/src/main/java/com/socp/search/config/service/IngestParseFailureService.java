@@ -84,7 +84,7 @@ public class IngestParseFailureService {
     @Transactional(readOnly = true)
     public Page<Map<String, Object>> page(int page, int size) {
         return repository.findByTenantIdOrderByReceivedAtDescIdAsc(
-                TenantContext.require(), PageRequest.of(page - 1, size)).map(IngestParseFailureService::view);
+                TenantContext.require(), PageRequest.of(page - 1, size)).map(this::view);
     }
 
     @Transactional
@@ -111,6 +111,7 @@ public class IngestParseFailureService {
             row.setLastError(null);
             repository.save(row);
             Map<String, Object> result = new LinkedHashMap<>(view(row));
+            result.put("eventTimestamp", normalized.event().timestamp().toString());
             result.put("created", committed.created());
             result.put("duplicates", committed.duplicates());
             return result;
@@ -130,9 +131,12 @@ public class IngestParseFailureService {
         }
     }
 
-    private static Map<String, Object> view(IngestParseFailureEntity row) {
+    private Map<String, Object> view(IngestParseFailureEntity row) {
         Map<String, Object> value = new LinkedHashMap<>();
         value.put("id", row.getId());
+        var source = normalizer.sourceContext(row.getRawPayload(), row.getCollectorId());
+        value.put("sourceId", source == null ? null : source.sourceId());
+        value.put("parseRuleIds", source == null ? java.util.List.of() : source.parseRuleIds());
         value.put("collectorId", row.getCollectorId());
         value.put("rawPayload", row.getRawPayload());
         value.put("receivedAt", row.getReceivedAt());

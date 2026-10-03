@@ -256,8 +256,13 @@ class SoarPlaybookLifecycleCoverageTest {
         oldRun.setPlaybookId("pb-old");
         oldRun.setStatus("SUCCEEDED");
         oldRun.setCreatedAt(Instant.parse("2025-01-01T00:00:00Z"));
-        given(runs.findLatestByTenantIdAndPlaybookIds("tenant-a", List.of("pb-old", "pb-never")))
-                .willReturn(List.of(oldRun));
+        var latest = org.mockito.Mockito.mock(SoarRunRepository.LatestRunMetadata.class);
+        given(latest.getId()).willReturn(oldRun.getId());
+        given(latest.getPlaybookId()).willReturn(oldRun.getPlaybookId());
+        given(latest.getStatus()).willReturn(oldRun.getStatus());
+        given(latest.getCreatedAt()).willReturn(oldRun.getCreatedAt());
+        given(runs.findLatestMetadataByTenantIdAndPlaybookIds("tenant-a", List.of("pb-old", "pb-never")))
+                .willReturn(List.of(latest));
 
         Page<Map<String, Object>> page = service.listPlaybooks(pageable, null, null, null, null);
 
@@ -266,7 +271,7 @@ class SoarPlaybookLifecycleCoverageTest {
         assertThat(page.getContent().getFirst().get("latestRun")).isEqualTo(Map.of(
                 "runId", "retained-run", "status", "SUCCEEDED", "createdAt", oldRun.getCreatedAt()));
         assertThat(page.getContent().get(1)).containsEntry("latestRun", null);
-        verify(runs).findLatestByTenantIdAndPlaybookIds("tenant-a", List.of("pb-old", "pb-never"));
+        verify(runs).findLatestMetadataByTenantIdAndPlaybookIds("tenant-a", List.of("pb-old", "pb-never"));
     }
 
     @Test
@@ -285,8 +290,9 @@ class SoarPlaybookLifecycleCoverageTest {
     void listPlaybooksFiltersByTagCaseInsensitively() {
         SoarPlaybookEntity edr = playbook("pb-1", "Contain host", List.of("edr", "contain"));
         SoarPlaybookEntity net = playbook("pb-2", "Block ip", List.of("net"));
-        given(playbooks.findByTenantId("tenant-a")).willReturn(List.of(edr, net));
 
+        given(playbooks.searchCatalog("tenant-a", null, null, SoarCatalogMetadata.tagToken("EDR"), null, PageRequest.of(0, 10)))
+                .willReturn(new PageImpl<>(List.of(edr)));
         Page<Map<String, Object>> page = service.listPlaybooks(PageRequest.of(0, 10), null, null, "EDR", null);
 
         assertThat(page.getContent()).extracting(row -> row.get("id")).containsExactly("pb-1");
@@ -296,15 +302,8 @@ class SoarPlaybookLifecycleCoverageTest {
 
     @Test
     void listPlaybooksFiltersByHighRiskPublishedVersion() {
-        given(playbooks.findByTenantId("tenant-a"))
-                .willReturn(List.of(playbook("pb-high", "Block ip"), playbook("pb-low", "Notify")));
-        given(versions.findByTenantIdAndPlaybookIdOrderByVersionNoDesc("tenant-a", "pb-high"))
-                .willReturn(List.of(version("ver-high", "pb-high", 1, SoarPlaybookVersionStatus.PUBLISHED,
-                        SIMPLE_DEFINITION, "{\"highRiskActionCount\":2,\"actionCount\":3}")));
-        given(versions.findByTenantIdAndPlaybookIdOrderByVersionNoDesc("tenant-a", "pb-low"))
-                .willReturn(List.of(version("ver-low", "pb-low", 1, SoarPlaybookVersionStatus.PUBLISHED,
-                        SIMPLE_DEFINITION, "{\"highRiskActionCount\":0,\"actionCount\":2}")));
-
+        given(playbooks.searchCatalog("tenant-a", null, null, null, "HIGH", PageRequest.of(0, 10)))
+                .willReturn(new PageImpl<>(List.of(playbook("pb-high", "Block ip"))));
         Page<Map<String, Object>> page = service.listPlaybooks(PageRequest.of(0, 10), null, null, null, "high");
 
         assertThat(page.getContent()).extracting(row -> row.get("id")).containsExactly("pb-high");
@@ -312,14 +311,8 @@ class SoarPlaybookLifecycleCoverageTest {
 
     @Test
     void listPlaybooksTreatsPlaybookWithoutPublishedVersionAsRiskNone() {
-        given(playbooks.findByTenantId("tenant-a"))
-                .willReturn(List.of(playbook("pb-draft", "Draft only"), playbook("pb-live", "Live")));
-        given(versions.findByTenantIdAndPlaybookIdOrderByVersionNoDesc("tenant-a", "pb-draft"))
-                .willReturn(List.of());
-        given(versions.findByTenantIdAndPlaybookIdOrderByVersionNoDesc("tenant-a", "pb-live"))
-                .willReturn(List.of(version("ver-live", "pb-live", 1, SoarPlaybookVersionStatus.PUBLISHED,
-                        SIMPLE_DEFINITION, "{\"highRiskActionCount\":0,\"actionCount\":2}")));
-
+        given(playbooks.searchCatalog("tenant-a", null, null, null, "NONE", PageRequest.of(0, 10)))
+                .willReturn(new PageImpl<>(List.of(playbook("pb-draft", "Draft only"))));
         Page<Map<String, Object>> page = service.listPlaybooks(PageRequest.of(0, 10), null, null, null, "NONE");
 
         assertThat(page.getContent()).extracting(row -> row.get("id")).containsExactly("pb-draft");

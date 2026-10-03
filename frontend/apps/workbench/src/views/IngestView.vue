@@ -55,7 +55,7 @@ import {
   ApiError,
   createOutput, updateOutput, createSource, deleteOutput, deleteParseRule, deleteSource, updateSource,
   ingestSummary, listCategories, listIngestTasks, listOutputs, listParseRulesPage, resolveParseRules, listSourcesPage,
-  previewParse, renderConfig, startIngestTask, stopIngestTask,
+  previewSource, getSource, validateOutputConfig, renderConfig, startIngestTask, stopIngestTask,
   listIngestParseFailures, replayIngestParseFailure,
   SOURCE_TYPES, PARSE_FORMATS,
   type IngestParseFailure, type IngestTask, type IngestSummary, type LogCategory, type LogSource, type LogSourceInput, type ParseRule, type SinkTarget,
@@ -63,10 +63,21 @@ import {
 import { useI18n } from '../composables/useI18n'
 import { fmtBytes, fmtTime } from '../lib/ui'
 import PageHeader from '../components/PageHeader.vue'
+import IngestSourceSetup from '../components/IngestSourceSetup.vue'
+import { useIngestCopy } from '../composables/useIngestCopy'
 
 const { t } = useI18n()
+const copy = useIngestCopy()
+const setupId = ref('')
+const setupSample = ref('')
+const showSetup = ref(false)
+let setupEditGeneration = 0
+let setupEditController: AbortController | null = null
+const editingOutputId = ref<string | null>(null)
+const outputValidation = ref('')
 const MULTILINE_PLACEHOLDER = '{ start_pattern = "^\\s", mode = "continue_through" }'
-const ingestTab = ref(String(route.query.tab || 'tasks'))
+const validTabs = ['tasks', 'sources', 'rules', 'outputs', 'quarantine']
+const ingestTab = ref(validTabs.includes(String(route.query.tab)) ? String(route.query.tab) : 'tasks')
 const sources = ref<LogSource[]>([])
 const sourcePage = ref(1)
 const sourceSize = ref(20)
@@ -115,7 +126,6 @@ const showRender = ref(false)
 const showSourceDialog = ref(false)
 const showOutputDialog = ref(false)
 const editingSourceId = ref<string | null>(null)
-const editingOutputId = ref<string | null>(null)
 const credentialAction = ref<'KEEP' | 'REPLACE' | 'CLEAR'>('KEEP')
 const lastSavedSource = ref<LogSource | null>(null)
 
@@ -127,7 +137,6 @@ const testDialog = ref(false)
 const testTarget = ref<IngestTask | null>(null)
 const testSample = ref('')
 type ParsePreviewAttempt = { ruleId?: string; rule?: string; format?: string; matched: boolean; error?: string }
-type ParsePreviewWithFields = ParsePreviewAttempt & { fields: Record<string, string> }
 type ParsePreviewResult = { ok: boolean; matched: boolean; sample: string; rule?: string; format?: string; fields: Record<string, string>; attempts?: ParsePreviewAttempt[]; error?: string }
 const testResult = ref<ParsePreviewResult | null>(null)
 const testLoading = ref(false)
@@ -152,7 +161,7 @@ function credentialLabel(action: string): string {
   return action === 'KEEP' ? t('workflow.credentialKEEP') : action === 'REPLACE' ? t('workflow.credentialREPLACE') : t('workflow.credentialCLEAR')
 }
 function outputLabel(id: string | null | undefined): string {
-  if (!id) return t('ingest.disabledDefault')
+  if (!id) return copy.value.platformDefault
   const output = outputs.value.find(item => item.id === id)
   return output ? `${output.name} · ${output.id}` : id
 }
@@ -263,7 +272,12 @@ const loadParseFailures = () => loadList('quarantine', signal =>
   parseFailureTotal.value = value.total
 })
 async function replayParseFailure(row: IngestParseFailure) {
-  if (!canWrite.value || replayingFailure.value) return
+  if (!canWrite.value || replayingFailure.value || confirming.value || disposed) return
+  confirming.value = true
+  let confirmed = false
+  try { confirmed = await confirmDanger(copy.value.replayWarning) }
+  finally { confirming.value = false }
+  if (!confirmed || !canWrite.value || disposed || replayingFailure.value) return
   replayingFailure.value = row.id
   try {
     const result = await replayIngestParseFailure(row.id)
@@ -281,15 +295,82 @@ async function replayParseFailure(row: IngestParseFailure) {
     replayingFailure.value = ''
   }
 }
-function onIngestTab(key: string | number) {
+function onIngestTab(key: string | number, syncRoute = true) {
   const tab = String(key)
-  ingestTab.value = tab
+  ingestTab.value = validTabs.includes(tab) ? tab : 'tasks'
+  if (syncRoute) {
+    clearSetup()
+    const query = { ...route.query }; query.tab = ingestTab.value; delete query.sourceId
+    if (route.query.tab !== ingestTab.value || route.query.sourceId) void router.push({ query })
+  }
   if (tab === 'sources') loadSources()
   if (tab === 'outputs') loadOutputs()
   if (tab === 'rules') loadParseRules()
   if (tab === 'tasks') loadTasks()
   if (tab === 'quarantine') loadParseFailures()
 }
+
+function cancelSetupEdit() {
+  setupEditGeneration++
+  setupEditController?.abort()
+  setupEditController = null
+}
+function clearSetup() {
+  cancelSetupEdit()
+  showSetup.value = false; setupId.value = ''; setupSample.value = ''
+}
+function closeSetup(visible = false) {
+  if (visible) return
+  clearSetup()
+  if (route.query.sourceId) {
+    const query = { ...route.query }; delete query.sourceId
+    void router.replace({ query })
+  }
+}
+function openSetup(id: string, sample = '') {
+  cancelSetupEdit()
+  setupId.value = id; setupSample.value = sample; showSetup.value = true
+  if (route.query.sourceId !== id) void router.push({ query: { ...route.query, sourceId: id } })
+}
+async function editSourceById(id: string) {
+  if (!canWrite.value || !showSetup.value || setupId.value !== id || setupEditController) return
+  const generation = setupEditGeneration
+  const controller = new AbortController()
+  setupEditController = controller
+  const ownsResult = () => !disposed && !controller.signal.aborted && generation === setupEditGeneration
+    && canWrite.value && showSetup.value && setupId.value === id
+  try {
+    const { source } = await getSource(id, { signal: controller.signal })
+    if (!ownsResult()) return
+    onIngestTab('sources')
+    openEditSource(source)
+  } catch (failure) {
+    if (ownsResult()) actionError.value = String(failure)
+  } finally { if (setupEditController === controller) setupEditController = null }
+}
+function sourceSearch(id: string, eventId?: string, timestamp?: string) {
+  const stamp = timestamp ? Date.parse(timestamp) : Date.now()
+  const safeStamp = Number.isFinite(stamp) ? stamp : Date.now()
+  void router.push({ name: 'search', query: {
+    q: `${eventId ? 'eventId' : 'source_id'}=${JSON.stringify(eventId || id)}`, range: 'custom',
+    from: new Date(safeStamp - (eventId ? 3600000 : 86400000)).toISOString(),
+    to: new Date(Math.max(Date.now(), safeStamp + 3600000)).toISOString(),
+  } })
+}
+function repairFailure(row: IngestParseFailure) {
+  if (row.sourceId) openSetup(row.sourceId, row.rawPayload)
+  else actionError.value = copy.value.noSource
+}
+watch(() => route.query.tab, value => {
+  const tab = validTabs.includes(String(value)) ? String(value) : 'tasks'
+  if (tab !== ingestTab.value) onIngestTab(tab, false)
+})
+watch(() => route.query.sourceId, id => {
+  if (typeof id !== 'string' || !id) { clearSetup(); return }
+  if (id !== setupId.value) { cancelSetupEdit(); setupSample.value = '' }
+  setupId.value = id; showSetup.value = true
+}, { immediate: true, flush: 'sync' })
+watch(canWrite, allowed => { if (!allowed) cancelSetupEdit() }, { flush: 'sync' })
 
 const EMPTY_SOURCE = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', description: '', protocol: 'tcp', charset: 'utf-8', timeField: '', timezone: 'Asia/Shanghai', tags: '', frequency: 1, ignoreOlderSeconds: null as number | null, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true }
 
@@ -307,6 +388,7 @@ function prepareSourceRuleSelector(ids: string[]) {
 }
 function openCreateSource() {
   if (!canWrite.value) return
+  onIngestTab('sources')
   editingSourceId.value = null
   newSource.value = { ...EMPTY_SOURCE }
   sourceErrors.value = {}
@@ -317,6 +399,7 @@ function openCreateSource() {
 }
 function openEditSource(source: LogSource) {
   if (!canWrite.value) return
+  cancelSetupEdit()
   editingSourceId.value = source.id
   newSource.value = {
     name: source.name, type: source.type || 'FILE', format: source.format || 'AUTO',
@@ -337,13 +420,13 @@ function openEditSource(source: LogSource) {
 }
 
 /** Required fields only; empty optional targets are submitted as empty. */
-function validateSource(): boolean {
+function validateSource(asDraft = false): boolean {
   sourceErrors.value = {}
   if (!newSource.value.name.trim()) sourceErrors.value.name = t('forms.fieldRequired', { field: t('ingest.sourceName') })
-  if (newSource.value.enabled) {
-    const required = newSource.value.type === 'FILE' ? 'path' : newSource.value.type === 'KAFKA' ? 'topic'
-      : ['SOCKET', 'SYSLOG'].includes(newSource.value.type) ? 'address' : null
-    if (required && !newSource.value[required].trim()) sourceErrors.value[required] = t('workflow.requiredCollectorTarget')
+  if (!asDraft && newSource.value.enabled) {
+    if (newSource.value.type === 'FILE' && !newSource.value.path.trim()) sourceErrors.value.path = copy.value.requiredConnection
+    if (['SOCKET', 'SYSLOG', 'KAFKA'].includes(newSource.value.type) && !newSource.value.address.trim()) sourceErrors.value.address = copy.value.requiredConnection
+    if (newSource.value.type === 'KAFKA' && !newSource.value.topic.trim()) sourceErrors.value.topic = copy.value.requiredConnection
   }
   return !Object.keys(sourceErrors.value).length
 }
@@ -358,21 +441,21 @@ function validateOutput(): boolean {
   else {
     try {
       const url = new URL(uri)
-      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) outputErrors.value.uri = t('forms.invalidInput')
+      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.hash) outputErrors.value.uri = t('forms.invalidInput')
     } catch { outputErrors.value.uri = t('forms.invalidInput') }
   }
   return !Object.keys(outputErrors.value).length
 }
 
-async function saveSource() {
-  if (!canWrite.value || !validateSource()) return
+async function saveSource(asDraft = false) {
+  if (!canWrite.value || !validateSource(asDraft)) return
   sourceError.value = ''
   isolateError(sourceError, await mutation.run(async () => {
   const source: LogSourceInput = {
     name: newSource.value.name.trim(), type: newSource.value.type, format: newSource.value.format,
     path: newSource.value.path.trim() || null, address: newSource.value.address.trim() || null,
     topic: newSource.value.topic.trim() || null, env: newSource.value.env.trim() || null,
-    enabled: newSource.value.enabled, readFrom: newSource.value.readFrom || null,
+    enabled: asDraft ? false : newSource.value.enabled, readFrom: newSource.value.readFrom || null,
     multiline: newSource.value.multiline.trim() || null, description: newSource.value.description.trim() || null,
     protocol: newSource.value.protocol || null, charset: newSource.value.charset || null,
     timeField: newSource.value.timeField.trim() || null, timezone: newSource.value.timezone || null,
@@ -383,9 +466,8 @@ async function saveSource() {
     sinkTargetId: newSource.value.sinkTargetId || null,
     parseRuleIds: newSource.value.parseRuleIds,
   }
-  lastSavedSource.value = editingSourceId.value
-    ? (await updateSource(editingSourceId.value, source)).source
-    : await createSource(source)
+  const saved = editingSourceId.value ? (await updateSource(editingSourceId.value, source)).source : await createSource(source)
+  if (!disposed) { lastSavedSource.value = saved; openSetup(saved.id) }
   sourceSearchDraft.value = source.name
   sourceQuery.value = source.name
   sourcePage.value = 1
@@ -439,11 +521,12 @@ function openEditOutput(output: SinkTarget) {
   editingOutputId.value = output.id
   credentialAction.value = 'KEEP'
   newOutput.value = { name: output.name, type: output.type, uri: output.uri, authToken: '', enabled: output.enabled }
-  outputErrors.value = {}; outputError.value = ''; showOutputDialog.value = true
+  outputErrors.value = {}; outputError.value = ''; outputValidation.value = ''; actionError.value = ''; showOutputDialog.value = true
 }
 function openCreateOutput() {
   if (!canWrite.value) return
   editingOutputId.value = null
+  outputValidation.value = ''
   credentialAction.value = 'REPLACE'
   newOutput.value = { name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true }
   outputErrors.value = {}
@@ -451,11 +534,25 @@ function openCreateOutput() {
   actionError.value = ''
   showOutputDialog.value = true
 }
+function outputPayload() {
+  return { name: newOutput.value.name.trim(), type: newOutput.value.type, uri: newOutput.value.uri.trim(),
+    authToken: !editingOutputId.value || credentialAction.value === 'REPLACE' ? newOutput.value.authToken || null : null, enabled: newOutput.value.enabled }
+}
+async function checkOutput() {
+  if (!canWrite.value || !validateOutput()) return
+  outputValidation.value = ''; outputError.value = ''
+  isolateError(outputError, await mutation.run(async () => {
+    await validateOutputConfig(outputPayload())
+    outputValidation.value = copy.value.validated
+  }))
+}
+watch(newOutput, () => { outputValidation.value = '' }, { deep: true })
+watch(credentialAction, () => { outputValidation.value = ''; newOutput.value.authToken = ''; outputErrors.value = {} })
 async function addOutput() {
   if (!canWrite.value || !validateOutput()) return
   outputError.value = ''
   isolateError(outputError, await mutation.run(async () => {
-  const target = { ...newOutput.value, name: newOutput.value.name.trim(), uri: newOutput.value.uri.trim(), authToken: newOutput.value.authToken || null }
+  const target = outputPayload()
   if (editingOutputId.value) await updateOutput(editingOutputId.value, target, credentialAction.value)
   else await createOutput(target)
   newOutput.value = { name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true }
@@ -523,45 +620,22 @@ function defaultPreviewSample(task: IngestTask): string {
     user: 'admin',
   }, null, 2)
 }
+watch(testSample, () => { cancelPreview(); testResult.value = null }, { flush: 'sync' })
 async function runTest() {
-  if (!canWrite.value || !testTarget.value || !testDialog.value || testLoading.value) return
+  if (!canWrite.value || !testTarget.value || !testDialog.value || testLoading.value || !testSample.value.trim()) return
   const target = testTarget.value
   const generation = ++previewGeneration
   const controller = new AbortController()
   previewController = controller
   testLoading.value = true
   testResult.value = null
-  const sample = testSample.value.trim() || defaultPreviewSample(target)
-  const ruleIds = target.parseRuleIds?.length ? [...target.parseRuleIds] : [undefined]
-  const ownsResult = () => !disposed && testDialog.value && generation === previewGeneration && !controller.signal.aborted
+  const sample = testSample.value
   try {
-    const attempts = new Array<ParsePreviewWithFields>(ruleIds.length)
-    let next = 0
-    async function worker() {
-      while (next < ruleIds.length && ownsResult()) {
-        const index = next++
-        const ruleId = ruleIds[index]
-        try {
-          const result = await previewParse({ ruleId, format: ruleId ? undefined : target.format || 'AUTO', line: sample }, { signal: controller.signal })
-          attempts[index] = { ruleId, rule: result.rule, format: result.format, matched: result.matched, error: result.error, fields: result.fields }
-        } catch (error) {
-          attempts[index] = { ruleId, matched: false, error: error instanceof Error ? error.message : String(error), fields: {} }
-        }
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(4, ruleIds.length) }, () => worker()))
-    if (!ownsResult()) return
-    const selected = attempts.find(attempt => attempt.matched) ?? attempts[0]
-    testResult.value = {
-      ok: Boolean(selected?.matched), matched: Boolean(selected?.matched), sample,
-      rule: selected?.rule, format: selected?.format, fields: selected?.fields ?? {},
-      error: selected?.matched ? undefined : selected?.error,
-      attempts: attempts.length > 1 ? attempts.map(({ fields: _fields, ...attempt }) => attempt) : undefined,
-    }
+    const result = await previewSource(target.id, sample, { signal: controller.signal })
+    if (!disposed && testDialog.value && generation === previewGeneration && !controller.signal.aborted) testResult.value = result
   } catch (error) {
-    if (ownsResult()) testResult.value = { ok: false, matched: false, sample, fields: {}, error: String(error) }
-  }
-  finally {
+    if (!disposed && testDialog.value && generation === previewGeneration && !controller.signal.aborted) testResult.value = { ok: false, matched: false, sample, fields: {}, error: String(error) }
+  } finally {
     if (generation === previewGeneration) { previewController = null; testLoading.value = false }
   }
 }
@@ -593,6 +667,7 @@ watch(showSourceDialog, open => {
 })
 onUnmounted(() => {
   disposed = true
+  cancelSetupEdit()
   cancelPreview()
   if (sourceRuleSearchTimer !== null) window.clearTimeout(sourceRuleSearchTimer)
   for (const controller of readControllers.values()) controller.abort()
@@ -612,18 +687,20 @@ onUnmounted(() => {
     </PageHeader>
     <section class="workflow-guide" :aria-label="t('workflow.ingestSteps')">
       <strong>{{ t('workflow.ingestSteps') }}</strong><p>{{ t('workflow.ingestGuide') }}</p>
-      <el-button v-if="canWrite" size="small" @click="ingestTab = 'sources'; openCreateSource()">{{ t('workflow.startConfiguration') }}</el-button>
-      <el-button size="small" @click="ingestTab = 'tasks'">{{ t('ingest.tasks') }}</el-button>
-      <el-button size="small" @click="ingestTab = 'quarantine'">{{ t('ingest.parseFailureTab') }}</el-button>
+      <el-button v-if="canWrite" size="small" @click="openCreateSource()">{{ t('workflow.startConfiguration') }}</el-button>
+      <el-button size="small" @click="onIngestTab('tasks')">{{ t('ingest.tasks') }}</el-button>
+      <el-button size="small" @click="onIngestTab('quarantine')">{{ t('ingest.parseFailureTab') }}</el-button>
     </section>
     <el-alert v-if="lastSavedSource" :title="t('workflow.sourceSaved', { name: lastSavedSource.name })" type="success" :closable="true" @close="lastSavedSource = null" />
     <el-tabs v-model="ingestTab" @tab-change="onIngestTab">
       <el-tab-pane :label="t('ingest.tasks')" name="tasks">
+        <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateSource()">{{ tasks.length ? t('ingest.addSource') : copy.firstSource }}</el-button><span class="hint">{{ copy.firstHint }}</span></div>
+        <p class="hint">{{ copy.observations }} {{ copy.debugHint }}</p>
         <el-row class="metrics-row" :gutter="12" style="margin-bottom:14px">
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary ? `${taskSummary.enabledSources}/${taskSummary.sources}` : t('time.notAvailable') }}</div><div class="label">{{ t('ingest.enabledTotal') }}</div></div></el-card></el-col>
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ taskSummary?.eps1m ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.eps') }}</div></div></el-card></el-col>
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-success)">{{ taskSummary?.accepted ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.accepted') }}</div></div></el-card></el-col>
-          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary?.forwarded ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.forwarded') }}</div></div></el-card></el-col>
+          <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary?.forwarded ?? t('time.notAvailable') }}</div><div class="label">{{ copy.debugForwarded }}</div></div></el-card></el-col>
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" :style="{ color: (taskSummary?.skipped ?? 0) > 0 ? 'var(--ns-warning)' : 'var(--ns-text-3)' }">{{ taskSummary?.skipped ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.skipped') }}</div></div></el-card></el-col>
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary ? fmtBytes(taskSummary.bytes) : t('time.notAvailable') }}</div><div class="label">{{ t('ingest.cumulativeBytes') }}</div></div></el-card></el-col>
         </el-row>
@@ -636,22 +713,22 @@ onUnmounted(() => {
             <el-table-column prop="format" :label="t('ingest.parseFormat')" width="90" />
             <el-table-column :label="t('ingest.target')" min-width="180" show-overflow-tooltip><template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.target }}</span></template></el-table-column>
             <el-table-column :label="t('ingest.epsWindow')" width="110"><template #default="{ row }"><span :style="{ color: row.runtime.eps1m > 0 ? 'var(--ns-success)' : 'var(--ns-text-3)', fontWeight: 600 }">{{ row.runtime.eps1m }}</span><span style="color:var(--ns-text-3)"> / {{ row.runtime.eps5m }}</span></template></el-table-column>
-            <el-table-column :label="t('ingest.receivedForwardedSkipped')" width="180"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.runtime.accepted }} / {{ row.runtime.forwarded }} / <span :style="{ color: row.runtime.parseFailed > 0 ? 'var(--ns-warning)' : 'inherit' }">{{ row.runtime.parseFailed }}</span></span></template></el-table-column>
+            <el-table-column :label="copy.receivedDebugFailed" width="180"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.runtime.accepted }} / {{ row.runtime.forwarded }} / <span :style="{ color: row.runtime.parseFailed > 0 ? 'var(--ns-warning)' : 'inherit' }">{{ row.runtime.parseFailed }}</span></span></template></el-table-column>
             <el-table-column :label="t('ingest.recentData')" width="150"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ fmtTime(row.runtime.lastAt) }}</span></template></el-table-column>
-            <el-table-column :label="t('ingest.actions')" width="310"><template #default="{ row }"><el-button v-if="canWrite" link :type="row.enabled ? 'warning' : 'success'" size="small" :loading="taskBusy[row.id]" :disabled="confirming || actionBusy" @click="toggleTaskRow(row)">{{ row.enabled ? t('ingest.disableConfig') : t('ingest.enableConfig') }}</el-button><el-button v-if="canWrite" link type="primary" size="small" @click="openTestRow(row)">{{ t('ingest.parsePreview') }}</el-button><el-button link size="small" @click="router.push({ name: 'search', query: { q: 'source_id=' + JSON.stringify(row.id), range: 'all' } })">{{ t('workflow.sourceLogs') }}</el-button></template></el-table-column>
+            <el-table-column :label="t('ingest.actions')" width="320"><template #default="{ row }"><el-button v-if="canWrite" link :type="row.enabled ? 'warning' : 'success'" size="small" :loading="taskBusy[row.id]" :disabled="confirming || actionBusy" @click="toggleTaskRow(row)">{{ row.enabled ? t('ingest.disableConfig') : t('ingest.enableConfig') }}</el-button><el-button v-if="canWrite" link type="primary" size="small" @click="openSetup(row.id)">{{ copy.setup }}</el-button><el-button link size="small" @click="sourceSearch(row.id)">{{ copy.sourceSearch }}</el-button><el-button v-if="canWrite" link type="primary" size="small" @click="openTestRow(row)">{{ t('ingest.parsePreview') }}</el-button></template></el-table-column>
             <el-table-column type="expand"><template #default="{ row }"><div style="padding:8px 20px;font-size:12px;color:var(--ns-text-2)"><div>{{ t('ingest.environmentDetail', { value: row.env || t('time.notAvailable') }) }} · {{ t('ingest.categoryDetail', { value: row.categoryId || t('time.notAvailable') }) }} · {{ t('ingest.outputDetail', { value: outputLabel(row.sinkTargetId) }) }} · {{ t('ingest.createdDetail', { value: fmtTime(row.createdAt) }) }}</div><div style="margin-top:4px">{{ t('ingest.boundRules') }}<el-tag v-for="p in row.parseRuleIds" :key="p" size="small" style="margin-right:4px">{{ p }}</el-tag><span v-if="!row.parseRuleIds?.length" style="color:var(--ns-text-3)">{{ t('ingest.autoDetect') }}</span></div><div v-if="row.runtime.lastError" style="margin-top:4px;color:var(--ns-danger)">{{ t('ingest.recentError', { time: fmtTime(row.runtime.lastErrorAt ?? null) }) }}{{ row.runtime.lastError }}</div></div></template></el-table-column>
           </el-table>
         </el-card>
         <el-dialog v-model="testDialog" :title="t('ingest.parsePreviewTitle', { name: testTarget?.name ?? '' })" width="720px">
           <div style="font-size:12px;color:var(--ns-text-3);margin-bottom:8px">{{ t('ingest.parsePreviewDescription') }}</div>
-          <el-input v-model="testSample" type="textarea" :rows="4" :placeholder="t('ingest.testSamplePlaceholder')" />
-          <div v-if="testResult" style="margin-top:12px"><el-alert :type="testResult.ok ? 'success' : 'error'" :closable="false" :title="t(testResult.ok ? 'ingest.parsePreviewPassed' : 'ingest.parsePreviewFailed')" /><div v-if="Object.keys(testResult.fields).length" class="parse-preview-fields"><span v-for="(value, field) in testResult.fields" :key="field"><b>{{ field }}</b><code>{{ value }}</code></span></div><pre class="mono test-out">{{ JSON.stringify(testResult, null, 2) }}</pre></div>
-          <template #footer><el-button @click="testDialog = false">{{ t('ingest.close') }}</el-button><el-button type="primary" :loading="testLoading" @click="runTest">{{ t('ingest.runParsePreview') }}</el-button></template>
+          <el-input v-model="testSample" type="textarea" :rows="4" :placeholder="copy.sample" />
+          <el-button size="small" @click="testSample = defaultPreviewSample(testTarget!)">{{ copy.example }}</el-button><p class="hint">{{ copy.previewHint }}</p><div v-if="testResult" style="margin-top:12px"><el-alert :type="testResult.ok ? 'success' : 'error'" :closable="false" :title="t(testResult.ok ? 'ingest.parsePreviewPassed' : 'ingest.parsePreviewFailed')" /><div v-if="Object.keys(testResult.fields).length" class="parse-preview-fields"><span v-for="(value, field) in testResult.fields" :key="field"><b>{{ field }}</b><code>{{ value }}</code></span></div><pre class="mono test-out">{{ JSON.stringify(testResult, null, 2) }}</pre></div>
+          <template #footer><el-button @click="testDialog = false">{{ t('ingest.close') }}</el-button><el-button type="primary" :loading="testLoading" :disabled="!testSample.trim()" @click="runTest">{{ t('ingest.runParsePreview') }}</el-button></template>
         </el-dialog>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.sourcesTab')" name="sources">
-        <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateSource">+ {{ t('ingest.addSource') }}</el-button><el-input v-model="sourceSearchDraft" clearable maxlength="128" :placeholder="t('ingest.sourceSearchPlaceholder')" style="width:min(280px,100%)" @keyup.enter="applySourceSearch" @clear="applySourceSearch" /><el-button @click="applySourceSearch">{{ t('common.search') }}</el-button><el-button :loading="sourcesLoading" @click="loadSources">{{ t('ingest.refresh') }}</el-button><el-button type="primary" plain @click="doRender">{{ t('ingest.renderConfig') }}</el-button><span class="hint">{{ t('ingest.sourceHint') }}</span></div>
+        <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateSource">+ {{ t('ingest.addSource') }}</el-button><el-input v-model="sourceSearchDraft" clearable maxlength="128" :placeholder="t('ingest.sourceSearchPlaceholder')" style="width:min(280px,100%)" @keyup.enter="applySourceSearch" @clear="applySourceSearch" /><el-button @click="applySourceSearch">{{ t('common.search') }}</el-button><el-button :loading="sourcesLoading" @click="loadSources">{{ t('ingest.refresh') }}</el-button><el-button type="primary" plain @click="doRender">{{ t('ingest.renderConfig') }}</el-button><span class="hint">{{ copy.builtins }}</span></div>
         <ActionFeedback :error="renderError" />
         <el-drawer v-model="showSourceDialog" :before-close="showSourceDialogGuard.beforeClose" :title="editingSourceId ? t('ingest.editSource') : t('ingest.addSource')" size="min(760px, 96vw)" :close-on-click-modal="false"><ActionFeedback :error="sourceError" />
           <el-form label-position="top" :disabled="actionBusy">
@@ -666,6 +743,46 @@ onUnmounted(() => {
                 <FormField :label="t('ingest.parseFormat')">
                   <el-select v-model="newSource.format" :placeholder="t('ingest.parseFormatPlaceholder')"><el-option v-for="format in PARSE_FORMATS" :key="format" :label="format" :value="format" /></el-select>
                 </FormField>
+
+
+                <FormField :label="t('ingest.outputTarget')">
+                  <el-select v-model="newSource.sinkTargetId" clearable filterable :placeholder="t('ingest.outputTargetPlaceholder')"><el-option :label="copy.platformDefault" value="" /><el-option v-if="newSource.sinkTargetId && !outputs.some(output => output.id === newSource.sinkTargetId)" :label="newSource.sinkTargetId" :value="newSource.sinkTargetId" /><el-option v-for="output in outputs" :key="output.id" :label="`${output.name} · ${output.type}`" :value="output.id" /></el-select>
+                </FormField>
+
+
+                <FormField :label="t('common.enabled')">
+                  <el-switch v-model="newSource.enabled" />
+                </FormField>
+              </FormGrid>
+            </FormSection>
+            <FormSection v-if="newSource.type === 'FILE'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.fileAccessHint')">
+              <FormGrid :columns="2">
+                <FormField :label="t('ingest.filePath')" :required="newSource.enabled" :error="sourceErrors.path" :hint="copy.localPath"><el-input v-model="newSource.path" :placeholder="t('ingest.filePathPlaceholder')" /></FormField>
+                <FormField :label="t('ingest.readFrom')"><el-select v-model="newSource.readFrom"><el-option :label="t('ingest.readFromBeginning')" value="beginning" /><el-option :label="t('ingest.readFromEnd')" value="end" /></el-select></FormField>
+              </FormGrid>
+              <details><summary>{{ t('forms.advanced') }}</summary><FormGrid :columns="2">
+                <FormField :label="t('ingest.multilineLabel')" :hint="t('ingest.multilineHint')" full>
+                  <el-input v-model="newSource.multiline" type="textarea" :rows="2" :placeholder="MULTILINE_PLACEHOLDER" />
+                </FormField>
+                <FormField :label="t('ingest.frequency')"><el-input-number v-model="newSource.frequency" :min="1" controls-position="right" /></FormField>
+                <FormField :label="t('ingest.ignoreOlderSeconds')" :hint="t('ingest.ignoreOlderHint')"><el-input-number v-model="newSource.ignoreOlderSeconds" :min="1" :max="315360000" clearable controls-position="right" /></FormField>
+              </FormGrid></details>
+            </FormSection>
+            <FormSection v-else-if="newSource.type === 'SOCKET' || newSource.type === 'SYSLOG'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.socketAccessHint')">
+              <FormGrid :columns="2">
+                <FormField :label="t('ingest.listenAddress')" :required="newSource.enabled" :error="sourceErrors.address"><el-input v-model="newSource.address" :placeholder="t('ingest.listenAddressPlaceholder')" /></FormField>
+                <FormField :label="t('ingest.protocol')"><el-select v-model="newSource.protocol" :placeholder="t('ingest.protocol')"><el-option label="UDP" value="udp" /><el-option label="TCP" value="tcp" /></el-select></FormField>
+              </FormGrid>
+            </FormSection>
+            <FormSection v-else-if="newSource.type === 'KAFKA'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.kafkaAccessHint')">
+              <FormGrid :columns="2">
+                <FormField :label="copy.brokers" :required="newSource.enabled" :error="sourceErrors.address" :hint="copy.kafkaHint"><el-input v-model="newSource.address" placeholder="broker.example:9092" /></FormField><FormField :label="t('ingest.topic')" :required="newSource.enabled" :error="sourceErrors.topic"><el-input v-model="newSource.topic" :placeholder="t('ingest.topicPlaceholder')" /></FormField>
+                <FormField :label="t('ingest.groupId')"><el-input v-model="newSource.groupId" :placeholder="t('ingest.groupIdPlaceholder')" /></FormField>
+              </FormGrid>
+            </FormSection>
+          <div v-else-if="['WINDOWS_EVENT', 'AGENT', 'HTTP_API', 'DATABASE', 'CLOUD'].includes(newSource.type)" style="margin-top:10px"><el-alert type="info" :closable="false" :title="copy.externalBlocked" /></div>
+            <details><summary>{{ t('forms.advanced') }}</summary><FormSection index="03" :title="t('ingest.encodingLabels')" :hint="t('ingest.encodingLabelsHint')">
+              <FormGrid :columns="2">
                 <FormField :label="t('ingest.category')">
                   <el-select v-model="newSource.categoryId" filterable default-first-option clearable :placeholder="t('meta.authPlaceholder')"><el-option v-for="category in logCategories" :key="category.id" :label="category.code + ' ' + category.name" :value="category.id" /></el-select>
                 </FormField>
@@ -674,58 +791,22 @@ onUnmounted(() => {
                   <small v-if="sourceRuleTotal > 50" class="hint">{{ t('ingest.ruleSearchMore', { count: sourceRuleTotal }) }}</small>
                   <ActionFeedback :error="loadErrors.ruleOptions || loadErrors.selectedRules" />
                 </FormField>
-                <FormField :label="t('ingest.outputTarget')">
-                  <el-select v-model="newSource.sinkTargetId" clearable filterable :placeholder="t('ingest.outputTargetPlaceholder')"><el-option :label="t('ingest.disabledDefault')" value="" /><el-option v-if="newSource.sinkTargetId && !outputs.some(output => output.id === newSource.sinkTargetId)" :label="newSource.sinkTargetId" :value="newSource.sinkTargetId" /><el-option v-for="output in outputs" :key="output.id" :label="`${output.name} · ${output.type}`" :value="output.id" /></el-select>
-                </FormField>
                 <FormField :label="t('ingest.environment')">
                   <el-input v-model="newSource.env" :placeholder="t('ingest.environmentPlaceholder')" />
                 </FormField>
                 <FormField :label="t('common.description')" full>
                   <el-input v-model="newSource.description" type="textarea" :rows="2" :placeholder="t('ingest.sourceDescriptionPlaceholder')" />
                 </FormField>
-                <FormField :label="t('common.enabled')">
-                  <el-switch v-model="newSource.enabled" />
-                </FormField>
-              </FormGrid>
-            </FormSection>
-            <FormSection v-if="newSource.type === 'FILE'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.fileAccessHint')">
-              <FormGrid :columns="2">
-                <FormField :label="t('ingest.filePath')" :required="newSource.enabled" :error="sourceErrors.path"><el-input v-model="newSource.path" :placeholder="t('ingest.filePathPlaceholder')" /></FormField>
-                <FormField :label="t('ingest.readFrom')"><el-select v-model="newSource.readFrom"><el-option :label="t('ingest.readFromBeginning')" value="beginning" /><el-option :label="t('ingest.readFromEnd')" value="end" /></el-select></FormField>
-                <FormField :label="t('ingest.frequency')"><el-input-number v-model="newSource.frequency" :min="1" controls-position="right" /></FormField>
-                <FormField :label="t('ingest.ignoreOlderSeconds')" :hint="t('ingest.ignoreOlderHint')"><el-input-number v-model="newSource.ignoreOlderSeconds" :min="1" :max="315360000" clearable controls-position="right" /></FormField>
-                <details style="grid-column:1 / -1"><summary>{{ t('workflow.advancedCollector') }}</summary>
-                  <FormField :label="t('ingest.multilineLabel')" :hint="t('ingest.multilineHint')" full>
-                    <el-input v-model="newSource.multiline" type="textarea" :rows="2" :placeholder="MULTILINE_PLACEHOLDER" />
-                  </FormField>
-                </details>
-              </FormGrid>
-            </FormSection>
-            <FormSection v-else-if="newSource.type === 'SOCKET' || newSource.type === 'SYSLOG'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.socketAccessHint')">
-              <FormGrid :columns="2">
-                <FormField :label="t('ingest.listenAddress')" :required="newSource.enabled" :error="sourceErrors.address"><el-input v-model="newSource.address" :placeholder="t('ingest.listenAddressPlaceholder')" /></FormField>
-                <FormField :label="t('ingest.protocol')"><el-select v-model="newSource.protocol" :placeholder="t('ingest.protocol')"><el-option label="UDP" value="udp" /><el-option label="TCP" value="tcp" /><el-option label="TLS" value="tls" /></el-select></FormField>
-              </FormGrid>
-            </FormSection>
-            <FormSection v-else-if="newSource.type === 'KAFKA'" index="02" :title="t('ingest.sourceAccess')" :hint="t('ingest.kafkaAccessHint')">
-              <FormGrid :columns="2">
-                <FormField :label="t('ingest.topic')" :required="newSource.enabled" :error="sourceErrors.topic"><el-input v-model="newSource.topic" :placeholder="t('ingest.topicPlaceholder')" /></FormField>
-                <FormField :label="t('ingest.groupId')"><el-input v-model="newSource.groupId" :placeholder="t('ingest.groupIdPlaceholder')" /></FormField>
-              </FormGrid>
-            </FormSection>
-          <div v-else-if="['WINDOWS_EVENT', 'AGENT', 'HTTP_API', 'DATABASE', 'CLOUD'].includes(newSource.type)" style="margin-top:10px"><el-alert type="info" :closable="false" :title="t('ingest.collectorInfo', { type: newSource.type })" /></div>
-            <FormSection index="03" :title="t('ingest.encodingLabels')" :hint="t('ingest.encodingLabelsHint')">
-              <FormGrid :columns="2">
-                <FormField :label="t('ingest.charset')"><el-select v-model="newSource.charset" :placeholder="t('ingest.charsetPlaceholder')"><el-option label="UTF-8" value="utf-8" /><el-option label="GBK" value="gbk" /><el-option label="ISO-8859-1" value="iso-8859-1" /></el-select></FormField>
+                <FormField :label="t('ingest.charset')"><el-select v-model="newSource.charset" :placeholder="t('ingest.charsetPlaceholder')"><el-option label="UTF-8" value="utf-8" /></el-select></FormField>
                 <FormField :label="t('ingest.timezone')"><el-select v-model="newSource.timezone" :placeholder="t('ingest.timezonePlaceholder')"><el-option label="Asia/Shanghai" value="Asia/Shanghai" /><el-option label="UTC" value="UTC" /><el-option label="Asia/Tokyo" value="Asia/Tokyo" /></el-select></FormField>
                 <FormField :label="t('ingest.timeField')"><el-input v-model="newSource.timeField" :placeholder="t('ingest.timeFieldPlaceholder')" /></FormField>
                 <FormField :label="t('ingest.tags')" :hint="t('ingest.tagsHint')" full><el-input v-model="newSource.tags" :placeholder="t('ingest.tagsPlaceholder')" /></FormField>
               </FormGrid>
-            </FormSection>
+            </FormSection></details>
           </el-form>
-          <template #footer><el-button @click="showSourceDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="saveSource">{{ editingSourceId ? t('common.save') : t('ingest.addSource') }}</el-button></template>
+          <template #footer><el-button @click="showSourceDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" :disabled="actionBusy" @click="saveSource(true)">{{ copy.draft }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="saveSource()">{{ editingSourceId ? t('common.save') : t('ingest.addSource') }}</el-button></template>
         </el-drawer>
-        <el-card shadow="never"><el-table v-loading="sourcesLoading" :data="sources" size="small" border :empty-text="t('common.empty')"><el-table-column prop="name" :label="t('common.name')" width="130" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="110" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="80" /><el-table-column :label="t('ingest.target')" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.path || row.address || row.topic || t('time.notAvailable') }}</template></el-table-column><el-table-column :label="t('ingest.protocol')" width="70"><template #default="{ row }">{{ row.protocol || t('time.notAvailable') }}</template></el-table-column><el-table-column prop="env" :label="t('ingest.environment')" width="65" /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="120"><template #default="{ row }"><el-button link type="primary" size="small" @click="openEditSource(row as LogSource)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeSource(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="sourcePage" v-model:page-size="sourceSize" :total="sourceTotal" :page-sizes="[20, 50, 100]" /></el-card>
+        <el-card shadow="never"><el-table v-loading="sourcesLoading" :data="sources" size="small" border :empty-text="t('common.empty')"><el-table-column prop="name" :label="t('common.name')" width="130" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="110" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="80" /><el-table-column :label="t('ingest.target')" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.path || row.address || row.topic || t('time.notAvailable') }}</template></el-table-column><el-table-column :label="t('ingest.protocol')" width="70"><template #default="{ row }">{{ row.protocol || t('time.notAvailable') }}</template></el-table-column><el-table-column prop="env" :label="t('ingest.environment')" width="65" /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="230"><template #default="{ row }"><el-button link type="primary" size="small" @click="openSetup(row.id)">{{ copy.setup }}</el-button><el-button link type="primary" size="small" @click="openEditSource(row as LogSource)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeSource(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="sourcePage" v-model:page-size="sourceSize" :total="sourceTotal" :page-sizes="[20, 50, 100]" /></el-card>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.parseFailureTab')" name="quarantine">
@@ -739,16 +820,16 @@ onUnmounted(() => {
             <el-table-column :label="t('ingest.failureReason')" min-width="220" show-overflow-tooltip><template #default="{ row }"><span :class="{ 'parse-replay-error': row.lastError }">{{ row.lastError || row.failureReason }}</span></template></el-table-column>
             <el-table-column prop="parserVersion" :label="t('ingest.parserVersion')" width="130" show-overflow-tooltip />
             <el-table-column prop="replayAttempts" :label="t('ingest.replayAttempts')" width="90" />
-            <el-table-column prop="replayedEventId" :label="t('ingest.replayedEventId')" min-width="180"><template #default="{ row }"><el-button v-if="row.replayedEventId" link type="primary" @click="router.push({ name: 'search', query: { q: 'eventId=' + JSON.stringify(row.replayedEventId), range: 'all' } })">{{ row.replayedEventId }}</el-button></template></el-table-column>
+            <el-table-column prop="replayedEventId" :label="t('ingest.replayedEventId')" min-width="180"><template #default="{ row }"><el-button v-if="row.replayedEventId" link @click="sourceSearch(row.sourceId || '', row.replayedEventId, row.eventTimestamp || row.receivedAt)">{{ row.replayedEventId }}</el-button></template></el-table-column>
             <el-table-column prop="replayStatus" :label="t('common.status')" width="105"><template #default="{ row }"><el-tag :type="row.replayStatus === 'REPLAYED' ? 'success' : 'warning'" size="small">{{ row.replayStatus }}</el-tag></template></el-table-column>
-            <el-table-column v-if="canWrite" :label="t('common.actions')" width="100"><template #default="{ row }"><el-button link type="primary" size="small" :loading="replayingFailure === row.id" :disabled="row.replayStatus === 'REPLAYED' || !!replayingFailure" @click="replayParseFailure(row as IngestParseFailure)">{{ t('ingest.replay') }}</el-button></template></el-table-column>
+            <el-table-column v-if="canWrite" :label="t('common.actions')" width="200"><template #default="{ row }"><el-button link size="small" @click="repairFailure(row as IngestParseFailure)">{{ copy.repair }}</el-button><el-button link type="primary" size="small" :loading="replayingFailure === row.id" :disabled="row.replayStatus === 'REPLAYED' || !!replayingFailure" @click="replayParseFailure(row as IngestParseFailure)">{{ t('ingest.replay') }}</el-button></template></el-table-column>
           </el-table>
           <PagerBar v-model:current-page="parseFailurePage" v-model:page-size="parseFailureSize" :total="parseFailureTotal" :page-sizes="[20, 50, 100]" />
         </el-card>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.outputTab')" name="outputs">
-        <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateOutput">+ {{ t('ingest.addOutput') }}</el-button><span class="hint">{{ t('ingest.outputHint') }}</span></div>
+        <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateOutput">+ {{ t('ingest.addOutput') }}</el-button><span class="hint">{{ copy.outputHint }}</span></div>
         <el-dialog v-model="showOutputDialog" :before-close="showOutputDialogGuard.beforeClose" :title="editingOutputId ? t('common.edit') : t('ingest.addOutput')" width="520px"><ActionFeedback :error="outputError" /><el-form :disabled="actionBusy" label-position="top">
             <FormGrid :columns="2">
               <FormField :label="t('ingest.outputName')" required :error="outputErrors.name">
@@ -768,15 +849,16 @@ onUnmounted(() => {
                 <el-switch v-model="newOutput.enabled" />
               </FormField>
             </FormGrid>
-          </el-form><template #footer><el-button @click="showOutputDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addOutput">{{ editingOutputId ? t('common.save') : t('ingest.addOutput') }}</el-button></template></el-dialog>
-        <el-card shadow="never"><el-table v-loading="outputsLoading" :data="outputs" size="small" border :empty-text="t('common.empty')"><el-table-column prop="name" :label="t('common.name')" width="180" /><el-table-column prop="type" :label="t('common.type')" width="130" /><el-table-column prop="uri" :label="t('ingest.targetUrl')" min-width="280" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="70"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="140"><template #default="{ row }"><el-button link type="primary" size="small" @click="openEditOutput(row as SinkTarget)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeOutput(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table></el-card>
+          </el-form><p v-if="outputValidation" role="status">{{ outputValidation }}</p><template #footer><el-button :disabled="actionBusy" @click="checkOutput">{{ copy.validate }}</el-button><el-button @click="showOutputDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addOutput">{{ editingOutputId ? t('common.save') : t('ingest.addOutput') }}</el-button></template></el-dialog>
+        <el-card shadow="never"><el-table v-loading="outputsLoading" :data="outputs" size="small" border :empty-text="t('common.empty')"><el-table-column prop="name" :label="t('common.name')" width="180" /><el-table-column prop="type" :label="t('common.type')" width="130" /><el-table-column prop="uri" :label="t('ingest.targetUrl')" min-width="280" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="70"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150"><template #default="{ row }"><el-button link type="primary" size="small" @click="openEditOutput(row as SinkTarget)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeOutput(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table></el-card>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.rulesTab')" name="rules">
         <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="router.push({ name: 'parser-new' })">{{ t('ingest.addParseRule') }}</el-button><el-input v-model="ruleSearchDraft" clearable maxlength="128" :placeholder="t('ingest.ruleSearchPlaceholder')" style="width:min(280px,100%)" @keyup.enter="applyRuleSearch" @clear="applyRuleSearch" /><el-button @click="applyRuleSearch">{{ t('common.search') }}</el-button><el-button :loading="parseRulesLoading" @click="loadParseRules">{{ t('ingest.refresh') }}</el-button><span class="hint">{{ t('ingest.parserHint') }}</span></div>
-        <el-card shadow="never"><el-table v-loading="parseRulesLoading" :data="parseRules" size="small" border :empty-text="t('common.empty')"><el-table-column prop="name" :label="t('ingest.ruleName')" width="180" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="90" /><el-table-column prop="pattern" :label="t('ingest.patternDescription')" min-width="300" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="140"><template #default="{ row }"><el-button link size="small" @click="router.push({ name: 'parser-edit', params: { parserId: row.id } })">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeParseRule(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="rulePage" v-model:page-size="ruleSize" :total="ruleTotal" :page-sizes="[20, 50, 100]" /></el-card>
+        <el-card shadow="never"><el-table v-loading="parseRulesLoading" :data="parseRules" size="small" border :empty-text="t('common.empty')"><el-table-column prop="name" :label="t('ingest.ruleName')" width="180" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="90" /><el-table-column prop="pattern" :label="t('ingest.patternDescription')" min-width="300" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150"><template #default="{ row }"><el-button link size="small" @click="router.push({ name: 'parser-edit', params: { parserId: row.id } })">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeParseRule(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="rulePage" v-model:page-size="ruleSize" :total="ruleTotal" :page-sizes="[20, 50, 100]" /></el-card>
       </el-tab-pane>
     </el-tabs>
+    <el-drawer :model-value="showSetup" @update:model-value="closeSetup" :title="copy.setup" size="min(820px, 96vw)"><IngestSourceSetup v-if="showSetup" :source-id="setupId" :initial-sample="setupSample" @edit="editSourceById" /></el-drawer>
     <el-dialog v-model="showRender" title="vector.toml" width="720px"><ActionFeedback :error="renderError" /><p class="workflow-guide">{{ t('workflow.applyConfig') }}</p><el-button size="small" type="primary" @click="copyRender">{{ t('common.copy') }}</el-button><pre style="background:var(--ns-bg-subtle);border:1px solid var(--ns-border);border-radius:6px;padding:12px;font-size:12px;overflow:auto;max-height:440px;margin-top:10px">{{ renderText }}</pre></el-dialog>
 
   </div>

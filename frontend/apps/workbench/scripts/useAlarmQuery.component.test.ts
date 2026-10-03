@@ -80,3 +80,32 @@ describe('useAlarmQuery route query contract', () => {
     expect(fetchPage).not.toHaveBeenCalled()
   })
 })
+
+it('preserves exact investigation and HIGH+CRITICAL filters through pagination', async () => {
+  const state = harness({ alarmId: 'a', severityGroup: 'high', owner: 'mine', entity: 'host-1', technique: 'T1110', from: '2026-10-01T00:00:00Z', to: '2026-10-02T00:00:00Z', tab: 'evidence' })
+  await state.loadAlarmPage()
+  expect(state.fetchPage).toHaveBeenCalledWith(expect.objectContaining({ owner: 'mine', entity: 'host-1', severityGroup: 'high', technique: 'T1110', from: '2026-10-01T00:00:00Z', to: '2026-10-02T00:00:00Z' }))
+  state.alarmPageNum.value = 2; await nextTick()
+  expect(state.replace.mock.calls.at(-1)?.[0].query).toMatchObject({ alarmId: 'a', severityGroup: 'high', tab: 'evidence', page: '2' })
+  state.alarmSeverity.value = 'CRITICAL'; state.onAlarmSearch(); await nextTick()
+  expect(state.replace.mock.calls.at(-1)?.[0].query.severityGroup).toBeUndefined()
+  expect(state.fetchPage.mock.calls.at(-1)?.[0]).toMatchObject({ severity: 'CRITICAL', severityGroup: undefined })
+})
+
+
+it('combines owner and assignee filters and uses edited absolute times rather than stale drilldown times', async () => {
+  const state = harness({ owner: 'mine', assignee: 'alice', status: 'ACTIVE', technique: 'T1110', from: '2026-10-01T00:00:00Z', to: '2026-10-02T00:00:00Z' })
+  state.alarmFrom.value = '2026-10-01T12:00:00Z'
+  state.alarmTo.value = '2026-10-03T00:00:00Z'
+  state.onAlarmSearch()
+  await nextTick()
+  expect(state.fetchPage.mock.calls.at(-1)?.[0]).toMatchObject({ owner: 'mine', assignee: 'alice', status: 'ACTIVE', technique: 'T1110', from: '2026-10-01T12:00:00Z', to: '2026-10-03T00:00:00Z' })
+  expect(state.replace.mock.calls.at(-1)?.[0].query).toMatchObject({ owner: 'mine', assignee: 'alice', from: '2026-10-01T12:00:00Z', to: '2026-10-03T00:00:00Z' })
+  state.route.query = { assignee: 'bob', from: '2026-09-01T00:00:00Z', to: '2026-09-02T00:00:00Z' }
+  await nextTick()
+  await nextTick()
+  expect(state.alarmOwner.value).toBe('')
+  expect(state.alarmAssignee.value).toBe('bob')
+  expect(state.investigationFilters.value).toEqual({})
+  expect(state.fetchPage.mock.calls.at(-1)?.[0]).toMatchObject({ assignee: 'bob', from: '2026-09-01T00:00:00Z', to: '2026-09-02T00:00:00Z' })
+})

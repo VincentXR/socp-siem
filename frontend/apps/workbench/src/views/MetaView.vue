@@ -50,8 +50,10 @@ import {
   type DataSourceType, type FieldDef, type LogCategory,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { useIngestCopy } from '../composables/useIngestCopy'
 
 const { t } = useI18n()
+const copy = useIngestCopy()
 const { columnWidth: dsColumnWidth, onHeaderDragEnd: onDsHeaderDragEnd } = useTableColumnWidths('meta-datasource-types')
 const { columnWidth: categoryColumnWidth, onHeaderDragEnd: onCategoryHeaderDragEnd } = useTableColumnWidths('meta-log-categories')
 const { columnWidth: fieldColumnWidth, onHeaderDragEnd: onFieldHeaderDragEnd } = useTableColumnWidths('meta-fields')
@@ -212,6 +214,7 @@ onUnmounted(() => {
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('meta.readOnly') }}</div>
     <ActionFeedback :error="loadError" />
     <ActionFeedback :error="actionError" />
+    <p class="page-readonly-hint">{{ copy.metadata }}</p>
     <el-tabs v-model="metaTab">
       <el-tab-pane :label="t('meta.dataSourceTypes')" name="ds">
         <div class="add-bar">

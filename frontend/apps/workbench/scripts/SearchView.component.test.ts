@@ -41,6 +41,24 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.resetAllMocks() })
 
 describe('search investigation state', () => {
+  it('does not execute generated SPL until the analyst reviews and explicitly runs it', async () => {
+    const router = await mountSearch({ draft: 'source=auth | stats count by user', range: 'all', alarmId: 'alarm-1', returnTo: '/ai?alarmId=alarm-1' })
+    expect(api.splSearch).not.toHaveBeenCalled()
+    expect(wrapper!.get('.search-query-row textarea').element).toHaveProperty('value', 'source=auth | stats count by user')
+    await button('Run Search').trigger('click'); await flushPromises()
+    expect(api.splSearch.mock.calls[0][0]).toBe('source=auth | stats count by user')
+    expect(router.currentRoute.value.query).toMatchObject({ q: 'source=auth | stats count by user', alarmId: 'alarm-1' })
+    expect(router.currentRoute.value.query.draft).toBeUndefined()
+  })
+  it('applies custom UTC bounds before the pipeline and rejects reversed ranges', async () => {
+    await mountSearch({ q: 'host="edge" | stats count', range: 'custom', from: '2026-10-01T00:00:00.000Z', to: '2026-10-02T00:00:00.000Z' })
+    expect(api.splSearch.mock.calls[0][0]).toBe('(host="edge") AND timestamp>=2026-10-01T00:00:00.000Z AND timestamp<=2026-10-02T00:00:00.000Z | stats count')
+    const dates = wrapper!.findAll('input[type="datetime-local"]')
+    await dates[0].setValue('2026-10-03T00:00:00')
+    await button('Run Search').trigger('click'); await flushPromises()
+    expect(api.splSearch).toHaveBeenCalledTimes(1)
+  })
+
   it('serializes export formats, retains the applied query and restores controls after failure', async () => {
     let reject!: (error: Error) => void
     api.exportSearch.mockReturnValueOnce(new Promise((_resolve, failure) => { reject = failure }))
@@ -114,6 +132,20 @@ describe('search investigation state', () => {
     expect(api.splSearch.mock.calls.at(-1)).toEqual([applied, expect.objectContaining({ limit: 100 })])
     expect(router.currentRoute.value.query).toMatchObject({ q: 'source=auth', size: '100', to: '2026-09-20T12:00:00.000Z' })
     expect(wrapper!.get('.search-query-row textarea').element).toHaveProperty('value', 'source=web')
+  })
+
+  it('keeps page-size changes on applied custom bounds when range fields are edited', async () => {
+    const router = await mountSearch({ q: 'host=edge', range: 'custom', from: '2026-10-01T00:00:00.000Z', to: '2026-10-02T00:00:00.000Z' })
+    const applied = api.splSearch.mock.calls[0][0]
+    const dates = wrapper!.findAll('input[type="datetime-local"]')
+    await dates[0].setValue('2026-10-03T00:00:00')
+    const size = wrapper!.get('.search-pagination').getComponent(ElSelect)
+    size.vm.$emit('update:modelValue', 100)
+    size.vm.$emit('change', 100)
+    await flushPromises()
+    expect(api.splSearch.mock.calls.at(-1)).toEqual([applied, expect.objectContaining({ limit: 100 })])
+    expect(router.currentRoute.value.query).toMatchObject({ range: 'custom', from: '2026-10-01T00:00:00.000Z', to: '2026-10-02T00:00:00.000Z' })
+    expect(dates[0].element).toHaveProperty('value', '2026-10-03T00:00')
   })
 
   it('does not let a superseded response clear the newer loading state or overwrite its results', async () => {

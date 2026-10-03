@@ -2,7 +2,7 @@ package com.socp.ai.infrastructure.llm;
 
 import com.socp.ai.config.LlmProperties;
 import com.socp.platform.client.config.SocpClientProperties;
-import com.socp.platform.client.http.BoundedBodyHandlers;
+import com.socp.platform.client.http.PinnedHttpTransport;
 import com.socp.platform.client.http.ExternalEndpointPolicy;
 import com.socp.platform.client.http.PinnedEndpoint;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -13,10 +13,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,16 +38,13 @@ public class HttpLlmChatClient implements LlmChatClient {
 
     private final LlmProperties properties;
     private final ExternalEndpointPolicy endpointPolicy;
-    private final HttpClient httpClient;
+    private final PinnedHttpTransport httpClient;
 
     @Autowired
     public HttpLlmChatClient(LlmProperties properties, ExternalEndpointPolicy endpointPolicy) {
         this.properties = properties;
         this.endpointPolicy = endpointPolicy;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofMillis(properties.getTimeoutMs()))
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .build();
+        this.httpClient = new PinnedHttpTransport();
     }
 
     /** Source-compatible constructor for isolated callers and unit tests. */
@@ -70,8 +63,7 @@ public class HttpLlmChatClient implements LlmChatClient {
             return Optional.empty();
         }
         String url = normalizeBaseUrl(properties.getBaseUrl()) + "/v1/chat/completions";
-        // 校验通过后把解析结果钉住到当前线程，建连时的隐式解析只会拿到已校验地址；
-        // URL 保持原主机名，SNI 与证书域名校验不受影响
+        // Carry the validated addresses to the connection manager; retain original hostname for TLS.
         try (PinnedEndpoint pinned = endpointPolicy.validatePinned(url,
                 properties.getAllowedHosts(), properties.isHttpsOnly(), properties.isAllowPrivateNetworks())) {
             if (pinned.isRejected()) {
@@ -88,19 +80,16 @@ public class HttpLlmChatClient implements LlmChatClient {
             );
             String json = MAPPER.writeValueAsString(requestBody);
 
-            var requestBuilder = HttpRequest.newBuilder()
-                    .uri(URI.create(url))
-                    .timeout(Duration.ofMillis(properties.getTimeoutMs()))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(json));
-
+            if (json.length() > 1_048_576) return Optional.empty();
+            byte[] payload = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            if (payload.length > 1_048_576) return Optional.empty();
+            Map<String, String> headers = new java.util.LinkedHashMap<>();
             if (properties.getApiKey() != null && !properties.getApiKey().isBlank()) {
-                requestBuilder.header("Authorization", "Bearer " + properties.getApiKey());
+                headers.put("Authorization", "Bearer " + properties.getApiKey());
             }
-
-            HttpResponse<String> response = httpClient.send(requestBuilder.build(),
-                    BoundedBodyHandlers.ofString(SocpClientProperties.DEFAULT_RESPONSE_BODY_LIMIT_BYTES));
-            if (response.statusCode() >= 200 && response.statusCode() < 300) {
+            var response = httpClient.send("POST", URI.create(url), payload, "application/json", headers, pinned,
+                    properties.getTimeoutMs(), properties.getTimeoutMs(), SocpClientProperties.DEFAULT_RESPONSE_BODY_LIMIT_BYTES);
+            if (response.status() >= 200 && response.status() < 300) {
                 JsonNode root = MAPPER.readTree(response.body());
                 JsonNode choices = root.path("choices");
                 if (choices.isArray() && !choices.isEmpty()) {
@@ -110,8 +99,10 @@ public class HttpLlmChatClient implements LlmChatClient {
                     }
                 }
             } else {
-                log.warn("LLM API returned status={} body={}", response.statusCode(), response.body());
+                log.warn("LLM API returned status={}", response.status());
             }
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
         } catch (Exception ex) {
             log.warn("LLM API invocation failed, falling back to local security knowledge base: {}", ex.getMessage());
         }

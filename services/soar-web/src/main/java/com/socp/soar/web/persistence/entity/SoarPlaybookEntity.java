@@ -27,6 +27,8 @@ public class SoarPlaybookEntity implements Persistable<String> {
     private String owner;
     @Column(name = "tags_json", columnDefinition = "TEXT")
     private String tagsJson;
+    @Column(name = "tag_tokens", columnDefinition = "TEXT")
+    private String tagTokens;
     @Column(nullable = false, length = 24)
     private String status;
     @Column(name = "latest_published_version")
@@ -52,7 +54,8 @@ public class SoarPlaybookEntity implements Persistable<String> {
     public String getOwner() { return owner; }
     public void setOwner(String owner) { this.owner = owner; }
     public String getTagsJson() { return tagsJson; }
-    public void setTagsJson(String tagsJson) { this.tagsJson = tagsJson; }
+    public void setTagsJson(String tagsJson) { this.tagsJson = tagsJson; this.tagTokens = com.socp.soar.web.service.SoarCatalogMetadata.tagTokens(tagsJson); }
+    public String getTagTokens() { return tagTokens; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
     public Integer getLatestPublishedVersion() { return latestPublishedVersion; }

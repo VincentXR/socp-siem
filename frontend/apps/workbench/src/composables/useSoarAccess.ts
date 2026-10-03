@@ -53,7 +53,7 @@ export function hasSoarPermission(role: string | undefined | null, permission: S
 export function useSoarAccess() {
   const state = inject(WORKBENCH_STATE, null)
   const role = computed(() => normalizeSoarRole(state?.currentRole.value))
-  const allowed = (permission: SoarPermission) => computed(() => hasSoarPermission(role.value, permission))
+  const allowed = (permission: SoarPermission) => computed(() => hasSoarPermission(role.value, permission) || (state as (typeof state & { currentPermissions?: import('vue').Ref<string[]> }))?.currentPermissions?.value.includes(permission) === true)
 
   return {
     role,

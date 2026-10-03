@@ -21,7 +21,15 @@
 # fail open. Readiness/liveness orchestration belongs to deploy/helm/socp-core
 # and executable boot evidence to build/verify-prod-boot.py.
 
+# Required for authenticated scraping; the file must match the service token.
+secrets:
+  socp_metrics_token:
+    file: ${SOCP_METRICS_TOKEN_FILE:?set SOCP_METRICS_TOKEN_FILE}
+
 services:
+  prometheus:
+    command: ["--config.file=/etc/prometheus/prometheus-prod.yml"]
+
   postgres:
     environment:
       POSTGRES_PASSWORD: ${SOCP_PG_PASSWORD:?set SOCP_PG_PASSWORD}

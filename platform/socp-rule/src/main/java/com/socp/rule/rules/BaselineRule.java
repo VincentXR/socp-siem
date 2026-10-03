@@ -95,6 +95,7 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
 
         State st = states.get(key, State::new);
         synchronized (st) {
+            states.invalidateSnapshot(key);
             long idx = event.timestamp().getEpochSecond() / bucketSeconds;
             // Late event-time records do not rewind a baseline bucket. The
             // current bucket is advanced only by the watermark, making
@@ -203,19 +204,15 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
 
     @Override
     public byte[] snapshotState() {
-        Map<String, Object> out = new java.util.LinkedHashMap<>();
-        states.forEach((key, state) -> {
-            synchronized (state) {
-                Map<String, Object> value = new java.util.LinkedHashMap<>();
-                value.put("bucketIdx", state.bucketIdx);
-                value.put("count", state.count);
-                value.put("alerted", state.alerted);
-                value.put("history", new ArrayList<>(state.history));
-                value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
-                out.put(key, value);
-            }
+        return states.snapshot(state -> {
+            Map<String, Object> value = new java.util.LinkedHashMap<>();
+            value.put("bucketIdx", state.bucketIdx);
+            value.put("count", state.count);
+            value.put("alerted", state.alerted);
+            value.put("history", new ArrayList<>(state.history));
+            value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
+            return value;
         });
-        return StateSnapshotCodec.write(out);
     }
 
     @Override

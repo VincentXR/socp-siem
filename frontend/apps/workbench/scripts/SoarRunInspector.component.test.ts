@@ -35,7 +35,7 @@ afterEach(() => { vi.useRealTimers(); document.body.textContent = '' })
 
 describe('SOAR run control identities and lifecycle', () => {
   it('lets a six-second fallback projection finish instead of cancelling it at every five-second poll', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
     const wrapper = mount(SoarRunInspector)
     await flushPromises()
     expect(wrapper.find('.soar-stream-state.polling').exists()).toBe(true)
@@ -60,7 +60,7 @@ describe('SOAR run control identities and lifecycle', () => {
   })
 
   it('still cancels an in-flight fallback projection on an explicit refresh', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
     const wrapper = mount(SoarRunInspector)
     await flushPromises()
     mocks.getRun.mockImplementation(id => new Promise(resolve => {
@@ -154,7 +154,7 @@ describe('SOAR bounded run and published-version catalogs', () => {
     for (let page = 1; page <= 4; page++) {
       await pager.findAll('button')[1].trigger('click')
       await flushPromises()
-      expect(mocks.listRuns).toHaveBeenLastCalledWith(page, 25, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+      expect(mocks.listRuns).toHaveBeenLastCalledWith(page, 25, expect.objectContaining({ signal: expect.any(AbortSignal) }), expect.any(Object))
     }
     const select = wrapper.find<HTMLSelectElement>('.soar-run-select select')
     expect(select.findAll('option')).toHaveLength(27) // 25 rows, selected run 1, and the empty choice
@@ -167,7 +167,7 @@ describe('SOAR bounded run and published-version catalogs', () => {
     expect(wrapper.find('.soar-run-summary').text()).toContain('run-101')
     await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click')
     await flushPromises()
-    expect(mocks.listRuns).toHaveBeenLastCalledWith(3, 25, expect.any(Object))
+    expect(mocks.listRuns).toHaveBeenLastCalledWith(3, 25, expect.any(Object), expect.any(Object))
     expect(select.element.value).toBe('run-101')
     wrapper.unmount()
   })
@@ -192,7 +192,7 @@ describe('SOAR bounded run and published-version catalogs', () => {
     mocks.listRuns.mockResolvedValueOnce(pageOf([], 4, 26)).mockResolvedValueOnce(pageOf([fixture('run-26')], 1, 26))
     pager.vm.$emit('change', 4)
     await flushPromises()
-    expect(mocks.listRuns).toHaveBeenLastCalledWith(1, 25, expect.any(Object))
+    expect(mocks.listRuns).toHaveBeenLastCalledWith(1, 25, expect.any(Object), expect.any(Object))
     expect(pager.props('page')).toBe(1)
     expect(pager.props('total')).toBe(26)
     expect(wrapper.find<HTMLSelectElement>('.soar-run-select select').element.value).toBe('run-1')
@@ -326,5 +326,89 @@ describe('SOAR bounded run and published-version catalogs', () => {
     expect(submit.disabled).toBe(true)
     expect(mocks.queueRun).not.toHaveBeenCalled()
     wrapper.unmount()
+  })
+})
+
+describe('analyst response context and receipts', () => {
+  it('prefills declared inputs and submits exactly the displayed edited values with both origin identities', async () => {
+    mocks.listVersions.mockResolvedValue([{ ...version('pb-1'), definition: {
+      inputSchema: { type: 'object', additionalProperties: false, required: ['alarmId', 'caseId', 'reason', 'enabled'], properties: {
+        alarmId: { type: 'string' }, caseId: { type: 'string' }, reason: { type: 'string', default: 'reviewed' }, enabled: { type: 'boolean', default: false },
+      } } }, riskSummary: { highRiskActionCount: 1 } }])
+    const wrapper = mount(SoarRunInspector, { props: { contextAlarmId: 'alarm-77', contextCaseId: 'case-88' }, attachTo: document.body })
+    await flushPromises(); await openQueue(wrapper)
+    const form = wrapper.findComponent({ name: 'SchemaInputForm' })
+    expect(form.props('modelValue')).toEqual({ alarmId: 'alarm-77', caseId: 'case-88', reason: 'reviewed', enabled: false })
+    form.vm.$emit('update:modelValue', { ...form.props('modelValue'), reason: 'confirmed by analyst' })
+    await flushPromises()
+    const view = wrapper.vm as unknown as { submitQueue: () => Promise<void> }
+    await view.submitQueue(); await flushPromises()
+    const submitted = mocks.queueRun.mock.calls[0][0]
+    expect(submitted.subject).toEqual({ type: 'alert', id: 'alarm-77', alarmId: 'alarm-77', caseId: 'case-88' })
+    expect(submitted.inputs).toEqual({ alarmId: 'alarm-77', caseId: 'case-88', reason: 'confirmed by analyst', enabled: false })
+    expect(mocks.confirmDanger.mock.calls[0][0]).toContain(JSON.stringify(submitted.inputs))
+    expect(wrapper.emitted('select-run')?.at(-1)).toEqual(['queued-run'])
+    wrapper.unmount()
+  })
+
+  it('blocks execution when schema form displays invalid raw JSON, even if last valid model remains', async () => {
+    mocks.listVersions.mockResolvedValue([{ ...version('pb-1'), definition: { inputSchema: { type: 'object', properties: { reason: { default: 'reviewed', type: 'string' } } } } }])
+    const wrapper = mount(SoarRunInspector, { attachTo: document.body })
+    await flushPromises(); await openQueue(wrapper)
+    const form = wrapper.findComponent({ name: 'SchemaInputForm' })
+    await form.get('details textarea').setValue('{invalid')
+    await (wrapper.vm as unknown as { submitQueue: () => Promise<void> }).submitQueue()
+    expect(mocks.confirmDanger).not.toHaveBeenCalled()
+    expect(mocks.queueRun).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('opens an exact deep-linked run outside the first page and retains all durable history pages', async () => {
+    const events = Array.from({ length: 450 }, (_, index) => ({ sequence: index + 1, eventType: `receipt-${index + 1}`, createdAt: '2026-10-02T00:00:00Z', payload: {} }))
+    mocks.listEvents.mockImplementation(async (_runId, after, page, size) => {
+      const filtered = events.filter(item => item.sequence > after)
+      return { items: filtered.slice(page * size, (page + 1) * size), total: filtered.length, totalPages: Math.ceil(filtered.length / size), page, size }
+    })
+    const wrapper = mount(SoarRunInspector, { props: { initialRunId: 'retained-run-450' } })
+    await flushPromises()
+    expect(mocks.getRun).toHaveBeenCalledWith('retained-run-450', expect.any(Object))
+    expect(wrapper.find<HTMLSelectElement>('.soar-run-select select').element.value).toBe('retained-run-450')
+    expect(mocks.listEvents).toHaveBeenCalledWith('retained-run-450', 0, 2, 200, expect.any(Object))
+    const view = wrapper.vm as unknown as { events: unknown[]; visibleEvents: unknown[]; loadEventHistory: (page: number | null) => Promise<void> }
+    expect(view.events).toHaveLength(200)
+    expect(view.events[0]).toMatchObject({ sequence: 251 })
+    await view.loadEventHistory(0)
+    expect(view.visibleEvents).toHaveLength(200)
+    expect(view.visibleEvents[0]).toMatchObject({ sequence: 1 })
+    await view.loadEventHistory(null)
+    expect(view.visibleEvents.at(-1)).toMatchObject({ sequence: 450 })
+    wrapper.unmount()
+  })
+
+  it('rejects stale SSE events from the prior run and repairs the current run through REST', async () => {
+    class Source {
+      static all: Source[] = []
+      listener?: (event: { data: string }) => void
+      onerror?: () => void
+      closed = false
+      constructor(readonly url: string) { Source.all.push(this) }
+      addEventListener(_name: string, listener: (event: { data: string }) => void) { this.listener = listener }
+      close() { this.closed = true }
+      emit(sequence: number) { this.listener?.({ data: JSON.stringify({ sequence, eventType: 'receipt', payload: {} }) }) }
+    }
+    vi.stubGlobal('EventSource', Source)
+    try {
+      const wrapper = mount(SoarRunInspector)
+      await flushPromises()
+      const previous = Source.all.at(-1)!
+      await wrapper.find('.soar-run-select select').setValue('run-2'); await flushPromises()
+      expect(previous.closed).toBe(true)
+      previous.emit(900)
+      expect((wrapper.vm as unknown as { events: unknown[] }).events).toEqual([])
+      mocks.getRun.mockResolvedValueOnce({ ...fixture('run-2'), status: 'SUCCEEDED' })
+      Source.all.at(-1)!.emit(1); await flushPromises()
+      expect(wrapper.find('.soar-run-summary .el-tag').text()).toBe('成功')
+      wrapper.unmount()
+    } finally { vi.unstubAllGlobals() }
   })
 })

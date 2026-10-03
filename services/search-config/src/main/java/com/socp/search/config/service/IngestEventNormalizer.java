@@ -118,10 +118,6 @@ public class IngestEventNormalizer {
             throw new IngestParseException("event contains too many fields (max "
                     + MAX_NORMALIZED_FIELDS + ")");
         }
-        if (sourceContext != null && sourceContext.resolved()
-                && sourceContext.sourceId() != null && !sourceContext.sourceId().isBlank()) {
-            canonical.putIfAbsent("source_id", sourceContext.sourceId());
-        }
         String rawLog = canonical.getOrDefault(CanonicalEvent.EVENT_MESSAGE, line);
 
         if (pipelineResolver != null && sourceContext != null) {
@@ -137,6 +133,11 @@ public class IngestEventNormalizer {
             if (parsedByRule.error() != null && !parsedByRule.error().isBlank()) {
                 canonical.put("parse.error", parsedByRule.error());
             }
+        }
+
+        if (sourceContext != null && sourceContext.resolved()
+                && sourceContext.sourceId() != null && !sourceContext.sourceId().isBlank()) {
+            canonical.put("source_id", sourceContext.sourceId());
         }
 
         com.socp.rule.partition.DetectionDelivery.quarantineInputMetadata(canonical);
@@ -248,6 +249,10 @@ public class IngestEventNormalizer {
         payload.put("fields", fields);
         if (!ecs.isEmpty()) payload.put("ecs", ecs);
         return new NormalizedEvent(event, payload, collector(fields, collectorHint));
+    }
+
+    IngestSourceContext sourceContext(String line, String collectorHint) {
+        return sourceResolver == null ? null : sourceResolver.resolve(line, collectorHint);
     }
 
     String parserVersion(String line, String collectorHint) {

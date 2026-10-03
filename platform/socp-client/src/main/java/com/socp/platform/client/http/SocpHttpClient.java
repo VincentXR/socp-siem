@@ -64,6 +64,7 @@ public class SocpHttpClient {
     private final ServiceRequestSigner requestSigner;
     private final ExternalEndpointPolicy externalEndpointPolicy;
     private final HttpClient http;
+    private final PinnedHttpTransport externalTransport = new PinnedHttpTransport();
 
     public SocpHttpClient(ServiceEndpoints endpoints,
                           ServiceTokenProvider tokens,
@@ -184,6 +185,13 @@ public class SocpHttpClient {
                 headers == null ? Map.of() : headers, props.getExternalAllowedHosts(), 1);
     }
 
+    /** One workflow-admitted attempt using a tenant connection's exact host allowlist. */
+    public ServiceCall postExternalOnce(String absoluteUrl, String body, String contentType, int timeoutMs,
+                                        Map<String, String> headers, List<String> allowedHosts) {
+        return postExternal(absoluteUrl, body, contentType, timeoutMs,
+                headers == null ? Map.of() : headers, allowedHosts, 1);
+    }
+
     /** Side-effect-free connectivity probe for an approved external endpoint. */
     public ServiceCall getExternalOnce(String absoluteUrl, int timeoutMs,
                                        Map<String, String> headers, List<String> allowedHosts) {
@@ -196,15 +204,14 @@ public class SocpHttpClient {
                 return denied;
             }
             return execute("GET", null, absoluteUrl, null, null, timeoutMs,
-                    headers == null ? Map.of() : headers, 1);
+                    headers == null ? Map.of() : headers, 1, pinned);
         }
     }
 
     private ServiceCall postExternal(String absoluteUrl, String body, String contentType, int timeoutMs,
                                      Map<String, String> headers, List<String> allowedHosts, int maxAttempts) {
-        // 校验通过后把解析结果钉住到当前线程：execute() 建连时的隐式 DNS 解析只会拿到
-        // 已校验地址，消除 validate-then-connect 的重绑定窗口；URL 主机名不变，
-        // SNI / 证书域名校验保持原样
+        // Carry the validated resolution into the actual connection manager. JDK
+        // HttpClient resolves asynchronously and cannot rely on a caller-thread DNS pin.
         try (PinnedEndpoint pinned = externalEndpointPolicy.validatePinned(absoluteUrl, allowedHosts,
                 props.isExternalHttpsOnly(), props.isExternalAllowPrivateNetworks())) {
             if (pinned.isRejected()) {
@@ -214,7 +221,7 @@ public class SocpHttpClient {
                 return denied;
             }
             return execute("POST", null, absoluteUrl, body, contentType == null ? JSON : contentType, timeoutMs,
-                    headers == null ? Map.of() : headers, maxAttempts);
+                    headers == null ? Map.of() : headers, maxAttempts, pinned);
         }
     }
 
@@ -234,6 +241,18 @@ public class SocpHttpClient {
     private ServiceCall execute(String method, SocpService target, String url,
                                 String body, String contentType, int timeoutMs,
                                 Map<String, String> headers, int maxAttempts) {
+        return execute(method, target, url, body, contentType, timeoutMs, headers, maxAttempts, null);
+    }
+
+    private ServiceCall execute(String method, SocpService target, String url,
+                                String body, String contentType, int timeoutMs,
+                                Map<String, String> headers, int maxAttempts, PinnedEndpoint pinned) {
+        int maxRequestBytes = Math.min(16 * 1024 * 1024, props.getRequestBodyLimitBytes());
+        if (target == null && body != null && (body.length() > maxRequestBytes
+                || body.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > maxRequestBytes)) {
+            ServiceCall denied = new ServiceCall(target, url, false, -1, "", "Request body exceeds byte limit", 0, false, 0);
+            record(denied); return denied;
+        }
         long start = System.nanoTime();
         int attempts = 0;
         int status = -1;
@@ -243,12 +262,25 @@ public class SocpHttpClient {
         int max = Math.max(1, maxAttempts);
 
         while (attempts < max) {
+            if (Thread.currentThread().isInterrupted()) {
+                error = "Interrupted"; retryable = false; break;
+            }
             attempts++;
             try {
                 HttpRequest req = build(method, target, url, body, contentType, timeoutMs, headers);
-                HttpResponse<String> resp = http.send(req, stringBodyHandler());
-                status = resp.statusCode();
-                respBody = resp.body() == null ? "" : resp.body();
+                if (pinned != null) {
+                    Map<String, String> outbound = new java.util.LinkedHashMap<>();
+                    req.headers().map().forEach((name, values) -> outbound.put(name, String.join(",", values)));
+                    var response = externalTransport.send(method, req.uri(),
+                            body == null ? null : body.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                            contentType, outbound, pinned, props.getConnectTimeoutMs(),
+                            timeoutMs > 0 ? timeoutMs : props.getRequestTimeoutMs(), props.getResponseBodyLimitBytes());
+                    status = response.status(); respBody = response.body();
+                } else {
+                    HttpResponse<String> resp = http.send(req, stringBodyHandler());
+                    status = resp.statusCode();
+                    respBody = resp.body() == null ? "" : resp.body();
+                }
                 error = null;
                 if (target != null && (status == 401 || status == 403)) {
                     // token 可能过期/失效，作废缓存让下一次调用重新登录

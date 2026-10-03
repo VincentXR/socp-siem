@@ -220,8 +220,15 @@ public class Alarm extends BaseEntity {
         this.sourceAlertId = sourceAlertId;
     }
 
+    @jakarta.persistence.Transient
+    private String assignee;
+    @jakarta.persistence.Transient
+    private String dispositionStatus;
+    public String getAssignee() { return assignee; }
+    public void setAssignee(String value) { assignee = value; }
+    public void setDispositionStatus(String value) { dispositionStatus = value; }
     public String getStatus() {
-        return status;
+        return dispositionStatus == null ? status : dispositionStatus;
     }
 
     public void setStatus(String status) {

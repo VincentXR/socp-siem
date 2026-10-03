@@ -6,7 +6,7 @@ import ElInput from 'element-plus/es/components/input/index.mjs'
 import AiAssistantView from '../src/views/AiAssistantView.vue'
 import type { AiResult, InvestigationResult } from '../src/api'
 
-const mocks = vi.hoisted(() => ({ aiAsk: vi.fn(), investigateAlert: vi.fn(), reanalyzeAlert: vi.fn(), appendInvestigationToIncident: vi.fn(),
+const mocks = vi.hoisted(() => ({ getAlarm: vi.fn(), getAlarmEvidence: vi.fn(), splSearch: vi.fn(), tiMatch: vi.fn(), getCase: vi.fn(), aiAsk: vi.fn(), investigateAlert: vi.fn(), reanalyzeAlert: vi.fn(), appendInvestigationToIncident: vi.fn(),
   route: { query: {} as Record<string, string | undefined> }, replace: vi.fn(), push: vi.fn() }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...mocks }))
 vi.mock('vue-router', () => ({ useRoute: () => mocks.route, useRouter: () => ({ push: mocks.push, replace: mocks.replace }) }))
@@ -110,7 +110,7 @@ describe('AI investigation context', () => {
     const wrapper = setupInvestigation(); await flushPromises()
     const append = () => wrapper.findAllComponents(ElButton).find(button => button.props('type') === 'success')!
     append().vm.$emit('click'); await nextTick()
-    expect(mocks.appendInvestigationToIncident).toHaveBeenCalledWith('job-a')
+    expect(mocks.appendInvestigationToIncident).toHaveBeenCalledWith('job-a', undefined)
     mocks.route.query = { alarmId: 'b' }; await flushPromises()
     expect(wrapper.find('.ai-analysis').text()).toBe('analysis b')
     expect(append().props('disabled')).toBe(true)
@@ -147,6 +147,42 @@ describe('AI investigation context', () => {
 
     expect(mocks.reanalyzeAlert).toHaveBeenCalledWith('a', 4, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(wrapper.find('.ai-analysis').text()).toBe('analysis a')
+    wrapper.unmount()
+  })
+})
+
+describe('AI evidence citations and resumable identity', () => {
+  it('resumes the URL job, resolves an authoritative citation and opens suggested SPL as a draft', async () => {
+    mocks.route.query = { alarmId: 'a', jobId: 'persisted-job', caseId: 'case-a' }
+    mocks.investigateAlert.mockResolvedValue({ ...investigation('a'), citations: [{ id: 'alert:a', source: 'alert', label: 'Alarm' }] })
+    mocks.getAlarm.mockResolvedValue({ id: 'a', message: 'authoritative alarm' })
+    const wrapper = setupInvestigation(); await flushPromises()
+    expect(mocks.investigateAlert).toHaveBeenCalledWith('a', expect.objectContaining({ jobId: 'persisted-job' }))
+    const view = wrapper.vm as unknown as { inspectCitation: (id: string) => Promise<void>; citationEvidence: unknown; citationLoading: boolean; openSuggestedSearch: (query: string) => void }
+    await view.inspectCitation('alert:a')
+    expect(mocks.getAlarm).toHaveBeenCalledWith('a', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(view.citationEvidence).toMatchObject({ message: 'authoritative alarm' })
+    await view.inspectCitation('missing-reference')
+    expect(view.citationLoading).toBe(false)
+    expect(view.citationEvidence).toBeNull()
+    view.openSuggestedSearch('host="edge" | stats count')
+    expect(mocks.push).toHaveBeenCalledWith(expect.objectContaining({ name: 'search', query: expect.objectContaining({ draft: 'host="edge" | stats count', alarmId: 'a', caseId: 'case-a' }) }))
+    expect(mocks.splSearch).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+  it('rejects a late citation read after switching to another alarm', async () => {
+    const pending = deferred<{ id: string }>()
+    mocks.route.query = { alarmId: 'a' }
+    mocks.investigateAlert.mockImplementation(async id => ({ ...investigation(id), citations: [{ id: `alert:${id}`, label: 'Alarm', source: 'alert' }] }))
+    mocks.getAlarm.mockReturnValue(pending.promise)
+    const wrapper = setupInvestigation(); await flushPromises()
+    const view = wrapper.vm as unknown as { inspectCitation: (id: string) => Promise<void>; citationEvidence: unknown }
+    const inspection = view.inspectCitation('alert:a')
+    const signal = mocks.getAlarm.mock.calls[0][1].signal as AbortSignal
+    mocks.route.query = { alarmId: 'b' }; await flushPromises()
+    expect(signal.aborted).toBe(true)
+    pending.resolve({ id: 'a' }); await inspection
+    expect(view.citationEvidence).toBeNull()
     wrapper.unmount()
   })
 })

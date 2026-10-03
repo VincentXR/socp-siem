@@ -84,6 +84,8 @@ workloads:
       SOCP_SOAR_SIMULATION_ENABLED: "false"
       SOCP_SOAR_SECRET_BACKEND: kubernetes
       SOCP_SOAR_SECRET_ALLOW_ENV_FALLBACK: "false"
+      # Exact tenant-to-secret-reference grants; no implicit namespace access.
+      SOAR_SECRET_TENANT_GRANTS: "{}"
       SOCP_SOAR_ARTIFACT_BACKEND: s3
       SOCP_SOAR_ARTIFACT_S3_ENDPOINT: https://minio.socp-data.svc.cluster.local:9000
       SOCP_SOAR_ARTIFACT_S3_BUCKET: socp-soar-artifacts
@@ -104,6 +106,12 @@ workloads:
       <<: *database-secrets
       SOCP_CK_USER: SOCP_CK_USER
       SOCP_CK_PASSWORD: SOCP_CK_PASSWORD
+      SOCP_MINIO_ACCESS: SOCP_MINIO_ACCESS
+      SOCP_MINIO_SECRET: SOCP_MINIO_SECRET
+    env:
+      SOCP_MINIO_URL: https://minio.socp-data.svc.cluster.local:9000
+      SOCP_MINIO_BUCKET: socp-reports
+      SOCP_MINIO_ENABLED: "true"
     health: { basePath: /report-web/actuator/health, metricsPath: /report-web/actuator/prometheus }
   asset-web:
     <<: *product-workload
@@ -125,6 +133,7 @@ workloads:
     secretEnv:
       <<: *database-secrets
       SOCP_COLLECTOR_CREDENTIALS: SOCP_COLLECTOR_CREDENTIALS
+      SOCP_INGEST_TOKEN: SOCP_INGEST_TOKEN
     health: { basePath: /hips-web/actuator/health, metricsPath: /hips-web/actuator/prometheus }
   ai-assistant:
     <<: *product-workload

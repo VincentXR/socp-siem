@@ -42,12 +42,12 @@ class AlarmQueryServiceTest {
 
     @Test
     void normalizesFiltersAndSortsAscending() {
-        when(repository.list(eq("tenant-a"), any(AlarmQuery.class))).thenReturn(List.of());
+        when(repository.page(eq("tenant-a"), any(AlarmQuery.class), any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
 
-        service.query(Severity.HIGH, "  R-1 ", " OPEN ", " login ", "unknown", "ASC");
+        service.page(Severity.HIGH, "  R-1 ", " OPEN ", " login ", "unknown", "ASC", 1, 20);
 
         ArgumentCaptor<AlarmQuery> query = ArgumentCaptor.forClass(AlarmQuery.class);
-        verify(repository).list(eq("tenant-a"), query.capture());
+        verify(repository).page(eq("tenant-a"), query.capture(), any(Pageable.class));
         assertThat(query.getValue().severity()).isEqualTo(Severity.HIGH);
         assertThat(query.getValue().rule()).isEqualTo("R-1");
         assertThat(query.getValue().status()).isEqualTo("OPEN");
@@ -89,6 +89,22 @@ class AlarmQueryServiceTest {
         assertThat(query.getValue().text()).isEqualTo("login");
         assertThat(query.getValue().sort()).isEqualTo(AlarmQuery.SortField.RISK_SCORE);
         assertThat(query.getValue().ascending()).isTrue();
+    }
+
+    @Test
+    void investigationAndAssigneeCriteriaComposeWithoutChangingTheEvidenceWindow() {
+        var from = java.time.Instant.parse("2026-09-01T00:00:00Z");
+        var to = from.plusSeconds(3600);
+        when(repository.page(eq("tenant-a"), any(AlarmQuery.class), any(Pageable.class))).thenReturn(new PageImpl<>(List.of()));
+        service.investigationPage(null, null, "ACTIVE", null, "occurredAt", "descending", 1, 20,
+                "alice", " host-a ", from, to, "T1110", "high", " alice ");
+        var query = ArgumentCaptor.forClass(AlarmQuery.class);
+        verify(repository).page(eq("tenant-a"), query.capture(), any(Pageable.class));
+        assertThat(query.getValue().owner()).isEqualTo("alice");
+        assertThat(query.getValue().assignee()).isEqualTo("alice");
+        assertThat(query.getValue().entity()).isEqualTo("host-a");
+        assertThat(query.getValue().inclusiveTo()).isFalse();
+        assertThat(query.getValue().severityGroup()).isEqualTo("high");
     }
 
     @Test

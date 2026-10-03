@@ -41,10 +41,12 @@ import FormGrid from '../components/FormGrid.vue'
 import FormSection from '../components/FormSection.vue'
 import { deleteRefEntry, addRefEntry, createRefSet, deleteRefSet, listRefSets, type ReferenceSet } from '../api'
 import { useI18n } from '../composables/useI18n'
+import { useRouter } from 'vue-router'
 import { useWriteAccess } from '../composables/useWriteAccess'
 
 const { t } = useI18n()
 const canWrite = useWriteAccess()
+const router = useRouter()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('refsets')
 
 const listRequest = useRequest<ReferenceSet[]>()
@@ -222,19 +224,20 @@ onUnmounted(() => { disposed = true; listRequest.cancel() })
   <div class="page-pad view-enter">
     <ActionFeedback :error="loadError" />
     <ActionFeedback :error="actionError" />
-    <PageHeader :title="t('refset.title')" :description="t('refset.description')">
+    <PageHeader :title="t('experience.enrichmentSets')" :description="t('refset.ingestionOnly')">
       <template #actions><el-button v-if="canWrite" type="primary" size="small" @click="openCreateSet">{{ t('refset.createSet') }}</el-button></template>
     </PageHeader>
+    <el-button link type="primary" @click="router.push({ name: 'ueba', query: { tab: 'watchlists' } })">{{ t('experience.detectionWatchlists') }}</el-button>
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('refset.readOnly') }}</div>
 
     <el-input v-model="keyword" :placeholder="t('forms.search')" clearable />
-    <el-table v-loading="loading" :data="filteredSets" border allow-drag-last-column style="margin-top:16px" @header-dragend="onHeaderDragEnd">
+    <el-table v-if="loading || loadError || filteredSets.length" v-loading="loading" :data="filteredSets" border allow-drag-last-column style="margin-top:16px" @header-dragend="onHeaderDragEnd">
       <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="200" />
       <el-table-column prop="description" column-key="description" :label="t('common.description')" :width="columnWidth('description')" min-width="200" show-overflow-tooltip />
       <el-table-column column-key="entries" :label="t('forms.entries')" :width="columnWidth('entries', 120)"><template #default="{ row }">{{ row.entries.length }}</template></el-table-column>
       <el-table-column :label="t('common.actions')" width="120" :resizable="false"><template #default="{ row }"><el-button link @click="openSet(row.id)">{{ t('forms.entries') }}</el-button></template></el-table-column>
     </el-table>
-    <el-empty v-if="!loading && !loadError && !actionError && !filteredSets.length" :description="t('refset.empty')" />
+    <el-empty v-if="!loading && !loadError && !actionError && !filteredSets.length" :description="keyword ? t('experience.noMatches') : t('refset.empty')"><el-button v-if="keyword" @click="keyword = ''">{{ t('experience.clearFilters') }}</el-button><el-button v-else-if="canWrite" type="primary" @click="openCreateSet">{{ t('refset.createSet') }}</el-button></el-empty>
     <el-drawer :model-value="Boolean(selectedId)" :before-close="beforeEntriesClose" :title="selected?.name || t('forms.entries')" size="min(760px, 96vw)" @update:model-value="value => { if (!value) selectedId = '' }">
       <template v-if="selected">
         <ActionFeedback :error="entryError" /><el-input v-model="entrySearch" :placeholder="t('forms.search')" clearable @input="entryPage = 1" />

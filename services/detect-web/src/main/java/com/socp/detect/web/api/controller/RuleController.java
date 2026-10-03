@@ -48,7 +48,10 @@ public class RuleController {
                                   @RequestParam(defaultValue = "") String q,
                                   @RequestParam(defaultValue = "") String status,
                                   @RequestParam(defaultValue = "") String reference,
-                                  @RequestParam(defaultValue = "") String referenceAlias) {
+                                  @RequestParam(defaultValue = "") String referenceAlias,
+                                  @RequestParam(defaultValue = "") String technique) {
+        String exactTechnique = bounded(technique, 16, "technique").trim().toUpperCase(java.util.Locale.ROOT);
+        if (!exactTechnique.isEmpty() && !exactTechnique.matches("T[0-9]{4}(?:\\.[0-9]{3})?")) throw com.socp.platform.error.exception.ApiException.badRequest("invalid technique");
         String keyword = bounded(q, 256, "q").trim();
         String lifecycle = bounded(status, 32, "status").trim().toUpperCase(java.util.Locale.ROOT);
         if (!lifecycle.isEmpty() && !List.of("DRAFT", "TESTING", "ACTIVE", "DISABLED", "ARCHIVED").contains(lifecycle)) {
@@ -56,7 +59,7 @@ public class RuleController {
         }
         bounded(reference, 4096, "reference");
         bounded(referenceAlias, 4096, "referenceAlias");
-        boolean filtered = !keyword.isEmpty() || !lifecycle.isEmpty() || !reference.isEmpty() || !referenceAlias.isEmpty();
+        boolean filtered = !keyword.isEmpty() || !lifecycle.isEmpty() || !reference.isEmpty() || !referenceAlias.isEmpty() || !exactTechnique.isEmpty();
         int safeSize = size == null || size <= 0 ? 100 : Math.min(MAX_LIST_SIZE, size);
         if (page == null) {
             // Compatibility response for older clients that still omit all
@@ -64,7 +67,7 @@ public class RuleController {
             // tenant-created rule population can no longer cause an unbounded
             // response allocation.
             List<Map<String, Object>> rows = filtered
-                    ? engine.searchRules(1, safeSize, keyword, lifecycle, reference, referenceAlias).getContent()
+                    ? (exactTechnique.isEmpty() ? engine.searchRules(1, safeSize, keyword, lifecycle, reference, referenceAlias) : engine.searchRulesByTechnique(1, safeSize, keyword, lifecycle, reference, referenceAlias, exactTechnique)).getContent()
                     : engine.listRules(safeSize);
             return ApiResult.ok(rows == null ? List.of() : rows);
         }
@@ -73,10 +76,14 @@ public class RuleController {
                     org.springframework.http.HttpStatus.BAD_REQUEST,
                     "page must be >= 1 and size must be between 1 and " + MAX_LIST_SIZE);
         }
-        var result = filtered ? engine.searchRules(page, safeSize, keyword, lifecycle, reference, referenceAlias)
+        var result = filtered ? (exactTechnique.isEmpty() ? engine.searchRules(page, safeSize, keyword, lifecycle, reference, referenceAlias) : engine.searchRulesByTechnique(page, safeSize, keyword, lifecycle, reference, referenceAlias, exactTechnique))
                 : engine.listRulesPage(page, safeSize);
         return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
                 result.getNumber() + 1, result.getSize(), result.getTotalPages()));
+    }
+
+    public ApiResult<?> listRules(Integer page, Integer size, String q, String status, String reference, String alias) {
+        return listRules(page, size, q, status, reference, alias, "");
     }
 
     public ApiResult<?> listRules(Integer page, Integer size) {

@@ -28,6 +28,9 @@ test('rule 501 remains manageable and selectable from a source', async ({ page }
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items: [] }) })
       return
     }
+    if (path === '/api/v1/system/health') {
+      await route.fulfill({ json: { code: 0, message: 'OK', data: { status: 'up', services: {}, checkedAt: '2026-10-02T00:00:00Z' } } }); return
+    }
     let data: unknown
     if (path === '/search-config/api/v1/parse-rules') {
       const requestedPage = Number(url.searchParams.get('page')), size = Number(url.searchParams.get('size'))
@@ -68,6 +71,7 @@ test('rule 501 remains manageable and selectable from a source', async ({ page }
   await page.goto('/ingest?tab=sources')
   await page.getByRole('row').filter({ hasText: 'Bound Source' }).getByRole('button', { name: 'Edit' }).click()
   const drawer = page.locator('.el-drawer')
+  await drawer.locator('details').filter({ has: page.locator('.el-form-item', { hasText: 'Bound parse rules:' }) }).locator('summary').first().click()
   const ruleSelect = drawer.locator('.el-form-item').filter({ hasText: 'Bound parse rules:' }).locator('.el-select')
   await expect(ruleSelect).toContainText('Deep parser')
   await ruleSelect.click()

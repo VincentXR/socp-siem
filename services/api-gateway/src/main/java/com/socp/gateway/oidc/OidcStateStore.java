@@ -10,8 +10,8 @@ public interface OidcStateStore {
     Mono<Void> save(String state, Entry entry, Duration ttl);
 
     /** Atomically returns and consumes a state value. */
-    Mono<Entry> consume(String state);
+    Mono<Entry> consume(String state, String browserBinding);
 
-    record Entry(String verifier, String nonce, long expiresAt) {
+    record Entry(String verifier, String nonce, long expiresAt, String browserBinding) {
     }
 }

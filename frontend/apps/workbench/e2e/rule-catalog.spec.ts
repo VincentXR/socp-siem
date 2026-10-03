@@ -14,7 +14,8 @@ test('rule 501 can be paged, filtered, edited by link, and selected for alarm fi
     if (!isWorkbenchBackendUrl(url)) { await route.continue(); return }
     const path = url.pathname
     let data: unknown
-    if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
+    if (path === '/api/v1/system/health') data = { status: 'up', services: {}, checkedAt: '2026-10-02T00:00:00Z' }
+    else if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (path === '/auth/operators') data = { items: [] }
     else if (path === '/detect-web/api/v1/stats') data = { rules: 501, eventCount: 0, alertCount: 0, queueLoad: 0 }
     else if (path === '/search-config/api/v1/meta/fields' || path === '/detect-web/api/v1/watchlists') data = []

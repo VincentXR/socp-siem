@@ -160,6 +160,8 @@ def verify_product_profile(helm: str, errors: list[str]) -> None:
     require(errors, "secretName: socp-soar-secrets" in soar
             and "mountPath: /var/run/secrets/socp" in soar,
             "product: SOAR must mount its connector/artifact secret projection read-only")
+    require(errors, 'name: SOAR_SECRET_TENANT_GRANTS' in soar and 'value: "{}"' in soar,
+            "product: SOAR tenant secret grants must default to the empty fail-closed map")
     runtime = documents.get(("ConfigMap", "socp-runtime"), "")
     for route in ("SOCP_SOAR_URI", "SOCP_SFM_URI", "SOCP_SAM_WEB_URI", "SOCP_SOC_URI",
                   "SOCP_HIPS_WEB_URI", "SOCP_AI_URI", "SOCP_TI_URI", "SOCP_ATTACK_URI",
@@ -457,6 +459,41 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
             f"{profile}: runtime config must not route dependencies to loopback")
 
 
+def verify_deployment_regressions(helm: str, errors: list[str]) -> None:
+    base = [helm, "template", "socp-contract", str(CHART), "--namespace", NAMESPACE,
+            "--values", str(TEST_VALUES), "--values", str(CHART / "values-production.yaml"),
+            "--values", str(CHART / "values-product.yaml"), *release_image_args(include_product=True)]
+    rendered = manifest_documents(run(base + ["--set-string", "runtime.extraConfig.SERVER_PORT=9191"]).stdout)
+    require(errors, 'SERVER_PORT: "9191"' in rendered[("ConfigMap", "socp-runtime")],
+            "runtime.extraConfig must override an existing runtime.config key")
+    required = {
+        "search-config-api": ("SOCP_INGEST_TOKEN", "SOCP_VECTOR_TOKEN"),
+        "search-config-worker": ("SOCP_INGEST_TOKEN", "SOCP_VECTOR_TOKEN"),
+        "hips-web": ("SOCP_INGEST_TOKEN",),
+        "report-web": ("SOCP_MINIO_ACCESS", "SOCP_MINIO_SECRET"),
+    }
+    for workload, keys in required.items():
+        deployment = rendered[("Deployment", workload)]
+        for key in keys:
+            pattern = (rf"- name: {key}\s+valueFrom:\s+secretKeyRef:\s+"
+                       rf"name: socp-[a-z-]+-secrets\s+key: {key}\s")
+            require(errors, re.search(pattern, deployment) is not None,
+                    f"{workload}: {key} must be supplied by an explicit secretKeyRef")
+            for source in ("config", "extraConfig"):
+                result = run(base + ["--set-string", f"runtime.{source}.{key}=forbidden"], expect_success=False)
+                require(errors, result.returncode != 0 and "never the shared ConfigMap" in result.stderr,
+                        f"runtime.{source} must reject secret {key}")
+    hpa = rendered[("HorizontalPodAutoscaler", "detect-web-worker")]
+    require(errors, re.search(r"maxReplicas:\s*6\s", hpa) is not None,
+            "Detection worker default HPA must be capped at six existing partitions")
+    for args, expected in ((["--set", "workloads.detect-web-worker.autoscaling.maxReplicas=7"], False),
+                           (["--set", "runtime.detectionPartitions=0"], False),
+                           (["--set", "runtime.detectionPartitions=8", "--set", "workloads.detect-web-worker.autoscaling.maxReplicas=8"], True)):
+        result = run(base + args, expect_success=False)
+        require(errors, (result.returncode == 0) == expected,
+                f"Detection partition/HPA bound had unexpected result for {args}")
+
+
 def verify_test_values_scope(errors: list[str]) -> None:
     """The shared CI values fixture must supply images and nothing else.
 
@@ -496,6 +533,7 @@ def main() -> int:
         for profile in PROFILES:
             verify_profile(helm, profile, errors)
         verify_product_profile(helm, errors)
+        verify_deployment_regressions(helm, errors)
     except RuntimeError as exc:
         errors.append(str(exc))
 

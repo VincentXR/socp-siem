@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { isWorkbenchBackendUrl } from './helpers'
+import { expectMobileNavigationClosed, isWorkbenchBackendUrl } from './helpers'
 
 const evidenceQuery = 'eventId="historical-event"'
 const event = { eventId: 'historical-event', timestamp: '2026-08-01T12:00:00Z', source: 'auth', host: 'edge', severity: 'HIGH', msg: 'Suspicious login', fields: { path: 'C:\\logs\\"auth"' } }
@@ -16,7 +16,8 @@ async function mockInvestigation(page: Page) {
     }
     const path = url.pathname
     let data: unknown
-    if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
+    if (path === '/api/v1/system/health') data = { status: 'up', services: {}, checkedAt: '2026-10-02T00:00:00Z' }
+    else if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (path === '/auth/operators') data = { items: [{ id: 'analyst' }] }
     else if (path === '/search-config/api/v1/meta/fields') data = []
     else if (path === '/search-config/api/v1/search') {
@@ -27,7 +28,7 @@ async function mockInvestigation(page: Page) {
     else if (path === '/detect-web/api/v1/rules/options') data = { items: [], total: 0 }
     else if (path === '/alert-web/api/alarms/alarm-1/evidence') data = { alarmId: alarm.id, query: evidenceQuery, complete: true, total: 1, items: [{ ...event, id: 'ev-1', raw: event.msg, order: 0 }] }
     else if (path === '/alert-web/api/alarms/alarm-1/disposition') data = { status: 'OPEN', notes: [], assignee: null }
-    else if (path === '/alert-web/api/alarms/alarm-1/deliveries') data = []
+    else if (['/alert-web/api/alarms/alarm-1/deliveries', '/alert-web/api/alarms/alarm-1/feedback', '/alert-web/api/alarms/alarm-1/similar'].includes(path)) data = []
     else if (path === '/incident-web/api/v1/incidents/by-alarm') {
       await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ code: 404, message: 'Case not found', data: null }) })
       return
@@ -85,7 +86,8 @@ test('event field pivots preserve values and return keyboard focus to the query'
   await expect(editor).toBeFocused()
   await expect(page.getByRole('dialog')).not.toBeVisible()
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.screenshot({ path: testInfo.outputPath('search-mobile.png'), fullPage: true })
+  await expectMobileNavigationClosed(page)
+  await page.screenshot({ path: testInfo.outputPath('search-mobile.png'), fullPage: true, animations: 'disabled' })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   expect(unexpected).toEqual([])
 })
