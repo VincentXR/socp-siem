@@ -77,6 +77,7 @@ const catalogPages = reactive({
 })
 
 const props = withDefaults(defineProps<{
+  initialVersionId?: string
   hideTabs?: boolean
   section: SoarControlPlaneSection
   canWrite?: boolean
@@ -664,7 +665,14 @@ async function discard(letter: SoarDeadLetter) {
 
 const { t } = useI18n()
 const { confirmDanger } = useConfirm()
-onMounted(() => { void load() })
+onMounted(() => {
+  void load()
+  if (props.section === 'rules' && props.canWrite && props.initialVersionId) {
+    openRuleForm()
+    ruleForm.playbookVersionIds = [props.initialVersionId]
+    // The service still verifies the version is published when this reviewed form is saved.
+  }
+})
 onUnmounted(() => { disposed = true; loadController?.abort(); stopRuleCatalogRequests() })
 
 function statusLabel(status: string): string {

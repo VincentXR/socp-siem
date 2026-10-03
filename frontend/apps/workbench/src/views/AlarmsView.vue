@@ -15,7 +15,8 @@ import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { localDateTime, utcInstant } from '../lib/time-range'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AlarmDispositionDrawer from '../components/AlarmDispositionDrawer.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -42,13 +43,14 @@ const props = defineProps<{
   onSortChange: (field: 'occurredAt' | 'severity' | 'ruleName' | 'entity' | 'status' | 'riskScore', order: 'ascending' | 'descending') => void
   exportCsv: () => Promise<void>
   exportJson: () => Promise<void>
-  goCase: () => void
+  goCase: (caseId?: string) => void
   goSearch: (query?: string) => void
   goAi?: (alarmId: string) => void
   goSoar?: (alarmId: string) => void
   assigneeOptions?: string[]
   canWrite?: boolean
   canAdmin?: boolean
+  currentUser?: string
 }>()
 
 const { t } = useI18n()
@@ -60,6 +62,14 @@ const keyword = defineModel<string>('keyword', { default: '' })
 const severity = defineModel<string>('severity', { default: '' })
 const status = defineModel<string>('status', { default: '' })
 const rule = defineModel<string>('rule', { default: '' })
+const assignee = defineModel<string>('assignee', { default: '' })
+const from = defineModel<string>('from', { default: '' })
+const to = defineModel<string>('to', { default: '' })
+const fromInput = computed({ get: () => localDateTime(from.value), set: value => { from.value = utcInstant(value) } })
+const toInput = computed({ get: () => localDateTime(to.value), set: value => { to.value = utcInstant(value) } })
+function myQueue() {
+  assignee.value = props.currentUser || ''; status.value = 'ACTIVE'; props.onSearch()
+}
 const pageNum = defineModel<number>('pageNum', { default: 1 })
 const drawerVisible = ref(false)
 const currentAlarm = ref<Alarm | null>(null)
@@ -84,7 +94,7 @@ const deepLinkRequests = useLatestRequest()
 const deepLinkLoading = ref(false)
 const deepLinkError = ref('')
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('alarms')
-const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
+const DISP_STATUSES = ['ACTIVE', 'OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
 
 async function loadRuleOptions(keyword = ''): Promise<void> {
   const request = ruleOptionRequests.start()
@@ -193,7 +203,7 @@ async function syncAlarmFromRoute(): Promise<void> {
 
 watch(() => [route.query.alarmId, props.filteredAlarms] as const, () => { void syncAlarmFromRoute() }, { immediate: true, deep: true })
 watch(drawerVisible, visible => {
-  if (!visible && route.query.alarmId) {
+  if (!visible && route.name === 'alarms' && route.query.alarmId) {
     const query = { ...route.query }
     delete query.alarmId
     void router.replace({ query })
@@ -233,9 +243,15 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
         <el-select v-model="status" :placeholder="t('alarms.statusFilter')" clearable style="width:150px" @change="props.onSearch">
           <el-option v-for="item in DISP_STATUSES" :key="item" :label="tOr(t, 'statuses.' + item, item)" :value="item" />
         </el-select>
+        <el-select v-model="assignee" clearable filterable :placeholder="t('cases.assignee')" style="width:160px" @change="props.onSearch"><el-option v-for="owner in props.assigneeOptions" :key="owner" :label="owner" :value="owner" /></el-select>
+        <el-button v-if="props.currentUser" size="small" @click="myQueue">{{ t('workflow.myQueue') }}</el-button>
         <el-button size="small" @click="props.onSearch">{{ t('common.search') }}</el-button>
         <small v-if="ruleCatalogError" class="alarm-catalog-hint" :title="ruleCatalogError">{{ t('alarms.ruleCatalogUnavailable') }}</small>
         <small v-else-if="ruleOptionsTotal > ruleOptions.length" class="alarm-catalog-hint">{{ t('detect.refineRuleSearch', { total: ruleOptionsTotal }) }}</small>
+      </div>
+      <div class="workflow-time-range">
+        <label>{{ t('workflow.timeFrom') }}<input v-model="fromInput" type="datetime-local" step="0.001" :aria-label="t('workflow.timeFrom')" /></label>
+        <label>{{ t('workflow.timeTo') }}<input v-model="toInput" type="datetime-local" step="0.001" :aria-label="t('workflow.timeTo')" /></label>
       </div>
       <div class="alarm-toolbar-actions">
         <span class="toolbar-count">{{ t('common.total', { total: props.alarmPageData.total }) }}</span>

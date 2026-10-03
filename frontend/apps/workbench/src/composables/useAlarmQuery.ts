@@ -26,6 +26,9 @@ export interface AlarmQueryParams {
   rule?: string
   sort: AlarmSortField
   order: AlarmSortOrder
+  assignee?: string
+  from?: string
+  to?: string
   signal: AbortSignal
 }
 
@@ -50,11 +53,15 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
     params.sort,
     params.order,
     { signal: params.signal },
+    { assignee: params.assignee, from: params.from, to: params.to },
   ))
   const alarmSeverity = ref('')
   const alarmKeyword = ref('')
   const alarmStatus = ref('')
   const alarmRule = ref('')
+  const alarmAssignee = ref('')
+  const alarmFrom = ref('')
+  const alarmTo = ref('')
   const alarmSort = ref<AlarmSortField>('occurredAt')
   const alarmOrder = ref<AlarmSortOrder>('descending')
   const alarmPageNum = ref(1)
@@ -73,6 +80,9 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
     alarmSeverity.value = typeof query.severity === 'string' ? query.severity : ''
     alarmStatus.value = typeof query.status === 'string' ? query.status : ''
     alarmRule.value = typeof query.rule === 'string' ? query.rule : ''
+    alarmAssignee.value = typeof query.assignee === 'string' ? query.assignee : ''
+    alarmFrom.value = typeof query.from === 'string' ? query.from : ''
+    alarmTo.value = typeof query.to === 'string' ? query.to : ''
     // Integers only, matching useListQuery: '2.5' must not reach the request
     // (the backend @RequestParam Integer answers it with a 500) or the URL.
     const nextPage = Number(query.page)
@@ -98,6 +108,9 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
     query.severity = alarmSeverity.value || undefined
     query.status = alarmStatus.value || undefined
     query.rule = alarmRule.value.trim() || undefined
+    query.assignee = alarmAssignee.value.trim() || undefined
+    query.from = alarmFrom.value || undefined
+    query.to = alarmTo.value || undefined
     query.page = alarmPageNum.value > 1 ? String(alarmPageNum.value) : undefined
     query.size = alarmPageSize.value !== 10 ? String(alarmPageSize.value) : undefined
     query.sort = alarmSort.value !== 'occurredAt' ? alarmSort.value : undefined
@@ -130,6 +143,9 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
       severity: alarmSeverity.value || undefined,
       status: alarmStatus.value || undefined,
       rule: alarmRule.value.trim() || undefined,
+      assignee: alarmAssignee.value.trim() || undefined,
+      from: alarmFrom.value || undefined,
+      to: alarmTo.value || undefined,
       sort: alarmSort.value,
       order: alarmOrder.value,
       signal,
@@ -151,7 +167,7 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
   }
 
   return {
-    alarmSeverity, alarmKeyword, alarmStatus, alarmRule,
+    alarmSeverity, alarmKeyword, alarmStatus, alarmRule, alarmAssignee, alarmFrom, alarmTo,
     alarmPageNum, alarmPageSize, alarmSort, alarmOrder, alarmPageData, filteredAlarms,
     loading: request.loading, error: request.error,
     loadAlarmPage, onAlarmSearch, onAlarmSortChange,

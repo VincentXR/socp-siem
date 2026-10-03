@@ -2,6 +2,8 @@ import { del, downloadFile, get, post, put, type ApiRequestOptions } from './cor
 import type { DataSourceType, FieldDef, LogCategory, LogSource, ParseRule, ReferenceSet, SearchResult, SinkTarget, Paged } from './models'
 import { withQuery } from '../lib/query'
 
+export const updateOutput = (id: string, target: Pick<SinkTarget, 'name' | 'type' | 'uri' | 'enabled'> & { authToken?: string | null }, credentialAction: 'KEEP' | 'REPLACE' | 'CLEAR') =>
+  put<SinkTarget>(`/search-config/api/v1/outputs/${encodeURIComponent(id)}`, { target, credentialAction })
 /** Always request the bounded, one-based source catalogue rather than its legacy array form. */
 export const listSourcesPage = (page: number, size: number, q = '', options?: ApiRequestOptions) =>
   get<Paged<LogSource>>(withQuery('/search-config/api/v1/sources', { page, size, q: q.trim() || undefined }), options)

@@ -300,6 +300,21 @@ public class AlarmService {
         return queryService.count(severity, rule, status, text, sort, order);
     }
 
+    public Page<Alarm> page(Severity severity, String rule, String status, String text,
+                            String sort, String order, int page, int size, String assignee,
+                            java.time.Instant from, java.time.Instant to) {
+        if ((assignee == null || assignee.isBlank()) && from == null && to == null)
+            return page(severity, rule, status, text, sort, order, page, size);
+        return queryService.page(severity, rule, status, text, sort, order, page, size, assignee, from, to);
+    }
+
+    public long count(Severity severity, String rule, String status, String text,
+                      String sort, String order, String assignee, java.time.Instant from, java.time.Instant to) {
+        if ((assignee == null || assignee.isBlank()) && from == null && to == null)
+            return count(severity, rule, status, text, sort, order);
+        return queryService.count(severity, rule, status, text, sort, order, assignee, from, to);
+    }
+
     public Alarm get(String id) {
         Alarm alarm = queryService.get(id);
         if (alarm == null) {

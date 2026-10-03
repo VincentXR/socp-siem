@@ -258,7 +258,7 @@ class LogSourceControllerTest {
         when(repository.findByTenantIdAndSourceId("tenant-a", source.id()))
                 .thenReturn(Optional.of(entity(source)));
         SinkTargetStore sinks = mock(SinkTargetStore.class);
-        when(sinks.resolveForRendering(null)).thenReturn(new SinkTarget("platform",
+        when(sinks.resolveForRendering(null)).thenReturn(new SinkTarget(SinkTargetStore.PLATFORM_INGEST_ID,
                 "平台 SEARCH ingest", "GLS_INGEST", "http://search:18081/ingest", null, true, Instant.now()));
         LogSourceController controller = new LogSourceController(new LogSourceStore(repository), sinks,
                 mock(IngestPipeline.class), new IngestLimitsProperties(), vectorProperties());

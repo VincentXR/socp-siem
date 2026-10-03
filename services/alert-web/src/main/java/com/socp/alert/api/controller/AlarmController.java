@@ -115,6 +115,11 @@ public class AlarmController {
     /** 查询告警：支持 severity / rule / q 过滤 + 分页（page 从 1 起，size 缺省 20）。
      *  只传 size 返回切片 List（兼容 verify 的 ?size=200 全量拉取）；
      *  传 page 返回分页结构 {items,total,page,size}。带限流（每租户 10/s）。 */
+    public Object list(Severity severity, String rule, String status, String q,
+                       String sort, String order, Integer page, Integer size) {
+        return list(severity, rule, status, q, sort, order, page, size, null, null, null);
+    }
+
     @RateLimit(permits = 10, seconds = 1)
     @GetMapping
     public Object list(
@@ -125,11 +130,16 @@ public class AlarmController {
             @RequestParam(defaultValue = "occurredAt") String sort,
             @RequestParam(defaultValue = "descending") String order,
             @RequestParam(required = false) Integer page,
-            @RequestParam(required = false) Integer size) {
+            @RequestParam(required = false) Integer size,
+            @RequestParam(required = false) String assignee,
+            @RequestParam(required = false) java.time.Instant from,
+            @RequestParam(required = false) java.time.Instant to) {
         int sz = size == null || size <= 0 ? 20 : Math.min(size, 500);
         int pg = page == null || page < 1 ? 1 : page;
         if (page != null || size != null) {
-            var result = service.page(severity, rule, status, q, sort, order, pg, sz);
+            var result = (assignee == null && from == null && to == null
+                    ? service.page(severity, rule, status, q, sort, order, pg, sz)
+                    : service.page(severity, rule, status, q, sort, order, pg, sz, assignee, from, to));
             if (page == null) {
                 return ApiResult.ok(result.getContent());
             }
@@ -141,7 +151,9 @@ public class AlarmController {
         // never materialize the entire tenant alarm table in the JVM. Older
         // versions called service.query() here, which made a large tenant turn
         // a harmless refresh into an OutOfMemoryError.
-        return ApiResult.ok(service.page(severity, rule, status, q, sort, order, 1, sz).getContent());
+        return ApiResult.ok((assignee == null && from == null && to == null
+                ? service.page(severity, rule, status, q, sort, order, 1, sz)
+                : service.page(severity, rule, status, q, sort, order, 1, sz, assignee, from, to)).getContent());
     }
 
     /** 下钻单条告警 */
@@ -188,6 +200,11 @@ public class AlarmController {
      * 分批流式写出：每批只从数据库取 EXPORT_BATCH_SIZE 条并即刻写回响应，
      * 不再全量物化租户告警，超大租户也不会把 JVM 推向 OOM。
      */
+    public void export(Severity severity, String rule, String q, String format, String status,
+                       String sort, String order, int limit, HttpServletResponse response) throws IOException {
+        export(severity, rule, q, format, status, sort, order, limit, response, null, null, null);
+    }
+
     @RequireRole({"admin", "analyst"})
     @GetMapping("/export")
     public void export(
@@ -199,12 +216,17 @@ public class AlarmController {
             @RequestParam(defaultValue = "occurredAt") String sort,
             @RequestParam(defaultValue = "descending") String order,
             @RequestParam(defaultValue = "" + EXPORT_DEFAULT_LIMIT) int limit,
-            HttpServletResponse response) throws IOException {
+            HttpServletResponse response,
+            @RequestParam(required = false) String assignee,
+            @RequestParam(required = false) java.time.Instant from,
+            @RequestParam(required = false) java.time.Instant to) throws IOException {
         if (limit < 1 || limit > EXPORT_MAX_LIMIT) {
             throw com.socp.platform.error.exception.ApiException.badRequest(
                     "limit must be between 1 and " + EXPORT_MAX_LIMIT);
         }
-        long total = service.count(severity, rule, status, q, sort, order);
+        long total = assignee == null && from == null && to == null
+                ? service.count(severity, rule, status, q, sort, order)
+                : service.count(severity, rule, status, q, sort, order, assignee, from, to);
         if (total > limit) {
             throw com.socp.platform.error.exception.ApiException.of(413,
                     "export contains " + total + " alarms; limit is " + limit);
@@ -223,7 +245,9 @@ public class AlarmController {
         int exported = 0;
         boolean first = true;
         while (exported < limit) {
-            var result = service.page(severity, rule, status, q, sort, order, page, EXPORT_BATCH_SIZE);
+            var result = assignee == null && from == null && to == null
+                    ? service.page(severity, rule, status, q, sort, order, page, EXPORT_BATCH_SIZE)
+                    : service.page(severity, rule, status, q, sort, order, page, EXPORT_BATCH_SIZE, assignee, from, to);
             List<Alarm> batch = result.getContent();
             for (Alarm alarm : batch) {
                 if (exported >= limit) break;

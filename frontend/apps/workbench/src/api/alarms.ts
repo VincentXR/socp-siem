@@ -12,7 +12,8 @@ export const listAlarmsPaged = (
   page: number, size: number, q?: string, severity?: string, status?: string, rule?: string,
   sort: 'occurredAt' | 'severity' | 'ruleName' | 'entity' | 'status' | 'riskScore' = 'occurredAt',
   order: 'ascending' | 'descending' = 'descending', options?: ApiRequestOptions,
-) => get<AlarmPage>(withQuery('/alert-web/api/alarms', { page, size, q, severity, status, rule, sort, order }), options)
+  scope: { assignee?: string; from?: string; to?: string } = {},
+) => get<AlarmPage>(withQuery('/alert-web/api/alarms', { page, size, q, severity, status, rule, sort, order, ...scope }), options)
 export const createAlarm = (a: Partial<Alarm>) => post<Alarm>('/alert-web/api/alarms', a)
 export const getAlarm = (id: string, options?: ApiRequestOptions) =>
   get<Alarm>(`/alert-web/api/alarms/${encodeURIComponent(id)}`, options)
@@ -46,6 +47,9 @@ export const listSimilarAlarms = (id: string, limit = 20) =>
 export const alarmStats = (options?: ApiRequestOptions, window = '7d') => get<AlarmStats>(withQuery('/alert-web/api/alarms/stats', { window }), options)
 
 export interface AlarmExportFilters {
+  assignee?: string
+  from?: string
+  to?: string
   q?: string
   severity?: string
   status?: string

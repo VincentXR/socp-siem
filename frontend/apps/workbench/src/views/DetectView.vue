@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { takeDetectionSample } from '../lib/detection-sample'
 import { onBeforeRouteUpdate, useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
 import { watch } from 'vue'
 import { useUnsavedChanges } from '../composables/useUnsavedChanges'
@@ -307,6 +308,15 @@ async function syncEditorRoute() {
   saveError.value = ''; advancedError.value = ''; saveNotice.value = ''; saveConflict.value = false
   ruleFieldErrors.value = {}; conditionErrors.value = emptyConditionErrors()
   showRuleEditor.value = true
+  if (typeof route.query.sample === 'string') {
+    const sample = takeDetectionSample(route.query.sample)
+    if (sample) {
+      sampleEventsText.value = JSON.stringify([sample], null, 2)
+      testInput.value = { source: sample.source || '', host: sample.host || '', severity: sample.severity || 'INFO',
+        message: sample.msg || '', fieldsText: JSON.stringify(sample.fields || {}, null, 2) }
+      saveNotice.value = t('workflow.sampleTransferred')
+    }
+  }
   changes.markSaved()
 }
 async function closeRuleEditor(): Promise<void> {
@@ -787,7 +797,7 @@ watch(() => route.fullPath, () => { historyOpen.value = false })
           <label>{{ t('common.source') }}<el-input v-model="testInput.source" /></label><label>{{ t('common.host') }}<el-input v-model="testInput.host" /></label>
           <label>{{ t('common.severity') }}<el-select v-model="testInput.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" /></el-select></label>
           <label class="full-width">{{ t('detect.testMessage') }}<el-input v-model="testInput.message" /></label><label class="full-width">{{ t('detect.testFields') }}<el-input v-model="testInput.fieldsText" type="textarea" :rows="4" spellcheck="false" /></label>
-          <details class="full-width"><summary>{{ t('detect.sampleSequence') }}</summary><el-input v-model="sampleEventsText" type="textarea" :rows="5" placeholder='[{"timestamp":"2026-01-01T00:00:00Z","source":"auth","msg":"Failed password","fields":{}}]' /></details>
+          <details class="full-width" :open="!!sampleEventsText"><summary>{{ t('detect.sampleSequence') }}</summary><el-input v-model="sampleEventsText" type="textarea" :rows="5" placeholder='[{"timestamp":"2026-01-01T00:00:00Z","source":"auth","msg":"Failed password","fields":{}}]' /></details>
           <p v-if="showRuleEditor" class="full-width form-hint">{{ t('detect.testingDraft') }}</p>
           <div class="detect-test-actions"><el-button v-if="canManageRules" type="primary" :loading="testing" :disabled="!rules.length && !showRuleEditor" @click="runIsolatedTest">{{ t('detect.runTest') }}</el-button><span>{{ t('detect.isolatedTestHint') }}</span></div>
         </div>

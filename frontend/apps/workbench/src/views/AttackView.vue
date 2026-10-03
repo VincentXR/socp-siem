@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import { useRouter } from 'vue-router'
+import PagerBar from '../components/PagerBar.vue'
+import { get } from '../api/core'
+import type { Paged, RuleOption } from '../api'
+import { withQuery } from '../lib/query'
 import { useWriteAccess } from '../composables/useWriteAccess'
 const canWrite = useWriteAccess()
 import { useRequest } from '../composables/useRequest'
@@ -28,6 +33,22 @@ import { attackCoverage, activeRuleTechniques, listTactics, listTechniques, alar
 import { useI18n } from '../composables/useI18n'
 
 const { t, locale } = useI18n()
+const router = useRouter()
+const relatedTechnique = ref<Technique | null>(null)
+const techniqueRules = useRequest<Paged<RuleOption>>()
+const techniqueRulePage = ref(1)
+const techniqueRuleSize = ref(20)
+async function loadTechniqueRules() {
+  const id = relatedTechnique.value?.id
+  if (!id || disposed) return
+  await techniqueRules.execute(signal => get<Paged<RuleOption>>(withQuery('/detect-web/api/v1/rules/by-technique', { technique: id, page: techniqueRulePage.value, size: techniqueRuleSize.value }), { signal }))
+}
+function inspectTechnique(technique: Technique) {
+  techniqueRules.reset()
+  relatedTechnique.value = technique; techniqueRulePage.value = 1
+  void loadTechniqueRules()
+}
+watch([techniqueRulePage, techniqueRuleSize], () => { void loadTechniqueRules() })
 type AttackCov = Awaited<ReturnType<typeof attackCoverage>>
 
 const tacticsRequest = useRequest<Tactic[]>()
@@ -181,6 +202,7 @@ watch(techniqueDialogVisible, visible => {
 onMounted(() => { void loadAttack(); void computeAttackCov() })
 onUnmounted(() => {
   disposed = true
+  techniqueRules.cancel()
   tacticsRequest.cancel(); techniquesRequest.cancel(); coverageRequest.cancel(); activityRequest.cancel(); noteRequest.cancel()
 })
 </script>
@@ -193,6 +215,21 @@ onUnmounted(() => {
     <PageHeader :title="t('attack.title')" :description="t('attack.description')">
       <template #actions><el-button :loading="activityLoading" :disabled="!techniques.length" @click="loadActivity">{{ t('attack.refreshActivity') }}</el-button><el-button :loading="attackLoading" @click="computeAttackCov">{{ t('attack.refreshCoverage') }}</el-button></template>
     </PageHeader>
+    <el-dialog :model-value="!!relatedTechnique" :title="relatedTechnique?.id + ' · ' + relatedTechnique?.name" width="min(720px, 96vw)" @close="relatedTechnique = null; techniqueRules.cancel()">
+      <template v-if="relatedTechnique">
+        <p>{{ relatedTechnique.description }}</p>
+        <el-button link @click="openUrl(relatedTechnique.url)">{{ t('attack.details') }} · MITRE ATT&amp;CK</el-button>
+        <h3>{{ t('workflow.relatedRules') }}</h3>
+        <ActionFeedback :error="techniqueRules.error.value?.message" />
+        <el-button v-if="techniqueRules.error.value" @click="loadTechniqueRules">{{ t('common.retry') }}</el-button>
+        <el-table :data="techniqueRules.data.value?.items || []" :empty-text="techniqueRules.loading.value ? t('common.loading') : t('common.empty')">
+          <el-table-column prop="name" :label="t('common.name')" />
+          <el-table-column prop="status" :label="t('common.status')" />
+          <el-table-column :label="t('common.actions')" min-width="200"><template #default="{ row }"><el-button link @click="router.push({ name: 'rule-edit', params: { ruleId: row.id } })">{{ t('common.details') }}</el-button><el-button link type="primary" @click="router.push({ name: 'alarms', query: { rule: row.id } })">{{ t('workflow.relatedAlarms') }}</el-button></template></el-table-column>
+        </el-table>
+        <PagerBar v-model:current-page="techniqueRulePage" v-model:page-size="techniqueRuleSize" :total="techniqueRules.data.value?.total || 0" />
+      </template>
+    </el-dialog>
     <el-card shadow="never" class="attack-card">
       <div class="attack-summary">
         <div><div class="attack-metric-label">{{ t('attack.detectionCoverage') }}</div><div class="attack-metric-hero">{{ attackCov ? attackCov.coverage : t('time.notAvailable') }}<span v-if="attackCov">%</span></div></div>
@@ -214,7 +251,7 @@ onUnmounted(() => {
       <div class="attack-matrix">
         <div v-for="column in attackMatrix" :key="column.tac.id" class="am-col">
           <div class="am-head">{{ column.tac.name }}<span class="am-cov">{{ attackCov ? column.covered : t('time.notAvailable') }}/{{ column.total }}</span></div>
-          <div v-for="technique in column.techs" :key="technique.id" class="am-cell" :class="techClass(technique)" role="button" :tabindex="technique.url ? 0 : -1" :aria-disabled="technique.url ? undefined : 'true'" @click="openUrl(technique.url)" @keydown.enter.space.prevent="openUrl(technique.url)" :title="technique.id + ' ' + technique.name" :aria-label="cellAria(technique)">
+          <div v-for="technique in column.techs" :key="technique.id" class="am-cell" :class="techClass(technique)" role="button" :tabindex="0" @click="inspectTechnique(technique)" @keydown.enter.space.prevent="inspectTechnique(technique)" :title="technique.id + ' ' + technique.name" :aria-label="cellAria(technique)">
             <span class="am-id">{{ technique.id }}</span><span v-if="technique.count" class="am-badge">{{ technique.count }}</span>
           </div>
         </div>
@@ -225,7 +262,7 @@ onUnmounted(() => {
         <el-table-column prop="id" :label="t('attack.techniqueId')" width="110" />
         <el-table-column prop="name" :label="t('attack.name')" min-width="180" show-overflow-tooltip />
         <el-table-column prop="tactic" :label="t('attack.tactic')" width="130" show-overflow-tooltip />
-        <el-table-column :label="t('attack.operation')" width="125"><template #default="{ row }"><el-button link type="primary" size="small" @click="openUrl(row.url)">{{ t('attack.details') }}</el-button><el-button link type="primary" size="small" @click="openTechniqueEdit(row as Technique)">{{ t('forms.note') }}</el-button></template></el-table-column>
+        <el-table-column :label="t('attack.operation')" width="125"><template #default="{ row }"><el-button link type="primary" size="small" @click="inspectTechnique(row as Technique)">{{ t('attack.details') }}</el-button><el-button link type="primary" size="small" @click="openTechniqueEdit(row as Technique)">{{ t('forms.note') }}</el-button></template></el-table-column>
       </el-table>
     </el-card>
 

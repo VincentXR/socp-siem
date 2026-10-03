@@ -101,7 +101,7 @@ const props = withDefaults(defineProps<{
   /** Whether the current operator can publish or deprecate a version. */
   canPublish?: boolean
 }>(), { initialPlaybookId: '', openRun: null, createRequest: 0, contextAlarmId: '', canWrite: true, canExecute: true, canPublish: true })
-const emit = defineEmits<{ saved: [SoarVersion]; created: [id: string]; 'dirty-change': [dirty: boolean] }>()
+const emit = defineEmits<{ automate: [versionId: string]; saved: [SoarVersion]; created: [id: string]; 'dirty-change': [dirty: boolean] }>()
 
 const { t } = useI18n()
 const { confirmDanger, promptInput } = useConfirm()
@@ -957,8 +957,10 @@ onUnmounted(() => {
 
     <div class="soar-editor-toolbar">
       <el-button v-if="props.canWrite && !selectedPlaybookId" type="primary" size="small" @click="openNewPlaybookDialog">{{ t('soar.blankPlaybook') }}</el-button>
+      <details class="soar-secondary-tools"><summary>{{ t('forms.more') }}</summary>
       <el-button v-if="props.canWrite" size="small" :disabled="!selectedPlaybookId" @click="createVersion">{{ t('soar.newDraftVersion') }}</el-button>
       <el-button size="small" :loading="loading" @click="loadCatalog">{{ t('common.refresh') }}</el-button>
+      </details>
       <el-button
         v-if="props.canWrite"
         size="small"
@@ -1015,6 +1017,7 @@ onUnmounted(() => {
       <el-button v-if="props.canPublish" size="small" type="success" :loading="publishing" @click="publish" :disabled="!isDraft || publishing">{{ t('soar.publish') }}</el-button>
     </div>
 
+    <div v-if="props.canWrite && selectedVersion?.status === 'PUBLISHED'" class="workflow-guide"><el-button type="primary" plain @click="emit('automate', selectedVersion.id)">{{ t('workflow.automatePublished') }}</el-button></div>
     <div v-if="message" class="soar-editor-message">{{ message }}</div>
     <div v-if="errorMessage" class="soar-editor-error">{{ errorMessage }}</div>
 
@@ -1179,6 +1182,8 @@ onUnmounted(() => {
 .soar-editor select, .soar-editor input, .soar-editor textarea { box-sizing: border-box; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg); color: var(--ns-text); font: inherit; }
 .soar-editor select, .soar-editor input { min-height: 30px; padding: 5px 8px; }
 .soar-editor textarea { width: 100%; padding: 8px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.45; }
+.soar-secondary-tools summary { cursor: pointer; padding: 6px; color: var(--ns-text-2); }
+.soar-secondary-tools[open] { flex: 1 1 100%; padding: 8px; border: 1px solid var(--ns-border); border-radius: 6px; }
 .soar-editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-bottom: 10px; }
 .soar-toolbar-spacer { flex: 1; }
 .soar-editor-message, .soar-editor-error { margin: 6px 0 10px; border-radius: 5px; padding: 7px 10px; font-size: 12px; }

@@ -33,15 +33,33 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import PagerBar from '../components/PagerBar.vue'
+import { useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import FormField from '../components/FormField.vue'
 import FormGrid from '../components/FormGrid.vue'
 import FormSection from '../components/FormSection.vue'
-import { updateChannel, testChannel, createChannel, deleteChannel, dispatchLog, listChannels, toggleChannel, type Channel, type DispatchLogEntry } from '../api'
+import { getChannel, updateChannel, testChannel, createChannel, deleteChannel, dispatchLog, listChannels, toggleChannel, type Channel, type DispatchLogEntry } from '../api'
 import { useI18n } from '../composables/useI18n'
 
 const { t, d } = useI18n()
+const router = useRouter()
+const channelPage = ref(1)
+const channelSize = ref(20)
+const channelTotal = ref(0)
+const logPage = ref(1)
+const logSize = ref(20)
+const logTotal = ref(0)
+const logStatus = ref('')
+watch([channelPage, channelSize, logPage, logSize], () => { void loadNotify() })
+watch(logStatus, () => { logPage.value = 1; void loadNotify() })
+async function editLogChannel(id: string) {
+  await mutation.run(async () => {
+    const channel = await getChannel(id)
+    if (!disposed) { editingId.value = channel.id; form.value = { ...channel }; dialogError.value = ''; fieldErrors.value = {}; testState.value = 'idle'; dialogVisible.value = true }
+  })
+}
 const latestRead = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('notify-channels')
 
@@ -124,13 +142,13 @@ async function loadNotify() {
   loading.value = true
   try {
     const [channelResult, logResult] = await Promise.allSettled([
-      listChannels({ signal: request.signal }), dispatchLog({ signal: request.signal }),
+      listChannels({ signal: request.signal }, channelPage.value, channelSize.value), dispatchLog({ signal: request.signal }, logPage.value, logSize.value, logStatus.value || undefined),
     ])
     if (!request.isCurrent()) return
     const failures: string[] = []
-    if (channelResult.status === 'fulfilled') channels.value = channelResult.value.items
+    if (channelResult.status === 'fulfilled') { channels.value = channelResult.value.items; channelTotal.value = channelResult.value.total; channelPage.value = Math.min(channelPage.value, Math.max(1, Math.ceil(channelTotal.value / channelSize.value))) }
     else failures.push(String(channelResult.reason))
-    if (logResult.status === 'fulfilled') logs.value = logResult.value.items
+    if (logResult.status === 'fulfilled') { logs.value = logResult.value.items; logTotal.value = logResult.value.total; logPage.value = Math.min(logPage.value, Math.max(1, Math.ceil(logTotal.value / logSize.value))) }
     else failures.push(String(logResult.reason))
     loadError.value = failures.join(' · ')
   } finally {
@@ -261,21 +279,26 @@ onMounted(loadNotify)
 
     <el-card shadow="never" class="notify-card">
       <template #header><span>{{ t('notify.channels') }}</span></template>
-      <el-input v-model="keyword" :placeholder="t('forms.search')" clearable style="margin-bottom:12px" /><el-table v-loading="loading" :data="filteredChannels" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onHeaderDragEnd">
+      <p class="dialog-hint">{{ t('workflow.channelScope') }}</p>
+      <el-input v-model="keyword" :placeholder="t('workflow.searchThisPage')" clearable style="margin-bottom:12px" /><el-table v-loading="loading" :data="filteredChannels" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onHeaderDragEnd">
         <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name', 140)" />
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 120)"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
         <el-table-column column-key="target" :label="t('notify.target')" :width="columnWidth('target')" min-width="200" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ displayTarget(row as Channel) }}</span></template></el-table-column>
         <el-table-column column-key="enabled" :label="t('common.enable')" :width="columnWidth('enabled', 90)"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.enabled') : t('common.disabled') }}</el-tag></template></el-table-column>
         <el-table-column v-if="canWrite" :label="t('common.actions')" width="260" :resizable="false"><template #default="{ row }"><el-button link size="small" :disabled="actionBusy" @click="openChannel(row as Channel)">{{ t('common.edit') }}</el-button><el-button link size="small" :disabled="actionBusy" @click="sendTest(row as Channel)">{{ t('forms.test') }}</el-button><el-button link type="primary" size="small" :disabled="actionBusy" @click="toggle(row.id)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" :disabled="actionBusy" @click="removeChannel(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column>
       </el-table>
+      <PagerBar v-model:current-page="channelPage" v-model:page-size="channelSize" :total="channelTotal" />
     </el-card>
 
     <el-card shadow="never">
       <template #header>{{ t('notify.dispatchLogsLive') }}</template>
+      <el-select v-model="logStatus" clearable :aria-label="t('common.status')" :placeholder="t('common.status')"><el-option v-for="status in ['sent', 'failed', 'unknown', 'pending', 'requeued']" :key="status" :value="status" :label="dispatchStatusLabel(status)" /></el-select>
+      <p class="dialog-hint">{{ t('workflow.notificationRecovery') }}</p>
       <el-table v-loading="loading" :data="logs" size="small" border :empty-text="t('common.empty')">
         <el-table-column type="expand"><template #default="{ row }">
           <div class="notify-receipt-detail">
-            <div><b>{{ t('notify.alarmId') }}</b><span class="mono">{{ row.alarmId || '—' }}</span></div>
+            <div><b>{{ t('notify.alarmId') }}</b><el-button v-if="row.alarmId" link type="primary" @click="router.push({ name: 'alarms', query: { alarmId: row.alarmId } })">{{ row.alarmId }}</el-button></div>
+            <div v-if="canWrite && row.channelId"><el-button link type="primary" :disabled="actionBusy" @click="editLogChannel(row.channelId)">{{ t('workflow.editChannel') }}</el-button></div>
             <div><b>{{ t('notify.deliveryId') }}</b><span class="mono">{{ row.deliveryId || '—' }}</span></div>
             <div><b>{{ t('notify.httpStatus') }}</b><span>{{ row.httpStatus ?? '—' }}</span></div>
             <div><b>{{ t('notify.retryClass') }}</b><span>{{ row.retryable === true ? t('notify.retryable') : row.retryable === false ? t('notify.notRetryable') : '—' }}</span></div>
@@ -290,6 +313,7 @@ onMounted(loadNotify)
         <el-table-column prop="errorCode" :label="t('notify.errorCode')" min-width="180" show-overflow-tooltip />
         <el-table-column :label="t('common.status')" width="100"><template #default="{ row }"><el-tag :type="dispatchStatusType(row.status)" size="small">{{ dispatchStatusLabel(row.status) }}</el-tag></template></el-table-column>
       </el-table>
+      <PagerBar v-model:current-page="logPage" v-model:page-size="logSize" :total="logTotal" />
     </el-card>
 
     <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="editingId ? t('common.edit') : t('notify.createChannel')" width="640px" :close-on-click-modal="false"><ActionFeedback :error="dialogError" />
@@ -311,7 +335,7 @@ onMounted(loadNotify)
           <FormField :label="t('common.description')" full>
             <el-input v-model="form.description" :placeholder="t('common.description')" />
           </FormField>
-          <FormField :label="t('common.enable')">
+          <FormField :label="t('common.enable')" :hint="t('workflow.channelScope')">
             <el-switch v-model="form.enabled" />
           </FormField>
         </FormGrid>

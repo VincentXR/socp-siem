@@ -48,6 +48,7 @@ class ReportServiceTest {
         assertThat(report.bySeverity()).containsEntry("HIGH", 3);
         assertThat(report.byRule()).singleElement().satisfies(rule -> {
             assertThat(rule.rule()).isEqualTo("R-1");
+            assertThat(rule.ruleId()).isEqualTo("R-1");
             assertThat(rule.count()).isEqualTo(3);
         });
         assertThat(report.source()).isEqualTo("alert-web");
@@ -96,6 +97,7 @@ class ReportServiceTest {
             assertThat(report.bySeverity()).containsEntry("HIGH", 2).containsEntry("LOW", 1);
             assertThat(report.byRule()).singleElement().satisfies(rule -> {
                 assertThat(rule.rule()).isEqualTo("R-1 Brute Force");
+                assertThat(rule.ruleId()).isEqualTo("R-1");
                 assertThat(rule.count()).isEqualTo(2);
             });
             assertThat(report.source()).isEqualTo("clickhouse");

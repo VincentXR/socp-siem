@@ -62,6 +62,19 @@ public record LogSource(
         @Size(max = 128) String groupId,
         Instant createdAt
 ) {
+    /** Disabled records may be drafts; enabled collectors must never fall back to a demo target. */
+    public void requireReady() {
+        if (!enabled) return;
+        String missing = switch (type) {
+            case FILE -> path == null || path.isBlank() ? "path" : null;
+            case SOCKET, SYSLOG -> address == null || address.isBlank() ? "address" : null;
+            case KAFKA -> topic == null || topic.isBlank() ? "topic" : null;
+            default -> null;
+        };
+        if (missing != null) throw com.socp.platform.error.exception.ApiException.badRequest(
+                "Enabled " + type + " source requires " + missing + "; save disabled to keep a draft");
+    }
+
     public static LogSource create(String name, SourceType type, ParseFormat format,
                                    String path, String address, String topic, String env, boolean enabled) {
         return createFull(name, type, format, path, address, topic, env, enabled,

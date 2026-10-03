@@ -28,6 +28,22 @@ class RuleCatalogPersistenceTest {
     @AfterEach void clearTenant() { TenantContext.clear(); }
 
     @Test
+    void techniqueDrilldownIsExactTenantScopedAndPaged() {
+        rule("catalog-a", "root", "Root", "ACTIVE", Map.of("mitre", "T1110 T1078"));
+        rule("catalog-a", "child", "Child", "ACTIVE", Map.of("mitre", "T1110.001"));
+        TenantContext.runWith("catalog-b", () -> rule("catalog-b", "private", "Private", "ACTIVE", Map.of("mitre", "T1110")));
+        var result = repository.byTechnique("catalog-a", "\nT1110\n", "\n", PageRequest.of(0, 1));
+        assertEquals(1, result.getTotalElements());
+        assertEquals("root", result.getContent().getFirst().get("id"));
+        var store = new RuleSpecStore(repository,
+                org.mockito.Mockito.mock(com.socp.detect.web.persistence.repository.RuleRevisionRepository.class),
+                org.mockito.Mockito.mock(com.socp.detect.web.persistence.repository.RuleContentConflictRepository.class),
+                org.mockito.Mockito.mock(RuleCatalogCoordinator.class));
+        assertEquals(result.getContent(), store.byTechnique("T1110", 1, 1).getContent());
+        assertEquals(0, repository.byTechnique("catalog-a", "\nT1110\n", "\n", PageRequest.of(1, 1)).getContent().size());
+    }
+
+    @Test
     void pagesAndSearchIncludeRulesAfterTheFirstFiveHundred() {
         for (int i = 0; i < 501; i++) rule("catalog-a", String.format("rule-%04d", i), "Rule " + i, "DRAFT", Map.of());
         var second = repository.findByTenantId("catalog-a", PageRequest.of(1, 500, Sort.by("ruleId")));

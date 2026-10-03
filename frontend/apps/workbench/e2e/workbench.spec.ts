@@ -256,6 +256,7 @@ test('case deep links retain drafts, page the full timeline and survive a failed
   let releaseFirst!: () => void
   const firstWrite = new Promise<void>(resolve => { releaseFirst = resolve })
   const timelinePages: string[] = []
+  await page.route('**/alert-web/api/alarms/alarm-one', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, data: { id: 'alarm-one', title: 'Suspicious login', severity: 'HIGH', status: 'OPEN', occurredAt: '2026-09-21T01:00:00Z' } }) }))
   await page.route('**/incident-web/api/v1/**', async route => {
     const url = new URL(route.request().url())
     const method = route.request().method()
@@ -757,6 +758,12 @@ test('alarm deep links load exact detail and expose downstream delivery recovery
     expect(url.searchParams.get('alarmId')).toBe(alarm.id)
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, data: linkedCase }) })
   })
+  await page.route('**/incident-web/api/v1/incidents/linked-case**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const data = path.endsWith('/linked-case') ? linkedCase : { items: [], total: 0 }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, data }) })
+  })
+  await page.route('**/incident-web/api/v1/incidents?**', route => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ code: 0, data: { items: [], total: 0 } }) }))
   await page.goto('/alarms?page=3&alarmId=off-page-alarm')
   const drawer = page.locator('.el-drawer')
   await expect(drawer).toContainText('Credential abuse from service account')
@@ -764,13 +771,20 @@ test('alarm deep links load exact detail and expose downstream delivery recovery
   await drawer.getByRole('tab', { name: 'Delivery', exact: true }).click()
   await expect(drawer).toContainText('incident service unavailable')
   await drawer.getByRole('button', { name: 'Requeue delivery', exact: true }).click()
-  await expect(drawer).toContainText('PENDING')
+  await expect(drawer).toContainText('Pending')
   expect(requeues).toBe(1)
   await page.reload()
   await expect(drawer).toContainText('Credential abuse from service account')
   await drawer.getByRole('tab', { name: 'Delivery', exact: true }).click()
-  await expect(drawer).toContainText('PENDING')
+  await expect(drawer).toContainText('Pending')
   await page.screenshot({ path: testInfo.outputPath('alarm-deep-link-delivery.png'), fullPage: true })
+  await drawer.getByRole('button', { name: 'Go to Case', exact: true }).first().click()
+  await expect(page).toHaveURL(/\/cases\?caseId=linked-case$/)
+  await expect(page.locator('.el-drawer.open')).toContainText(linkedCase.title)
+  await page.goBack()
+  await expect(page).toHaveURL(/alarmId=off-page-alarm/)
+  await page.locator('.el-drawer.open').getByRole('button', { name: 'Go to Case', exact: true }).last().click()
+  await expect(page).toHaveURL(/\/cases\?caseId=linked-case$/)
   expect(unexpected).toEqual([])
 })
 

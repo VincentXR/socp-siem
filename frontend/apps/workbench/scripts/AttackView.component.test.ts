@@ -90,11 +90,11 @@ describe('ATT&CK request ownership', () => {
     button(wrapper, 'forms.note').vm.$emit('click'); await flushPromises()
     const signal = api.getTechniqueNote.mock.calls[0]![1].signal as AbortSignal
     button(wrapper, 'common.cancel').vm.$emit('click'); await flushPromises()
-    expect(wrapper.findComponent(ElDialog).props('modelValue')).toBe(false)
+    expect(wrapper.findAllComponents(ElDialog).find(dialog => dialog.findAllComponents(ElInput).length)!.props('modelValue')).toBe(false)
     expect(signal.aborted).toBe(true)
     wrapper.findAllComponents(ElButton).filter(node => node.text() === translate('forms.note'))[1]!.vm.$emit('click'); await flushPromises()
     pending.resolve({ note: 'Old note' }); await flushPromises()
-    expect(wrapper.findComponent(ElDialog).findAllComponents(ElInput).at(-1)!.props('modelValue')).toBe('Second saved note')
+    expect(wrapper.findAllComponents(ElDialog).find(dialog => dialog.findAllComponents(ElInput).length)!.findAllComponents(ElInput).at(-1)!.props('modelValue')).toBe('Second saved note')
     wrapper.unmount()
   })
   it('allows correcting and retrying a failed note save while keeping pending writes guarded', async () => {
@@ -102,7 +102,7 @@ describe('ATT&CK request ownership', () => {
     api.saveTechniqueNote.mockRejectedValueOnce(new Error('write unavailable')).mockReturnValueOnce(pending.promise)
     const wrapper = setup(); await flushPromises()
     button(wrapper, 'forms.note').vm.$emit('click'); await flushPromises()
-    const input = wrapper.findComponent(ElDialog).findAllComponents(ElInput).at(-1)!
+    const input = wrapper.findAllComponents(ElDialog).find(dialog => dialog.findAllComponents(ElInput).length)!.findAllComponents(ElInput).at(-1)!
     input.vm.$emit('update:modelValue', 'Draft one')
     button(wrapper, 'common.save').vm.$emit('click'); await flushPromises()
     expect(input.props('disabled')).toBe(false)
@@ -110,10 +110,10 @@ describe('ATT&CK request ownership', () => {
     input.vm.$emit('update:modelValue', 'Corrected draft')
     button(wrapper, 'common.save').vm.$emit('click'); await flushPromises()
     button(wrapper, 'common.cancel').vm.$emit('click'); await flushPromises()
-    expect(wrapper.findComponent(ElDialog).props('modelValue')).toBe(true)
+    expect(wrapper.findAllComponents(ElDialog).find(dialog => dialog.findAllComponents(ElInput).length)!.props('modelValue')).toBe(true)
     expect(api.saveTechniqueNote).toHaveBeenLastCalledWith('T1', 'Corrected draft')
     pending.resolve({ note: 'Corrected draft' }); await flushPromises()
-    expect(wrapper.findComponent(ElDialog).props('modelValue')).toBe(false)
+    expect(wrapper.findAllComponents(ElDialog).find(dialog => dialog.findAllComponents(ElInput).length)!.props('modelValue')).toBe(false)
     expect(api.listTechniques).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })

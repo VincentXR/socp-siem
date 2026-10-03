@@ -79,6 +79,30 @@ class AlarmServiceTest {
     }
 
     @Test
+    void scopedListAndCountShareNormalizedRepositoryCriteria() {
+        TenantContext.set("tenant-a");
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "queryService", new AlarmQueryService(repository));
+        var from = Instant.parse("2026-09-01T00:00:00Z");
+        var to = from.plusSeconds(3600);
+        var page = new org.springframework.data.domain.PageImpl<Alarm>(List.of());
+        given(repository.page(org.mockito.ArgumentMatchers.eq("tenant-a"), org.mockito.ArgumentMatchers.any(AlarmQuery.class),
+                org.mockito.ArgumentMatchers.any(org.springframework.data.domain.Pageable.class))).willReturn(page);
+        given(repository.count(org.mockito.ArgumentMatchers.eq("tenant-a"), org.mockito.ArgumentMatchers.any(AlarmQuery.class))).willReturn(7L);
+        assertSame(page, service.page(null, null, "ACTIVE", null, "occurredAt", "descending", 2, 20, " alice ", from, to));
+        assertEquals(7, service.count(null, null, "ACTIVE", null, "occurredAt", "descending", " alice ", from, to));
+        var query = ArgumentCaptor.forClass(AlarmQuery.class);
+        verify(repository).count(org.mockito.ArgumentMatchers.eq("tenant-a"), query.capture());
+        assertEquals("alice", query.getValue().assignee());
+        assertEquals(from, query.getValue().from());
+        assertEquals(to, query.getValue().to());
+        verify(repository).page("tenant-a", query.getValue(), org.springframework.data.domain.PageRequest.of(1, 20));
+        assertThrows(com.socp.platform.error.exception.ApiException.class,
+                () -> service.count(null, null, null, null, null, null, "a".repeat(129), from, to));
+        assertThrows(com.socp.platform.error.exception.ApiException.class,
+                () -> service.page(null, null, null, null, null, null, 1, 20, "alice", to, from));
+    }
+
+    @Test
     void createsAlarmAndPendingOutboxUnderCurrentTenant() {
         TenantContext.set("tenant-a");
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,

@@ -57,6 +57,7 @@ public class VectorConfigRenderer {
         Map<String, SinkTarget> targets = new LinkedHashMap<>();
         Map<String, List<String>> groups = new LinkedHashMap<>();
         for (LogSource src : active) {
+            src.requireReady();
             String id = "src_" + src.id().replace('-', '_');
             if (!isVectorNative(src)) {
                 sb.append(emitSource(src, id));
@@ -104,6 +105,10 @@ public class VectorConfigRenderer {
             throw ApiException.of(409, "日志源 " + displayName(source) + " 绑定的输出目标 "
                     + target.name() + " 已停用或未配置投递地址，请先修正后再渲染");
         }
+        if (!"GLS_INGEST".equalsIgnoreCase(target.type()) && !"HTTP".equalsIgnoreCase(target.type())) {
+            throw ApiException.of(409, "Unsupported output protocol: " + target.type()
+                    + ". Choose SEARCH ingest (GLS_INGEST) or an HTTP NDJSON receiver; OpenSearch bulk is not supported.");
+        }
         return target;
     }
 
@@ -119,7 +124,7 @@ public class VectorConfigRenderer {
             case FILE -> {
                 b.append("[sources.").append(id).append("]\n");
                 b.append("type = \"file\"\n");
-                b.append("include = [\"").append(s.path() == null ? "demo/sample.log" : s.path()).append("\"]\n");
+                b.append("include = [\"").append(s.path()).append("\"]\n");
                 b.append("read_from = \"").append(s.readFrom() == null ? "beginning" : s.readFrom()).append("\"\n");
                 b.append("data_dir = \".cache/vector\"\n");
                 long frequencySeconds = s.frequency() == null ? 1L : Math.max(1L, s.frequency());
@@ -271,7 +276,7 @@ public class VectorConfigRenderer {
     /** Effective credential of one target, redacted unless the caller may see the secret. */
     private String credential(SinkTarget target, boolean includeSecret) {
         String token = target.authToken();
-        if ((token == null || token.isBlank()) && "GLS_INGEST".equalsIgnoreCase(target.type())) {
+        if ((token == null || token.isBlank()) && com.socp.search.config.persistence.store.SinkTargetStore.PLATFORM_INGEST_ID.equals(target.id())) {
             token = platformAuthToken;
         }
         if (token == null || token.isBlank()) return null;

@@ -24,6 +24,12 @@ public interface RuleRepository extends TenantScopedRepository<RuleEntity, Strin
 
     long countByTenantId(String tenantId);
 
+    @Query("select new map(r.ruleId as id, r.catalogName as name, r.catalogStatus as status) "
+            + "from RuleEntity r where r.tenantId = :tenant "
+            + "and locate(:needle, concat(:separator, r.catalogTechniques, :separator)) > 0 order by r.ruleId")
+    Page<java.util.Map<String, Object>> byTechnique(@Param("tenant") String tenant,
+            @Param("needle") String needle, @Param("separator") String separator, Pageable pageable);
+
     @Query("select r from RuleEntity r where r.tenantId = :tenant "
             + "and (:keyword = '' or locate(:keyword, r.catalogSearch) > 0) "
             + "and (:status = '' or r.catalogStatus = :status) "

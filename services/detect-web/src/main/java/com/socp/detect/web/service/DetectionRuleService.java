@@ -46,6 +46,10 @@ final class DetectionRuleService {
 
     List<Map<String, Object>> lookupRules(List<String> ids) { return store.lookup(ids); }
 
+    org.springframework.data.domain.Page<Map<String, Object>> byTechnique(String technique, int page, int size) {
+        return store.byTechnique(technique, page, size);
+    }
+
     List<String> activeTechniques() { return store.activeTechniques(); }
 
     Map<String, Object> getRule(String id) {

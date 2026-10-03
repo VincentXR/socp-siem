@@ -2,6 +2,8 @@ import { downloadFile, get, post, type ApiRequestOptions } from './core'
 import type { Alarm, CaseInfo, Paged, TimelineEvent } from './models'
 import { withQuery } from '../lib/query'
 
+export const addCaseNote = (id: string, content: string, idempotencyKey: string) =>
+  post(withQuery(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/notes`, { content, idempotencyKey }))
 export const listCases = (page = 1, size = 20, q?: string, status?: string, options?: ApiRequestOptions) =>
   get<Paged<CaseInfo>>(withQuery('/incident-web/api/v1/incidents', { page, size, q, status }), options)
 export const getCase = (id: string, options?: ApiRequestOptions) =>

@@ -36,6 +36,22 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {"socp.security.dev-bypass=true"})
 class RuleControllerTest {
 
+    @Test
+    void techniquePivotUsesExactPagedRouteAndValidatesItsInput() throws Exception {
+        var row = Map.<String, Object>of("id", "rule-501", "name", "Exact technique", "status", "ACTIVE");
+        given(engine.rulesByTechnique("T1110.001", 2, 20)).willReturn(new org.springframework.data.domain.PageImpl<>(
+                java.util.List.of(row), org.springframework.data.domain.PageRequest.of(1, 20), 21));
+        mvc.perform(get("/api/v1/rules/by-technique").param("technique", "T1110.001").param("page", "2")
+                        .header("Authorization", BEARER).header("X-Role", "analyst"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value("rule-501"))
+                .andExpect(jsonPath("$.data.total").value(21)).andExpect(jsonPath("$.data.page").value(2));
+        for (String query : java.util.List.of("?technique=T1110%25", "?technique=T1110&page=0", "?technique=T1110&size=101")) {
+            mvc.perform(get("/api/v1/rules/by-technique" + query).header("Authorization", BEARER).header("X-Role", "analyst"))
+                    .andExpect(status().isBadRequest());
+        }
+        verify(engine, org.mockito.Mockito.never()).getRule(any());
+    }
+
     @Test void ruleReadsExposeTheSpecificValidatorAndMissingPreconditionsNeverReachTheEngine() throws Exception {
         var current = Map.<String, Object>of("id", "custom", "revisionToken", "a".repeat(64));
         given(engine.getRule("custom")).willReturn(current);

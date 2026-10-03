@@ -964,6 +964,10 @@ public class DetectEngineService {
 
     public List<Map<String, Object>> lookupRules(List<String> ids) { return ruleService.lookupRules(ids); }
 
+    public org.springframework.data.domain.Page<Map<String, Object>> rulesByTechnique(String technique, int page, int size) {
+        return ruleService.byTechnique(technique, page, size);
+    }
+
     public List<String> activeRuleTechniques() { return ruleService.activeTechniques(); }
 
     public Map<String, Object> contentManifest() {

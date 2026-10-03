@@ -14,6 +14,7 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElRow from 'element-plus/es/components/row/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
+import { useRouter } from 'vue-router'
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { ECharts } from 'echarts/core'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
@@ -29,6 +30,11 @@ import { tOr } from '../utils/i18nLabel'
 const props = defineProps<{ theme: 'light' | 'dark' }>()
 const { t, n, locale } = useI18n()
 const canWrite = useWriteAccess()
+const router = useRouter()
+function openRuleAlarms(ruleId: string) {
+  if (!report.value || report.value.queryWindow !== 'today') return
+  void router.push({ name: 'alarms', query: { rule: ruleId, from: report.value.date + 'T00:00:00Z', to: report.value.generatedAt } })
+}
 
 const summaryRequest = useRequest<ReportSummary>()
 const trendRequest = useRequest<ReportTrend>()
@@ -257,7 +263,7 @@ onUnmounted(() => {
     </el-row>
     <el-card shadow="never" style="margin-top:14px" v-if="report" class="report-rules-card">
       <template #header>{{ t('report.topRules') }}</template>
-      <el-table :data="report.byRule" size="small" border><el-table-column prop="rule" :label="t('common.rule')" show-overflow-tooltip /><el-table-column prop="count" :label="t('report.alarmCount')" width="120" /></el-table>
+      <el-table :data="report.byRule" size="small" border><el-table-column prop="rule" :label="t('common.rule')" show-overflow-tooltip><template #default="{ row }"><el-button v-if="row.ruleId && report.queryWindow === 'today'" link type="primary" @click="openRuleAlarms(row.ruleId)">{{ row.rule }}</el-button><span v-else>{{ row.rule }}</span></template></el-table-column><el-table-column prop="count" :label="t('report.alarmCount')" width="120" /></el-table>
     </el-card>
     <el-card shadow="never" style="margin-top:14px" class="report-storage-card">
       <template #header><div class="report-storage-head"><strong>{{ t('report.savedReports') }}</strong><span>{{ t('report.storageHint') }}</span></div></template>

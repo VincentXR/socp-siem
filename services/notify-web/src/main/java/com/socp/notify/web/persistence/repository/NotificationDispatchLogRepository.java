@@ -13,5 +13,6 @@ public interface NotificationDispatchLogRepository extends TenantScopedRepositor
     List<NotificationDispatchLogEntity> findByTenantId(String tenantId);
     Optional<NotificationDispatchLogEntity> findByIdAndTenantId(String id, String tenantId);
     List<NotificationDispatchLogEntity> findTop200ByTenantIdOrderByCreatedAtDesc(String tenantId);
+    Page<NotificationDispatchLogEntity> findByTenantIdAndStatusOrderByCreatedAtDesc(String tenantId, String status, Pageable pageable);
     Page<NotificationDispatchLogEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId, Pageable pageable);
 }
