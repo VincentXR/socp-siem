@@ -34,7 +34,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
-
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
@@ -66,6 +65,7 @@ public class SoarRunQueryService {
     private final SoarDispatchOutboxRepository dispatchOutbox;
     private final SoarSignalOutboxRepository signals;
     private final ObjectMapper mapper;
+    private final SoarReadModelMapper readModels;
     private SoarArtifactRepository artifacts;
     private SoarApprovalDecisionRepository approvalDecisions;
     private SoarArtifactStore artifactStore;
@@ -89,6 +89,7 @@ public class SoarRunQueryService {
         this.approvals = approvals;
         this.signals = signals;
         this.mapper = mapper;
+        this.readModels = new SoarReadModelMapper(mapper);
     }
 
     @Autowired(required = false)
@@ -114,6 +115,14 @@ public class SoarRunQueryService {
         return runs.searchByTenant(tenant(), normalizeUpper(status), normalize(playbookVersionId),
                 normalizeUpper(triggerType), normalizeLower(requestedBy), createdFrom, createdTo, pageable)
                 .map(this::runView);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<Map<String, Object>> investigationRuns(Pageable pageable, String alarmId, String caseId, String status, String q) {
+        for (String value : new String[] { alarmId, caseId, q }) {
+            if (value != null && value.length() > 255) throw error(HttpStatus.BAD_REQUEST, "SOAR_FILTER_INVALID", "filter exceeds 255 characters");
+        }
+        return runs.searchInvestigation(tenant(), normalize(alarmId), normalize(caseId), normalizeUpper(status), normalizeLower(q), pageable).map(this::runView);
     }
 
     @Transactional(readOnly = true)
@@ -270,13 +279,21 @@ public class SoarRunQueryService {
 
     @Transactional(readOnly = true)
     public List<Map<String, Object>> listApprovals() {
-        return approvals.findByTenantIdOrderByCreatedAtDesc(tenant()).stream()
-                .map(this::approvalView).toList();
+        return listApprovals(org.springframework.data.domain.PageRequest.of(0, 200)).getContent();
     }
 
     @Transactional(readOnly = true)
     public Page<Map<String, Object>> listApprovals(Pageable pageable) {
-        return approvals.findByTenantIdOrderByCreatedAtDesc(tenant(), pageable).map(this::approvalView);
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
+        var page = approvals.findByTenantIdOrderByCreatedAtDesc(tenant, pageable);
+        if (page.isEmpty()) return new org.springframework.data.domain.PageImpl<>(List.of(), page.getPageable(), page.getTotalElements());
+        Map<String, List<com.socp.soar.web.persistence.entity.SoarApprovalDecisionEntity>> votes = new LinkedHashMap<>();
+        if (approvalDecisions != null) {
+            approvalDecisions.findByTenantIdAndApprovalIdInOrderByCreatedAtAsc(tenant,
+                    page.getContent().stream().map(com.socp.soar.web.persistence.entity.SoarApprovalEntity::getId).toList())
+                    .forEach(vote -> votes.computeIfAbsent(vote.getApprovalId(), ignored -> new ArrayList<>()).add(vote));
+        }
+        return page.map(approval -> readModels.approvalView(approval, votes.getOrDefault(approval.getId(), List.of())));
     }
 
     private SoarRunEntity run(String id) {
@@ -307,6 +324,8 @@ public class SoarRunQueryService {
         result.put("playbookVersion", run.getPlaybookVersionNo());
         result.put("definitionHash", run.getDefinitionHash());
         result.put("triggerType", run.getTriggerType());
+        result.put("originAlarmId", run.getOriginAlarmId());
+        result.put("originCaseId", run.getOriginCaseId());
         result.put("subject", Map.of("type", nullSafe(run.getSubjectType()), "id", nullSafe(run.getSubjectId())));
         result.put("status", run.getStatus());
         result.put("executionNodeCount", run.getExecutionNodeCount() == null ? 0 : run.getExecutionNodeCount());
@@ -379,38 +398,6 @@ public class SoarRunQueryService {
         return result;
     }
 
-    private Map<String, Object> approvalView(SoarApprovalEntity approval) {
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("id", approval.getId()); result.put("runId", approval.getRunId());
-        result.put("approvalKey", nullSafe(approval.getApprovalKey())); result.put("nodeRunId", nullSafe(approval.getNodeRunId()));
-        result.put("actionRef", nullSafe(approval.getActionRef())); result.put("inputHash", nullSafe(approval.getInputHash()));
-        result.put("targetSnapshot", redactedTree(approval.getTargetSnapshotJson()));
-        result.put("approvalPolicy", redactedTree(approval.getPolicyJson()));
-        result.put("requiredApprovals", approval.getRequiredApprovals());
-        List<Map<String, Object>> votes = approvalVotes(approval);
-        long approved = votes.stream().filter(vote -> "APPROVE".equals(vote.get("decision"))).count();
-        if (approved == 0 && "APPROVED".equalsIgnoreCase(approval.getStatus())) {
-            approved = Math.min(1, Math.max(1, approval.getRequiredApprovals()));
-        }
-        result.put("approvedVotes", approved); result.put("decisions", votes); result.put("status", approval.getStatus());
-        result.put("requestedBy", approval.getRequestedBy()); result.put("approver", nullSafe(approval.getApprover()));
-        result.put("reason", redactFreeText(approval.getReason(), 2048));
-        result.put("decisionReason", redactFreeText(approval.getDecisionReason(), 2048));
-        result.put("createdAt", approval.getCreatedAt()); result.put("expiresAt", approval.getExpiresAt());
-        result.put("decidedAt", approval.getDecidedAt());
-        return result;
-    }
-
-    private List<Map<String, Object>> approvalVotes(SoarApprovalEntity approval) {
-        if (approvalDecisions == null || approval == null || approval.getId() == null) return List.of();
-        List<SoarApprovalDecisionEntity> rows = approvalDecisions
-                .findByTenantIdAndApprovalIdOrderByCreatedAtAsc(tenant(), approval.getId());
-        if (rows == null) return List.of();
-        return rows.stream().map(vote -> Map.<String, Object>of(
-                "id", vote.getId(), "actor", vote.getActorId(), "decision", vote.getDecision(),
-                "reason", redactFreeText(vote.getReason(), 2048), "createdAt", vote.getCreatedAt())).toList();
-    }
-
     private String decodeExternalArtifact(SoarArtifactEntity artifact, byte[] bytes) {
         if (bytes == null || artifact.getSizeBytes() < 0 || artifact.getSizeBytes() > MAX_ARTIFACT_BYTES
                 || bytes.length > MAX_ARTIFACT_BYTES || artifact.getSha256() == null
@@ -436,20 +423,7 @@ public class SoarRunQueryService {
         } catch (Exception ignored) { return mapper.createObjectNode(); }
     }
 
-    private Object redact(Object value) {
-        if (value instanceof Map<?, ?> map) {
-            Map<String, Object> output = new LinkedHashMap<>();
-            map.forEach((key, item) -> {
-                String name = String.valueOf(key).toLowerCase(Locale.ROOT);
-                output.put(String.valueOf(key), name.contains("secret") || name.contains("token")
-                        || name.contains("password") || name.contains("authorization") || name.equals("cookie")
-                        ? "[REDACTED]" : redact(item));
-            });
-            return output;
-        }
-        if (value instanceof List<?> list) return list.stream().map(this::redact).toList();
-        return value;
-    }
+    private Object redact(Object value) { return SoarRedaction.structured(value); }
 
     private static String redactFreeText(String value, int max) {
         if (value == null) return "";

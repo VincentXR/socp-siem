@@ -12,7 +12,7 @@ vi.mock('../src/api', async original => ({ ...await original<object>(), listRule
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
 const alarm = (id: string) => ({ id, severity: 'HIGH', occurredAt: '2026-10-01T00:00:00Z' }) as Alarm
 type View = { handleSelectionChange: (rows: Alarm[]) => void; handleBatchUpdate: () => Promise<void>
-  batchOperation: 'assign' | 'status'; batchAssignee: string; batchStatus: string; selectedAlarms: Alarm[] }
+  batchOperation: 'assign' | 'status'; batchAssignee: string; batchStatus: string; batchReason: string; selectedAlarms: Alarm[] }
 
 async function setup() {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: { template: '<div />' } }] })
@@ -44,7 +44,7 @@ describe('alarm batch confirmation', () => {
     expect(mocks.batchUpdateAlarmDisposition).not.toHaveBeenCalled()
     view.handleSelectionChange([alarm('B')]); view.batchAssignee = 'bob'
     confirmation.resolve('confirm'); await operation
-    expect(mocks.batchUpdateAlarmDisposition).toHaveBeenCalledExactlyOnceWith(['A'], { assignee: 'alice' })
+    expect(mocks.batchUpdateAlarmDisposition).toHaveBeenCalledExactlyOnceWith(['A'], { assignee: 'alice', reason: undefined })
     expect(view.selectedAlarms.map(item => item.id)).toEqual(['B'])
     expect(view.batchAssignee).toBe('bob')
     wrapper.unmount()
@@ -52,7 +52,7 @@ describe('alarm batch confirmation', () => {
 
   it('does not write after cancellation, permission loss or unmount', async () => {
     const { wrapper, view } = await setup()
-    view.handleSelectionChange([alarm('A')]); view.batchOperation = 'status'; view.batchStatus = 'RESOLVED'
+    view.handleSelectionChange([alarm('A')]); view.batchOperation = 'status'; view.batchStatus = 'RESOLVED'; view.batchReason = 'Verified evidence'
     mocks.confirm.mockRejectedValueOnce(new Error('cancel'))
     await view.handleBatchUpdate()
     const confirmation = deferred<string>()
@@ -68,4 +68,37 @@ describe('alarm batch confirmation', () => {
     wrapper.unmount(); leaving.resolve('confirm'); await late
     expect(mocks.batchUpdateAlarmDisposition).not.toHaveBeenCalled()
   })
+})
+
+
+it('treats ACTIVE as a list filter rather than a writable disposition', async () => {
+  const { wrapper, view } = await setup()
+  const options = wrapper.vm as unknown as { DISP_STATUSES: string[]; FILTER_STATUSES: string[] }
+  expect(options.FILTER_STATUSES).toContain('ACTIVE')
+  expect(options.DISP_STATUSES).not.toContain('ACTIVE')
+  view.handleSelectionChange([alarm('A')])
+  view.batchOperation = 'status'
+  view.batchStatus = 'ACTIVE'
+  await view.handleBatchUpdate()
+  expect(mocks.confirm).not.toHaveBeenCalled()
+  expect(mocks.batchUpdateAlarmDisposition).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+it('clears the previous ownership mode when choosing my queue or a new owner filter', async () => {
+  const { wrapper } = await setup()
+  await wrapper.setProps({ currentUser: 'alice' })
+  const view = wrapper.vm as unknown as { owner: string; assignee: string; status: string; myQueue: () => void; searchOwner: () => void; searchAssignee: () => void }
+  view.owner = 'unassigned'
+  view.myQueue()
+  expect(view.owner).toBe('')
+  expect(view.assignee).toBe('alice')
+  expect(view.status).toBe('ACTIVE')
+  view.owner = 'mine'
+  view.searchOwner()
+  expect(view.assignee).toBe('')
+  view.assignee = 'bob'
+  view.searchAssignee()
+  expect(view.owner).toBe('')
+  wrapper.unmount()
 })

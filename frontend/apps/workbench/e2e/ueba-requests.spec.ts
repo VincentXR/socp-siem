@@ -13,7 +13,8 @@ test('UEBA keeps selected details and current score inputs through delayed and f
     const url = new URL(route.request().url()), path = url.pathname
     if (!isWorkbenchBackendUrl(url)) { await route.continue(); return }
     let data: unknown
-    if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
+    if (path === '/api/v1/system/health') data = { status: 'up', services: {}, checkedAt: '2026-10-02T00:00:00Z' }
+    else if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (path === '/auth/operators') data = { items: [] }
     else if (path === '/detect-web/api/v1/ueba/entities') data = entities
     else if (path === '/detect-web/api/v1/ueba/summary') data = { entities: 2, byLevel: { MEDIUM: 2 }, maxRisk: 30, halfLifeHours: 24 }

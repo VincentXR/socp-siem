@@ -3,6 +3,7 @@ package com.socp.search.config.render;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.search.config.domain.LogSource;
 import com.socp.search.config.domain.SinkTarget;
+import com.socp.search.config.persistence.store.SinkTargetStore;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -63,6 +64,7 @@ public class VectorConfigRenderer {
                 sb.append(emitSource(src, id));
                 continue;
             }
+            requireReady(src);
             String tName = "t_" + src.id().replace('-', '_');
             SinkTarget target = select(src, sinks);
             targets.put(target.id(), target);
@@ -79,11 +81,45 @@ public class VectorConfigRenderer {
         return sb.toString();
     }
 
-    private static boolean isVectorNative(LogSource source) {
+    public static boolean isVectorNative(LogSource source) {
         return switch (source.type()) {
             case FILE, SOCKET, SYSLOG, KAFKA -> true;
             case WINDOWS_EVENT, AGENT, HTTP_API, DATABASE, CLOUD -> false;
         };
+    }
+
+    /** Drafts may be saved, but rendering must never substitute a demo input. */
+    public static void requireReady(LogSource source) {
+        String missing = switch (source.type()) {
+            case FILE -> blank(source.path()) ? "FILE requires a collector-local path/glob" : null;
+            case SOCKET, SYSLOG -> blank(source.address()) ? "Listener address is required" :
+                    "tls".equalsIgnoreCase(source.protocol()) ? "TLS listener requires operator-managed certificates; use a managed collector configuration" : null;
+            case KAFKA -> blank(source.address()) || blank(source.topic())
+                    ? "KAFKA requires bootstrap servers in address and a topic" : null;
+            default -> null;
+        };
+        if (missing == null && isVectorNative(source) && !blank(source.charset())
+                && !"utf-8".equalsIgnoreCase(source.charset())) {
+            missing = "Only UTF-8 native collection is supported; use a managed transcoding collector";
+        }
+        if (missing == null && source.type() == com.socp.search.config.domain.SourceType.FILE
+                && !blank(source.readFrom()) && !List.of("beginning", "end").contains(source.readFrom())) {
+            missing = "FILE read mode must be beginning or end";
+        }
+        if (missing == null && (source.type() == com.socp.search.config.domain.SourceType.SOCKET
+                || source.type() == com.socp.search.config.domain.SourceType.SYSLOG)
+                && !blank(source.protocol()) && !List.of("tcp", "udp").contains(source.protocol().toLowerCase(java.util.Locale.ROOT))) {
+            missing = "Only TCP/UDP listeners are supported by this renderer";
+        }
+        if (missing != null) throw ApiException.badRequest(missing + "; save disabled until configured");
+    }
+
+    private static boolean blank(String value) { return value == null || value.isBlank(); }
+
+    /** Quote a TOML basic string, including paths on Windows. */
+    private static String escaped(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"")
+                .replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t");
     }
 
     /** 单个源的 sink 名称保持稳定：第一组沿用历史契约名 gls_ingest，多目标时按序号区分。 */
@@ -106,8 +142,14 @@ public class VectorConfigRenderer {
                     + target.name() + " 已停用或未配置投递地址，请先修正后再渲染");
         }
         if (!"GLS_INGEST".equalsIgnoreCase(target.type()) && !"HTTP".equalsIgnoreCase(target.type())) {
-            throw ApiException.of(409, "Unsupported output protocol: " + target.type()
-                    + ". Choose SEARCH ingest (GLS_INGEST) or an HTTP NDJSON receiver; OpenSearch bulk is not supported.");
+            throw ApiException.of(409, "Output type " + target.type() + " is not supported by the NDJSON HTTP collector renderer");
+        }
+        java.net.URI uri;
+        try { uri = java.net.URI.create(target.uri()); }
+        catch (IllegalArgumentException invalid) { throw ApiException.badRequest("Invalid output URI"); }
+        if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))
+                || uri.getHost() == null || uri.getUserInfo() != null || uri.getFragment() != null) {
+            throw ApiException.badRequest("Output requires an HTTP(S) URI without embedded credentials or fragment");
         }
         return target;
     }
@@ -118,13 +160,13 @@ public class VectorConfigRenderer {
 
     private String emitSource(LogSource s, String id) {
         StringBuilder b = new StringBuilder();
-        b.append("\n# ---- 日志源: ").append(s.name() == null ? s.id() : s.name())
+        b.append("\n# ---- 日志源: ").append((s.name() == null ? s.id() : s.name()).replace("\n", " ").replace("\r", " "))
                 .append(" (").append(s.type()).append("/").append(s.format()).append(") ----\n");
         switch (s.type()) {
             case FILE -> {
                 b.append("[sources.").append(id).append("]\n");
                 b.append("type = \"file\"\n");
-                b.append("include = [\"").append(s.path()).append("\"]\n");
+                b.append("include = [\"").append(escaped(s.path())).append("\"]\n");
                 b.append("read_from = \"").append(s.readFrom() == null ? "beginning" : s.readFrom()).append("\"\n");
                 b.append("data_dir = \".cache/vector\"\n");
                 long frequencySeconds = s.frequency() == null ? 1L : Math.max(1L, s.frequency());
@@ -141,20 +183,20 @@ public class VectorConfigRenderer {
                 b.append("[sources.").append(id).append("]\n");
                 b.append("type = \"socket\"\n");
                 b.append("mode = \"").append(protoOf(s, "tcp")).append("\"\n");
-                b.append("address = \"").append(s.address() == null ? "0.0.0.0:5514" : s.address()).append("\"\n");
+                b.append("address = \"").append(escaped(s.address())).append("\"\n");
             }
             case SYSLOG -> {
                 b.append("[sources.").append(id).append("]\n");
                 b.append("type = \"syslog\"\n");
-                b.append("address = \"").append(s.address() == null ? "0.0.0.0:5514" : s.address()).append("\"\n");
+                b.append("address = \"").append(escaped(s.address())).append("\"\n");
                 b.append("mode = \"").append(protoOf(s, "tcp")).append("\"\n");
             }
             case KAFKA -> {
                 b.append("[sources.").append(id).append("]\n");
                 b.append("type = \"kafka\"\n");
-                b.append("bootstrap_servers = \"kafka:9092\"\n");
-                b.append("topics = [\"").append(s.topic() == null ? "socp-raw" : s.topic()).append("\"]\n");
-                b.append("group_id = \"").append(s.groupId() == null ? "search-" + id : s.groupId()).append("\"\n");
+                b.append("bootstrap_servers = \"").append(escaped(s.address())).append("\"\n");
+                b.append("topics = [\"").append(escaped(s.topic())).append("\"]\n");
+                b.append("group_id = \"").append(s.groupId() == null ? "search-" + id : escaped(s.groupId())).append("\"\n");
             }
             case WINDOWS_EVENT -> b.append(agentNote(id, "Windows 事件日志",
                     "Winlogbeat / Windows 事件转发将日志推送到 SEARCH ingest（或先入 Kafka）"));
@@ -237,7 +279,7 @@ public class VectorConfigRenderer {
         String auth = authToken == null
                 ? ""
                 : "\nrequest.headers.Authorization = \""
-                    + (authToken.startsWith("Bearer ") ? authToken : "Bearer " + authToken)
+                    + escaped(authToken.startsWith("Bearer ") ? authToken : "Bearer " + authToken)
                     + "\"";
         String secretNote = authToken == null || !REDACTED_TOKEN.equals(authToken) ? ""
                 : "\n# 凭据已脱敏：把 " + REDACTED_TOKEN
@@ -270,13 +312,13 @@ public class VectorConfigRenderer {
                 buffer.type = "disk"
                 buffer.max_size = 268435488
                 buffer.when_full = "block"
-                """.formatted(target.name(), blockName, inputs, target.uri(), auth, secretNote);
+                """.formatted(target.name().replace("\n", " ").replace("\r", " "), blockName, inputs, escaped(target.uri()), auth, secretNote);
     }
 
     /** Effective credential of one target, redacted unless the caller may see the secret. */
     private String credential(SinkTarget target, boolean includeSecret) {
         String token = target.authToken();
-        if ((token == null || token.isBlank()) && com.socp.search.config.persistence.store.SinkTargetStore.PLATFORM_INGEST_ID.equals(target.id())) {
+        if ((token == null || token.isBlank()) && SinkTargetStore.PLATFORM_INGEST_ID.equals(target.id())) {
             token = platformAuthToken;
         }
         if (token == null || token.isBlank()) return null;

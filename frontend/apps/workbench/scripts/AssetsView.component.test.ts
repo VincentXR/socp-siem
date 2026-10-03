@@ -3,6 +3,7 @@ import { h, ref } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AssetsView from '../src/views/AssetsView.vue'
+import MetricCard from '../src/components/MetricCard.vue'
 import PagerBar from '../src/components/PagerBar.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import type { Asset, Endpoint, Paged } from '../src/api/models'
@@ -68,6 +69,19 @@ describe('asset investigation and reviewed writes', () => {
     mocks.confirm.mockResolvedValue('confirm')
   })
   afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
+
+  it('turns inventory goals into server filters and restores direct filter links', async () => {
+    const router = await open('/assets?type=SERVER&owner=sec&criticality=HIGH&page=2')
+    expect(mocks.list).toHaveBeenLastCalledWith(2, 10, undefined, expect.anything(), { type: 'SERVER', owner: 'sec', criticality: 'HIGH' })
+    wrapper.findAllComponents(MetricCard).find(card => card.props('tone') === 'danger')!.vm.$emit('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.criticality).toBe('CRITICAL')
+    expect(router.currentRoute.value.query.page).toBeUndefined()
+    expect(mocks.list.mock.calls.at(-1)![4]).toEqual({ type: 'SERVER', owner: 'sec', criticality: 'CRITICAL' })
+    await click('清除筛选')
+    expect(router.currentRoute.value.query).toEqual({})
+    expect(mocks.list.mock.calls.at(-1)![4]).toEqual({ type: undefined, owner: undefined, criticality: undefined })
+  })
 
   it('loads off-page detail and exact paged associations without prefetched tenant inventories', async () => {
     await open('/assets')
@@ -216,6 +230,6 @@ describe('asset investigation and reviewed writes', () => {
     await router.push('/assets?q=restored&page=2'); await flushPromises()
     await new Promise(resolve => setTimeout(resolve, 350)); await flushPromises()
     expect(router.currentRoute.value.query).toEqual({ q: 'restored', page: '2' })
-    expect(mocks.list).toHaveBeenLastCalledWith(2, 10, 'restored', expect.anything())
+    expect(mocks.list).toHaveBeenLastCalledWith(2, 10, 'restored', expect.anything(), { type: undefined, criticality: undefined, owner: undefined })
   })
 })

@@ -49,7 +49,16 @@ public class SinkTargetController {
     @AuditOperation(action = "CREATE_SINK_TARGET", target = "sink_target")
     @PostMapping
     public ApiResult<SinkTargetView> create(@Valid @RequestBody SinkTargetRequest target) {
+        target.validateHttpOutput();
         return ApiResult.ok(SinkTargetView.of(store.save(target.toDomain())));
+    }
+
+    /** Static validation only: never probes operator-controlled URLs or writes an event. */
+    @RequireRole({"admin", "analyst"})
+    @PostMapping("/validate")
+    public ApiResult<Map<String, Object>> validate(@Valid @RequestBody SinkTargetRequest request) {
+        request.validateHttpOutput();
+        return ApiResult.ok(Map.of("valid", true, "networkTested", false, "writesEvent", false));
     }
 
     @RequireRole({"admin", "analyst"})
@@ -64,6 +73,7 @@ public class SinkTargetController {
     @PutMapping("/{id}")
     public ApiResult<SinkTargetView> update(@PathVariable String id,
                                            @Valid @RequestBody SinkTargetUpdateRequest request) {
+        request.target().validateHttpOutput();
         return ApiResult.ok(SinkTargetView.of(store.update(id, request)));
     }
 }

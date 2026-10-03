@@ -52,7 +52,7 @@ public class AlarmDispositionController {
     @PutMapping("/status")
     public ApiResult<AlarmDispositionService.Disposition> setStatus(@PathVariable String id, @Valid @RequestBody AlarmStatusRequest body) {
         alarmService.get(id);
-        return ApiResult.ok(disp.setStatus(id, body.status()));
+        return ApiResult.ok(disp.setStatus(id, body.status(), body.reason(), body.classification()));
     }
 
     @RequireRole({"admin", "analyst"})
@@ -64,6 +64,17 @@ public class AlarmDispositionController {
         String assignee = body.assignee();
         if (assignee == null || assignee.isBlank()) throw ApiException.badRequest("assignee 必填");
         return ApiResult.ok(disp.assign(id, assignee));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("alarm:triage")
+    @AuditOperation(action = "CLAIM_ALARM", target = "t_alarm_disposition")
+    @PostMapping("/claim")
+    public ApiResult<AlarmDispositionService.Disposition> claim(@PathVariable String id) {
+        alarmService.get(id);
+        String actor = AuthenticatedIdentityContext.current().map(com.socp.platform.tenant.context.AuthenticatedIdentity::subject)
+                .orElseThrow(() -> ApiException.of(401, "Authenticated owner required"));
+        return ApiResult.ok(disp.assign(id, actor));
     }
 
     @RequireRole({"admin", "analyst"})

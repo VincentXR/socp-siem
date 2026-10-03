@@ -3,7 +3,7 @@ import type { DetectionIngestEvent, DetectionIngestResult, GasAlert, GasStats, P
 import { withQuery } from '../lib/query'
 
 export type RuleOption = Pick<RuleSpec, 'id' | 'name' | 'type' | 'status'>
-export interface RuleListQuery { page?: number; size?: number; q?: string; status?: string; reference?: string; referenceAlias?: string }
+export interface RuleListQuery { page?: number; size?: number; q?: string; status?: string; reference?: string; referenceAlias?: string; technique?: string }
 export const listRulePage = (query: RuleListQuery = {}, options?: ApiRequestOptions) =>
   get<Paged<RuleSpec>>(withQuery('/detect-web/api/v1/rules', { page: 1, size: 20, ...query }), options)
 export const getRule = (id: string, options?: ApiRequestOptions) => get<RuleSpec>(`/detect-web/api/v1/rules/${encodeURIComponent(id)}`, options)

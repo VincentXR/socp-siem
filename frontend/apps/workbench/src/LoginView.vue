@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { authCapabilities, login as apiLogin } from './api'
-import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { useI18n } from './composables/useI18n'
 import { normalizeLocale, setLocale } from './i18n/locale-manager'
 
@@ -12,6 +11,7 @@ const demoMode = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true
 const username = ref(demoMode ? 'demo' : '')
 const password = ref(demoMode ? 'demo123' : '')
 const busy = ref(false)
+const loginError = ref('')
 const capabilities = ref({ localPassword: demoMode, oidc: false })
 const capabilitiesLoading = ref(true)
 const capabilitiesError = ref('')
@@ -34,6 +34,7 @@ async function loadCapabilities() {
 async function doLogin() {
   if (busy.value) return
   busy.value = true
+  loginError.value = ''
   try {
     const d = await apiLogin(username.value, password.value)
     const serverLocale = normalizeLocale(d.locale)
@@ -44,7 +45,7 @@ async function doLogin() {
     } catch { /* optional preference */ }
     emit('done', d.username, d.role)
   } catch (error) {
-    ElMessage.error((error as Error).message || t('login.errorInvalid'))
+    loginError.value = (error as Error).message || t('login.errorInvalid')
   } finally {
     busy.value = false
   }
@@ -97,9 +98,10 @@ onMounted(loadCapabilities)
         <div v-if="capabilitiesLoading" class="login-capability-status" role="status">
           <span class="login-loading-bar" />{{ t('login.checkingMethods') }}
         </div>
-        <div v-if="capabilitiesError" class="login-capability-error" role="alert">{{ capabilitiesError }}</div>
+        <div v-if="capabilitiesError" class="login-capability-error" role="alert">{{ capabilitiesError }} <button type="button" :disabled="capabilitiesLoading" @click="loadCapabilities">{{ t('common.retry') }}</button></div>
 
-        <form v-if="capabilities.localPassword" class="login-form" @submit.prevent="doLogin">
+        <p v-if="loginError" id="login-error" class="login-capability-error" role="alert">{{ loginError }}</p>
+        <form v-if="capabilities.localPassword" :aria-describedby="loginError ? 'login-error' : undefined" class="login-form" @submit.prevent="doLogin">
           <label class="field"><span class="field-label">{{ t('login.username') }}</span><input v-model="username" class="input" :placeholder="demoMode ? 'demo / admin' : ''" autocomplete="username" /></label>
           <label class="field"><span class="field-label">{{ t('login.password') }}</span><input v-model="password" type="password" class="input" :placeholder="demoMode ? 'demo123 / admin123' : ''" autocomplete="current-password" /></label>
           <button type="submit" class="submit" :disabled="busy"><span v-if="busy" class="spinner" /><span>{{ busy ? t('login.loggingIn') : t('login.loginBtn') }}</span></button>
@@ -135,16 +137,16 @@ onMounted(loadCapabilities)
 .login-brand strong { font-size: 16px; letter-spacing: .08em; }
 .login-brand small { margin-top: 2px; color: rgba(218, 233, 255, .55); font-size: 9px; letter-spacing: .18em; }
 .login-intro-copy { max-width: 520px; margin: auto 0 36px; }
-.login-eyebrow, .login-panel-label { color: #76aaff; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.login-eyebrow, .login-panel-label { color: #76aaff; font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .login-intro-copy h1 { margin: 12px 0 14px; font-size: clamp(34px, 4vw, 50px); font-weight: 620; letter-spacing: -.045em; line-height: 1.08; }
 .login-intro-copy p { max-width: 470px; margin: 0; color: rgba(222, 235, 255, .66); font-size: 14px; line-height: 1.7; }
 .login-capabilities { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .login-capabilities > div { min-width: 0; padding: 13px; border: 1px solid rgba(164, 201, 255, .13); border-radius: 9px; background: rgba(255, 255, 255, .035); }
 .login-capabilities span, .login-capabilities strong, .login-capabilities small { display: block; }
-.login-capabilities span { margin-bottom: 12px; color: #76aaff; font-family: var(--ns-font-mono); font-size: 10px; }
+.login-capabilities span { margin-bottom: 12px; color: #76aaff; font-family: var(--ns-font-mono); font-size: 12px; }
 .login-capabilities strong { font-size: 12px; }
-.login-capabilities small { margin-top: 4px; color: rgba(222, 235, 255, .52); font-size: 10px; line-height: 1.45; }
-.login-platform-state { display: flex; align-items: center; gap: 8px; margin-top: 24px; color: rgba(222, 235, 255, .54); font-size: 10px; letter-spacing: .04em; }
+.login-capabilities small { margin-top: 4px; color: rgba(222, 235, 255, .52); font-size: 12px; line-height: 1.45; }
+.login-platform-state { display: flex; align-items: center; gap: 8px; margin-top: 24px; color: rgba(222, 235, 255, .54); font-size: 12px; letter-spacing: .04em; }
 .login-platform-state i { width: 6px; height: 6px; border-radius: 50%; background: #54d29c; box-shadow: 0 0 0 4px rgba(84, 210, 156, .12); }
 .login-panel { align-self: center; padding: 48px 44px; }
 .login-panel-label { color: var(--ns-accent-fg); }
@@ -161,20 +163,21 @@ onMounted(loadCapabilities)
 .spinner { width: 15px; height: 15px; border: 2px solid color-mix(in srgb, var(--ns-on-accent) 40%, transparent); border-top-color: var(--ns-on-accent); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .quick { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--ns-border); }
-.quick-label { margin-right: 8px; color: var(--ns-text-3); font-size: 11px; }
-.chip { margin: 4px 4px 0 0; padding: 5px 9px; border: 1px solid var(--ns-border); border-radius: 6px; background: var(--ns-bg-subtle); color: var(--ns-text-2); cursor: pointer; font: inherit; font-size: 11px; }
+.quick-label { margin-right: 8px; color: var(--ns-text-3); font-size: 12px; }
+.chip { margin: 4px 4px 0 0; padding: 5px 9px; border: 1px solid var(--ns-border); border-radius: 6px; background: var(--ns-bg-subtle); color: var(--ns-text-2); cursor: pointer; font: inherit; font-size: 12px; }
 .chip:hover { border-color: var(--ns-accent); color: var(--ns-accent-fg); }
 .oidc-row { margin-top: 12px; }
 .oidc-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 42px; border: 1px solid var(--ns-border-strong); border-radius: 7px; background: var(--ns-bg-subtle); color: var(--ns-text-2); cursor: pointer; font: inherit; font-size: 12px; }
 .oidc-btn:hover { border-color: var(--ns-accent); color: var(--ns-accent-fg); }
-.login-capability-status, .login-capability-error { margin-bottom: 14px; font-size: 11px; }
+.login-capability-status, .login-capability-error { margin-bottom: 14px; font-size: 12px; }
 .login-capability-status { display: flex; align-items: center; gap: 8px; color: var(--ns-text-3); }
 .login-loading-bar { width: 24px; height: 2px; overflow: hidden; background: var(--ns-border); }
 .login-capability-error { padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--ns-warning) 28%, var(--ns-border)); border-radius: 6px; background: color-mix(in srgb, var(--ns-warning) 6%, var(--ns-surface)); color: var(--ns-text-2); }
-.login-security-note { margin: 22px 0 0; color: var(--ns-text-3); font-size: 10px; text-align: center; }
+.login-security-note { margin: 22px 0 0; color: var(--ns-text-3); font-size: 12px; text-align: center; }
 @media (max-width: 820px) {
   .login-page { align-items: start; padding: 72px 18px 30px; overflow: auto; }
   .login-stage { grid-template-columns: 1fr; min-height: auto; }
+  .login-panel { grid-row: 1; }
   .login-intro { padding: 30px; }
   .login-intro-copy { margin: 48px 0 26px; }
   .login-intro-copy h1 { font-size: 32px; }

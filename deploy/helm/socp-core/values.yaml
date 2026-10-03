@@ -23,6 +23,8 @@ serviceAccount:
   annotations: {}
 
 runtime:
+  # Existing routed-topic partition count; this does not repartition Kafka.
+  detectionPartitions: 6
   # Each workload below names every allowed Secret key in `secretEnv`.
   # Deployments deliberately never use Secret `envFrom`. For the migration pair
   # (`${SOCP_PG_MIGRATION_USER}`/`${SOCP_PG_MIGRATION_PASSWORD}`) a missing key
@@ -204,6 +206,8 @@ workloads:
       SOCP_OPENSEARCH_USERNAME: SOCP_OPENSEARCH_USERNAME
       SOCP_OPENSEARCH_PASSWORD: SOCP_OPENSEARCH_PASSWORD
       SOCP_COLLECTOR_CREDENTIALS: SOCP_COLLECTOR_CREDENTIALS
+      SOCP_INGEST_TOKEN: SOCP_INGEST_TOKEN
+      SOCP_VECTOR_TOKEN: SOCP_VECTOR_TOKEN
     fieldEnv: {}
     env:
       SOCP_SEARCH_RUNTIME_ROLE: api
@@ -241,6 +245,8 @@ workloads:
       SOCP_OPENSEARCH_USERNAME: SOCP_OPENSEARCH_USERNAME
       SOCP_OPENSEARCH_PASSWORD: SOCP_OPENSEARCH_PASSWORD
       SOCP_COLLECTOR_CREDENTIALS: SOCP_COLLECTOR_CREDENTIALS
+      SOCP_INGEST_TOKEN: SOCP_INGEST_TOKEN
+      SOCP_VECTOR_TOKEN: SOCP_VECTOR_TOKEN
     fieldEnv: {}
     env:
       SOCP_SEARCH_RUNTIME_ROLE: worker
@@ -344,7 +350,8 @@ workloads:
         memory: 1536Mi
     autoscaling:
       minReplicas: 3
-      maxReplicas: 12
+      # One active owner per routed-topic partition; no automatic repartition.
+      maxReplicas: 6
       targetCPUUtilizationPercentage: 65
     podDisruptionBudget:
       minAvailable: 2

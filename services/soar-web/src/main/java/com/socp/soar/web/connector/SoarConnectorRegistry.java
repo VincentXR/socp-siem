@@ -133,6 +133,8 @@ public class SoarConnectorRegistry {
         }
         boolean known = connector.descriptor().actions().stream().anyMatch(a -> a.id().equals(parsed[1]));
         if (!known) return ActionResult.failed("SOAR_ACTION_NOT_FOUND", "unknown action", false);
+        if (request.connection() != null && !java.util.Objects.equals(request.tenantId(), request.connection().tenantId()))
+            return ActionResult.failed("SOAR_CONNECTION_TENANT_MISMATCH", "connection belongs to another tenant", false);
         try {
             return connector.execute(new ActionRequest(request.tenantId(), request.runId(), request.nodeRunId(),
                     request.attemptNo(), canonical, request.idempotencyKey(), request.parameters(),
@@ -569,7 +571,7 @@ public class SoarConnectorRegistry {
             ConnectionContext connection = request.connection();
             if (connection == null) return ActionResult.failed("SOAR_CONNECTION_UNAVAILABLE", "connection is required", false);
             String body = json(request.parameters());
-            ServiceCall call = http.postExternal(connection.endpoint(), body, SocpHttpClient.JSON,
+            ServiceCall call = http.postExternalOnce(connection.endpoint(), body, SocpHttpClient.JSON,
                     (int) Math.min(60_000, connection.timeout().toMillis()),
                     requestHeaders(connection, request.idempotencyKey()), connection.allowedHosts());
             return fromExternalCall(call, "request");
@@ -601,7 +603,7 @@ public class SoarConnectorRegistry {
         }
         @Override public ActionResult execute(ActionRequest request) {
             if (request.connection() == null) return ActionResult.failed("SOAR_CONNECTION_UNAVAILABLE", "connection is required", false);
-            ServiceCall call = http.postExternal(request.connection().endpoint(), json(request.parameters()),
+            ServiceCall call = http.postExternalOnce(request.connection().endpoint(), json(request.parameters()),
                     SocpHttpClient.JSON, (int) Math.min(60_000, request.connection().timeout().toMillis()),
                     requestHeaders(request.connection(), request.idempotencyKey()), request.connection().allowedHosts());
             return fromExternalCall(call, id);

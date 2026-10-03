@@ -339,7 +339,8 @@ public class SoarAutomationRuleService {
                 String requestId = "rule-" + rule.getId() + "-r"
                         + Math.max(1, rule.getRevision()) + "-"
                         + shortHash(eventId + "#" + actionIndex++);
-                Map<String, Object> subject = Map.of("type", rule.getTriggerType(), "id", eventId);
+                // Receipt identity is eventId; the investigation subject is independently normalized.
+                Map<String, Object> subject = SoarService.castObjectMap((Map<?, ?>) event.get("subject"));
                 Map<String, Object> inputs = matcher.automationInputs(event, depth + 1);
                 Map<String, Object> run = soar.queueManualRun(requestId, versionId, subject, inputs);
                 if (firstRun == null) firstRun = run;

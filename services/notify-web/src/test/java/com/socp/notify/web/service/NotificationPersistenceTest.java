@@ -56,6 +56,27 @@ class NotificationPersistenceTest {
         jdbc.update("delete from t_notification_channel_namespace");
     }
 
+    @Test void dispatchPagesApplyExactFiltersAndStableOrderBeyondTheFirstPage() {
+        var rows = new java.util.ArrayList<com.socp.notify.web.persistence.entity.NotificationDispatchLogEntity>();
+        for (int index = 0; index < 26; index++) {
+            var row = new com.socp.notify.web.persistence.entity.NotificationDispatchLogEntity();
+            row.setId(String.format("log-%02d", index));
+            row.setTenantId("tenant-a"); row.setAlarmId("alarm-exact"); row.setChannelName("Ops");
+            row.setChannelType("LOG"); row.setStatus(index == 25 ? "sent" : "failed");
+            row.setResultJson("{}"); row.setCreatedAt(Instant.parse("2026-01-01T00:00:00Z"));
+            rows.add(row);
+        }
+        logs.saveAllAndFlush(rows);
+        var first = logs.filterPage("tenant-a", "failed", "alarm-exact", "Ops", org.springframework.data.domain.PageRequest.of(0, 20));
+        var second = logs.filterPage("tenant-a", "failed", "alarm-exact", "Ops", org.springframework.data.domain.PageRequest.of(1, 20));
+        assertEquals(25, first.getTotalElements()); assertEquals(20, first.getNumberOfElements());
+        assertEquals(5, second.getNumberOfElements());
+        assertEquals("log-24", first.getContent().getFirst().getId());
+        assertEquals("log-04", second.getContent().getFirst().getId());
+        assertTrue(logs.filterPage("tenant-b", "", "", "", org.springframework.data.domain.PageRequest.of(0, 20)).isEmpty());
+        assertTrue(logs.filterPage("tenant-a", "", "alarm", "Ops", org.springframework.data.domain.PageRequest.of(0, 20)).isEmpty());
+    }
+
     @Test void claimIsDurableAndSuccessSurvivesReplay() {
         var first = state.claim("alarm", "channel");
         assertNotNull(first.token());

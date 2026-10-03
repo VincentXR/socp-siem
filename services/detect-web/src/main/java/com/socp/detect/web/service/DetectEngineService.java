@@ -956,6 +956,11 @@ public class DetectEngineService {
         return ruleService.searchRules(page, size, keyword, status, reference, alias);
     }
 
+    public org.springframework.data.domain.Page<Map<String, Object>> searchRulesByTechnique(int page, int size, String keyword, String status,
+            String reference, String alias, String technique) {
+        return ruleService.searchRulesByTechnique(page, size, keyword, status, reference, alias, technique);
+    }
+
     public org.springframework.data.domain.Page<Map<String, Object>> ruleOptions(int page, int size, String keyword) {
         return ruleService.ruleOptions(page, size, keyword);
     }

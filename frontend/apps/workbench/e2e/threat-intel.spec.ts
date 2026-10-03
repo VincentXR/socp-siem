@@ -12,6 +12,10 @@ async function fixture(page: Page, options: {
   await page.route('**/*', async route => {
     const url = new URL(route.request().url()), method = route.request().method()
     if (!isWorkbenchBackendUrl(url)) { await route.continue(); return }
+    if (url.pathname === '/api/v1/system/health') {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 0, data: { status: 'up', services: { 'detect-web': 'up' }, checkedAt: new Date().toISOString() } }) })
+      return
+    }
     let data: unknown
     if (url.pathname === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (url.pathname === '/auth/operators') data = { items: [] }
@@ -76,6 +80,7 @@ test('a completed lifecycle request cannot replace a newly selected indicator de
   await page.goto('/threat-intel')
   await page.getByRole('button', { name: 'a.example', exact: true }).click()
   let drawer = page.getByRole('dialog', { name: 'a.example', exact: true })
+  await drawer.locator('summary').click()
   await drawer.getByRole('button', { name: 'Restore', exact: true }).click()
   await expect.poll(() => started).toBe(true)
   await expect(drawer.getByRole('button', { name: 'Delete', exact: true })).toBeDisabled()

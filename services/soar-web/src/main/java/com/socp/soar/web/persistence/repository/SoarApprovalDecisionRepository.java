@@ -17,6 +17,9 @@ public interface SoarApprovalDecisionRepository
     List<SoarApprovalDecisionEntity> findByTenantIdAndApprovalIdOrderByCreatedAtAsc(
             String tenantId, String approvalId);
 
+    List<SoarApprovalDecisionEntity> findByTenantIdAndApprovalIdInOrderByCreatedAtAsc(
+            String tenantId, Collection<String> approvalIds);
+
     Optional<SoarApprovalDecisionEntity> findByTenantIdAndApprovalIdAndActorId(
             String tenantId, String approvalId, String actorId);
 

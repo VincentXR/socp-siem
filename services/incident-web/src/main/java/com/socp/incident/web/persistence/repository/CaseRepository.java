@@ -40,6 +40,23 @@ public interface CaseRepository extends TenantScopedRepository<CaseEntity, Strin
                                       @Param("status") String status,
                                       Pageable pageable);
 
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select c from CaseEntity c where c.tenantId = :tenantId and c.id = :id")
+    Optional<CaseEntity> lockByTenantIdAndId(@Param("tenantId") String tenantId, @Param("id") String id);
+
+    @Query("""
+            select c from CaseEntity c
+             where c.tenantId = :tenantId
+               and (:status = '' or c.status = :status)
+               and ((:queue = 'mine' and c.assignee = :actor)
+                    or (:queue = 'unassigned' and (c.assignee is null or c.assignee = '')))
+               and (:query = '' or lower(concat(coalesce(c.id, ''), ' ', coalesce(c.caseNo, ''), ' ',
+                    coalesce(c.title, ''), ' ', coalesce(c.entity, ''), ' ', coalesce(c.assignee, '')))
+                    like lower(concat('%', :query, '%')))
+            """)
+    Page<CaseEntity> searchQueue(@Param("tenantId") String tenantId, @Param("query") String query,
+            @Param("status") String status, @Param("queue") String queue, @Param("actor") String actor, Pageable pageable);
+
     Optional<CaseEntity> findByTenantIdAndId(String tenantId, String id);
 
     Optional<CaseEntity> findFirstByTenantIdAndEntityAndStatusInOrderByUpdatedAtDescIdAsc(

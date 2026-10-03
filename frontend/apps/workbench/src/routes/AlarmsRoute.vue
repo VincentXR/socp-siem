@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import AlarmsView from '../views/AlarmsView.vue'
 import { WORKBENCH_STATE } from '../app/workbenchState'
 import { exportAlarms } from '../api/alarms'
@@ -26,20 +26,21 @@ const alarmError = computed(() => query.error.value?.message ?? '')
 const canWrite = computed(() => ['admin', 'analyst', 'role_admin', 'role_analyst'].includes(state.currentRole.value.toLowerCase()))
 const canAdmin = computed(() => ['admin', 'role_admin'].includes(state.currentRole.value.toLowerCase()))
 const router = useRouter()
+const route = useRoute()
 
 function goCase(caseId?: string) {
-  if (caseId) void router.push({ name: 'case', query: { caseId } })
+  if (caseId) void router.push({ name: 'case', query: { caseId, alarmId: String(route.query.alarmId || ''), returnTo: route.fullPath } })
   else state.navigate('case')
 }
 function goSearch(q?: string) {
-  void router.push({ name: 'search', query: q ? { q, range: 'all' } : {} })
+  void router.push({ name: 'search', query: q ? { q, range: 'all', alarmId: String(route.query.alarmId || ''), returnTo: route.fullPath } : {} })
 }
-function goAi(alarmId: string) {
+function goAi(alarmId: string, caseId?: string) {
   if (!canWrite.value) return
-  void router.push({ name: 'ai', query: { alarmId } })
+  void router.push({ name: 'ai', query: { alarmId, caseId, returnTo: route.fullPath } })
 }
-function goSoar(alarmId: string) {
-  void router.push({ name: 'soar', query: { alarmId } })
+function goSoar(alarmId: string, caseId?: string) {
+  void router.push({ name: 'soar', query: { alarmId, caseId, returnTo: route.fullPath } })
 }
 function exportWithCurrentFilters(format: 'csv' | 'json') {
   return exportAlarms(format, {
@@ -52,6 +53,8 @@ function exportWithCurrentFilters(format: 'csv' | 'json') {
     to: alarmTo.value || undefined,
     sort: query.alarmSort.value,
     order: query.alarmOrder.value,
+    owner: query.alarmOwner.value || undefined,
+    ...query.investigationFilters.value,
   })
 }
 </script>
@@ -62,6 +65,7 @@ function exportWithCurrentFilters(format: 'csv' | 'json') {
     v-model:severity="alarmSeverity"
     v-model:status="alarmStatus"
     v-model:rule="alarmRule"
+    v-model:owner="query.alarmOwner.value"
     v-model:assignee="alarmAssignee"
     v-model:from="alarmFrom"
     v-model:to="alarmTo"

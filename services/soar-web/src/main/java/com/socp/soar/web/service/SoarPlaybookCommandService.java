@@ -1,18 +1,23 @@
 package com.socp.soar.web.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.definition.SoarDefinitionValidator;
 import com.socp.soar.web.domain.DefinitionValidationResult;
 import com.socp.soar.web.domain.SoarPlaybookVersionStatus;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
 import com.socp.soar.web.persistence.entity.SoarPlaybookEntity;
+import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
+import com.socp.soar.web.persistence.repository.SoarPlaybookRepository;
 import org.springframework.http.HttpStatus;
-
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
 import java.util.UUID;
+import java.util.Set;
+import java.util.Objects;
 
 /**
  * Playbook and immutable-version command boundary for {@link SoarService}.
@@ -23,6 +28,29 @@ import java.util.UUID;
  * artifact code.</p>
  */
 final class SoarPlaybookCommandService {
+    SoarPlaybookCommandService(SoarPlaybookRepository playbooks, PlaybookVersionRepository versions,
+                SoarDefinitionValidator validator, ObjectMapper mapper, SoarReadModelMapper readModels,
+                SoarJson json, SoarRecords records, SoarRuntimeGate gates, SoarDefinitionPolicy definitionPolicy) {
+        this.playbooks = playbooks;
+        this.versions = versions;
+        this.validator = validator;
+        this.mapper = mapper;
+        this.readModels = readModels;
+        this.json = json;
+        this.records = records;
+        this.gates = gates;
+        this.definitionPolicy = definitionPolicy;
+    }
+
+    private final SoarDefinitionPolicy definitionPolicy;
+    private final SoarRuntimeGate gates;
+    private final SoarRecords records;
+    private final SoarJson json;
+    private final SoarReadModelMapper readModels;
+    private final ObjectMapper mapper;
+    private final SoarDefinitionValidator validator;
+    private final PlaybookVersionRepository versions;
+    private final SoarPlaybookRepository playbooks;
 
     private static final String DEFAULT_DEFINITION = "{\"schemaVersion\":\"soar.playbook\","
             + "\"entryNodeId\":\"start\",\"nodes\":["
@@ -30,28 +58,22 @@ final class SoarPlaybookCommandService {
             + "{\"id\":\"end\",\"type\":\"END\",\"name\":\"End\",\"outcome\":\"SUCCEEDED\"}],"
             + "\"edges\":[{\"from\":\"start\",\"to\":\"end\"}]}";
 
-    private final SoarService service;
-
-    SoarPlaybookCommandService(SoarService service) {
-        this.service = service;
-    }
-
     Map<String, Object> createPlaybook(String name, String description, List<String> tags) {
-        service.requireControlPlane();
-        String tenant = service.tenant();
-        String actor = service.actor();
+        gates.requireControlPlane();
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
+        String actor = SoarService.actor();
         Instant now = Instant.now();
         SoarPlaybookEntity playbook = new SoarPlaybookEntity();
         playbook.setId(UUID.randomUUID().toString());
         playbook.setTenantId(tenant);
-        playbook.setName(service.required(name, "name", 128));
-        playbook.setDescription(service.limit(description, 2048));
+        playbook.setName(SoarService.required(name, "name", 128));
+        playbook.setDescription(SoarService.limit(description, 2048));
         playbook.setOwner(actor);
-        playbook.setTagsJson(service.write(tags == null ? List.of() : tags));
+        playbook.setTagsJson(json.write(tags == null ? List.of() : tags));
         playbook.setStatus("ACTIVE");
         playbook.setCreatedAt(now);
         playbook.setUpdatedAt(now);
-        service.playbooks.save(playbook);
+        playbooks.save(playbook);
 
         PlaybookVersionEntity draft = new PlaybookVersionEntity();
         draft.setId(UUID.randomUUID().toString());
@@ -62,13 +84,13 @@ final class SoarPlaybookCommandService {
         draft.setSchemaVersion(SoarDefinitionValidator.SCHEMA_VERSION);
         draft.setDefinitionJson(DEFAULT_DEFINITION);
         draft.setLayoutJson("{}");
-        draft.setDefinitionHash(service.validator.canonicalHash(DEFAULT_DEFINITION));
+        draft.setDefinitionHash(validator.canonicalHash(DEFAULT_DEFINITION));
         draft.setRiskSummaryJson("{\"highRiskActionCount\":0,\"actionCount\":0}");
         draft.setCreatedBy(actor);
         draft.setCreatedAt(now);
         draft.setUpdatedAt(now);
-        service.versions.save(draft);
-        return service.playbookView(playbook, draft);
+        versions.save(draft);
+        return playbookView(playbook, draft);
     }
 
     Map<String, Object> importDraft(String name, String description, List<String> tags,
@@ -88,26 +110,26 @@ final class SoarPlaybookCommandService {
 
     Map<String, Object> updatePlaybook(String id, String name, String description,
                                         List<String> tags, String status, Long expectedRowVersion) {
-        service.requireControlPlane();
-        String tenant = service.tenant();
-        SoarPlaybookEntity playbook = service.playbooks.findByTenantIdAndIdForUpdate(tenant, id)
-                .or(() -> service.playbooks.findByTenantIdAndId(tenant, id))
+        gates.requireControlPlane();
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
+        SoarPlaybookEntity playbook = playbooks.findByTenantIdAndIdForUpdate(tenant, id)
+                .or(() -> playbooks.findByTenantIdAndId(tenant, id))
                 .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_PLAYBOOK_NOT_FOUND",
                         "playbook not found"));
         if (expectedRowVersion != null && !expectedRowVersion.equals(playbook.getRowVersion())) {
             throw SoarService.error(HttpStatus.CONFLICT, "SOAR_PLAYBOOK_CONFLICT",
                     "playbook was changed by another editor");
         }
-        if (name != null) playbook.setName(service.required(name, "name", 128));
-        if (description != null) playbook.setDescription(service.limit(description.trim(), 2048));
+        if (name != null) playbook.setName(SoarService.required(name, "name", 128));
+        if (description != null) playbook.setDescription(SoarService.limit(description.trim(), 2048));
         if (tags != null) {
             if (tags.size() > 32) {
                 throw SoarService.error(HttpStatus.BAD_REQUEST, "SOAR_INPUT_INVALID",
                         "tags must contain at most 32 values");
             }
             List<String> normalized = tags.stream()
-                    .map(value -> service.required(value, "tag", 64)).distinct().toList();
-            playbook.setTagsJson(service.write(normalized));
+                    .map(value -> SoarService.required(value, "tag", 64)).distinct().toList();
+            playbook.setTagsJson(json.write(normalized));
         }
         if (status != null) {
             String normalized = status.trim().toUpperCase(java.util.Locale.ROOT);
@@ -118,8 +140,8 @@ final class SoarPlaybookCommandService {
             playbook.setStatus(normalized);
         }
         playbook.setUpdatedAt(Instant.now());
-        service.playbooks.save(playbook);
-        return service.playbookView(playbook);
+        playbooks.save(playbook);
+        return playbookView(playbook);
     }
 
     Map<String, Object> createVersion(String playbookId) {
@@ -137,14 +159,14 @@ final class SoarPlaybookCommandService {
     }
 
     Map<String, Object> createDraftVersion(String playbookId, Integer baseVersionNo) {
-        service.requireControlPlane();
-        String tenant = service.tenant();
-        service.playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
+        gates.requireControlPlane();
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
+        playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
                 .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_PLAYBOOK_NOT_FOUND",
                         "playbook not found"));
-        List<PlaybookVersionEntity> history = service.versions
+        List<PlaybookVersionEntity> history = versions
                 .findByTenantIdAndPlaybookIdOrderByVersionNoDesc(tenant, playbookId);
-        if (service.versions.findFirstByTenantIdAndPlaybookIdAndStatusOrderByVersionNoDesc(
+        if (versions.findFirstByTenantIdAndPlaybookIdAndStatusOrderByVersionNoDesc(
                 tenant, playbookId, SoarPlaybookVersionStatus.DRAFT.name()).isPresent()) {
             throw SoarService.error(HttpStatus.CONFLICT, "SOAR_DRAFT_ALREADY_EXISTS",
                     "the playbook already has an editable draft");
@@ -167,52 +189,52 @@ final class SoarPlaybookCommandService {
         draft.setSchemaVersion(SoarDefinitionValidator.SCHEMA_VERSION);
         draft.setDefinitionJson(base == null ? DEFAULT_DEFINITION : base.getDefinitionJson());
         draft.setLayoutJson(base == null ? "{}" : base.getLayoutJson());
-        draft.setDefinitionHash(service.validator.canonicalHash(draft.getDefinitionJson()));
+        draft.setDefinitionHash(validator.canonicalHash(draft.getDefinitionJson()));
         draft.setRiskSummaryJson(base == null ? "{\"highRiskActionCount\":0,\"actionCount\":0}"
                 : base.getRiskSummaryJson());
-        draft.setCreatedBy(service.actor());
+        draft.setCreatedBy(SoarService.actor());
         draft.setCreatedAt(now);
         draft.setUpdatedAt(now);
-        service.versions.save(draft);
-        return service.versionView(draft);
+        versions.save(draft);
+        return versionView(draft);
     }
 
     void validatePublishedVersionForAutomation(String versionId) {
-        String tenant = service.tenant();
-        PlaybookVersionEntity version = service.versions.findByTenantIdAndId(tenant, versionId)
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
+        PlaybookVersionEntity version = versions.findByTenantIdAndId(tenant, versionId)
                 .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_VERSION_NOT_FOUND",
                         "version not found"));
         if (!SoarPlaybookVersionStatus.PUBLISHED.name().equals(version.getStatus())) {
             throw SoarService.error(HttpStatus.CONFLICT, "SOAR_VERSION_NOT_PUBLISHED",
                     "automation rule can only reference a published version");
         }
-        SoarPlaybookEntity playbook = service.playbooks.findByTenantIdAndId(tenant, version.getPlaybookId())
+        SoarPlaybookEntity playbook = playbooks.findByTenantIdAndId(tenant, version.getPlaybookId())
                 .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_PLAYBOOK_NOT_FOUND",
                         "playbook not found"));
         if (!"ACTIVE".equalsIgnoreCase(playbook.getStatus())) {
             throw SoarService.error(HttpStatus.CONFLICT, "SOAR_PLAYBOOK_ARCHIVED",
                     "archived playbooks cannot be enabled for automation");
         }
-        DefinitionValidationResult checked = service.validator.validate(version.getDefinitionJson());
+        DefinitionValidationResult checked = validator.validate(version.getDefinitionJson());
         if (!checked.valid()) {
             throw SoarService.error(HttpStatus.BAD_REQUEST, "SOAR_DEFINITION_INVALID",
                     "published definition is no longer valid");
         }
-        service.validateConnections(version.getDefinitionJson(), tenant);
-        service.validateSubPlaybookGraph(tenant, version);
+        definitionPolicy.validateConnections(version.getDefinitionJson(), tenant);
+        definitionPolicy.validateSubPlaybookGraph(tenant, version);
     }
 
     Map<String, Object> saveDraft(String playbookId, int versionNo, String definition,
                                   String layout, Long expectedRowVersion) {
-        service.requireControlPlane();
-        String tenant = service.tenant();
-        service.playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
-                .or(() -> service.playbooks.findByTenantIdAndId(tenant, playbookId))
+        gates.requireControlPlane();
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
+        playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
+                .or(() -> playbooks.findByTenantIdAndId(tenant, playbookId))
                 .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_PLAYBOOK_NOT_FOUND",
                         "playbook not found"));
-        PlaybookVersionEntity version = service.versions.findByTenantIdAndPlaybookIdAndVersionNoForUpdate(
+        PlaybookVersionEntity version = versions.findByTenantIdAndPlaybookIdAndVersionNoForUpdate(
                         tenant, playbookId, versionNo)
-                .or(() -> service.versions.findByTenantIdAndPlaybookIdAndVersionNo(tenant, playbookId, versionNo))
+                .or(() -> versions.findByTenantIdAndPlaybookIdAndVersionNo(tenant, playbookId, versionNo))
                 .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_VERSION_NOT_FOUND",
                         "version not found"));
         if (!SoarPlaybookVersionStatus.DRAFT.name().equals(version.getStatus())) {
@@ -227,7 +249,7 @@ final class SoarPlaybookCommandService {
             throw SoarService.error(HttpStatus.BAD_REQUEST, "SOAR_DEFINITION_INVALID",
                     "definition is required");
         }
-        DefinitionValidationResult checked = service.validator.validate(definition);
+        DefinitionValidationResult checked = validator.validate(definition);
         if (checked.errors().stream().anyMatch(issue ->
                 "DEFINITION_SECRET_INLINE_FORBIDDEN".equals(issue.code())
                         || "ACTION_SECRET_INLINE_FORBIDDEN".equals(issue.code()))) {
@@ -235,32 +257,32 @@ final class SoarPlaybookCommandService {
                     "playbook definitions cannot persist inline secrets; use a connection secretRef");
         }
         version.setDefinitionJson(definition);
-        version.setLayoutJson(layout == null ? "{}" : service.limit(layout, SoarDefinitionValidator.MAX_BYTES));
+        version.setLayoutJson(layout == null ? "{}" : SoarService.limit(layout, SoarDefinitionValidator.MAX_BYTES));
         version.setDefinitionHash(checked.definitionHash() == null
-                ? service.validator.canonicalHash(definition) : checked.definitionHash());
+                ? validator.canonicalHash(definition) : checked.definitionHash());
         version.setSchemaVersion(checked.schemaVersion() == null ? SoarDefinitionValidator.SCHEMA_VERSION
                 : checked.schemaVersion());
-        version.setRiskSummaryJson(service.write(Map.of(
+        version.setRiskSummaryJson(json.write(Map.of(
                 "highRiskActionCount", checked.highRiskActionCount(),
                 "actionCount", checked.actionCount(),
                 "valid", checked.valid())));
         version.setUpdatedAt(Instant.now());
-        service.versions.save(version);
-        return service.versionView(version);
+        versions.save(version);
+        return versionView(version);
     }
 
     DefinitionValidationResult validateVersion(String playbookId, int versionNo) {
-        PlaybookVersionEntity version = service.version(playbookId, versionNo);
-        DefinitionValidationResult checked = service.validator.validate(version.getDefinitionJson());
-        if (checked.valid()) service.validateConnections(version.getDefinitionJson(), service.tenant());
+        PlaybookVersionEntity version = records.version(playbookId, versionNo);
+        DefinitionValidationResult checked = validator.validate(version.getDefinitionJson());
+        if (checked.valid()) definitionPolicy.validateConnections(version.getDefinitionJson(), com.socp.platform.tenant.context.TenantContext.require());
         return checked;
     }
 
     Map<String, Object> dryRun(String playbookId, int versionNo,
                                Map<String, Object> subject, Map<String, Object> inputs) {
-        PlaybookVersionEntity version = service.version(playbookId, versionNo);
+        PlaybookVersionEntity version = records.version(playbookId, versionNo);
         try {
-            return new SoarDryRunEngine(service.mapper, service.validator)
+            return new SoarDryRunEngine(mapper, validator)
                     .run(version.getDefinitionJson(), inputs, subject);
         } catch (IllegalArgumentException failure) {
             throw SoarService.error(HttpStatus.BAD_REQUEST, "SOAR_DRY_RUN_INVALID",
@@ -269,7 +291,7 @@ final class SoarPlaybookCommandService {
     }
 
     JsonNode definitionSchema() {
-        return service.readTree("{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\","
+        return json.readTree("{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\","
                 + "\"$id\":\"https://socp.local/schema/soar.playbook\","
                 + "\"type\":\"object\",\"required\":[\"schemaVersion\",\"entryNodeId\",\"nodes\",\"edges\"],"
                 + "\"properties\":{\"schemaVersion\":{\"const\":\"soar.playbook\"},"
@@ -280,56 +302,56 @@ final class SoarPlaybookCommandService {
     }
 
     Map<String, Object> publish(String playbookId, int versionNo) {
-        service.requireControlPlane();
-        String tenant = service.tenant();
-        SoarPlaybookEntity playbook = service.playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
-                .or(() -> service.playbooks.findByTenantIdAndId(tenant, playbookId))
+        gates.requireControlPlane();
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
+        SoarPlaybookEntity playbook = playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
+                .or(() -> playbooks.findByTenantIdAndId(tenant, playbookId))
                 .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_PLAYBOOK_NOT_FOUND",
                         "playbook not found"));
-        PlaybookVersionEntity version = service.versions.findByTenantIdAndPlaybookIdAndVersionNoForUpdate(
+        PlaybookVersionEntity version = versions.findByTenantIdAndPlaybookIdAndVersionNoForUpdate(
                         tenant, playbookId, versionNo)
-                .or(() -> service.versions.findByTenantIdAndPlaybookIdAndVersionNo(tenant, playbookId, versionNo))
+                .or(() -> versions.findByTenantIdAndPlaybookIdAndVersionNo(tenant, playbookId, versionNo))
                 .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_VERSION_NOT_FOUND",
                         "version not found"));
         if (!SoarPlaybookVersionStatus.DRAFT.name().equals(version.getStatus())) {
             throw SoarService.error(HttpStatus.CONFLICT, "SOAR_VERSION_IMMUTABLE",
                     "only a draft can be published");
         }
-        DefinitionValidationResult checked = service.validator.validate(version.getDefinitionJson());
+        DefinitionValidationResult checked = validator.validate(version.getDefinitionJson());
         if (!checked.valid()) {
             throw SoarService.error(HttpStatus.BAD_REQUEST, "SOAR_DEFINITION_INVALID",
                     "definition has " + checked.errors().size() + " validation error(s)");
         }
-        service.validateConnections(version.getDefinitionJson(), tenant);
-        service.validateSubPlaybookGraph(tenant, version);
+        definitionPolicy.validateConnections(version.getDefinitionJson(), tenant);
+        definitionPolicy.validateSubPlaybookGraph(tenant, version);
         Instant now = Instant.now();
         version.setStatus(SoarPlaybookVersionStatus.PUBLISHED.name());
-        version.setPublishedBy(service.actor());
+        version.setPublishedBy(SoarService.actor());
         version.setPublishedAt(now);
         version.setUpdatedAt(now);
         version.setDefinitionHash(checked.definitionHash());
-        version.setRiskSummaryJson(service.write(Map.of(
+        version.setRiskSummaryJson(json.write(Map.of(
                 "highRiskActionCount", checked.highRiskActionCount(),
                 "actionCount", checked.actionCount(), "valid", true)));
-        service.versions.save(version);
+        versions.save(version);
         playbook.setLatestPublishedVersion(versionNo);
         playbook.setUpdatedAt(now);
-        service.playbooks.save(playbook);
-        Map<String, Object> view = service.versionView(version);
-        view.put("connectionHealth", service.connectionHealth(version.getDefinitionJson(), tenant));
+        playbooks.save(playbook);
+        Map<String, Object> view = versionView(version);
+        view.put("connectionHealth", definitionPolicy.connectionHealth(version.getDefinitionJson(), tenant));
         return view;
     }
 
     Map<String, Object> deprecate(String playbookId, int versionNo) {
-        service.requireControlPlane();
-        String tenant = service.tenant();
-        SoarPlaybookEntity playbook = service.playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
-                .or(() -> service.playbooks.findByTenantIdAndId(tenant, playbookId))
+        gates.requireControlPlane();
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
+        SoarPlaybookEntity playbook = playbooks.findByTenantIdAndIdForUpdate(tenant, playbookId)
+                .or(() -> playbooks.findByTenantIdAndId(tenant, playbookId))
                 .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_PLAYBOOK_NOT_FOUND",
                         "playbook not found"));
-        PlaybookVersionEntity version = service.versions.findByTenantIdAndPlaybookIdAndVersionNoForUpdate(
+        PlaybookVersionEntity version = versions.findByTenantIdAndPlaybookIdAndVersionNoForUpdate(
                         tenant, playbookId, versionNo)
-                .or(() -> service.versions.findByTenantIdAndPlaybookIdAndVersionNo(tenant, playbookId, versionNo))
+                .or(() -> versions.findByTenantIdAndPlaybookIdAndVersionNo(tenant, playbookId, versionNo))
                 .orElseThrow(() -> SoarService.error(HttpStatus.NOT_FOUND, "SOAR_VERSION_NOT_FOUND",
                         "version not found"));
         if (!SoarPlaybookVersionStatus.PUBLISHED.name().equals(version.getStatus())) {
@@ -338,17 +360,29 @@ final class SoarPlaybookCommandService {
         }
         version.setStatus(SoarPlaybookVersionStatus.DEPRECATED.name());
         version.setUpdatedAt(Instant.now());
-        service.versions.save(version);
+        versions.save(version);
         if (Integer.valueOf(versionNo).equals(playbook.getLatestPublishedVersion())) {
-            Integer replacement = service.versions.findByTenantIdAndPlaybookIdOrderByVersionNoDesc(tenant, playbookId)
+            Integer replacement = versions.findByTenantIdAndPlaybookIdOrderByVersionNoDesc(tenant, playbookId)
                     .stream()
                     .filter(candidate -> SoarPlaybookVersionStatus.PUBLISHED.name().equals(candidate.getStatus()))
                     .map(PlaybookVersionEntity::getVersionNo)
                     .findFirst().orElse(null);
             playbook.setLatestPublishedVersion(replacement);
             playbook.setUpdatedAt(Instant.now());
-            service.playbooks.save(playbook);
+            playbooks.save(playbook);
         }
-        return service.versionView(version);
+        return versionView(version);
+    }
+    private Map<String, Object> playbookView(SoarPlaybookEntity value) {
+        Integer draft = versions.findFirstByTenantIdAndPlaybookIdAndStatusOrderByVersionNoDesc(
+                com.socp.platform.tenant.context.TenantContext.require(), value.getId(), "DRAFT")
+                .map(com.socp.soar.web.persistence.entity.PlaybookVersionEntity::getVersionNo).orElse(null);
+        return readModels.playbookView(value, draft);
+    }
+    private Map<String, Object> playbookView(SoarPlaybookEntity value, PlaybookVersionEntity draft) {
+        return readModels.playbookView(value, draft == null ? null : draft.getVersionNo());
+    }
+    private Map<String, Object> versionView(PlaybookVersionEntity value) {
+        return readModels.versionView(value, records.playbook(value.getPlaybookId()).getStatus());
     }
 }

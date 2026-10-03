@@ -149,6 +149,10 @@ public class CaseService {
         return store.page(page, size, query, status);
     }
 
+    public Page<Case> queue(int page, int size, String query, String status, String queue, String actor) {
+        return store.queue(page, size, query, status, queue, actor);
+    }
+
     public long count() {
         return store.count();
     }

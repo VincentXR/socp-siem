@@ -2,8 +2,6 @@ import { del, downloadFile, get, post, put, type ApiRequestOptions } from './cor
 import type { DataSourceType, FieldDef, LogCategory, LogSource, ParseRule, ReferenceSet, SearchResult, SinkTarget, Paged } from './models'
 import { withQuery } from '../lib/query'
 
-export const updateOutput = (id: string, target: Pick<SinkTarget, 'name' | 'type' | 'uri' | 'enabled'> & { authToken?: string | null }, credentialAction: 'KEEP' | 'REPLACE' | 'CLEAR') =>
-  put<SinkTarget>(`/search-config/api/v1/outputs/${encodeURIComponent(id)}`, { target, credentialAction })
 /** Always request the bounded, one-based source catalogue rather than its legacy array form. */
 export const listSourcesPage = (page: number, size: number, q = '', options?: ApiRequestOptions) =>
   get<Paged<LogSource>>(withQuery('/search-config/api/v1/sources', { page, size, q: q.trim() || undefined }), options)
@@ -40,7 +38,7 @@ export const deleteParseRule = (id: string) => del(`/search-config/api/v1/parse-
 export const previewParse = (body: { ruleId?: string; format?: string; pattern?: string; line: string }, options?: ApiRequestOptions) =>
   post<{ matched: boolean; fields: Record<string, string>; error?: string; rule?: string; format?: string }>('/search-config/api/v1/parse-rules/preview', body, options)
 export const listOutputs = (options?: ApiRequestOptions) => get<SinkTarget[]>('/search-config/api/v1/outputs', options)
-export const createOutput = (o: Partial<SinkTarget>) => post<SinkTarget>('/search-config/api/v1/outputs', o)
+export const createOutput = (o: Partial<SinkTarget> & { authToken?: string | null }) => post<SinkTarget>('/search-config/api/v1/outputs', o)
 export const deleteOutput = (id: string) => del(`/search-config/api/v1/outputs/${encodeURIComponent(id)}`)
 
 export const listDataSourceTypes = (options?: ApiRequestOptions) => get<DataSourceType[]>('/search-config/api/v1/meta/data-source-types', options)

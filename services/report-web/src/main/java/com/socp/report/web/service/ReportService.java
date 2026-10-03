@@ -120,7 +120,7 @@ public class ReportService {
     public ReportSummary dailyReport() {
         String predicate = "tenant_id = '" + sqlLiteral(tenant()) + "'";
         CkFetch severityRows = ckQuery("SELECT severity, uniqExact(alarm_id) FROM alert_agg.alarm_detail WHERE "
-                + predicate + " AND ts >= today() GROUP BY severity");
+                + predicate + " AND ts >= toStartOfDay(now('UTC')) AND ts < toStartOfDay(now('UTC')) + INTERVAL 1 DAY GROUP BY severity");
         if (!severityRows.available()) {
             return fallbackDaily(severityRows.reason());
         }
@@ -136,7 +136,7 @@ public class ReportService {
         }
 
         CkFetch ruleRows = ckQuery("SELECT rule_id, rule_name, uniqExact(alarm_id) c FROM alert_agg.alarm_detail WHERE "
-                + predicate + " AND ts >= today() GROUP BY rule_id, rule_name ORDER BY c DESC LIMIT 10");
+                + predicate + " AND ts >= toStartOfDay(now('UTC')) AND ts < toStartOfDay(now('UTC')) + INTERVAL 1 DAY GROUP BY rule_id, rule_name ORDER BY c DESC LIMIT 10");
         List<ReportSummary.RuleCount> byRule;
         String source = "clickhouse";
         boolean degraded = false;
@@ -158,7 +158,7 @@ public class ReportService {
 
     public ReportTrend trend7d() {
         String predicate = "tenant_id = '" + sqlLiteral(tenant()) + "'";
-        CkFetch rows = ckQuery("SELECT toDate(ts) d, uniqExact(alarm_id) FROM alert_agg.alarm_detail WHERE "
+        CkFetch rows = ckQuery("SELECT toDate(ts, 'UTC') d, uniqExact(alarm_id) FROM alert_agg.alarm_detail WHERE "
                 + predicate + " AND ts >= now() - INTERVAL 7 DAY GROUP BY d ORDER BY d");
         if (rows.available()) {
             Map<String, Integer> countsByDay = new LinkedHashMap<>();

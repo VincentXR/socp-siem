@@ -34,6 +34,28 @@ class EndpointLookupPersistenceTest {
     @AfterEach void clearTenant() { TenantContext.clear(); }
 
     @Test
+    void statusFilteringUsesHeartbeatExpiryAndTenantScopedPages() {
+        TenantContext.set("status-filter");
+        Instant recent = Instant.now();
+        Instant expired = recent.minusSeconds(600);
+        store.save(new Endpoint("online", "match-live", "203.0.113.1", "Linux", "agent", "ONLINE", recent));
+        store.save(new Endpoint("stale", "match-stale", "203.0.113.2", "Linux", "agent", "ONLINE", expired));
+        store.save(new Endpoint("offline", "match-offline", "203.0.113.3", "Linux", "agent", "OFFLINE", recent));
+        store.save(new Endpoint("other", "other", "203.0.113.4", "Linux", "agent", "OFFLINE", recent));
+        var online = store.page(1, 1, "match", "ONLINE");
+        var offline = store.page(1, 1, "match", "OFFLINE");
+        assertThat(online.getTotalElements()).isEqualTo(1);
+        assertThat(online.getContent()).extracting(Endpoint::id).containsExactly("online");
+        assertThat(offline.getTotalElements()).isEqualTo(2);
+        assertThat(offline.getContent()).extracting(Endpoint::id).containsExactly("offline");
+        assertThat(store.page(2, 1, "match", "OFFLINE").getContent()).extracting(Endpoint::id).containsExactly("stale");
+        assertThat(store.page(2, 1, "match", "OFFLINE").getContent()).extracting(Endpoint::status).containsExactly("OFFLINE");
+        assertThat(store.stats()).containsEntry("online", 1L);
+        TenantContext.set("status-filter-other");
+        assertThat(store.page(1, 20, "match", "OFFLINE")).isEmpty();
+    }
+
+    @Test
     void hostnameHistoryPagesBeyondGlobalPrefixWithoutCrossingTenants() {
         TenantContext.set("endpoint-history");
         var endpoint = store.save(Endpoint.register(" Shared-Host ", "203.0.113.7", "Linux", "agent"));

@@ -20,7 +20,6 @@ AUTH_BOUNDARY = re.compile(
 PERSISTENCE_IMPORT = re.compile(r"^import\s+com\.socp\..*\.persistence\.(repository|entity)\.", re.MULTILINE)
 REPOSITORY_DECL = re.compile(
     r"public\s+interface\s+(\w+Repository)\s+extends\s+([^\{]+)\{", re.MULTILINE)
-SERVICE_DEPENDENCY = re.compile(r"<artifactId>([^<]+)</artifactId>")
 STARTER_MANAGED = {
     "socp-auth", "socp-tenant", "socp-audit", "socp-ratelimit",
     "socp-obs", "socp-error", "socp-data",

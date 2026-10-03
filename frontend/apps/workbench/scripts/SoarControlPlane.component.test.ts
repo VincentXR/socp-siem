@@ -48,6 +48,27 @@ async function mountPlane(props: { section: 'rules' | 'tasks' | 'connections-and
 }
 
 describe('soar control plane data scoping', () => {
+  it('prefills a published-version handoff for review without creating or enabling a rule', async () => {
+    const wrapper = mount(SoarControlPlane, { props: { section: 'rules', initialVersionId: 'published-version', canWrite: true } })
+    await flushPromises()
+    expect(versionPicker(wrapper).props('modelValue')).toEqual(['published-version'])
+    expect(mocks.createAutomationRule).not.toHaveBeenCalled()
+    expect(mocks.setAutomationRuleEnabled).not.toHaveBeenCalled()
+    await wrapper.setProps({ canWrite: false })
+    await flushPromises()
+    expect(wrapper.findAllComponents(ElDrawer).some(drawer => drawer.props('modelValue'))).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('does not open a version handoff for a read-only operator', async () => {
+    const wrapper = mount(SoarControlPlane, { props: { section: 'rules', initialVersionId: 'published-version', canWrite: false } })
+    await flushPromises()
+    expect(wrapper.findAllComponents(ElDrawer).some(drawer => drawer.props('modelValue'))).toBe(false)
+    expect(mocks.listPlaybooks).not.toHaveBeenCalled()
+    expect(mocks.createAutomationRule).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   it('loads only the rule catalog for the rules section', async () => {
     const wrapper = await mountPlane({ section: 'rules', hideTabs: true })
     expect(mocks.listAutomationRules).toHaveBeenCalled()

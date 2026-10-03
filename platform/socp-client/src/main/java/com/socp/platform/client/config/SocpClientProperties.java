@@ -99,6 +99,10 @@ public class SocpClientProperties {
         this.bodyLogLimit = bodyLogLimit;
     }
 
+    private int requestBodyLimitBytes = 1_048_576;
+    public int getRequestBodyLimitBytes() { return requestBodyLimitBytes; }
+    public void setRequestBodyLimitBytes(int value) { requestBodyLimitBytes = Math.max(1, value); }
+
     public int getResponseBodyLimitBytes() {
         return responseBodyLimitBytes;
     }

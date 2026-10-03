@@ -47,18 +47,12 @@ public class EndpointStore {
     void init() {
         if (!demoDataEnabled) return;
         TenantContext.runWith("default", () -> {
-            List<EndpointEntity> all = repository.findByTenantId("default");
-            if (all.isEmpty()) {
+            if (repository.countByTenantId("default") == 0) {
                 save(Endpoint.register("web01", "10.0.0.5", "Ubuntu 22.04", "falco-0.39"));
                 save(Endpoint.register("web02", "10.0.0.6", "Ubuntu 22.04", "falco-0.39"));
                 save(Endpoint.register("db-master", "10.0.0.10", "Debian 12", "falco-0.38"));
             }
         });
-    }
-
-    @Transactional(readOnly = true)
-    public List<Endpoint> list() {
-        return repository.findByTenantId(tenant()).stream().map(EndpointStore::fromEntity).toList();
     }
 
     @Transactional(readOnly = true)
@@ -70,9 +64,18 @@ public class EndpointStore {
     /** Reads one bounded tenant page directly from the endpoint table. */
     @Transactional(readOnly = true)
     public Page<Endpoint> page(int page, int size, String query) {
+        return page(page, size, query, "");
+    }
+
+    @Transactional(readOnly = true)
+    public Page<Endpoint> page(int page, int size, String query, String status) {
         Pageable pageable = PageRequest.of(page - 1, size,
                 Sort.by(Sort.Order.asc("hostname"), Sort.Order.asc("storageId")));
         String normalized = query == null ? "" : query.trim();
+        if (status != null && !status.isBlank()) {
+            return repository.searchStatusByTenantId(tenant(), normalized, status,
+                    Instant.now().minus(HEARTBEAT_EXPIRATION), pageable).map(EndpointStore::fromEntity);
+        }
         Page<EndpointEntity> result = normalized.isEmpty()
                 ? repository.findByTenantId(tenant(), pageable)
                 : repository.searchByTenantId(tenant(), normalized, pageable);
@@ -150,7 +153,7 @@ public class EndpointStore {
     private static final java.time.Duration HEARTBEAT_EXPIRATION = java.time.Duration.ofMinutes(5);
 
     private static Endpoint fromEntity(EndpointEntity entity) {
-        String status = entity.getStatus();
+        String status = "ONLINE".equals(entity.getStatus()) ? "ONLINE" : "OFFLINE";
         Instant last = entity.getLastHeartbeat();
         // 动态心跳衰减判定：若超期未收到探针心跳，动态判定为 OFFLINE
         if (last != null && last.isBefore(Instant.now().minus(HEARTBEAT_EXPIRATION))) {

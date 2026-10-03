@@ -1,15 +1,11 @@
 package com.socp.threat.web.service;
 
-import com.socp.platform.client.http.BoundedBodyHandlers;
+import com.socp.platform.client.http.PinnedHttpTransport;
 import com.socp.platform.client.http.ExternalEndpointPolicy;
 import com.socp.platform.client.http.PinnedEndpoint;
 import com.socp.platform.client.config.SocpClientProperties;
 
-import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -17,7 +13,7 @@ import java.util.List;
 /** Minimal TAXII 2.1 collection client with bounded pagination and HTTPS policy. */
 public final class TaxiiClient {
 
-    private final HttpClient http;
+    private final PinnedHttpTransport http;
     private final Duration timeout;
     private final boolean allowHttp;
     private final ExternalEndpointPolicy endpointPolicy;
@@ -26,7 +22,7 @@ public final class TaxiiClient {
         this.timeout = timeout == null ? Duration.ofSeconds(10) : timeout;
         this.allowHttp = allowHttp;
         this.endpointPolicy = java.util.Objects.requireNonNull(endpointPolicy, "endpointPolicy");
-        this.http = HttpClient.newBuilder().connectTimeout(this.timeout).build();
+        this.http = new PinnedHttpTransport();
     }
 
     public List<String> fetchCollection(URI collection, String authorization) {
@@ -34,28 +30,31 @@ public final class TaxiiClient {
         if (!allowHttp && !"https".equalsIgnoreCase(collection.getScheme())) {
             throw invalid("TAXII collection must use HTTPS");
         }
-        // 把整轮分页夹进一次「校验 + 钉住」：钉住期间当前线程对同一主机的任何重新解析
-        // （包括每页建连时的隐式解析）都只会返回已校验地址，消除重绑定窗口
+        // Every page connects using the original validated resolution and TLS hostname.
         try (PinnedEndpoint pinned = endpointPolicy.validatePinned(collection.toString())) {
             if (pinned.isRejected()) throw invalid("TAXII endpoint rejected: " + pinned.rejectionReason());
             List<String> documents = new ArrayList<>();
             URI next = collection;
             for (int page = 0; next != null && page < 100; page++) {
                 validateNext(next, collection);
-                HttpRequest.Builder request = HttpRequest.newBuilder(next).timeout(timeout)
-                        .header("Accept", "application/taxii+json;version=2.1");
-                if (authorization != null && !authorization.isBlank()) request.header("Authorization", authorization);
+                java.util.Map<String, String> headers = new java.util.LinkedHashMap<>();
+                headers.put("Accept", "application/taxii+json;version=2.1");
+                if (authorization != null && !authorization.isBlank()) headers.put("Authorization", authorization);
                 try {
-                    HttpResponse<String> response = http.send(request.GET().build(),
-                            BoundedBodyHandlers.ofString(SocpClientProperties.DEFAULT_RESPONSE_BODY_LIMIT_BYTES));
-                    if (response.statusCode() / 100 != 2) throw invalid("TAXII HTTP " + response.statusCode());
+                    int deadline = (int) Math.max(1L, Math.min(Integer.MAX_VALUE, timeout.toMillis()));
+                    var response = http.send("GET", next, null, null, headers, pinned,
+                            deadline, deadline, SocpClientProperties.DEFAULT_RESPONSE_BODY_LIMIT_BYTES);
+                    if (response.status() / 100 != 2) throw invalid("TAXII HTTP " + response.status());
                     documents.add(response.body());
                     URI link = nextLink(response.body());
                     next = link == null ? null : next.resolve(link);
+                } catch (IllegalArgumentException invalidResponse) {
+                    // Preserve sanitized protocol/validation errors for checkpoint diagnostics.
+                    throw invalidResponse;
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
                     throw new IllegalStateException("TAXII collection request failed", ex);
-                } catch (IOException ex) {
+                } catch (Exception ex) {
                     throw new IllegalStateException("TAXII collection request failed", ex);
                 }
             }

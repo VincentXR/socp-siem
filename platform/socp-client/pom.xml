@@ -15,6 +15,12 @@
     <description>服务间调用统一客户端：地址解析 / 超时 / 状态码检查 / 失败可见 / 指标 / trace 透传 / 重试</description>
 
     <dependencies>
+        <!-- Request-scoped DNS resolver pins validated external addresses at socket creation;
+             JDK HttpClient performs asynchronous DNS and cannot honor thread-local pins. -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

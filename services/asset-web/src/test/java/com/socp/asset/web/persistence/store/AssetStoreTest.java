@@ -43,8 +43,6 @@ class AssetStoreTest {
                 db.stream().filter(e -> "default".equals(e.getTenantId())).toList());
         when(repo.findByIdAndTenantId(any(), any())).thenAnswer(inv ->
                 db.stream().filter(e -> e.getId().equals(inv.getArgument(0))).findFirst());
-        when(repo.findByIpAndTenantId(any(), any())).thenAnswer(inv ->
-                db.stream().filter(e -> e.getIp() != null && e.getIp().equals(inv.getArgument(0))).toList());
         store = new AssetStore(repo);
     }
 
@@ -55,7 +53,7 @@ class AssetStoreTest {
 
     @Test
     void seedsFiveDemoAssets() {
-        List<Asset> all = store.list();
+        List<Asset> all = db.stream().map(AssetStore::fromEntity).toList();
         assertEquals(5, all.size());
         assertTrue(all.stream().anyMatch(a -> "fw-core".equals(a.name()) && "FIREWALL".equals(a.type())));
         assertTrue(all.stream().anyMatch(a -> "CRITICAL".equals(a.criticality())));
@@ -66,19 +64,19 @@ class AssetStoreTest {
         db.clear();
         AssetStore productionStore = new AssetStore(repo, false);
 
-        assertTrue(productionStore.list().isEmpty());
+        assertTrue(db.isEmpty());
     }
 
     @Test
     void saveThenDeleteRoundTrip() {
-        int before = store.list().size();
+        int before = db.stream().map(AssetStore::fromEntity).toList().size();
 
         Asset a = Asset.create("app01", "SERVER", "10.0.0.30", "RHEL 9", "app", "MEDIUM");
         assertEquals(a, store.save(a), "save 应原样回传，便于控制器直接返回");
-        assertEquals(before + 1, store.list().size());
+        assertEquals(before + 1, db.stream().map(AssetStore::fromEntity).toList().size());
 
         assertTrue(store.delete(a.id()), "已存在的 id 删除返回 true");
-        assertEquals(before, store.list().size());
+        assertEquals(before, db.stream().map(AssetStore::fromEntity).toList().size());
         assertFalse(store.delete(a.id()), "重复删除返回 false");
     }
 

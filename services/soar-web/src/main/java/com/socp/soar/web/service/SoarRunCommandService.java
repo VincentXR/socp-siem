@@ -2,36 +2,36 @@ package com.socp.soar.web.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.definition.SoarDefinitionValidator;
 import com.socp.soar.web.domain.DefinitionValidationResult;
+import com.socp.soar.web.domain.SoarPlaybookVersionStatus;
 import com.socp.soar.web.domain.SoarRunStatus;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
-import com.socp.soar.web.persistence.entity.SoarApprovalEntity;
-import com.socp.soar.web.persistence.entity.SoarDispatchOutboxEntity;
-import com.socp.soar.web.persistence.entity.SoarManualTaskEntity;
 import com.socp.soar.web.persistence.entity.SoarNodeRunEntity;
 import com.socp.soar.web.persistence.entity.SoarPlaybookEntity;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
-import com.socp.soar.web.persistence.repository.SoarApprovalRepository;
-import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
-import com.socp.soar.web.persistence.repository.SoarManualTaskRepository;
-import com.socp.soar.web.persistence.repository.SoarNodeRunRepository;
-import com.socp.soar.web.persistence.repository.SoarRunRepository;
+import com.socp.soar.web.persistence.entity.SoarApprovalEntity;
+import com.socp.soar.web.persistence.entity.SoarManualTaskEntity;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
+import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
+import com.socp.soar.web.persistence.repository.SoarNodeRunRepository;
 import com.socp.soar.web.persistence.repository.SoarPlaybookRepository;
-import com.socp.soar.web.domain.SoarPlaybookVersionStatus;
+import com.socp.soar.web.persistence.repository.SoarRunRepository;
+import com.socp.soar.web.persistence.repository.SoarApprovalRepository;
+import com.socp.soar.web.persistence.repository.SoarManualTaskRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
-
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
 import java.util.UUID;
-
+import java.util.Set;
+import com.socp.soar.web.persistence.entity.SoarDispatchOutboxEntity;
+import java.util.Objects;
 
 /**
  * Run admission, retry, manual-task and cancellation commands extracted from
@@ -39,8 +39,37 @@ import java.util.UUID;
  * annotations while this class owns run state transitions.
  */
 final class SoarRunCommandService {
+    SoarRunCommandService(SoarPlaybookRepository playbooks, PlaybookVersionRepository versions,
+                SoarRunRepository runs, SoarDispatchOutboxRepository dispatches, SoarNodeRunRepository nodes,
+                SoarApprovalRepository approvals, SoarDefinitionValidator validator, ObjectMapper mapper,
+                SoarManualInputValidator manualInputValidator, SoarManualTaskRepository manualTasks,
+                SoarReadModelMapper readModels, SoarJson json, SoarRecords records, SoarRuntimeGate gates,
+                SoarEventWriter eventWriter, SoarDefinitionPolicy definitionPolicy) {
+        this.playbooks = playbooks;
+        this.versions = versions;
+        this.runs = runs;
+        this.dispatches = dispatches;
+        this.nodes = nodes;
+        this.approvals = approvals;
+        this.validator = validator;
+        this.mapper = mapper;
+        this.manualInputValidator = manualInputValidator;
+        this.manualTasks = manualTasks;
+        this.readModels = readModels;
+        this.json = json;
+        this.records = records;
+        this.gates = gates;
+        this.eventWriter = eventWriter;
+        this.definitionPolicy = definitionPolicy;
+    }
 
-    private final SoarService service;
+    private final SoarDefinitionPolicy definitionPolicy;
+    private final SoarEventWriter eventWriter;
+    private final SoarRuntimeGate gates;
+    private final SoarRecords records;
+    private final SoarJson json;
+    private final SoarReadModelMapper readModels;
+
     private final SoarRunRepository runs;
     private final SoarPlaybookRepository playbooks;
     private final PlaybookVersionRepository versions;
@@ -52,22 +81,8 @@ final class SoarRunCommandService {
     private final SoarManualInputValidator manualInputValidator;
     private final com.fasterxml.jackson.databind.ObjectMapper mapper;
 
-    SoarRunCommandService(SoarService service) {
-        this.service = service;
-        this.runs = service.runs;
-        this.playbooks = service.playbooks;
-        this.versions = service.versions;
-        this.dispatches = service.dispatches;
-        this.nodes = service.nodes;
-        this.approvals = service.approvals;
-        this.manualTasks = service.manualTasks;
-        this.validator = service.validator;
-        this.manualInputValidator = service.manualInputValidator;
-        this.mapper = service.mapper;
-    }
-
-    private String tenant() { return service.tenant(); }
-    private void requireExecution(String tenant) { service.requireExecution(tenant); }
+    private String tenant() { return com.socp.platform.tenant.context.TenantContext.require(); }
+    private void requireExecution(String tenant) { gates.requireExecution(tenant); }
     private static String actor() { return SoarService.actor(); }
     private static String required(String value, String field, int max) {
         return SoarService.required(value, field, max);
@@ -76,36 +91,36 @@ final class SoarRunCommandService {
     private static ResponseStatusException error(HttpStatus status, String code, String message) {
         return SoarService.error(status, code, message);
     }
-    private String write(Object value) { return service.write(value); }
-    private Object redact(Object value) { return service.redact(value); }
+    private String write(Object value) { return json.write(value); }
+    private Object redact(Object value) { return SoarRedaction.structured(value); }
     private static String redactFreeText(String value, int max) {
         return SoarService.redactFreeText(value, max);
     }
-    private Map<String, Object> runView(SoarRunEntity run) { return service.runView(run); }
-    private Map<String, Object> nodeView(SoarNodeRunEntity node) { return service.nodeView(node); }
-    private Map<String, Object> manualTaskView(SoarManualTaskEntity task) { return service.manualTaskView(task); }
+    private Map<String, Object> runView(SoarRunEntity run) { return readModels.runView(run); }
+    private Map<String, Object> nodeView(SoarNodeRunEntity node) { return readModels.nodeView(node); }
+    private Map<String, Object> manualTaskView(SoarManualTaskEntity task) { return readModels.manualTaskView(task); }
     private void appendEvent(String runId, String type, String actor, String summary, Map<String, Object> detail) {
-        service.appendEvent(runId, type, actor, summary, detail);
+        eventWriter.appendEvent(runId, type, actor, summary, detail);
     }
     private void enqueueSignal(SoarRunEntity run, String type, Map<String, Object> payload) {
-        service.enqueueSignal(run, type, payload);
+        eventWriter.enqueueSignal(run, type, payload);
     }
-    private SoarRunEntity run(String id) { return service.run(id); }
+    private SoarRunEntity run(String id) { return records.run(id); }
     private void validateConnections(String definitionJson, String tenant) {
-        service.validateConnections(definitionJson, tenant);
+        definitionPolicy.validateConnections(definitionJson, tenant);
     }
     private void validateSubPlaybookGraph(String tenant, PlaybookVersionEntity version) {
-        service.validateSubPlaybookGraph(tenant, version);
+        definitionPolicy.validateSubPlaybookGraph(tenant, version);
     }
     private boolean terminalRunProjection(SoarRunEntity run) {
         return SoarService.terminalRunProjection(run);
     }
-    private Map<String, Object> readMap(String json) { return service.readMap(json); }
+    private Map<String, Object> readMap(String json) { return this.json.readMap(json); }
     private Map<String, Object> castObjectMap(Map<?, ?> value) { return SoarService.castObjectMap(value); }
-    private String shortHash(String value) { return service.shortHash(value); }
-    private String approvalPolicyJson(String snapshot) { return service.approvalPolicyJson(snapshot); }
+    private String shortHash(String value) { return json.shortHash(value); }
+    private String approvalPolicyJson(String snapshot) { return definitionPolicy.approvalPolicyJson(snapshot); }
     private ApprovalContext buildApprovalContext(String definitionJson, String inputJson) {
-        SoarService.ApprovalContext value = service.buildApprovalContext(definitionJson, inputJson);
+        SoarDefinitionPolicy.ApprovalContext value = definitionPolicy.buildApprovalContext(definitionJson, inputJson);
         return new ApprovalContext(value.actionRef(), value.inputHash(), value.targetSnapshotJson());
     }
     private String text(Map<String, Object> map, String key) { return SoarService.text(map, key); }
@@ -155,6 +170,8 @@ final class SoarRunCommandService {
             throw error(HttpStatus.CONFLICT, "SOAR_DEFINITION_INVALID",
                     "published definition failed runtime validation");
         }
+        com.fasterxml.jackson.databind.JsonNode declaredInputs = json.readTree(version.getDefinitionJson()).path("inputSchema");
+        if (!declaredInputs.isMissingNode()) manualInputValidator.validate(declaredInputs.toString(), inputs == null ? Map.of() : inputs);
         // Connector health and enabled/deleted bindings are mutable after a
         // version is published. Re-check them at admission so a run never
         // enters the durable queue with an already-unusable target.
@@ -177,6 +194,20 @@ final class SoarRunCommandService {
         run.setTriggerType("MANUAL");
         run.setSubjectType(text(subject, "type"));
         run.setSubjectId(text(subject, "id"));
+        for (String field : List.of("id", "alarmId", "caseId")) {
+            Object value = subject == null ? null : subject.get(field);
+            if (value != null && (!(value instanceof String) || ((String) value).length() > 255))
+                throw error(HttpStatus.BAD_REQUEST, "SOAR_INPUT_INVALID", "origin identity must be a string of at most 255 characters");
+        }
+        String alarmId = text(subject, "alarmId");
+        String caseId = text(subject, "caseId");
+        String subjectType = String.valueOf(run.getSubjectType()).toLowerCase(java.util.Locale.ROOT);
+        boolean alarmSubject = Set.of("alert", "alarm", "alert.created", "alarm.created").contains(subjectType);
+        boolean caseSubject = Set.of("case", "incident", "case.created", "incident.created").contains(subjectType);
+        run.setOriginAlarmId(alarmId == null || alarmId.isBlank()
+                ? (alarmSubject ? run.getSubjectId() : null) : alarmId);
+        run.setOriginCaseId(caseId == null || caseId.isBlank()
+                ? (caseSubject ? run.getSubjectId() : null) : caseId);
         run.setStatus(SoarRunStatus.QUEUED.name());
         run.setExecutionNodeCount(0);
         String inputJson = write(redact(Map.of("subject", subject == null ? Map.of() : subject,
@@ -494,6 +525,7 @@ final class SoarRunCommandService {
         clone.setPlaybookVersionNo(original.getPlaybookVersionNo()); clone.setDefinitionHash(original.getDefinitionHash());
         clone.setTriggerType(rerun ? "RERUN" : "RETRY"); clone.setSubjectType(original.getSubjectType());
         clone.setSubjectId(original.getSubjectId());
+        clone.setOriginAlarmId(original.getOriginAlarmId()); clone.setOriginCaseId(original.getOriginCaseId());
         PlaybookVersionEntity sourceVersion = versions.findByTenantIdAndId(tenant, original.getPlaybookVersionId())
                 .orElseThrow(() -> error(HttpStatus.CONFLICT, "SOAR_VERSION_NOT_FOUND",
                         "source published version is unavailable"));

@@ -1,5 +1,9 @@
 package com.socp.incident.web.api.controller;
 import com.socp.incident.web.api.request.AlarmRequest;
+import com.socp.incident.web.api.request.CaseChangeRequest;
+import com.socp.incident.web.api.request.CaseClaimRequest;
+import com.socp.incident.web.api.request.CaseNoteRequest;
+import com.socp.incident.web.service.CaseWorkspaceService;
 import com.socp.incident.web.api.request.CreateCaseRequest;
 import com.socp.incident.web.domain.Case;
 import com.socp.incident.web.domain.TimelineEvent;
@@ -47,6 +51,8 @@ public class CaseController {
     private final CaseService service;
     private final int maxListSize;
     private final ObjectMapper objectMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private CaseWorkspaceService workspace;
 
     public CaseController(CaseService service,
                           @Value("${socp.web.list-max-size:500}") int maxListSize,
@@ -81,14 +87,18 @@ public class CaseController {
     public ApiResult<PageResponse<Case>> list(@RequestParam(defaultValue = "1") int page,
                                               @RequestParam(defaultValue = "500") int size,
                                               @RequestParam(defaultValue = "") String q,
-                                              @RequestParam(required = false) String status) {
+                                              @RequestParam(required = false) String status,
+                                              @RequestParam(defaultValue = "") String queue) {
         requireValidRange(page, size);
-        Page<Case> result = service.page(page, size, normalizeQuery(q), normalizeStatus(status));
+        if (!List.of("", "mine", "unassigned").contains(queue)) throw ApiException.badRequest("Invalid case queue");
+        Page<Case> result = queue.isEmpty() ? service.page(page, size, normalizeQuery(q), normalizeStatus(status))
+                : service.queue(page, size, normalizeQuery(q), normalizeStatus(status), queue, CaseActor.resolve(null));
         return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
                 result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
 
     /** 归档导出：按数据库页流式写出案件摘要；时间线通过独立分页资源读取。 */
+    @org.springframework.transaction.annotation.Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     @RequireRole({"admin", "analyst"})
     @GetMapping("/incidents/export")
     public void export(@RequestParam(defaultValue = "10000") int limit,
@@ -101,6 +111,7 @@ public class CaseController {
             throw ApiException.of(413, "export exceeds the requested limit; narrow the query before exporting");
         }
 
+        response.setHeader(HttpHeaders.CACHE_CONTROL, "private, no-store");
         response.setStatus(HttpStatus.OK.value());
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
@@ -110,13 +121,14 @@ public class CaseController {
         boolean first = true;
         int exported = 0;
         int page = 1;
+        int batchSize = Math.min(EXPORT_BATCH_SIZE, limit);
         while (exported < total && exported < limit) {
-            int batchSize = Math.min(EXPORT_BATCH_SIZE, limit - exported);
             Page<Case> result = service.page(page, batchSize, "", "");
             if (result.isEmpty()) {
                 break;
             }
             for (Case incident : result.getContent()) {
+                if (exported >= limit) break;
                 if (!first) {
                     writer.write(',');
                 }
@@ -207,6 +219,52 @@ public class CaseController {
                                                @RequestParam String content,
                                                @RequestParam(required = false) String idempotencyKey) {
         return ApiResult.ok(service.addNote(id, CaseActor.resolve(author), content, idempotencyKey));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
+    @AuditOperation(action = "CHANGE_INCIDENT", target = "case")
+    @PostMapping("/incidents/{id}/changes")
+    public ApiResult<Map<String, Object>> change(@PathVariable String id, @Valid @RequestBody CaseChangeRequest request) {
+        return ApiResult.ok(workspace.change(id, CaseActor.resolve(null), request));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
+    @AuditOperation(action = "CLAIM_INCIDENT", target = "case")
+    @PostMapping("/incidents/{id}/claim")
+    public ApiResult<Map<String, Object>> claim(@PathVariable String id, @Valid @RequestBody CaseClaimRequest request) {
+        return ApiResult.ok(workspace.claim(id, CaseActor.resolve(null), request.expectedVersion(), request.idempotencyKey()));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
+    @AuditOperation(action = "ADD_INCIDENT_NOTE", target = "case")
+    @PostMapping(value = "/incidents/{id}/notes", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ApiResult<Map<String, Object>> noteJson(@PathVariable String id,
+                                                  @RequestParam(required = false) String author,
+                                                  @Valid @RequestBody CaseNoteRequest request) {
+        return ApiResult.ok(workspace.note(id, CaseActor.resolve(author), request));
+    }
+
+    /** Bounded single-case summary. Explicit truncation keeps export omissions visible. */
+    @org.springframework.transaction.annotation.Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    @RequireRole({"admin", "analyst"})
+    @GetMapping("/incidents/{id}/export")
+    public ResponseEntity<Map<String, Object>> exportSummary(@PathVariable String id) {
+        Case incident = service.getMetadata(id);
+        if (incident == null) throw ApiException.notFound("Case not found");
+        Map<String, Object> timeline = service.timeline(id, 0, 500);
+        Page<String> alarms = service.alarms(id, 0, 500);
+        Page<String> rules = service.rules(id, 0, 500);
+        long timelineTotal = ((Number) timeline.get("total")).longValue();
+        return ResponseEntity.ok().header(HttpHeaders.CACHE_CONTROL, "private, no-store").header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"case-summary.json\"")
+                .contentType(MediaType.APPLICATION_JSON).body(Map.of(
+                        "case", incident, "timeline", timeline.get("timeline"), "timelineTotal", timelineTotal,
+                        "alarmIds", alarms.getContent(), "alarmTotal", alarms.getTotalElements(),
+                        "ruleIds", rules.getContent(), "ruleTotal", rules.getTotalElements(),
+                        "truncated", timelineTotal > 500 || alarms.getTotalElements() > 500 || rules.getTotalElements() > 500,
+                        "scope", "Case metadata and up to 500 timeline, alarm and rule references each; raw evidence is not included"));
     }
 
     @GetMapping("/stats")

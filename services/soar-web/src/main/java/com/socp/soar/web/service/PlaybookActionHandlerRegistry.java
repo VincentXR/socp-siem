@@ -91,7 +91,7 @@ public class PlaybookActionHandlerRegistry {
             if (endpoint.isBlank()) {
                 return failed("CONNECTOR_NOT_CONFIGURED", "no endpoint is configured for " + type.wireName());
             }
-            ServiceCall call = http.postExternal(endpoint, context.payloadJson(), SocpHttpClient.JSON,
+            ServiceCall call = http.postExternalOnce(endpoint, context.payloadJson(), SocpHttpClient.JSON,
                     Math.max(100, timeoutMs));
             Map<String, Object> result = verifiedCall(type.wireName(), call, false);
             if (PlaybookActionStatus.EXECUTED.wireValue().equals(result.get("status"))) {
@@ -137,7 +137,7 @@ public class PlaybookActionHandlerRegistry {
         @Override
         public Map<String, Object> handle(PlaybookActionContext context) {
             String url = context.action();
-            ServiceCall call = http.postExternal(url, context.payloadJson(),
+            ServiceCall call = http.postExternalOnce(url, context.payloadJson(),
                     SocpHttpClient.JSON, WEBHOOK_TIMEOUT_MS);
             return verifiedCall("webhook", call, false);
         }

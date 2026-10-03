@@ -72,7 +72,7 @@ describe('report source and lifecycle ownership', () => {
     expect(wrapper.find('.report-file-date').text()).toBe('2026-09-23')
     const old = deferred<ReturnType<typeof listing>>()
     mocks.listArchive.mockReturnValueOnce(old.promise).mockResolvedValueOnce(listing('reports/tenant/20260922/', 'new-file'))
-    const picker = wrapper.findComponent(ElInput)
+    const picker = wrapper.findAllComponents(ElInput).find(input => input.attributes('type') === 'date' || input.props('type') === 'date')!
     picker.vm.$emit('update:modelValue', '2026-09-21'); await flushPromises()
     const signal = mocks.listArchive.mock.calls.at(-1)![1].signal as AbortSignal
     picker.vm.$emit('update:modelValue', '2026-09-22'); await flushPromises()
@@ -100,7 +100,7 @@ describe('report source and lifecycle ownership', () => {
     const popup = { opener: {}, close: vi.fn(), location: { replace: vi.fn() } }
     const open = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window)
     const wrapper = setup(); await flushPromises()
-    wrapper.findAllComponents(ElButton).find(button => button.text() === translate('report.download'))!.vm.$emit('click', new MouseEvent('click'))
+    wrapper.findAllComponents(ElButton).find(button => button.text() === translate('experience.downloadJson'))!.vm.$emit('click', new MouseEvent('click'))
     expect(open).toHaveBeenCalledWith('about:blank', '_blank')
     expect(popup.opener).toBeNull()
     pending.resolve({ key: listing().objects[0]!.key, url }); await flushPromises()
@@ -121,7 +121,7 @@ describe('report source and lifecycle ownership', () => {
     const wrapper = setup(); await flushPromises()
     wrapper.findAllComponents(ElButton).find(button => button.props('type') === 'primary')!.vm.$emit('click', new MouseEvent('click'))
     await flushPromises()
-    expect(wrapper.findComponent(ElInput).props('modelValue')).toBe('2026-09-23')
+    expect(wrapper.findAllComponents(ElInput).find(input => input.attributes('type') === 'date' || input.props('type') === 'date')!.props('modelValue')).toBe('2026-09-23')
     expect(mocks.listArchive.mock.calls.at(-1)![0]).toBe('reports/tenant/20260923/')
     wrapper.unmount()
   })

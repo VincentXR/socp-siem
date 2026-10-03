@@ -15,7 +15,8 @@ test('investigation follows the selected alert while old polls and summary write
     const url = new URL(route.request().url()), path = url.pathname
     if (!isWorkbenchBackendUrl(url)) { await route.continue(); return }
     let data: unknown
-    if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
+    if (path === '/api/v1/system/health') data = { status: 'up', services: {}, checkedAt: '2026-10-02T00:00:00Z' }
+    else if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (path === '/auth/operators') data = { items: [] }
     else if (path === '/ai-assistant/api/v1/ai/investigations/async') {
       const id = route.request().postDataJSON().alertId as string
@@ -42,7 +43,7 @@ test('investigation follows the selected alert while old polls and summary write
     await expect.poll(() => pollingA).toBe(true)
     await input.fill('b')
     await panel.getByRole('button', { name: 'Investigate', exact: true }).click()
-    await expect(page).toHaveURL(/\/assistant\?alarmId=b$/)
+    await expect(page).toHaveURL(url => url.pathname === '/assistant' && url.searchParams.get('alarmId') === 'b')
     await expect(panel.locator('.ai-analysis')).toHaveText('analysis b')
     releaseA()
     await panel.getByRole('button', { name: 'Append summary to Incident', exact: true }).click()

@@ -276,22 +276,20 @@ public class AlarmService {
         return new AlarmEvidenceResponse(alarm.getId(), items.size(), !items.isEmpty(), drilldown, items);
     }
 
-    public List<Alarm> query(Severity severity, String rule, String text) {
-        return queryService.query(severity, rule, null, text, "occurredAt", "descending");
-    }
-
-    public List<Alarm> query(Severity severity, String rule, String status, String text,
-                             String sort, String order) {
-        return queryService.query(severity, rule, status, text, sort, order);
-    }
-
-    public Page<Alarm> pageByTimestamp(String sort, String order, int page, int size) {
-        return queryService.page(null, null, null, null, sort, order, page, size);
-    }
-
     public Page<Alarm> page(Severity severity, String rule, String status, String text,
                             String sort, String order, int page, int size) {
         return queryService.page(severity, rule, status, text, sort, order, page, size);
+    }
+
+    public Page<Alarm> investigationPage(Severity severity, String rule, String status, String text,
+            String sort, String order, int page, int size, String owner, String entity, java.time.Instant from, java.time.Instant to, String technique, String severityGroup) {
+        return queryService.investigationPage(severity, rule, status, text, sort, order, page, size, owner, entity, from, to, technique, severityGroup);
+    }
+
+    public Page<Alarm> investigationPage(Severity severity, String rule, String status, String text,
+            String sort, String order, int page, int size, String owner, String entity, java.time.Instant from,
+            java.time.Instant to, String technique, String severityGroup, String assignee) {
+        return queryService.investigationPage(severity, rule, status, text, sort, order, page, size, owner, entity, from, to, technique, severityGroup, assignee);
     }
 
     /** Count a filtered tenant view without loading alarm entities. */

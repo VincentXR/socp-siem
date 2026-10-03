@@ -105,9 +105,15 @@ const rowValue = (row: ImportRow, ...keys: string[]) => {
 const assets = ref<Asset[]>([])
 const size = ref(10)
 const assetTotal = ref(0)
-const listQuery = useListQuery({ routeName: 'assets', total: assetTotal, size })
+const listQuery = useListQuery({ routeName: 'assets', total: assetTotal, size, fields: [{ key: 'type' }, { key: 'criticality' }, { key: 'owner' }] })
 const page = listQuery.page
 const keyword = listQuery.keyword
+const typeFilter = listQuery.filters.type
+const criticalityFilter = listQuery.filters.criticality
+const ownerFilter = listQuery.filters.owner
+const hasFilters = computed(() => Boolean(keyword.value.trim() || typeFilter.value || criticalityFilter.value || ownerFilter.value.trim()))
+function applyFilters() { page.value = 1; listQuery.sync(); void loadAssets() }
+function clearFilters() { keyword.value = ''; typeFilter.value = ''; criticalityFilter.value = ''; ownerFilter.value = ''; applyFilters() }
 const loading = ref(false)
 const latestRequest = useLatestRequest()
 
@@ -117,7 +123,7 @@ async function loadAssets() {
   loadError.value = ''
   try {
     const [listResult, statResult] = await Promise.allSettled([
-      assetApi.list(page.value, size.value, listQuery.keywordParam.value, { signal: request.signal }),
+      assetApi.list(page.value, size.value, listQuery.keywordParam.value, { signal: request.signal }, { type: typeFilter.value || undefined, criticality: criticalityFilter.value || undefined, owner: ownerFilter.value.trim() || undefined }),
       assetApi.stats({ signal: request.signal }),
     ])
     if (!request.isCurrent()) return
@@ -339,10 +345,10 @@ useDebouncedWatch(keyword, () => {
 })
 watch(selectedId, () => { void loadDetail() }, { immediate: true })
 watch([endpointPage, endpointSize], () => { void loadRelatedEndpoints() })
-watch([() => route.query.q, () => route.query.page], () => {
-  const before = { page: page.value, keyword: keyword.value.trim() }
+watch([() => route.query.q, () => route.query.page, () => route.query.type, () => route.query.criticality, () => route.query.owner], () => {
+  const before = { page: page.value, keyword: keyword.value.trim(), filters: [typeFilter.value, criticalityFilter.value, ownerFilter.value].join("|") }
   listQuery.applyRouteQuery()
-  if (before.page === page.value && before.keyword !== keyword.value.trim()) void loadAssets()
+  if (before.page === page.value && (before.keyword !== keyword.value.trim() || before.filters !== [typeFilter.value, criticalityFilter.value, ownerFilter.value].join("|"))) void loadAssets()
 })
 </script>
 
@@ -365,17 +371,22 @@ watch([() => route.query.q, () => route.query.page], () => {
 
     <div v-if="assetStat" class="page-metrics">
       <MetricCard :label="t('assets.totalAssets')" tone="info">{{ assetStat.total }}</MetricCard>
-      <MetricCard :label="t('assets.criticalAssets')" tone="danger">{{ assetStat.byCriticality?.CRITICAL ?? 0 }}</MetricCard>
-      <MetricCard :label="t('assets.highValueAssets')" tone="warning">{{ assetStat.byCriticality?.HIGH ?? 0 }}</MetricCard>
+      <MetricCard :label="t('assets.criticalAssets')" tone="danger" interactive @click="criticalityFilter = 'CRITICAL'; applyFilters()">{{ assetStat.byCriticality?.CRITICAL ?? 0 }}</MetricCard>
+      <MetricCard :label="t('assets.highValueAssets')" tone="warning" interactive @click="criticalityFilter = 'HIGH'; applyFilters()">{{ assetStat.byCriticality?.HIGH ?? 0 }}</MetricCard>
       <MetricCard :label="t('assets.assetTypes')" tone="neutral">{{ Object.keys(assetStat.byType || {}).length }}</MetricCard>
     </div>
 
-    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="assetTotal" :loading="loading" :error="loadError" :retry="loadAssets" :empty-title="t('assets.assetList')" :empty-description="t('assets.description')">
+    <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="assetTotal" :loading="loading" :error="loadError" :retry="loadAssets" :empty-title="t(hasFilters ? 'experience.noMatches' : 'experience.firstUse')" :empty-description="t('assets.description')">
       <template #toolbar>
         <FilterToolbar :count="assetTotal">
         <el-input v-model="keyword" :disabled="actionBusy" :placeholder="t('assets.searchPlaceholder')" clearable @input="page = 1" />
+        <el-select v-model="typeFilter" clearable :placeholder="t('experience.type')" :aria-label="t('experience.type')" @change="applyFilters"><el-option v-for="item in assetTypes" :key="item.value" :label="item.label" :value="item.value" /></el-select>
+        <el-select v-model="criticalityFilter" clearable :placeholder="t('experience.criticality')" :aria-label="t('experience.criticality')" @change="applyFilters"><el-option v-for="item in criticalityOptions" :key="item.value" :label="item.label" :value="item.value" /></el-select>
+        <el-input v-model="ownerFilter" clearable :placeholder="t('experience.owner')" :aria-label="t('experience.owner')" @change="applyFilters" />
+        <el-button v-if="hasFilters" size="small" @click="clearFilters">{{ t('experience.clearFilters') }}</el-button>
         </FilterToolbar>
       </template>
+      <template #empty-actions><el-button v-if="hasFilters" @click="clearFilters">{{ t('experience.clearFilters') }}</el-button><el-button v-else-if="canWrite" type="primary" @click="openCreateAsset">{{ t('assets.createAsset') }}</el-button></template>
       <el-table :data="assets" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="row => openAssetDetail(row as Asset)">
         <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="180" show-overflow-tooltip />
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 100)">
@@ -467,7 +478,7 @@ watch([() => route.query.q, () => route.query.page], () => {
           <ActionFeedback :error="endpointInventoryError" />
           <el-button v-if="endpointInventoryError" @click="loadRelatedEndpoints">{{ t('common.retry') }}</el-button>
           <el-table v-else-if="detailEndpoints.length" :data="detailEndpoints" size="small">
-            <el-table-column prop="hostname" :label="t('endpoints.hostname')" min-width="150" show-overflow-tooltip />
+            <el-table-column prop="hostname" :label="t('endpoints.hostname')" min-width="150"><template #default="{ row }"><el-button link type="primary" @click="router.push({ name: 'endpoints', query: { endpointId: row.id } })">{{ row.hostname }}</el-button></template></el-table-column>
             <el-table-column prop="status" :label="t('common.status')" width="90"><template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ tOr(t, 'statuses.' + row.status, row.status) }}</el-tag></template></el-table-column>
             <el-table-column prop="lastHeartbeat" :label="t('endpoints.lastHeartbeat')" width="160" show-overflow-tooltip><template #default="{ row }">{{ formatTime(row.lastHeartbeat) }}</template></el-table-column>
           </el-table>

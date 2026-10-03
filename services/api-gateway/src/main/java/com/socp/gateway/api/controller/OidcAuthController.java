@@ -44,12 +44,18 @@ public class OidcAuthController {
 
     private static final Logger log = LoggerFactory.getLogger(OidcAuthController.class);
     private static final Duration STATE_TTL = Duration.ofMinutes(10);
+    static final String CORRELATION_PREFIX = "SOCP_OIDC_";
+    private static final String CALLBACK_PATH = "/auth/oidc";
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5)).build();
     private final AuthController authController;
     private final OidcIdTokenValidator idTokenValidator;
     private final OidcStateStore stateStore;
+
+    @Value("${socp.auth.cookie-secure:false}") private boolean cookieSecure;
+    @Value("${socp.oidc.group-mappings:{}}") private String groupMappings = "{}";
+    @Value("${socp.oidc.permission-mappings:{}}") private String permissionMappings = "{}";
 
     @Value("${socp.oidc.issuer-uri:}") private String issuerUri;
     @Value("${socp.oidc.client-id:socp-spa}") private String clientId;
@@ -72,13 +78,18 @@ public class OidcAuthController {
     }
 
     @GetMapping("/login")
-    public Mono<ResponseEntity<?>> login() {
+    public Mono<ResponseEntity<?>> login(ServerHttpRequest request) {
+        if (request != null && request.getCookies().keySet().stream()
+                .filter(name -> name.startsWith(CORRELATION_PREFIX)).count() >= 8) {
+            return Mono.just(error(HttpStatus.TOO_MANY_REQUESTS, "Too many pending OIDC logins"));
+        }
         if (issuerUri == null || issuerUri.isBlank()) {
             return Mono.just(error(HttpStatus.INTERNAL_SERVER_ERROR, "OIDC issuer is not configured"));
         }
         String verifier = randomUrlToken();
         String state = randomUrlToken();
         String nonce = randomUrlToken();
+        String browserBinding = randomUrlToken();
         long now = System.currentTimeMillis();
         String authUrl = issuer() + "/protocol/openid-connect/auth"
                 + "?client_id=" + enc(clientId)
@@ -89,8 +100,10 @@ public class OidcAuthController {
                 + "&nonce=" + enc(nonce)
                 + "&code_challenge=" + enc(codeChallenge(verifier))
                 + "&code_challenge_method=S256";
-        ResponseEntity<?> redirect = ResponseEntity.status(HttpStatus.FOUND).location(URI.create(authUrl)).build();
-        return stateStore.save(state, new OidcStateStore.Entry(verifier, nonce, now + STATE_TTL.toMillis()), STATE_TTL)
+        ResponseEntity<?> redirect = ResponseEntity.status(HttpStatus.FOUND).location(URI.create(authUrl))
+                .header(HttpHeaders.SET_COOKIE, correlationCookie(state, browserBinding, STATE_TTL).toString()).build();
+        return stateStore.save(state, new OidcStateStore.Entry(verifier, nonce, now + STATE_TTL.toMillis(),
+                        codeChallenge(browserBinding)), STATE_TTL)
                 .thenReturn(redirect);
     }
 
@@ -100,7 +113,14 @@ public class OidcAuthController {
                                              ServerHttpRequest request) {
         String browserLocale = request == null
                 ? null : request.getHeaders().getFirst(HttpHeaders.ACCEPT_LANGUAGE);
-        return stateStore.consume(state)
+        if (state == null || !state.matches("[A-Za-z0-9_-]{43}")) {
+            return Mono.just(error(HttpStatus.UNAUTHORIZED, "OIDC state is invalid or expired"));
+        }
+        var cookie = request == null ? null : request.getCookies().getFirst(CORRELATION_PREFIX + state);
+        if (cookie == null || !cookie.getValue().matches("[A-Za-z0-9_-]{43}")) {
+            return Mono.just(error(HttpStatus.UNAUTHORIZED, "OIDC browser correlation is missing"));
+        }
+        return stateStore.consume(state, codeChallenge(cookie.getValue()))
                 .filter(entry -> entry.expiresAt() > System.currentTimeMillis())
                 .flatMap(entry -> Mono.<ResponseEntity<?>>fromCallable(
                                 () -> completeCallback(code, entry, browserLocale))
@@ -109,7 +129,11 @@ public class OidcAuthController {
                 .onErrorResume(failure -> {
                     log.warn("OIDC callback rejected: {}", failure.getMessage());
                     return Mono.just(error(HttpStatus.UNAUTHORIZED, "OIDC login failed"));
-                });
+                }).map(response -> ResponseEntity.status(response.getStatusCode())
+                        .headers(headers -> response.getHeaders().forEach((key, values) ->
+                                values.forEach(value -> headers.add(key, value))))
+                        .header(HttpHeaders.SET_COOKIE, correlationCookie(state, "", Duration.ZERO).toString())
+                        .body(response.getBody()));
     }
 
     private ResponseEntity<?> completeCallback(String code, OidcStateStore.Entry entry,
@@ -127,7 +151,9 @@ public class OidcAuthController {
             if (identityLocale == null) identityLocale = first(claims, "language", "lang");
             String localeHint = identityLocale == null ? browserLocale : identityLocale;
             String token = authController.sign(subject, role, tenant,
-                    authController.resolveLocale(subject, localeHint));
+                    authController.resolveLocale(subject, localeHint),
+                    com.socp.gateway.oidc.OidcClaimMapping.groups(claims, groupMappings),
+                    com.socp.gateway.oidc.OidcClaimMapping.permissions(claims, permissionMappings));
             log.info("OIDC login succeeded subject={} role={} tenant={}", subject, role, tenant);
             return ResponseEntity.status(HttpStatus.FOUND)
                     .header(HttpHeaders.SET_COOKIE, authController.sessionCookie(token).toString())
@@ -195,6 +221,11 @@ public class OidcAuthController {
         if (value != null && !String.valueOf(value).isBlank()) return String.valueOf(value);
         value = claims.get(fallback);
         return value == null || String.valueOf(value).isBlank() ? null : String.valueOf(value);
+    }
+
+    private org.springframework.http.ResponseCookie correlationCookie(String state, String value, Duration ttl) {
+        return org.springframework.http.ResponseCookie.from(CORRELATION_PREFIX + state, value)
+                .httpOnly(true).secure(cookieSecure).sameSite("Lax").path(CALLBACK_PATH).maxAge(ttl).build();
     }
 
     private String issuer() {

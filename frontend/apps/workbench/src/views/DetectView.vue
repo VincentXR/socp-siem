@@ -7,6 +7,7 @@ import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
 const route = useRoute()
 const router = useRouter()
+const investigationReturn = computed(() => typeof route.query.returnTo === 'string' && /^\/(alarms|cases)(?:[?#]|$)/.test(route.query.returnTo) ? route.query.returnTo : '')
 const showTest = ref(false)
 const ruleKeyword = ref('')
 
@@ -149,6 +150,16 @@ const testError = ref('')
 const testing = ref(false)
 const sampleEventsText = ref('')
 const testResult = ref<RuleTestResult | null>(null)
+const testReceipt = ref<{ revision?: string; ruleId: string; fingerprint: string; at: string; result: RuleTestResult } | null>(null)
+function testFingerprint(): string { return JSON.stringify({ form: ruleForm.value, samples: sampleEventsText.value, input: testInput.value, target: testRuleId.value }) }
+const testReceiptStale = computed(() => Boolean(testReceipt.value && (testReceipt.value.fingerprint !== testFingerprint() || testReceipt.value.revision !== loadedRevisionToken.value)))
+const publicationLink = computed(() => ruleEditingId.value ? router.resolve({ name: 'rule-edit', params: { ruleId: ruleEditingId.value } }).href : '')
+async function publishSavedRule(): Promise<void> {
+  if (!sourceRule.value || changes.dirty.value || !canActivate.value || saving.value) return
+  await toggleRule(sourceRule.value)
+  if (ruleEditingId.value) { const updated = normalizeRuleSpec(await getRule(ruleEditingId.value)); if (updated) { sourceRule.value = updated; ruleForm.value = formFromRule(updated); loadedRevisionToken.value = updated.revisionToken; changes.markSaved() } }
+}
+
 
 function emptyCondition(): RuleCondition { return { field: 'msg', op: 'contains', value: '' } }
 function clone<T>(value: T): T { return value == null ? value : JSON.parse(JSON.stringify(value)) as T }
@@ -634,6 +645,9 @@ function conditionScopeLabel(scope?: string): string {
 
 async function runIsolatedTest(): Promise<void> {
   if (!canManageRules.value || testing.value) return
+  const identity = `${route.name?.toString()}:${ruleEditingId.value}`
+  const fingerprint = testFingerprint()
+  const revision = loadedRevisionToken.value
   testError.value = ''; testResult.value = null; testing.value = true
   try {
     const parsed = JSON.parse(testInput.value.fieldsText) as unknown
@@ -648,6 +662,7 @@ async function runIsolatedTest(): Promise<void> {
       : testRuleId.value ? rules.value.filter(rule => String(rule.id) === testRuleId.value) : rules.value
     if (!selected.length || selected.length > 20) throw new Error(t('detect.ruleTestLimit'))
     const result = await testGasRules(selected, events)
+    if (disposed || identity !== `${route.name?.toString()}:${ruleEditingId.value}`) return
     const selectedById = new Map(selected.map(rule => [String(rule.id), rule]))
     const traces: RuleTestTrace[] = result.map(row => {
       const sourceRule = selectedById.get(String(row.id)) ?? selected.find(rule => rule.name === row.name)
@@ -664,6 +679,7 @@ async function runIsolatedTest(): Promise<void> {
       }
     })
     testResult.value = { checked: traces.length, matched: traces.filter(trace => trace.state === 'MATCHED').length, candidates: traces.filter(trace => trace.state === 'CANDIDATE').length, traces }
+    testReceipt.value = { revision, ruleId: ruleEditingId.value || testRuleId.value || 'current-page', fingerprint, at: new Date().toISOString(), result: testResult.value }
   } catch (error) { testError.value = error instanceof Error ? error.message : String(error) }
   finally { testing.value = false }
 }
@@ -684,6 +700,7 @@ async function loadRuleList(): Promise<void> {
     const result = await listRulePage({ page: rulePage.value, size: rulePageSize.value,
       q: typeof route.query.q === 'string' ? route.query.q : undefined,
       status: typeof route.query.status === 'string' ? route.query.status : undefined,
+      technique: typeof route.query.technique === 'string' ? route.query.technique : undefined,
       ...(typeof route.query.reference === 'string' ? { reference: route.query.reference } : {}) }, { signal: request.signal })
     if (!request.isCurrent()) return
     rules.value = result.items.map(normalizeRuleSpec).filter((rule): rule is RuleSpec => rule !== null)
@@ -704,7 +721,7 @@ async function refreshRules(): Promise<void> {
   await Promise.all([loadRules(), route.meta.editor ? syncEditorRoute() : Promise.resolve()])
 }
 watch(() => [route.name, route.params.ruleId, route.query.copy], () => { void syncEditorRoute() }, { immediate: true })
-watch(() => [route.name, route.query.q, route.query.status, route.query.reference, route.query.page, route.query.size], () => {
+watch(() => [route.name, route.query.q, route.query.status, route.query.reference, route.query.technique, route.query.page, route.query.size], () => {
   if (route.name !== 'detect') { listRequests.cancel(); return }
   ruleKeyword.value = typeof route.query.q === 'string' ? route.query.q : ''
   ruleStatusFilter.value = typeof route.query.status === 'string' ? route.query.status : ''
@@ -712,11 +729,13 @@ watch(() => [route.name, route.query.q, route.query.status, route.query.referenc
 }, { immediate: true })
 onMounted(loadSupport)
 watch(() => route.fullPath, () => { historyOpen.value = false })
+watch(() => route.query.ruleId, id => { if (route.name === 'detect' && typeof id === 'string' && id) void router.replace({ name: 'rule-edit', params: { ruleId: id }, query: { ...route.query, ruleId: undefined } }) }, { immediate: true })
 </script>
 
 <template>
   <div class="page-pad view-enter detect-view">
     <p v-if="editorLoading" role="status">{{ t('common.loading') }}</p>
+    <el-button v-if="investigationReturn" @click="router.push(investigationReturn)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
     <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('detect.title')" :description="t('detect.workspaceDescription')">
       <template #actions><el-button v-if="route.meta.editor" :disabled="saving" @click="closeRuleEditor">{{ t('forms.back') }}</el-button><el-select v-if="!route.meta.editor" v-model="ruleStatusFilter" size="small" @change="applyRuleFilters" clearable :placeholder="t('common.filter')" style="width:150px"><el-option v-for="status in ['DRAFT', 'TESTING', 'ACTIVE', 'DISABLED', 'ARCHIVED']" :key="status" :label="lifecycleStatusLabel(status)" :value="status" /></el-select><el-button size="small" :loading="loading || supportLoading || editorLoading" @click="refreshRules">{{ t('common.refresh') }}</el-button><el-button v-if="canManageRules && !route.meta.editor" type="primary" size="small" @click="openRuleEditor()">{{ t('detect.createRule') }}</el-button></template>
     </PageHeader>
@@ -736,6 +755,15 @@ watch(() => route.fullPath, () => { historyOpen.value = false })
 
     <section v-if="showRuleEditor" class="detect-editor-workspace" :class="{ 'detect-editor-readonly': !canManageRules }">
       <div class="workspace-section-head"><div><div class="page-eyebrow">{{ t('detect.editorEyebrow') }}</div><h2>{{ ruleEditingId ? t('detect.editor.editRule') : t('detect.createRule') }}</h2><p>{{ t('detect.editorHint') }}</p></div><div class="workspace-section-actions"><el-button v-if="canManageRules && ruleEditingId" size="small" :disabled="saving" @click="openRuleHistory()">{{ t('detect.revisionHistory') }}</el-button><el-tag v-if="ruleEditingId" :type="statusTag(ruleForm.status)" size="small">{{ lifecycleStatusLabel(ruleForm.status) }}</el-tag><el-button size="small" :disabled="saving" @click="closeRuleEditor">{{ t('common.cancel') }}</el-button></div></div>
+      <section class="workspace-hint" :aria-label="t('analystJourney.publicationVerification')">
+        <p>1. Save → 2. Test the current saved revision → 3. Publisher enables → 4. Verify genuine matching alarms. Isolated tests never ingest events or create alarms.</p>
+        <p v-if="testReceipt">{{ t('analystJourney.testReceipt', { rule: testReceipt.ruleId, revision: testReceipt.revision || t('analystJourney.unsavedDraft'), at: testReceipt.at, matched: testReceipt.result.matched }) }} <strong v-if="testReceiptStale">{{ t('analystJourney.changedSinceTest') }}</strong></p>
+        <el-button v-if="canActivate && sourceRule && !sourceRule.enabled" :disabled="changes.dirty.value || saving" @click="publishSavedRule">{{ t('analystJourney.enableSavedRevision') }}</el-button>
+        <p v-else-if="!canActivate && publicationLink">{{ t('analystJourney.publicationAdmin') }} <a :href="publicationLink">{{ publicationLink }}</a></p>
+        <el-button v-if="ruleEditingId" @click="router.push({ name: 'alarms', query: { rule: ruleEditingId } })">{{ t('analystJourney.verifyAlarms') }}</el-button>
+        <el-button @click="router.push({ name: 'search' })">{{ t('analystJourney.findSamples') }}</el-button>
+        <p>{{ t('analystJourney.ruleEngineCounters', { events: gasStat.eventCount, alerts: gasStat.alertCount }) }} </p>
+      </section>
       <p v-if="saving" class="form-hint" role="status">{{ t('common.busySaving') }}</p>
       <el-form label-position="top" class="detect-editor-form" :disabled="!canManageRules || saving">
         <section ref="scopeSection" class="detect-form-section"><div class="detect-form-section-title"><span>01</span><div><h3>{{ t('detect.dataScope') }}</h3><p>{{ t('detect.dataScopeHint') }}</p></div></div><div class="detect-form-grid"><el-form-item :label="t('common.name')" required :error="ruleFieldErrors.name"><el-input v-model="ruleForm.name" :placeholder="t('detect.editor.namePlaceholder')" /></el-form-item><el-form-item :label="t('common.type')"><el-select v-model="ruleForm.type"><el-option v-if="rawOnlyRuleType" :label="typeLabel(ruleForm.type)" :value="ruleForm.type" /><el-option v-for="type in RULE_TYPES" :key="type" :label="typeLabel(type)" :value="type" /></el-select></el-form-item><el-form-item :label="t('common.severity')"><el-select v-model="ruleForm.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" /></el-select></el-form-item><el-form-item :label="t('detect.editor.window')"><el-input v-model="ruleForm.window" :placeholder="t('detect.editor.windowPlaceholder')" /></el-form-item></div></section>
@@ -793,7 +821,8 @@ watch(() => route.fullPath, () => { historyOpen.value = false })
       <div class="workspace-section-head"><div><h2>{{ t('detect.testTitle') }}</h2><p>{{ t('detect.testHint') }}</p></div><el-tag type="info" size="small">{{ t('detect.isolatedTest') }}</el-tag></div>
       <div class="detect-test-grid">
         <div class="detect-test-form">
-          <label>{{ t('detect.testRule') }}<el-select v-model="testRuleId" clearable :placeholder="t('detect.pageRules')"><el-option :label="t('detect.pageRules')" value="" /><el-option v-for="rule in rules" :key="rule.id" :label="rule.name" :value="String(rule.id)" /></el-select></label>
+          <label v-if="!showRuleEditor">{{ t('detect.testRule') }}<el-select v-model="testRuleId" clearable :placeholder="t('detect.pageRules')"><el-option :label="t('detect.pageRules')" value="" /><el-option v-for="rule in rules" :key="rule.id" :label="rule.name" :value="String(rule.id)" /></el-select></label>
+          <p v-if="showRuleEditor">{{ t('analystJourney.lockedTestTarget', { name: ruleForm.name || ruleEditingId || t('analystJourney.newDraft'), revision: loadedRevisionToken || t('analystJourney.unsaved') }) }} </p>
           <label>{{ t('common.source') }}<el-input v-model="testInput.source" /></label><label>{{ t('common.host') }}<el-input v-model="testInput.host" /></label>
           <label>{{ t('common.severity') }}<el-select v-model="testInput.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" /></el-select></label>
           <label class="full-width">{{ t('detect.testMessage') }}<el-input v-model="testInput.message" /></label><label class="full-width">{{ t('detect.testFields') }}<el-input v-model="testInput.fieldsText" type="textarea" :rows="4" spellcheck="false" /></label>

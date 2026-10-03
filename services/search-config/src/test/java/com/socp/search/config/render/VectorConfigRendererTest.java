@@ -147,7 +147,7 @@ class VectorConfigRendererTest {
         LogSource sock = LogSource.create("syslog-tcp", SourceType.SYSLOG, ParseFormat.SYSLOG,
                 null, "0.0.0.0:5514", null, "prod", true);
         LogSource kafka = LogSource.create("kafka-raw", SourceType.KAFKA, ParseFormat.JSON,
-                null, null, "socp-raw", "prod", true);
+                null, "broker.example:19092", "socp-raw", "prod", true);
         String toml = new VectorConfigRenderer(null).render(List.of(sock, kafka), id -> platformIngest("p"));
 
         assertTrue(toml.contains("type = \"syslog\""), "syslog 源");
@@ -220,6 +220,39 @@ class VectorConfigRendererTest {
         assertTrue(toml.contains("ignore_older_secs = 86400"));
     }
 
+    @Test
+    void tenantTargetCannotBorrowPlatformCredentialByClaimingItsType() {
+        SinkTarget tenant = new SinkTarget("tenant-target", "External", "GLS_INGEST",
+                "https://external.example/ingest", null, true, Instant.now());
+        String config = new VectorConfigRenderer("platform-secret")
+                .render(List.of(fileSource("source", tenant.id())), id -> tenant, true);
+        assertFalse(config.contains("platform-secret"));
+        assertFalse(config.contains("Authorization"));
+    }
+
+    @Test
+    void missingConnectionHasNoDemoFallbackAndDisabledDraftRemainsSavable() {
+        LogSource source = LogSource.create("missing", SourceType.FILE, ParseFormat.AUTO,
+                null, null, null, null, true);
+        assertThrows(ApiException.class, () -> new VectorConfigRenderer(null)
+                .render(List.of(source), id -> platformIngest("p")));
+        LogSource draft = LogSource.create("draft", SourceType.FILE, ParseFormat.AUTO,
+                null, null, null, null, false);
+        assertFalse(new VectorConfigRenderer(null).render(List.of(draft), SinkResolver.NONE).contains("demo/sample.log"));
+    }
+
+    @Test
+    void kafkaUsesTheConfiguredBrokersAndWindowsPathsAreEscaped() {
+        LogSource kafka = LogSource.create("Kafka", SourceType.KAFKA, ParseFormat.JSON,
+                null, "broker.example:19092", "audit", null, true);
+        String config = new VectorConfigRenderer(null).render(List.of(kafka), id -> platformIngest("p"));
+        assertTrue(config.contains("bootstrap_servers = \"broker.example:19092\""));
+        LogSource windows = LogSource.create("Windows file", SourceType.FILE, ParseFormat.AUTO,
+                "C:\\logs\\app.log", null, null, null, true);
+        assertTrue(new VectorConfigRenderer(null).render(List.of(windows), id -> platformIngest("p"))
+                .contains("C:\\\\logs\\\\app.log"));
+    }
+
     private static int occurrences(String value, String needle) {
         return (value.length() - value.replace(needle, "").length()) / needle.length();
     }
@@ -232,6 +265,6 @@ class VectorConfigRendererTest {
     }
 
     private static SinkTarget platformIngest(String id) {
-        return new SinkTarget(id, "平台 SEARCH ingest", "GLS_INGEST", INGEST_URI, null, true, Instant.now());
+        return new SinkTarget(com.socp.search.config.persistence.store.SinkTargetStore.PLATFORM_INGEST_ID, "平台 SEARCH ingest", "GLS_INGEST", INGEST_URI, null, true, Instant.now());
     }
 }

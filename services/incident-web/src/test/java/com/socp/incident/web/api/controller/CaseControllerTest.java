@@ -43,6 +43,8 @@ class CaseControllerTest {
 
     @MockitoBean
     private CaseService service;
+    @MockitoBean
+    private com.socp.incident.web.service.CaseWorkspaceService workspace;
 
     @Test
     void createRejectsBlankTitleBeforeCallingService() throws Exception {
@@ -288,4 +290,70 @@ class CaseControllerTest {
             AuthenticatedIdentityContext.clear();
         }
     }
+    @Test
+    void mineQueueUsesAuthenticatedPrincipalAndRejectsUnknownQueue() throws Exception {
+        AuthenticatedIdentityContext.set(new AuthenticatedIdentity("alice", "tenant-a", "analyst",
+                java.util.Set.of(), java.util.Set.of(), AuthenticatedIdentity.Kind.USER));
+        try {
+            given(service.queue(1, 20, "", "", "mine", "dev-user")).willReturn(new PageImpl<>(List.of(), PageRequest.of(0, 20), 0));
+            mvc.perform(get("/api/v1/incidents").header("Authorization", BEARER).header("X-Role", "analyst").param("size", "20").param("queue", "mine").param("actor", "bob"))
+                    .andExpect(status().isOk());
+            verify(service).queue(1, 20, "", "", "mine", "dev-user");
+            mvc.perform(get("/api/v1/incidents").header("Authorization", BEARER).header("X-Role", "analyst").param("queue", "everyone")).andExpect(status().isBadRequest());
+        } finally { AuthenticatedIdentityContext.clear(); }
+    }
+
+    @Test
+    void jsonNoteUsesBoundedBodyAndTrustedActorRatherThanAuthorParameter() throws Exception {
+        AuthenticatedIdentityContext.set(new AuthenticatedIdentity("alice", "tenant-a", "analyst",
+                java.util.Set.of(), java.util.Set.of(), AuthenticatedIdentity.Kind.USER));
+        try {
+            given(workspace.note(org.mockito.ArgumentMatchers.eq("case-1"), org.mockito.ArgumentMatchers.eq("dev-user"), org.mockito.ArgumentMatchers.any()))
+                    .willReturn(Map.of("changed", true));
+            mvc.perform(post("/api/v1/incidents/case-1/notes").header("Authorization", BEARER).header("X-Role", "analyst").param("author", "bob")
+                            .contentType(MediaType.APPLICATION_JSON).content("{\"content\":\"checked\",\"idempotencyKey\":\"note-key\"}"))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.changed").value(true));
+            verify(workspace).note("case-1", "dev-user", new com.socp.incident.web.api.request.CaseNoteRequest("checked", "note-key"));
+            mvc.perform(post("/api/v1/incidents/case-1/notes").header("Authorization", BEARER).header("X-Role", "analyst").contentType(MediaType.APPLICATION_JSON)
+                            .content(json.writeValueAsString(Map.of("content", "x".repeat(16001), "idempotencyKey", "oversized"))))
+                    .andExpect(status().isBadRequest());
+        } finally { AuthenticatedIdentityContext.clear(); }
+    }
+
+    @Test
+    void workspaceCommandsRequireVersionAndReplayKey() throws Exception {
+        mvc.perform(post("/api/v1/incidents/case-1/changes").header("Authorization", BEARER).header("X-Role", "analyst").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\":\"OPEN\"}")).andExpect(status().isBadRequest());
+        mvc.perform(post("/api/v1/incidents/case-1/claim").header("Authorization", BEARER).header("X-Role", "analyst").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"expectedVersion\":-1,\"idempotencyKey\":\"claim\"}")).andExpect(status().isBadRequest());
+        org.mockito.Mockito.verifyNoInteractions(workspace);
+    }
+
+    @Test
+    void summaryExportMakesTruncationAndEvidenceScopeExplicit() throws Exception {
+        Case incident = Case.create("bounded summary", "host-1", "HIGH");
+        given(service.getMetadata("case-1")).willReturn(incident);
+        given(service.timeline("case-1", 0, 500)).willReturn(Map.of("timeline", List.of(), "total", 501L));
+        given(service.alarms("case-1", 0, 500)).willReturn(new PageImpl<>(List.of("alarm-1"), PageRequest.of(0, 500), 1));
+        given(service.rules("case-1", 0, 500)).willReturn(new PageImpl<>(List.of(), PageRequest.of(0, 500), 0));
+        mvc.perform(get("/api/v1/incidents/case-1/export").header("Authorization", BEARER).header("X-Role", "analyst")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.truncated").value(true)).andExpect(jsonPath("$.timelineTotal").value(501))
+                .andExpect(jsonPath("$.scope").value(org.hamcrest.Matchers.containsString("raw evidence is not included")))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Cache-Control", "private, no-store"));
+        mvc.perform(get("/api/v1/incidents/missing/export").header("Authorization", BEARER).header("X-Role", "analyst")).andExpect(status().isNotFound());
+    }
+
+    @Test
+    void finalExportBatchRetainsFixedOffsetAndDoesNotRepeatEarlierRows() throws Exception {
+        var first = java.util.stream.IntStream.range(0, 500).mapToObj(i -> Case.create("case-" + i, "host", "LOW")).toList();
+        var last = Case.create("case-500", "host", "LOW");
+        given(service.count()).willReturn(501L);
+        given(service.page(1, 500, "", "")).willReturn(new PageImpl<>(first, PageRequest.of(0, 500), 501));
+        given(service.page(2, 500, "", "")).willReturn(new PageImpl<>(List.of(last), PageRequest.of(1, 500), 501));
+        mvc.perform(get("/api/v1/incidents/export").header("Authorization", BEARER).header("X-Role", "analyst").param("limit", "501"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(501))
+                .andExpect(jsonPath("$[500].title").value("case-500"));
+        verify(service).page(2, 500, "", "");
+    }
+
 }

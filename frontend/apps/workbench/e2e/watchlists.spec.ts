@@ -14,6 +14,7 @@ test('watchlist catalogue pages summaries and loads members on demand', async ({
     let data: unknown
     if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (path === '/auth/operators') data = { items: [] }
+    else if (path === '/api/v1/system/health' && route.request().method() === 'GET') data = { status: 'up', services: {}, checkedAt: '2026-09-20T00:00:00Z' }
     else if (path === '/detect-web/api/v1/ueba/entities') data = []
     else if (path === '/detect-web/api/v1/ueba/summary') data = { entities: 0, byLevel: {}, maxRisk: 0, halfLifeHours: 24 }
     else if (path === '/detect-web/api/v1/ueba/score') data = { score: 0, level: 'LOW', breakdown: {} }
@@ -68,6 +69,7 @@ test('creation conflict preserves input and lets the analyst choose a new name',
     let data: unknown
     if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (path === '/auth/operators') data = { items: [] }
+    else if (path === '/api/v1/system/health' && route.request().method() === 'GET') data = { status: 'up', services: {}, checkedAt: '2026-09-20T00:00:00Z' }
     else if (path === '/detect-web/api/v1/ueba/entities') data = []
     else if (path === '/detect-web/api/v1/ueba/summary') data = { entities: 0, byLevel: {}, maxRisk: 0, halfLifeHours: 24 }
     else if (path === '/detect-web/api/v1/ueba/score') data = { score: 0, level: 'LOW', breakdown: {} }

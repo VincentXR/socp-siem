@@ -68,7 +68,8 @@ public record LogSource(
         String missing = switch (type) {
             case FILE -> path == null || path.isBlank() ? "path" : null;
             case SOCKET, SYSLOG -> address == null || address.isBlank() ? "address" : null;
-            case KAFKA -> topic == null || topic.isBlank() ? "topic" : null;
+            case KAFKA -> address == null || address.isBlank() ? "bootstrap servers in address"
+                    : topic == null || topic.isBlank() ? "topic" : null;
             default -> null;
         };
         if (missing != null) throw com.socp.platform.error.exception.ApiException.badRequest(

@@ -70,10 +70,12 @@ class ReportServiceTest {
 
     @Test
     void usesClickHouseRowsForDailyReportAndRecordsFreshness() throws Exception {
+        var queries = new java.util.concurrent.CopyOnWriteArrayList<String>();
         AlertClient alerts = mock(AlertClient.class);
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             String sql = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            queries.add(sql);
             String body;
             if (sql.contains("GROUP BY severity")) {
                 body = "HIGH\t2\nLOW\t1\n";
@@ -93,6 +95,9 @@ class ReportServiceTest {
             ClickHouseProperties properties = clickHouseProperties(server);
             ReportSummary report = new ReportService(alerts, properties).dailyReport();
 
+            assertThat(queries.stream().filter(sql -> sql.contains("GROUP BY")).toList()).hasSize(2)
+                    .allSatisfy(sql -> assertThat(sql).contains("ts >= toStartOfDay(now('UTC'))")
+                            .contains("ts < toStartOfDay(now('UTC')) + INTERVAL 1 DAY"));
             assertThat(report.total()).isEqualTo(3);
             assertThat(report.bySeverity()).containsEntry("HIGH", 2).containsEntry("LOW", 1);
             assertThat(report.byRule()).singleElement().satisfies(rule -> {
@@ -153,7 +158,7 @@ class ReportServiceTest {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", exchange -> {
             String sql = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
-            String body = sql.contains("toDate(ts)")
+            String body = sql.contains("toDate(ts, 'UTC')")
                     ? today.minusDays(2) + "\t4\nbad-row\n" + today + "\t2\n"
                     : "1710000000000\n";
             byte[] response = body.getBytes(StandardCharsets.UTF_8);

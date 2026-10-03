@@ -2,11 +2,12 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { h, ref } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import PagerBar from '../src/components/PagerBar.vue'
 import NotifyView from '../src/views/NotifyView.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 
 const mocks = vi.hoisted(() => ({
-  listChannels: vi.fn(), dispatchLog: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), testChannel: vi.fn(),
+  listChannels: vi.fn(), getChannel: vi.fn(), dispatchLog: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), testChannel: vi.fn(),
   deleteChannel: vi.fn(), toggleChannel: vi.fn(), success: vi.fn(), info: vi.fn(), confirm: vi.fn(),
 }))
 vi.mock('../src/api', async original => ({ ...await original<object>(), ...mocks }))
@@ -24,7 +25,7 @@ const channel = { id: 'channel-one', name: 'Saved channel', type: 'SLACK', targe
 let wrapper: ReturnType<typeof mount>
 async function open(existing = false) {
   const router = createRouter({ history: createMemoryHistory(), routes: [
-    { path: '/notify', component: NotifyView }, { path: '/elsewhere', component: { template: '<p>Elsewhere</p>' } },
+    { name: 'notify', path: '/notify', component: NotifyView }, { path: '/elsewhere', component: { template: '<p>Elsewhere</p>' } },
   ] })
   await router.push('/notify')
   await router.isReady()
@@ -52,6 +53,7 @@ describe('notification configuration and test delivery', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     mocks.listChannels.mockResolvedValue({ items: [], total: 0 })
+    mocks.getChannel.mockResolvedValue(channel)
     mocks.dispatchLog.mockResolvedValue({ items: [], total: 0 })
     mocks.createChannel.mockImplementation(async payload => ({ ...payload, id: channel.id }))
     mocks.updateChannel.mockImplementation(async (id, payload) => ({ ...payload, id }))
@@ -59,6 +61,72 @@ describe('notification configuration and test delivery', () => {
     mocks.confirm.mockResolvedValue('confirm')
   })
   afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
+
+  it('fetches real receipt pages and preserves exact filters through navigation', async () => {
+    mocks.dispatchLog.mockResolvedValue({ items: [], total: 65 })
+    const router = await open()
+    await click('取消')
+    await router.push('/notify?logPage=2&logSize=20&logStatus=failed&alarmId=alarm-1&channel=Ops')
+    await flushPromises()
+    expect(mocks.dispatchLog).toHaveBeenLastCalledWith(expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      { page: 2, size: 20, status: 'failed', alarmId: 'alarm-1', channel: 'Ops' })
+    const before = mocks.dispatchLog.mock.calls.length
+    wrapper.findAllComponents(PagerBar)[1]!.vm.$emit('update:currentPage', 3)
+    await flushPromises()
+    expect(router.currentRoute.value.query.logPage).toBe('3')
+    expect(mocks.dispatchLog).toHaveBeenCalledTimes(before + 1)
+    expect(mocks.dispatchLog.mock.calls.at(-1)![1].page).toBe(3)
+    wrapper.findAllComponents(PagerBar)[1]!.vm.$emit('update:pageSize', 50)
+    await flushPromises()
+    expect(router.currentRoute.value.query.logSize).toBe('50')
+    expect(mocks.dispatchLog.mock.calls.at(-1)![1]).toEqual({ page: 1, size: 50, status: 'failed', alarmId: 'alarm-1', channel: 'Ops' })
+    await router.push('/notify?logPage=-3&logSize=999')
+    await flushPromises()
+    expect(mocks.dispatchLog.mock.calls.at(-1)![1]).toEqual({ page: 1, size: 20, status: undefined, alarmId: undefined, channel: undefined })
+  })
+
+  it('pages channels independently while keeping receipt filters and restores both from the URL', async () => {
+    mocks.listChannels.mockResolvedValue({ items: [channel], total: 65 })
+    mocks.dispatchLog.mockResolvedValue({ items: [], total: 65 })
+    const router = await open()
+    await click('取消')
+    await router.push('/notify?logPage=2&logStatus=failed&alarmId=alarm-1&channel=Ops')
+    await flushPromises()
+    wrapper.findAllComponents(PagerBar)[0]!.vm.$emit('update:currentPage', 3)
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ channelPage: '3', logPage: '2', logStatus: 'failed', alarmId: 'alarm-1', channel: 'Ops' })
+    expect(mocks.listChannels).toHaveBeenLastCalledWith(expect.objectContaining({ signal: expect.any(AbortSignal) }), 3, 20)
+    expect(mocks.dispatchLog.mock.calls.at(-1)![1]).toEqual({ page: 2, size: 20, status: 'failed', alarmId: 'alarm-1', channel: 'Ops' })
+    await router.push('/notify?channelPage=2&channelSize=10&logPage=3&logStatus=unknown')
+    await flushPromises()
+    expect(wrapper.findAllComponents(PagerBar)[0]!.props()).toMatchObject({ currentPage: 2, pageSize: 10, total: 65 })
+    expect(wrapper.findAllComponents(PagerBar)[1]!.props()).toMatchObject({ currentPage: 3, pageSize: 20, total: 65 })
+  })
+
+  it('refetches a valid receipt page and updates the URL after results shrink', async () => {
+    mocks.dispatchLog.mockResolvedValue({ items: [], total: 21 })
+    const router = await open()
+    await click('取消')
+    await router.push('/notify?logPage=3&logStatus=failed&channel=Ops')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ logPage: '2', logStatus: 'failed', channel: 'Ops' })
+    expect(mocks.dispatchLog.mock.calls.at(-1)![1]).toEqual({ page: 2, size: 20, status: 'failed', alarmId: undefined, channel: 'Ops' })
+  })
+
+  it('loads an off-page receipt channel by its exact ID and edits the existing channel', async () => {
+    const offPage = { ...channel, id: 'channel-off-page', name: 'Off-page channel' }
+    mocks.getChannel.mockResolvedValue(offPage)
+    await open()
+    await click('取消')
+    const view = wrapper.findComponent(NotifyView).vm as unknown as { editLogChannel: (id: string) => Promise<void> }
+    await view.editLogChannel(offPage.id)
+    await flushPromises()
+    expect(mocks.getChannel).toHaveBeenCalledExactlyOnceWith(offPage.id)
+    expect(wrapper.find('.el-dialog input').element).toHaveProperty('value', offPage.name)
+    await click('保存')
+    expect(mocks.updateChannel).toHaveBeenCalledWith(offPage.id, expect.objectContaining({ name: offPage.name }))
+    expect(mocks.createChannel).not.toHaveBeenCalled()
+  })
 
   it('binds a row test to its confirmed channel and prevents duplicate confirmations', async () => {
     mocks.listChannels.mockResolvedValue({ items: [channel], total: 1 })

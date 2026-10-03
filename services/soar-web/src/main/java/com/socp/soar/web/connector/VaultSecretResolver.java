@@ -30,6 +30,8 @@ public class VaultSecretResolver implements SecretResolver {
     private final SecretResolver tokenResolver;
     private final HttpClient http;
     private final URI endpoint;
+    private final TenantSecretAuthorizer authorizer;
+    @Override public boolean isAuthorized(String tenantId, String reference) { return authorizer.allows(tenantId, reference); }
 
     @org.springframework.beans.factory.annotation.Autowired
     public VaultSecretResolver(SoarSecretProperties properties, ObjectMapper mapper) {
@@ -42,6 +44,7 @@ public class VaultSecretResolver implements SecretResolver {
         this.mapper = mapper == null ? new ObjectMapper() : mapper;
         this.tokenResolver = tokenResolver == null ? new EnvironmentSecretResolver() : tokenResolver;
         this.endpoint = parseEndpoint(this.properties);
+        this.authorizer = new TenantSecretAuthorizer(this.properties.getTenantGrants());
         require(this.properties.getVaultTokenRef(), "SOAR Vault token reference");
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofMillis(timeout(this.properties.getConnectTimeoutMs(), 100, 60_000)))
@@ -71,9 +74,9 @@ public class VaultSecretResolver implements SecretResolver {
                 .GET()
                 .build();
         try {
-            HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            HttpResponse<String> response = http.send(request, com.socp.platform.client.http.BoundedBodyHandlers.ofString(MAX_RESPONSE_BYTES));
             if (response.statusCode() < 200 || response.statusCode() >= 300
-                    || response.body() == null || response.body().length > MAX_RESPONSE_BYTES) {
+                    || response.body() == null || response.body().length() > MAX_RESPONSE_BYTES) {
                 return Optional.empty();
             }
             JsonNode body = mapper.readTree(response.body());

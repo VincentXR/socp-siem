@@ -10,6 +10,7 @@ export interface DetectionResultSummary {
 }
 
 export interface Alarm {
+  assignee?: string | null
   id: string
   ruleId: string
   ruleName: string
@@ -173,7 +174,7 @@ export interface ParseRule {
   filters?: Array<Record<string, unknown>>
   enabled: boolean; order: number
 }
-export interface SinkTarget { id: string; name: string; type: string; uri: string; authToken: string | null; enabled: boolean }
+export interface SinkTarget { id: string; name: string; type: string; uri: string; authTokenConfigured: boolean; enabled: boolean }
 export interface SearchEvent {
   eventId: string; timestamp: string; source: string; host: string; severity: string; msg: string
   fields: Record<string, string>; ecs?: Record<string, string>
@@ -253,7 +254,7 @@ export interface TimelineEvent { ts: string; type: string; message: string; sour
 export interface CaseInfo {
   id: string; caseNo?: string; title: string; entity: string; severity: string; status: string
   ruleIds: string[]; alarmIds: string[]; timeline: TimelineEvent[]; assignee: string
-  ruleCount?: number; alarmCount?: number; createdAt?: string; updatedAt?: string
+  ruleCount?: number; alarmCount?: number; createdAt?: string; updatedAt?: string; rowVersion?: number
 }
 export interface AlarmDeliveryStatus {
   deliveryId: string; alarmId: string; destination: string; status: string; attempts: number
@@ -287,6 +288,7 @@ export interface IngestTask {
   parseRuleIds: string[]; createdAt: string | null; runtime: TaskRuntime
 }
 export interface IngestParseFailure {
+  sourceId?: string | null; parseRuleIds?: string[]; eventTimestamp?: string | null
   id: string; collectorId: string; rawPayload: string; receivedAt: string; parserVersion: string
   failureReason: string; replayStatus: 'PENDING' | 'REPLAYED' | string; replayAttempts: number
   replayedEventId?: string | null; replayedAt?: string | null; lastError?: string | null; duplicate?: boolean

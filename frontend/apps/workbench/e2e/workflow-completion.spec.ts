@@ -1,5 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
-import { isWorkbenchBackendUrl } from './helpers'
+import { expectMobileNavigationClosed, isWorkbenchBackendUrl, mockInvestigationReadiness } from './helpers'
 
 const reply = (route: Route, data: unknown, status = 200) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify({ code: status === 200 ? 0 : status, message: status === 200 ? '' : 'Write unavailable', data }) })
 async function session(page: Page) {
@@ -23,6 +23,7 @@ async function session(page: Page) {
     unexpected.push(`${route.request().method()} ${path}`)
     return route.abort()
   })
+  await mockInvestigationReadiness(page)
   return unexpected
 }
 
@@ -42,6 +43,7 @@ test('enabled file sources require a real target and output edits preserve bindi
       sourceWrites++; return reply(route, { ...route.request().postDataJSON(), id: 'source-new' })
     }
     if (route.request().method() !== 'GET') return route.fallback()
+    if (path.endsWith('/sources/source-new/setup')) return reply(route, { source: { id: 'source-new', name: 'Audit logs', type: 'FILE', path: '/var/log/audit.log', enabled: true }, collectorTag: 'search-source-new', nativeVector: true, appliedState: 'UNKNOWN', configurationVersion: 'saved-v1', output: null, problems: [], pipeline: [], pipelineMode: 'BUILTIN_THEN_SPARSE_FALLBACK' })
     if (path.endsWith('/outputs')) return reply(route, [output])
     if (path.endsWith('/sources') || path.endsWith('/parse-rules') || path.includes('parse-failures')) return reply(route, { items: [], total: 0 })
     if (path.endsWith('/summary')) return reply(route, {})
@@ -53,13 +55,15 @@ test('enabled file sources require a real target and output edits preserve bindi
   const drawer = page.locator('.el-drawer.open')
   await drawer.getByLabel('Source name', { exact: true }).fill('Audit logs')
   await drawer.getByRole('button', { name: 'Add Log Source', exact: true }).click()
-  await expect(drawer).toContainText('Enter the collector target')
+  await expect(drawer).toContainText('Complete this connection field before enabling')
   expect(sourceWrites).toBe(0)
   await drawer.getByLabel('File path', { exact: true }).fill('/var/log/audit.log')
   await drawer.getByRole('button', { name: 'Add Log Source', exact: true }).click()
-  await expect(drawer).not.toBeVisible()
+  await expect(page.getByRole('dialog', { name: 'Add Log Source', exact: true })).not.toBeVisible()
+  await expect(page.getByRole('dialog', { name: 'Guided setup', exact: true })).toBeVisible()
+  await page.getByRole('dialog', { name: 'Guided setup', exact: true }).getByRole('button', { name: 'Close this dialog' }).click()
   expect(sourceWrites).toBe(1)
-  await expect(page.getByRole('alert')).toContainText('does not mean the collector is running')
+  await expect(page.getByRole('alert').filter({ hasText: 'does not mean the collector is running' })).toBeVisible()
   await page.getByRole('tab', { name: 'Output Configuration', exact: true }).click()
   await page.getByRole('row').filter({ hasText: 'Receiver' }).getByRole('button', { name: 'Edit', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Edit', exact: true })
@@ -79,15 +83,16 @@ test('enabled file sources require a real target and output edits preserve bindi
 
 test('case notes retry the same durable identity and the next note gets a fresh identity', async ({ page }) => {
   const unexpected = await session(page)
-  const writes: URLSearchParams[] = []
+  const writes: Array<{ content: string; idempotencyKey: string }> = []
   const notes: Array<{ ts: string; message: string; type: string; source: string }> = []
   await page.route('**/incident-web/api/v1/incidents**', route => {
     const url = new URL(route.request().url())
     if (url.pathname.endsWith('/notes')) {
-      writes.push(url.searchParams)
+      const body = route.request().postDataJSON() as { content: string; idempotencyKey: string }
+      writes.push(body)
       if (writes.length === 1) return reply(route, null, 503)
-      notes.push({ ts: '2026-09-01T00:00:00Z', message: url.searchParams.get('content')!, type: 'NOTE', source: 'alice' })
-      return reply(route, { added: true })
+      notes.push({ ts: '2026-09-01T00:00:00Z', message: body.content, type: 'NOTE', source: 'alice' })
+      return reply(route, { case: { id: 'case-a', title: 'Investigation A', status: 'OPEN', severity: 'HIGH', rowVersion: notes.length, alarmIds: [], ruleIds: [], timeline: [] } })
     }
     if (url.pathname.endsWith('/case-a')) return reply(route, { id: 'case-a', title: 'Investigation A', status: 'OPEN', severity: 'HIGH' })
     if (url.pathname.endsWith('/timeline')) return reply(route, { items: notes, total: notes.length })
@@ -95,18 +100,18 @@ test('case notes retry the same durable identity and the next note gets a fresh 
   })
   await page.goto('/cases?caseId=case-a')
   const drawer = page.locator('.el-drawer.open')
-  await drawer.getByLabel('Notes', { exact: true }).fill('Evidence checked')
-  await drawer.getByRole('button', { name: 'Add investigation note' }).click()
+  await drawer.getByLabel('Investigation note', { exact: true }).fill('Evidence checked')
+  await drawer.getByRole('button', { name: 'Add note', exact: true }).click()
   await expect(drawer.getByRole('alert')).toBeVisible()
-  await expect(drawer.getByLabel('Notes', { exact: true })).toHaveValue('Evidence checked')
-  await drawer.getByRole('button', { name: 'Add investigation note' }).click()
-  await expect(drawer.getByLabel('Notes', { exact: true })).toHaveValue('')
+  await expect(drawer.getByLabel('Investigation note', { exact: true })).toHaveValue('Evidence checked')
+  await drawer.getByRole('button', { name: 'Add note', exact: true }).click()
+  await expect(drawer.getByLabel('Investigation note', { exact: true })).toHaveValue('')
   await expect(drawer.getByRole('region', { name: 'Response Timeline' })).toContainText('Evidence checked')
-  expect(writes[0].get('idempotencyKey')).toBe(writes[1].get('idempotencyKey'))
-  await drawer.getByLabel('Notes', { exact: true }).fill('Second evidence')
-  await drawer.getByRole('button', { name: 'Add investigation note' }).click()
-  await expect(drawer.getByLabel('Notes', { exact: true })).toHaveValue('')
-  expect(writes[2].get('idempotencyKey')).not.toBe(writes[1].get('idempotencyKey'))
+  expect(writes[0].idempotencyKey).toBe(writes[1].idempotencyKey)
+  await drawer.getByLabel('Investigation note', { exact: true }).fill('Second evidence')
+  await drawer.getByRole('button', { name: 'Add note', exact: true }).click()
+  await expect(drawer.getByLabel('Investigation note', { exact: true })).toHaveValue('')
+  expect(writes[2].idempotencyKey).not.toBe(writes[1].idempotencyKey)
   expect(notes).toHaveLength(2)
   expect(unexpected).toEqual([])
 })
@@ -128,7 +133,7 @@ test('notification history requests real page and status scopes and can edit an 
   const history = page.locator('.el-card').filter({ hasText: 'invalid_auth' })
   await history.locator('.el-pager').getByText('2', { exact: true }).click()
   await expect.poll(() => reads.at(-1)?.get('page')).toBe('2')
-  await history.getByRole('combobox', { name: 'Status', exact: true }).press('Enter')
+  await history.getByRole('combobox', { name: 'Delivery status', exact: true }).press('Enter')
   await page.getByRole('option', { name: 'Failed', exact: true }).click()
   await expect.poll(() => reads.at(-1)?.get('status')).toBe('failed')
   expect(reads.at(-1)?.get('page')).toBe('1')
@@ -153,6 +158,7 @@ test('alarm verdict records rationale without changing disposition or detection 
       return reply(route, feedback.at(-1))
     }
     if (path.endsWith('/feedback')) return reply(route, feedback)
+    if (path.endsWith('/similar')) return reply(route, [])
     if (path.endsWith('/disposition')) return reply(route, { status: 'OPEN', assignee: '', notes: [] })
     if (path.endsWith('/evidence')) return reply(route, { items: [], total: 0, complete: true })
     if (path.endsWith('/deliveries')) return reply(route, [])
@@ -174,19 +180,28 @@ test('alarm verdict records rationale without changing disposition or detection 
 
 test('partial AI investigation exposes missing evidence and navigable citations', async ({ page }) => {
   const unexpected = await session(page)
+  const searches: string[] = []
   const result = { investigationId: 'job-a', alertId: 'alarm-a', revision: 1, status: 'PARTIAL', analysis: 'Provisional conclusion',
     recommendedSpl: 'eventId="event-a"', timeline: [], hypotheses: [], nextActions: [], degradedSources: ['OpenSearch'],
     citations: [{ id: 'incident:case-a', source: 'incident-web', description: 'Related case' }], summaryAppended: true, incidentId: 'case-a' }
   await page.route('**/ai-assistant/api/v1/ai/investigations/**', route => reply(route, route.request().method() === 'POST' ? { jobId: 'job-a' } : result))
   await page.route('**/search-config/api/v1/meta/fields', route => reply(route, []))
-  await page.route('**/search-config/api/v1/search?**', route => reply(route, { events: [], total: 0, source: 'opensearch' }))
+  await page.route('**/search-config/api/v1/search?**', route => {
+    searches.push(new URL(route.request().url()).searchParams.get('q')!)
+    return reply(route, { events: [], total: 0, source: 'opensearch' })
+  })
   await page.goto('/assistant?alarmId=alarm-a')
   await expect(page.getByRole('alert')).toContainText('Missing evidence sources: OpenSearch')
   const citation = page.getByRole('link', { name: 'Related case', exact: true })
   await expect(citation).toHaveAttribute('href', '/cases?caseId=case-a')
-  await page.getByRole('button', { name: 'Run in log search' }).click()
-  await expect(page).toHaveURL(/\/search\?q=/)
-  expect(new URL(page.url()).searchParams.get('q')).toBe('eventId="event-a"')
+  await page.getByRole('button', { name: 'Review query in Search', exact: true }).click()
+  await expect(page).toHaveURL(/\/search\?draft=/)
+  expect(new URL(page.url()).searchParams.get('draft')).toBe('eventId="event-a"')
+  expect(searches).toEqual([])
+  await page.getByRole('button', { name: 'Run Search', exact: true }).click()
+  await expect.poll(() => new URL(page.url()).searchParams.get('q')).toBe('eventId="event-a"')
+  expect(new URL(page.url()).searchParams.has('draft')).toBe(false)
+  await expect.poll(() => searches).toEqual(['eventId="event-a"'])
   expect(unexpected).toEqual([])
 })
 
@@ -199,14 +214,14 @@ test('custom time is applied, shareable, and remains stable when the draft chang
     return reply(route, { mode: 'events', events: [], total: 0, source: 'opensearch' })
   })
   await page.goto('/search?q=host%3Da%20OR%20host%3Db&range=all')
-  await page.getByRole('button', { name: 'Custom time', exact: true }).click()
-  await page.getByLabel('Start time', { exact: true }).fill('2026-09-01T08:00')
-  await page.getByLabel('End time', { exact: true }).fill('2026-09-02T08:00')
+  await page.getByRole('button', { name: 'Custom', exact: true }).click()
+  await page.getByLabel('From (UTC)', { exact: true }).fill('2026-09-01T08:00')
+  await page.getByLabel('To (UTC)', { exact: true }).fill('2026-09-02T08:00')
   await page.getByRole('button', { name: 'Run Search', exact: true }).click()
   await expect.poll(() => queries.at(-1)).toContain('(host=a OR host=b) AND timestamp>=')
   const applied = queries.at(-1)
   expect(new URL(page.url()).searchParams.get('from')).toMatch(/Z$/)
-  await page.getByLabel('Start time', { exact: true }).fill('2026-10-01T08:00')
+  await page.getByLabel('From (UTC)', { exact: true }).fill('2026-10-01T08:00')
   expect(queries.at(-1)).toBe(applied)
   await page.reload()
   await expect.poll(() => queries.at(-1)).toBe(applied)
@@ -239,7 +254,8 @@ test('my active queue and absolute time scope are shared by the URL and export',
   expect(exported?.get('assignee')).toBe('alice')
   expect(exported?.get('status')).toBe('ACTIVE')
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.screenshot({ path: testInfo.outputPath('alarm-queue-mobile.png'), fullPage: true })
+  await expectMobileNavigationClosed(page)
+  await page.screenshot({ path: testInfo.outputPath('alarm-queue-mobile.png'), fullPage: true, animations: 'disabled' })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
   expect(unexpected).toEqual([])
 })
@@ -287,28 +303,36 @@ test('ATT&CK opens tenant rule associations and pivots to rule-scoped alarms', a
   const unexpected = await session(page)
   const technique = { id: 'T1110', name: 'Brute Force', tactic: 'credential-access', description: 'Repeated credentials', url: 'https://attack.mitre.org/techniques/T1110/' }
   const scopes: URLSearchParams[] = []
+  const alarmScopes: URLSearchParams[] = []
   await page.route('**/attack-web/api/v1/**', route => {
     const path = new URL(route.request().url()).pathname
     if (path.endsWith('/tactics')) return reply(route, { items: [{ id: 'credential-access', name: 'Credential Access' }] })
     if (path.endsWith('/techniques')) return reply(route, { items: [technique] })
+    if (path.endsWith('/techniques/T1110/note')) return reply(route, { note: 'Reviewed technique context' })
     if (path.endsWith('/coverage')) return reply(route, { totalTechniques: 1, coveredTechniques: 1, coverage: 100, byTactic: [], uncovered: [] })
     return route.fallback()
   })
   await page.route('**/detect-web/api/v1/rules/active-techniques', route => reply(route, ['T1110']))
   await page.route('**/alert-web/api/alarms/technique-counts', route => reply(route, { from: '2026-09-01', until: '2026-09-02', counts: { T1110: 3 } }))
+  await page.route('**/alert-web/api/alarms?**', route => {
+    alarmScopes.push(new URL(route.request().url()).searchParams)
+    return reply(route, { items: [], total: 0 })
+  })
   await page.route('**/detect-web/api/v1/rules/by-technique?**', route => {
     scopes.push(new URL(route.request().url()).searchParams)
     return reply(route, { items: [{ id: 'rule-a', name: 'Login detection', status: 'ACTIVE' }], total: 21 })
   })
   await page.goto('/attack')
   await page.locator('.am-cell').click()
-  const detail = page.getByRole('dialog', { name: 'T1110 · Brute Force' })
+  const detail = page.getByRole('dialog', { name: 'Technique details', exact: true })
   await expect(detail).toContainText('Login detection')
+  await expect(detail).toContainText('Reviewed technique context')
   expect(scopes[0].get('technique')).toBe('T1110')
+  expect(alarmScopes[0].get('technique')).toBe('T1110')
   await detail.locator('.el-pager').getByText('2', { exact: true }).click()
   await expect.poll(() => scopes.at(-1)?.get('page')).toBe('2')
   await page.screenshot({ path: testInfo.outputPath('attack-rule-pivot.png'), fullPage: true })
   await detail.getByRole('button', { name: 'Related alarms', exact: true }).click()
-  await expect(page).toHaveURL(/\/alarms\?rule=rule-a/)
+  await expect(page).toHaveURL(/\/alarms\?rule=rule-a&technique=T1110/)
   expect(unexpected).toEqual([])
 })

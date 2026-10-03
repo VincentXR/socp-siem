@@ -42,6 +42,7 @@ public record LogSourceRequest(
                 protocol, charset, timeField, timezone, tags, frequency, ignoreOlderSeconds,
                 categoryId, groupId);
         source.requireReady();
+        if (enabled) com.socp.search.config.render.VectorConfigRenderer.requireReady(source);
         return source;
     }
 
@@ -54,6 +55,7 @@ public record LogSourceRequest(
                 categoryId, groupId,
                 createdAt);
         source.requireReady();
+        if (enabled) com.socp.search.config.render.VectorConfigRenderer.requireReady(source);
         return source;
     }
 }

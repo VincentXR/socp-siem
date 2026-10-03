@@ -1,5 +1,5 @@
 import { flushPromises, shallowMount } from '@vue/test-utils'
-import { nextTick, ref } from 'vue'
+import { nextTick, ref, reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import UebaView from '../src/views/UebaView.vue'
 import UebaRiskPanel from '../src/components/ueba/UebaRiskPanel.vue'
@@ -8,6 +8,8 @@ import UebaScorePanel from '../src/components/ueba/UebaScorePanel.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import type { RiskEntity, ScoreBreakdown } from '../src/api'
 
+const navigation = vi.hoisted(() => ({ route: { query: {} as Record<string, unknown> }, replace: vi.fn() }))
+vi.mock('vue-router', () => ({ useRoute: () => navigation.route, useRouter: () => ({ replace: navigation.replace }) }))
 const mocks = vi.hoisted(() => ({ uebaEntities: vi.fn(), uebaSummary: vi.fn(), listWatchlists: vi.fn(),
   listTechniques: vi.fn(), uebaEntity: vi.fn(), uebaScore: vi.fn() }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...mocks }))
@@ -27,6 +29,8 @@ async function setup() {
   return wrapper
 }
 beforeEach(() => {
+  navigation.route = reactive({ query: {} })
+  navigation.replace.mockImplementation(async to => { navigation.route.query = to.query })
   mocks.uebaEntities.mockResolvedValue([entity('a'), entity('b')])
   mocks.uebaSummary.mockResolvedValue({})
   mocks.listWatchlists.mockResolvedValue([])

@@ -227,9 +227,9 @@ class SoarApprovalResolutionCoverageTest {
 
     @Test
     void listApprovalsProjectsTenantScopedRows() {
-        given(approvals.findByTenantIdOrderByCreatedAtDesc("tenant-a"))
-                .willReturn(List.of(approval("apr-1", "run-1", "PENDING")));
-        given(approvals.findByTenantIdOrderByCreatedAtDesc(eq("tenant-a"), any(PageRequest.class)))
+        given(approvals.findByTenantIdOrderByCreatedAtDesc("tenant-a", PageRequest.of(0, 200)))
+                .willReturn(new PageImpl<>(List.of(approval("apr-1", "run-1", "PENDING"))));
+        given(approvals.findByTenantIdOrderByCreatedAtDesc("tenant-a", PageRequest.of(0, 10)))
                 .willReturn(new PageImpl<>(List.of(approval("apr-2", "run-2", "APPROVED"))));
 
         List<Map<String, Object>> all = service.listApprovals();

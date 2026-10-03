@@ -35,6 +35,7 @@ CHECKS: tuple[Check, ...] = (
     Check("package layout", ("build/verify-package-layout.py",)),
     Check("architecture boundaries", ("build/verify-architecture.py",)),
     Check("observability assets", ("build/verify-observability-assets.py",)),
+    Check("metrics file-token contract", ("build/verify-metrics-auth.py",)),
     Check("SOAR static contract", ("build/verify-soar.py",)),
     Check("source style debt", ("build/verify-style.py",)),
     Check("runtime consolidation policy", ("build/verify-runtime-consolidation.py",)),

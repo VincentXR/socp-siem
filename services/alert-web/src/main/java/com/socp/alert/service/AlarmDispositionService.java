@@ -88,21 +88,40 @@ public class AlarmDispositionService {
             throw ApiException.badRequest("非法状态: " + status + "（可选 OPEN/INVESTIGATING/RESOLVED/CLOSED）");
         }
         Disposition cur = currentForUpdate(alarmId);
-        Disposition next = new Disposition(s, cur.assignee(), cur.notes());
+        Disposition next = new Disposition(s, cur.assignee(), appendHistory(cur, "Status: " + cur.status() + " → " + s), cur.tags());
         // Deterministic idempotency: re-applying the current status is a no-op, so a
         // retried or duplicated request neither rewrites the row nor churns updated_at.
-        if (s.equals(cur.status())) return next;
+        if (s.equals(cur.status())) return cur;
         return persist(alarmId, next);
+    }
+
+    @Transactional
+    public Disposition setStatus(String alarmId, String status, String reason, String classification) {
+        status = normalizeOptionalStatus(status);
+        if (status == null) throw ApiException.badRequest("status is required");
+        boolean closing = "RESOLVED".equals(status) || "CLOSED".equals(status);
+        requireClosureEvidence(status, reason, classification);
+        Disposition current = currentForUpdate(alarmId);
+        if (Objects.equals(status, current.status())) return current;
+        Disposition updated = setStatus(alarmId, status);
+        if (closing) return addNote(alarmId, batchActor(), "Closure [" + classification + "]: " + reason.trim());
+        return updated;
+    }
+
+    private static List<Disposition.Note> appendHistory(Disposition current, String change) {
+        List<Disposition.Note> notes = new ArrayList<>(current.notes());
+        notes.add(new Disposition.Note(batchActor(), change, Instant.now()));
+        return List.copyOf(notes);
     }
 
     @Transactional
     public Disposition assign(String alarmId, String assignee) {
         Disposition cur = currentForUpdate(alarmId);
         String target = assignee == null ? null : assignee.trim();
-        Disposition next = new Disposition(cur.status(), target, cur.notes());
+        Disposition next = new Disposition(cur.status(), target, appendHistory(cur, "Owner: " + Objects.toString(cur.assignee(), "unassigned") + " → " + Objects.toString(target, "unassigned")), cur.tags());
         // Deterministic idempotency: assigning the current owner is a no-op, so SOAR
         // or UI retries of the same assignment do not rewrite the disposition.
-        if (Objects.equals(target, cur.assignee())) return next;
+        if (Objects.equals(target, cur.assignee())) return cur;
         return persist(alarmId, next);
     }
 
@@ -210,6 +229,24 @@ public class AlarmDispositionService {
         result.put("alarmIds", items.stream().map(item -> String.valueOf(item.get("alarmId"))).toList());
         result.put("items", List.copyOf(items));
         return result;
+    }
+
+    /** Analyst boundary: connector state reconciliation keeps its separate legacy contract. */
+    @Transactional
+    public Map<String, Object> batchUpdate(List<String> alarmIds, String status,
+            String assignee, String reason, String classification) {
+        String normalized = normalizeOptionalStatus(status);
+        requireClosureEvidence(normalized, reason, classification);
+        String evidence = ("RESOLVED".equals(normalized) || "CLOSED".equals(normalized))
+                ? "Closure [" + classification + "]: " + reason.trim() : reason;
+        return batchUpdate(alarmIds, normalized, assignee, evidence);
+    }
+
+    private static void requireClosureEvidence(String status, String reason, String classification) {
+        if (!"RESOLVED".equals(status) && !"CLOSED".equals(status)) return;
+        if (reason == null || reason.isBlank() || reason.length() > 4096 || classification == null
+                || !Set.of("TRUE_POSITIVE", "FALSE_POSITIVE", "BENIGN", "UNDETERMINED").contains(classification))
+            throw ApiException.badRequest("Closure requires a classification and reason/evidence");
     }
 
     /** Persist the complete disposition in the authoritative tenant row. */

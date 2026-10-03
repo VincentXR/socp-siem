@@ -16,6 +16,11 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { RunOpenRequest } from './editor/runHighlight'
 import { useConfirm } from '../../composables/useConfirm'
+import { initialRunInputs } from './editor/runInputs'
+import { coalescedRefresh } from '../../lib/coalesced-refresh'
+import { declaredEffects } from './editor/executionReview'
+import SchemaInputForm from '../SchemaInputForm.vue'
+import { validateSchemaInput } from '../../utils/schemaValidation'
 import { useFormDialog } from '../../composables/useFormDialog'
 import { useI18n } from '../../composables/useI18n'
 import RowActivate from '../RowActivate.vue'
@@ -46,13 +51,16 @@ import {
 } from '../../api'
 
 const props = withDefaults(defineProps<{
+  initialRunId?: string
+  contextAlarmId?: string
+  contextCaseId?: string
   canWrite?: boolean
   canExecute?: boolean
   canOperate?: boolean
   /** False while the runs pane is hidden; pauses projection polling and the live stream. */
   active?: boolean
-}>(), { canWrite: true, canExecute: true, canOperate: true, active: true })
-const emit = defineEmits<{ 'open-in-editor': [payload: RunOpenRequest] }>()
+}>(), { initialRunId: '', contextAlarmId: '', contextCaseId: '', canWrite: true, canExecute: true, canOperate: true, active: true })
+const emit = defineEmits<{ 'open-in-editor': [payload: RunOpenRequest]; 'select-run': [runId: string] }>()
 
 const { t } = useI18n()
 const { confirmDanger, promptInput } = useConfirm()
@@ -60,9 +68,11 @@ const { confirmDanger, promptInput } = useConfirm()
 const catalogPageSize = 25
 const runs = ref<SoarRun[]>([])
 const runsPage = ref(0)
+const runKeyword = ref('')
+const runStatusFilter = ref('')
 const runsTotal = ref(0)
 const runsTotalPages = ref(0)
-const selectedRunId = ref('')
+const selectedRunId = ref(props.initialRunId)
 const run = ref<SoarRun | null>(null)
 const nodes = ref<SoarNodeRun[]>([])
 const events = ref<SoarEvent[]>([])
@@ -92,8 +102,16 @@ const queueForm = ref({
   playbookVersionId: '',
   requestId: '',
   subject: '{}',
-  inputs: '{\n  "eventId": "workbench-manual-run",\n  "eventType": "manual.test"\n}',
+  inputs: '{}',
 })
+const queueInputs = ref<Record<string, unknown>>({})
+const queueInputsValid = ref(true)
+const queueInputSchema = computed(() => (publishedVersions.value.find(item => item.version.id === queueForm.value.playbookVersionId)?.version.definition as Record<string, unknown> | undefined)?.inputSchema)
+watch(() => queueForm.value.playbookVersionId, () => {
+  queueInputs.value = initialRunInputs(queueInputSchema.value, { alarmId: props.contextAlarmId, caseId: props.contextCaseId })
+  queueForm.value.inputs = JSON.stringify(queueInputs.value, null, 2)
+}, { flush: 'sync' })
+watch(queueInputs, value => { queueForm.value.inputs = JSON.stringify(value, null, 2) }, { deep: true, flush: 'sync' })
 const queueGuard = useFormDialog(queueDialogVisible, () => queueForm.value, () => queueLoading.value)
 let pollTimer: ReturnType<typeof setInterval> | undefined
 let stream: EventSource | undefined
@@ -113,7 +131,52 @@ const queuePlaybookOptions = computed(() => queuePlaybook.value && !queuePlayboo
 const selectedRunOffPage = computed(() => selectedRunId.value && !runs.value.some(item => item.runId === selectedRunId.value))
 
 const selectedNode = computed(() => nodes.value.find(node => node.id === selectedNodeRunId.value))
-const lastSequence = computed(() => events.value.reduce((max, item) => Math.max(max, item.sequence || 0), 0))
+const lastSequence = ref(0)
+const eventPageSize = 200
+const historyPage = ref<number | null>(null)
+const historyEvents = ref<SoarEvent[]>([])
+const eventTotalPages = ref(0)
+const durableEventCount = ref(0)
+const eventError = ref('')
+const historyLoading = ref(false)
+const visibleEvents = computed(() => historyPage.value === null ? events.value : historyEvents.value)
+let historyController: AbortController | null = null
+function mergeEvents(incoming: SoarEvent[]): void {
+  const merged = new Map(events.value.map(item => [item.sequence, item]))
+  for (const item of incoming) merged.set(item.sequence, item)
+  events.value = [...merged.values()].sort((a, b) => a.sequence - b.sequence).slice(-eventPageSize)
+}
+async function loadEventHistory(page: number | null): Promise<void> {
+  historyController?.abort()
+  if (page === null) { historyPage.value = null; historyLoading.value = false; return }
+  const controller = new AbortController()
+  historyController = controller
+  const runId = selectedRunId.value
+  historyLoading.value = true
+  try {
+    const result = await listEvents(runId, 0, page, eventPageSize, { signal: controller.signal })
+    if (disposed || controller.signal.aborted || runId !== selectedRunId.value) return
+    historyEvents.value = result.items
+    historyPage.value = page
+  } catch (failure) { if (!controller.signal.aborted) eventError.value = failureText(failure) }
+  finally { if (historyController === controller) historyLoading.value = false }
+}
+async function catchUpEvents(runId: string, generation: number, signal: AbortSignal): Promise<void> {
+  // Bounded per refresh; the cursor is advanced only through durable REST pages.
+  // SSE arrivals must not skip unseen events when the stream has gaps.
+  for (let page = 0; page < 3; page++) {
+    const result = await listEvents(runId, lastSequence.value, 0, eventPageSize, { signal })
+    if (disposed || signal.aborted || generation !== loadGeneration || runId !== selectedRunId.value) return
+    durableEventCount.value += result.items.filter(item => item.sequence > lastSequence.value).length
+    eventTotalPages.value = Math.ceil(durableEventCount.value / eventPageSize)
+    mergeEvents(result.items)
+    const next = Math.max(lastSequence.value, ...result.items.map(item => item.sequence))
+    const advanced = next > lastSequence.value
+    lastSequence.value = next
+    eventError.value = ''
+    if (!advanced || result.items.length < eventPageSize) break
+  }
+}
 const unknownNodes = computed(() => nodes.value.filter(node => ['ACTION_UNKNOWN', 'UNKNOWN'].includes(node.status)))
 
 function failureText(failure: unknown): string {
@@ -223,8 +286,8 @@ function openQueueDialog(): void {
   queueForm.value = {
     playbookVersionId: '',
     requestId: newRequestId(),
-    subject: '{}',
-    inputs: '{\n  "eventId": "workbench-manual-run",\n  "eventType": "manual.test"\n}',
+    subject: JSON.stringify({ ...(props.contextAlarmId ? { type: 'alert', id: props.contextAlarmId } : props.contextCaseId ? { type: 'case', id: props.contextCaseId } : {}), ...(props.contextAlarmId ? { alarmId: props.contextAlarmId } : {}), ...(props.contextCaseId ? { caseId: props.contextCaseId } : {}) }, null, 2),
+    inputs: '{}',
   }
   queueDialogVisible.value = true
   queueGuard.markSaved()
@@ -247,13 +310,20 @@ async function submitQueue(): Promise<void> {
     return
   }
   queueLoading.value = true
+  const context = `${props.contextAlarmId}:${props.contextCaseId}`
   try {
+    const subject = parseObject(queueForm.value.subject, 'Subject')
+    const inputs = queueInputSchema.value ? JSON.parse(JSON.stringify(queueInputs.value)) as Record<string, unknown> : parseObject(queueForm.value.inputs, 'Inputs')
+    const version = publishedVersions.value.find(item => item.version.id === queueForm.value.playbookVersionId)!.version
+    const requestId = queueForm.value.requestId.trim() || newRequestId()
+    if (queueInputSchema.value && (!queueInputsValid.value || validateSchemaInput(inputs, queueInputSchema.value).length)) throw new Error(t('analystJourney.liveInputsRequired'))
+    if (!(await confirmDanger(t('analystJourney.liveExecutionConfirmation', { revision: version.version, target: JSON.stringify(subject), inputs: JSON.stringify(inputs), risk: JSON.stringify(version.riskSummary) ?? '', effects: JSON.stringify(declaredEffects(version.definition)) }))) || !queueReadsActive() || context !== `${props.contextAlarmId}:${props.contextCaseId}` || version.id !== queueForm.value.playbookVersionId) return
     const result = await queueRun({
-      requestId: queueForm.value.requestId.trim() || newRequestId(),
-      playbookVersionId: queueForm.value.playbookVersionId,
-      subject: parseObject(queueForm.value.subject, 'Subject'),
-      inputs: parseObject(queueForm.value.inputs, 'Inputs'),
+      requestId,
+      playbookVersionId: version.id,
+      subject, inputs,
     })
+    if (disposed || context !== `${props.contextAlarmId}:${props.contextCaseId}`) return
     queueDialogVisible.value = false
     queueMessage.value = result.duplicate
       ? t('soar.runDuplicate', { runId: result.runId })
@@ -304,7 +374,7 @@ async function loadRuns(refreshSelected = true) {
   runsLoading.value = true
   runsError.value = ''
   try {
-    const result = await listRuns(runsPage.value, catalogPageSize, { signal: controller.signal })
+    const result = await listRuns(runsPage.value, catalogPageSize, { signal: controller.signal }, { alarmId: props.contextAlarmId || undefined, caseId: props.contextCaseId || undefined, q: runKeyword.value.trim() || undefined, status: runStatusFilter.value || undefined })
     if (disposed || !props.active || controller.signal.aborted || runsController !== controller) return
     runsTotal.value = result.total
     runsTotalPages.value = result.totalPages ?? Math.ceil(result.total / catalogPageSize)
@@ -354,6 +424,11 @@ async function refreshRun() {
     run.value = null
     nodes.value = []
     events.value = []
+    lastSequence.value = 0
+    historyPage.value = null
+    historyEvents.value = []
+    eventError.value = ''
+    historyController?.abort()
     artifacts.value = []
     attempts.value = []
     selectedNodeRunId.value = ''
@@ -370,7 +445,18 @@ async function refreshRun() {
     if (disposed || !props.active || controller.signal.aborted || generation !== loadGeneration) return
     run.value = runResult
     nodes.value = nodeResult
-    events.value = eventResult.items
+    durableEventCount.value = eventResult.total ?? eventResult.items.length
+    eventTotalPages.value = eventResult.totalPages ?? Math.ceil(durableEventCount.value / eventPageSize)
+    const latest = eventTotalPages.value > 1
+      ? await listEvents(runId, 0, eventTotalPages.value - 1, eventPageSize, options) : eventResult
+    if (disposed || controller.signal.aborted || generation !== loadGeneration) return
+    // A partially filled final page still shows the latest 200 receipts, not
+    // merely the last remainder. History pages keep their durable offsets.
+    const preceding = eventTotalPages.value > 1 && latest.items.length < eventPageSize
+      ? (eventTotalPages.value === 2 ? eventResult : await listEvents(runId, 0, eventTotalPages.value - 2, eventPageSize, options)) : null
+    if (disposed || controller.signal.aborted || generation !== loadGeneration) return
+    events.value = [...(preceding?.items ?? []), ...latest.items].slice(-eventPageSize)
+    lastSequence.value = Math.max(0, ...events.value.map(item => item.sequence))
     artifacts.value = artifactResult
     if (!nodes.value.some(node => node.id === selectedNodeRunId.value)) {
       selectedNodeRunId.value = nodes.value[0]?.id ?? ''
@@ -425,10 +511,8 @@ function openStream() {
     const payload = (event as MessageEvent<string>).data
     try {
       const item = JSON.parse(payload) as SoarEvent
-      if (!events.value.some(existing => existing.sequence === item.sequence)) {
-        events.value = [...events.value, item].sort((left, right) => left.sequence - right.sequence)
-      }
-      void refreshProjection()
+      mergeEvents([item])
+      projectionRefresh.request()
     } catch { /* malformed stream data is ignored; the next poll repairs the projection */ }
   })
   stream.onerror = () => {
@@ -442,6 +526,8 @@ function closeStream() {
   stream?.close()
   stream = undefined
 }
+
+const projectionRefresh = coalescedRefresh(() => refreshProjection(), 5_000)
 
 async function refreshProjection(force = false) {
   if (disposed || !props.active || !selectedRunId.value || loading.value) return
@@ -469,8 +555,9 @@ async function refreshProjection(force = false) {
       selectedNodeRunId.value = nodes.value[0]?.id ?? ''
     }
     artifacts.value = artifactResult
+    await catchUpEvents(runId, generation, controller.signal)
     await loadAttempts()
-  } catch { /* retain the last known durable projection */ }
+  } catch (failure) { if (!controller.signal.aborted && generation === loadGeneration) eventError.value = `Timeline/projection may be stale: ${failureText(failure)}` }
   finally {
     if (projectionController === controller) {
       projectionController = null
@@ -567,7 +654,15 @@ async function viewArtifact(artifact: SoarArtifact) {
   }
 }
 
+watch(() => [props.contextAlarmId, props.contextCaseId], () => {
+  selectedRunId.value = props.initialRunId || ''
+  queueDialogVisible.value = false
+  runsPage.value = 0
+  if (props.active) void loadRuns()
+})
+watch(() => props.initialRunId, id => { if (id !== selectedRunId.value) selectedRunId.value = id })
 watch(selectedRunId, () => {
+  if (selectedRunId.value) emit('select-run', selectedRunId.value)
   if (selectedRunId.value) { void refreshRun(); return }
   loadGeneration++
   runController?.abort()
@@ -589,7 +684,7 @@ watch(selectedNodeRunId, () => { void loadAttempts() })
 
 function startPolling(): void {
   stopPolling()
-  pollTimer = setInterval(() => { if (streamState.value !== 'live') void refreshProjection() }, 5000)
+  pollTimer = setInterval(() => { projectionRefresh.request() }, 5000)
 }
 function stopPolling(): void {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = undefined }
@@ -614,6 +709,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   disposed = true
+  projectionRefresh.dispose()
   cancelReads()
   stopPolling()
   closeStream()
@@ -621,6 +717,8 @@ onUnmounted(() => {
 
 function cancelReads(): void {
   cancelQueueReads()
+  historyController?.abort()
+  historyLoading.value = false
   loadGeneration++
   projectionPending = false
   runsController?.abort()
@@ -663,6 +761,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
           <el-button size="small" :loading="loading || runsLoading" @click="loadRuns()">{{ t('common.refresh') }}</el-button>
         </div>
       </div>
+      <form class="soar-run-select" @submit.prevent="runsPage = 0; loadRuns(false)"><el-input v-model="runKeyword" :aria-label="t('analystJourney.runSearchLabel')" :placeholder="t('analystJourney.runSearchPlaceholder')" /><select v-model="runStatusFilter" :aria-label="t('analystJourney.runStatus')"><option value="">{{ t('analystJourney.allStatuses') }}</option><option v-for="status in ['QUEUED','RUNNING','WAITING_APPROVAL','SUCCEEDED','FAILED','ACTION_UNKNOWN','CANCELLED']" :key="status">{{ status }}</option></select><el-button native-type="submit">{{ t('analystJourney.searchRuns') }}</el-button></form>
       <SoarCatalogPager class="soar-runs-pager" :page="runsPage" :total="runsTotal" :total-pages="runsTotalPages" :loading="runsLoading" :disabled="Boolean(controlBusy)" :label="t('soar.selectRun')" @change="changeRunsPage" />
     </template>
 
@@ -673,6 +772,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
         <el-tag size="small" :type="run.status === 'SUCCEEDED' ? 'success' : (['FAILED', 'ACTION_UNKNOWN', 'TIMED_OUT'].includes(run.status) ? 'danger' : 'warning')">{{ statusLabel(run.status) }}</el-tag>
         <span><b>{{ run.runId }}</b></span><span>{{ t('soar.revisionLabel', { version: run.playbookVersion }) }}</span><span>{{ run.triggerType }}</span>
         <span class="soar-stream-state" :class="streamState">● {{ streamLabel(streamState) }}</span>
+        <span>{{ t('analystJourney.runTarget', { type: run.subject?.type ?? '', id: run.subject?.id ?? '', requester: run.requestedBy ?? '' }) }} </span>
         <span class="soar-toolbar-spacer" />
         <el-button
           size="small"
@@ -689,6 +789,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
         </template>
       </div>
 
+      <p>{{ t('analystJourney.outcomeGuidance') }}</p>
       <div v-if="run.errorCode" class="soar-run-error"><b>{{ run.errorCode }}</b> {{ run.errorMessage }}</div>
 
       <div class="soar-run-grid">
@@ -711,8 +812,15 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
         <section class="soar-run-panel">
           <div class="soar-panel-title">{{ t('soar.actionAttempts') }} <span v-if="selectedNode">· {{ selectedNode.nodeId }}</span></div>
           <div class="soar-table-scroll"><table><thead><tr><th>#</th><th>{{ t('common.status') }}</th><th>{{ t('soar.remoteReceipt') }}</th><th>{{ t('common.error') }}</th></tr></thead><tbody><tr v-for="attempt in attempts" :key="attempt.id"><td>{{ attempt.attemptNo }}</td><td>{{ statusLabel(attempt.status) }}</td><td class="mono">{{ attempt.remoteOperationId || json(attempt.receipt) || '-' }}</td><td>{{ attempt.errorCode || attempt.errorMessage || '-' }}</td></tr></tbody></table><div v-if="!attempts.length" class="soar-empty">{{ t('soar.noActionAttempts') }}</div></div>
-          <div class="soar-panel-title soar-events-title">{{ t('soar.eventTimeline') }} · {{ events.length }} {{ tOr(t, 'common.itemsSuffix', 'events') }}</div>
-          <div class="soar-event-list"><div v-for="event in [...events].reverse()" :key="event.id" class="soar-event"><span class="soar-event-seq">#{{ event.sequence }}</span><span><b>{{ event.eventType }}</b><small>{{ event.summary }}</small></span><time>{{ event.createdAt || '' }}</time></div><div v-if="!events.length" class="soar-empty">{{ t('soar.noEvents') }}</div></div>
+          <div class="soar-panel-title soar-events-title">{{ t('soar.eventTimeline') }} · {{ visibleEvents.length }} {{ tOr(t, 'common.itemsSuffix', 'events') }}</div>
+          <div v-if="eventError" role="alert">{{ eventError }}</div>
+          <div class="soar-run-select">
+            <el-button size="small" :disabled="historyLoading || (historyPage ?? eventTotalPages - 1) <= 0" @click="loadEventHistory((historyPage ?? eventTotalPages - 1) - 1)">{{ t('analystJourney.olderEvents') }}</el-button>
+            <el-button v-if="historyPage !== null" size="small" :disabled="historyLoading || historyPage >= eventTotalPages - 1" @click="loadEventHistory(historyPage + 1)">{{ t('analystJourney.newerEvents') }}</el-button>
+            <el-button v-if="historyPage !== null" size="small" @click="loadEventHistory(null)">{{ t('analystJourney.liveEvents') }}</el-button>
+            <span>{{ historyPage === null ? t('analystJourney.latestEvents') : t('analystJourney.historyPage', { page: historyPage + 1 }) }}</span>
+          </div>
+          <div class="soar-event-list"><div v-for="event in [...visibleEvents].reverse()" :key="event.id" class="soar-event"><span class="soar-event-seq">#{{ event.sequence }}</span><span><b>{{ event.eventType }}</b><small>{{ event.summary }}</small></span><time>{{ event.createdAt || '' }}</time></div><div v-if="!visibleEvents.length" class="soar-empty">{{ t('soar.noEvents') }}</div></div>
         </section>
 
         <section class="soar-run-panel">
@@ -743,7 +851,7 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
               v-for="item in publishedVersions"
               :key="item.version.id"
               :value="item.version.id"
-              :label="`${item.playbook.name} · Revision ${item.version.version}`"
+              :label="`${item.playbook.name} · ${t('soar.revisionLabel', { version: item.version.version })}`"
             >
               <span>{{ item.playbook.name }} · {{ t('soar.revisionLabel', { version: item.version.version }) }}</span>
               <small class="soar-option-id">{{ item.version.id }}</small>
@@ -757,7 +865,9 @@ function streamLabel(state: 'closed' | 'live' | 'polling'): string {
           <el-input v-model="queueForm.subject" type="textarea" :rows="3" spellcheck="false" />
         </el-form-item>
         <el-form-item :label="t('soar.inputsJson')" required>
-          <el-input v-model="queueForm.inputs" type="textarea" :rows="5" spellcheck="false" />
+          <SchemaInputForm v-if="queueInputSchema" :key="queueForm.playbookVersionId" v-model="queueInputs" :schema="queueInputSchema" @valid="queueInputsValid = $event" :disabled="queueLoading" />
+          <p v-else>{{ t('analystJourney.noQueueInputSchema') }}</p>
+          <el-input v-if="!queueInputSchema" v-model="queueForm.inputs" type="textarea" :rows="5" spellcheck="false" />
         </el-form-item>
       </el-form>
       <div v-if="queueError" class="soar-inspector-error" role="alert">{{ queueError }}</div>

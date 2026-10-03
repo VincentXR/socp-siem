@@ -50,9 +50,9 @@ class SinkTargetStoreTest {
         assertEquals(original.createdAt(), updated.createdAt());
         assertEquals(original.authToken(), updated.authToken());
         assertEquals("https://example.test/new", updated.uri());
-        assertThrows(ApiException.class, () -> store.update(SinkTargetStore.PLATFORM_INGEST_ID, keep));
+        assertEquals(404, assertThrows(ApiException.class, () -> store.update(SinkTargetStore.PLATFORM_INGEST_ID, keep)).getCode());
         TenantContext.set("tenant-b");
-        assertThrows(ApiException.class, () -> store.update(original.id(), keep));
+        assertEquals(404, assertThrows(ApiException.class, () -> store.update(original.id(), keep)).getCode());
         TenantContext.set("tenant-a");
         var replace = new com.socp.search.config.api.request.SinkTargetUpdateRequest(body,
                 com.socp.search.config.api.request.SinkTargetUpdateRequest.CredentialAction.REPLACE);

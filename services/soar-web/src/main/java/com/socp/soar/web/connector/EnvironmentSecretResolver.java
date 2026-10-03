@@ -10,6 +10,14 @@ import java.util.Optional;
 @ConditionalOnProperty(prefix = "socp.soar.secrets", name = "backend",
         havingValue = "env", matchIfMissing = true)
 public class EnvironmentSecretResolver implements SecretResolver {
+    private final TenantSecretAuthorizer authorizer;
+    public EnvironmentSecretResolver() { this(new com.socp.soar.web.config.SoarSecretProperties()); }
+    @org.springframework.beans.factory.annotation.Autowired
+    public EnvironmentSecretResolver(com.socp.soar.web.config.SoarSecretProperties properties) {
+        authorizer = new TenantSecretAuthorizer(properties.getTenantGrants());
+    }
+    @Override public boolean isAuthorized(String tenantId, String reference) { return authorizer.allows(tenantId, reference); }
+
     @Override
     public Optional<String> resolve(String reference) {
         if (reference == null || reference.isBlank()) return Optional.empty();

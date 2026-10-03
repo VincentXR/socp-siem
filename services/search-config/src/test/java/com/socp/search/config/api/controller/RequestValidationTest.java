@@ -74,6 +74,28 @@ class RequestValidationTest {
     }
 
     @Test
+    void enabledKafkaRequiresExplicitBrokersButDisabledDraftKeepsOptionalMetadataEmpty() {
+        for (boolean enabled : List.of(true, false)) {
+            LogSourceRequest request = new LogSourceRequest(
+                    "kafka", SourceType.KAFKA, ParseFormat.AUTO, null, null,
+                    "audit", null, enabled, null, null, null, List.of(), null,
+                    null, "utf-8", null, null, List.of(), null, null, null, null);
+            if (enabled) {
+                org.junit.jupiter.api.Assertions.assertThrows(com.socp.platform.error.exception.ApiException.class, request::toNewDomain);
+                org.junit.jupiter.api.Assertions.assertThrows(com.socp.platform.error.exception.ApiException.class,
+                        () -> request.toDomain("existing-source", java.time.Instant.EPOCH));
+            } else {
+                var draft = request.toNewDomain();
+                assertEquals(false, draft.enabled());
+                org.junit.jupiter.api.Assertions.assertNull(draft.address());
+                org.junit.jupiter.api.Assertions.assertNull(draft.categoryId());
+                org.junit.jupiter.api.Assertions.assertNull(draft.sinkTargetId());
+                assertTrue(draft.parseRuleIds().isEmpty());
+            }
+        }
+    }
+
+    @Test
     void sinkTargetRequestAcceptsGlsIngestAndRejectsUnknownType() {
         SinkTargetRequest glsIngest = new SinkTargetRequest(
                 "SEARCH 默认 ingest", "GLS_INGEST",

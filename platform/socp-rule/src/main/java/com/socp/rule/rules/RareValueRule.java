@@ -86,6 +86,7 @@ public final class RareValueRule extends AbstractRule implements StatefulRule {
 
         State st = states.get(key, State::new);
         synchronized (st) {
+            states.invalidateSnapshot(key);
             st.observed++;
             if (st.seen.contains(value)) return;
 
@@ -134,14 +135,11 @@ public final class RareValueRule extends AbstractRule implements StatefulRule {
 
     @Override
     public byte[] snapshotState() {
-        Map<String, Object> out = new java.util.LinkedHashMap<>();
-        states.forEach((key, state) -> {
-            synchronized (state) {
-                out.put(key, Map.of("seen", List.copyOf(state.seen), "observed", state.observed));
-            }
+        return states.snapshot(state -> {
+            return Map.of("seen", List.copyOf(state.seen), "observed", state.observed);
         });
-        return StateSnapshotCodec.write(out);
     }
+
 
     @Override
     public void restoreState(byte[] serializedState) {

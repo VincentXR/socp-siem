@@ -38,7 +38,7 @@ class NotifyControllerTest {
                 .hasFieldOrPropertyWithValue("code", 404);
         var pageable = org.springframework.data.domain.PageRequest.of(1, 20);
         var receipt = Map.<String, Object>of("channelId", "off-page", "status", "unknown");
-        given(dispatcher.log(pageable, "unknown")).willReturn(new org.springframework.data.domain.PageImpl<>(
+        given(dispatcher.log(pageable, "unknown", "", "")).willReturn(new org.springframework.data.domain.PageImpl<>(
                 List.of(receipt), pageable, 21));
         var result = controller().log(2, 20, "unknown").data();
         assertEquals(21, result.total());
@@ -161,15 +161,24 @@ class NotifyControllerTest {
         Map<String, Object> result = Map.of("alarmId", "AL-2", "failed", 0);
         List<Map<String, Object>> log = List.of(Map.of("alarmId", "AL-2", "status", "sent"));
         given(dispatcher.dispatch(any())).willReturn(result);
-        given(dispatcher.log(org.mockito.ArgumentMatchers.any())).willReturn(
+        given(dispatcher.log(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.eq(""), org.mockito.ArgumentMatchers.eq(""), org.mockito.ArgumentMatchers.eq(""))).willReturn(
                 new org.springframework.data.domain.PageImpl<>(log,
                         org.springframework.data.domain.PageRequest.of(0, 500), 1));
 
         var response = controller().notify(request);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
-        assertEquals(log, controller().log(1, 500).data().items());
-        verify(dispatcher).log(org.springframework.data.domain.PageRequest.of(0, 500));
+        assertEquals(log, controller().log(1, 500, "", "", "").data().items());
+        verify(dispatcher).log(org.springframework.data.domain.PageRequest.of(0, 500), "", "", "");
+    }
+
+    @Test
+    void dispatchLogUsesBoundedPagesAndExactTrimmedFilters() {
+        given(dispatcher.log(org.springframework.data.domain.PageRequest.of(1, 20), "failed", "AL-2", "Ops"))
+                .willReturn(new org.springframework.data.domain.PageImpl<>(List.of(), org.springframework.data.domain.PageRequest.of(1, 20), 20));
+        assertEquals(20, controller().log(2, 20, " failed ", " AL-2 ", " Ops ").data().total());
+        assertThatThrownBy(() -> controller().log(0, 20, "", "", "")).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> controller().log(1, 20, "", "x".repeat(256), "")).isInstanceOf(ApiException.class);
     }
 
     @Test

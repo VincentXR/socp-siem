@@ -1,28 +1,29 @@
 package com.socp.soar.web.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.domain.SoarRunStatus;
 import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
-import com.socp.soar.web.persistence.entity.SoarApprovalDecisionEntity;
-import com.socp.soar.web.persistence.entity.SoarApprovalEntity;
-import com.socp.soar.web.persistence.entity.SoarDispatchOutboxEntity;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
+import com.socp.soar.web.persistence.entity.SoarApprovalEntity;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
-import com.socp.soar.web.persistence.repository.SoarApprovalDecisionRepository;
-import com.socp.soar.web.persistence.repository.SoarApprovalRepository;
 import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
+import com.socp.soar.web.persistence.repository.SoarApprovalRepository;
+import com.socp.soar.web.persistence.repository.SoarApprovalDecisionRepository;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
-
 import java.time.Instant;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
+import java.util.Set;
+import com.socp.soar.web.persistence.entity.SoarApprovalDecisionEntity;
+import com.socp.soar.web.persistence.entity.SoarDispatchOutboxEntity;
+import java.util.LinkedHashSet;
+import java.util.Optional;
 
 /**
  * Approval state transitions extracted from {@link SoarService}.  The
@@ -30,28 +31,33 @@ import java.util.UUID;
  * collaborator owns quorum, policy, expiry and workflow signalling rules.
  */
 final class SoarApprovalCommandService {
+    SoarApprovalCommandService(PlaybookVersionRepository versions, SoarRunRepository runs,
+                SoarDispatchOutboxRepository dispatches, SoarApprovalRepository approvals,
+                SoarReadModelMapper readModels, SoarJson json, SoarEventWriter eventWriter) {
+        this.versions = versions;
+        this.runs = runs;
+        this.dispatches = dispatches;
+        this.approvals = approvals;
+        this.readModels = readModels;
+        this.json = json;
+        this.eventWriter = eventWriter;
+    }
 
-    private final SoarService service;
+    private final SoarEventWriter eventWriter;
+    private final SoarJson json;
+    private final SoarReadModelMapper readModels;
+
     private final SoarApprovalRepository approvals;
     private SoarApprovalDecisionRepository approvalDecisions;
     private final SoarRunRepository runs;
     private final SoarDispatchOutboxRepository dispatches;
     private final PlaybookVersionRepository versions;
 
-    SoarApprovalCommandService(SoarService service) {
-        this.service = service;
-        this.approvals = service.approvals;
-        this.approvalDecisions = service.approvalDecisions;
-        this.runs = service.runs;
-        this.dispatches = service.dispatches;
-        this.versions = service.versions;
-    }
-
     void setApprovalDecisions(SoarApprovalDecisionRepository approvalDecisions) {
         this.approvalDecisions = approvalDecisions;
     }
 
-    private String tenant() { return service.tenant(); }
+    private String tenant() { return com.socp.platform.tenant.context.TenantContext.require(); }
 
     private static String actor() { return SoarService.actor(); }
 
@@ -80,16 +86,17 @@ final class SoarApprovalCommandService {
     }
 
     private Map<String, Object> approvalView(SoarApprovalEntity approval) {
-        return service.approvalView(approval);
+        return readModels.approvalView(approval, approvalDecisions == null ? List.of()
+                : approvalDecisions.findByTenantIdAndApprovalIdOrderByCreatedAtAsc(tenant(), approval.getId()));
     }
 
     private void appendEvent(String runId, String type, String actor, String summary,
                              Map<String, Object> detail) {
-        service.appendEvent(runId, type, actor, summary, detail);
+        eventWriter.appendEvent(runId, type, actor, summary, detail);
     }
 
     private void enqueueSignal(SoarRunEntity run, String type, Map<String, Object> payload) {
-        service.enqueueSignal(run, type, payload);
+        eventWriter.enqueueSignal(run, type, payload);
     }
 
     Map<String, Object> decideApproval(String id, boolean approve, String decisionReason) {
@@ -153,7 +160,7 @@ final class SoarApprovalCommandService {
                     approvalDecisions.findByTenantIdAndApprovalIdAndActorId(tenant, approval.getId(), approver);
             if (priorVote != null && priorVote.isPresent()) {
                 // A retried browser request from the same approver is idempotent.
-                return approvalView(approval);
+                return readModels.approvalView(approval, approvalDecisions.findByTenantIdAndApprovalIdOrderByCreatedAtAsc(tenant, approval.getId()));
             }
         }
         recordApprovalDecision(tenant, approval.getId(), approver,
@@ -171,7 +178,8 @@ final class SoarApprovalCommandService {
                             "requiredApprovals", requiredApprovals));
             run.setUpdatedAt(now);
             runs.save(run);
-            return approvalView(approval);
+            return readModels.approvalView(approval, approvalDecisions == null ? List.of()
+                : approvalDecisions.findByTenantIdAndApprovalIdOrderByCreatedAtAsc(tenant(), approval.getId()));
         }
         approval.setStatus(approve ? "APPROVED" : "REJECTED");
         approval.setApprover(approver);
@@ -216,7 +224,8 @@ final class SoarApprovalCommandService {
             enqueueSignal(run, "APPROVAL", Map.of("approve", approve, "approvalId", id,
                     "approvalKey", nullSafe(approval.getApprovalKey())));
         }
-        return approvalView(approval);
+        return readModels.approvalView(approval, approvalDecisions == null ? List.of()
+                : approvalDecisions.findByTenantIdAndApprovalIdOrderByCreatedAtAsc(tenant(), approval.getId()));
     }
 
     boolean expireApproval(String id, Instant now) {
@@ -296,7 +305,7 @@ final class SoarApprovalCommandService {
     }
 
     private boolean approvalPolicyAllows(SoarApprovalEntity approval) {
-        var policy = service.readTree(approval == null ? null : approval.getPolicyJson());
+        var policy = json.readTree(approval == null ? null : approval.getPolicyJson());
         if (!policy.isObject()) return true;
         Set<String> roles = policyPrincipals(policy, "allowedRoles", "approverRoles");
         Set<String> groups = policyPrincipals(policy, "allowedGroups", "approverGroups");

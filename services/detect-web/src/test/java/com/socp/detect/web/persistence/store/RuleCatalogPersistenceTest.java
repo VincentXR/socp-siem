@@ -110,6 +110,17 @@ class RuleCatalogPersistenceTest {
         assertEquals(List.of("T1078\nT1110\nT1110.001"), repository.activeTechniques("catalog-a", PageRequest.of(0, 100)));
     }
 
+    @Test
+    void techniquePivotMatchesExactTokensAcrossAllDeclaredIdsWithoutCrossingTenant() {
+        rule("catalog-a", "exact", "Exact", "ACTIVE", Map.of("mitreIds", List.of("T1059", "T1110")));
+        rule("catalog-a", "subtechnique", "Subtechnique", "ACTIVE", Map.of("mitre", "T1110.001"));
+        TenantContext.runWith("catalog-b", () -> rule("catalog-b", "foreign", "Foreign", "ACTIVE", Map.of("mitre", "T1110")));
+        var result = repository.searchTechnique("catalog-a", "", "ACTIVE", "", "", "\nT1110\n", PageRequest.of(0, 20));
+        assertEquals(List.of("exact"), result.map(RuleEntity::getId).getContent());
+        var child = repository.searchTechnique("catalog-a", "", "", "", "", "\nT1110.001\n", PageRequest.of(0, 20));
+        assertEquals(List.of("subtechnique"), child.map(RuleEntity::getId).getContent());
+    }
+
     protected RuleEntity rule(String tenant, String id, String name, String status, Map<String, Object> extra) {
         var row = new RuleEntity();
         row.setStorageId(UUID.randomUUID().toString());

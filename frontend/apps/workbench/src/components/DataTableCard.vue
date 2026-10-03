@@ -45,6 +45,7 @@ const isEmpty = computed(() => !props.loading && !props.error && props.total ===
       <div class="list-empty-mark">—</div>
       <strong>{{ props.emptyTitle || t('common.empty') }}</strong>
       <span v-if="props.emptyDescription">{{ props.emptyDescription }}</span>
+      <slot name="empty-actions" />
     </div>
     <PagerBar v-if="props.total > 0" v-model:current-page="currentPage" v-model:page-size="pageSize" :total="props.total" />
   </el-card>

@@ -1,50 +1,22 @@
 #!/usr/bin/env python3
-"""Small hermetic HTTP sink used by multi-process full-stack verification."""
-
+"""CLI entry point for the shared hermetic webhook fixture."""
 import argparse
-import json
+import importlib.util
+from pathlib import Path
 import signal
-import sys
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
-class WebhookSink(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-
-    def do_GET(self):
-        if self.path.rstrip("/") not in ("", "/health"):
-            self.send_error(404)
-            return
-        body = b"ok\n"
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-        self.wfile.flush()
-
-    def do_POST(self):
-        length = int(self.headers.get("Content-Length", "0"))
-        body = self.rfile.read(length)
-        sys.stdout.write(json.dumps({
-            "path": self.path,
-            "bytes": len(body),
-        }) + "\n")
-        sys.stdout.flush()
-        self.send_response(204)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-        self.wfile.flush()
-
-    def log_message(self, _format, *_args):
-        return
-
-
-class WebhookSinkServer(ThreadingHTTPServer):
-    # Notification and SOAR recovery scenarios intentionally create bursts.
-    # The stdlib default backlog is only five and can make the hermetic sink
-    # look like an unknown third-party outcome under otherwise healthy load.
-    request_queue_size = 128
+# Resolve the sibling by its file, not by the caller's import search path.
+# CI also imports this entry point with spec_from_file_location(), which does
+# not add build/ to sys.path as direct script execution would.
+_SPEC = importlib.util.spec_from_file_location(
+    "_socp_webhook_sink", Path(__file__).resolve().with_name("webhook_sink.py"))
+assert _SPEC is not None and _SPEC.loader is not None
+_FIXTURE = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_FIXTURE)
+WebhookSink = _FIXTURE.WebhookSink
+WebhookSinkServer = _FIXTURE.WebhookSinkServer
 
 
 def main():

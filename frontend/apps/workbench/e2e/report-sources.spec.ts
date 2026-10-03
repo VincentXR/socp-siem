@@ -10,6 +10,10 @@ test('report sources recover independently, dated archives remain reachable, and
   await page.route('**/*', async route => {
     const url = new URL(route.request().url()), path = url.pathname
     if (!isWorkbenchBackendUrl(url)) { await route.continue(); return }
+    if (path === '/api/v1/system/health') {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 0, data: { status: 'up', services: { 'detect-web': 'up' }, checkedAt: new Date().toISOString() } }) })
+      return
+    }
     let data: unknown
     if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (path === '/auth/operators') data = { items: [] }
@@ -47,21 +51,21 @@ test('report sources recover independently, dated archives remain reachable, and
   expect(dailyCalls).toBe(1); expect(trendCalls).toBe(2)
   const archive = page.locator('.report-storage-card')
   await expect(archive.getByRole('alert')).toContainText('500')
-  const date = page.locator('.report-archive-filter input')
+  const date = page.locator('.report-archive-filter input[type="date"]')
   await date.fill('2026-09-23'); await date.press('Enter')
   await expect.poll(() => prefixes.at(-1)).toBe(`${root}20260923/`)
   await expect(archive.getByRole('alert')).toHaveCount(0)
   await expect(archive.locator('.report-file-date').first()).toHaveText('2026-09-23')
-  const [popup] = await Promise.all([page.waitForEvent('popup'), archive.getByRole('button', { name: 'Download', exact: true }).click()])
+  const [popup] = await Promise.all([page.waitForEvent('popup'), archive.getByRole('button', { name: 'Download JSON', exact: true }).click()])
   await popup.waitForURL('**/saved-report.json')
   expect(await popup.evaluate(() => window.opener === null)).toBe(true)
   await expect(popup.locator('body')).toContainText('42')
   await popup.close()
-  await page.getByRole('button', { name: 'Generate Report', exact: true }).click()
+  await page.getByRole('button', { name: 'Save daily snapshot', exact: true }).click()
   await expect.poll(() => prefixes.at(-1)).toBe(`${root}20260924/`)
   await expect(date).toHaveValue('2026-09-24')
   await expect(archive.getByRole('alert')).toContainText('500')
-  const generated = archive.getByRole('button', { name: 'Download generated snapshot', exact: true })
+  const generated = archive.locator('.report-generated').getByRole('button', { name: 'Download JSON', exact: true })
   const [generatedPopup] = await Promise.all([page.waitForEvent('popup'), generated.click()])
   await generatedPopup.waitForURL('**/saved-report.json')
   expect(downloads.at(-1)).toBe(`${root}20260924/snapshot-generated.json`)
@@ -80,7 +84,7 @@ test('report sources recover independently, dated archives remain reachable, and
   expect(generatedBox!.x + generatedBox!.width).toBeLessThanOrEqual(390)
   try {
     await expect.poll(async () => {
-      const box = await archive.getByRole('button', { name: 'Download', exact: true }).first().boundingBox()
+      const box = await archive.locator('.el-table').getByRole('button', { name: 'Download JSON', exact: true }).first().boundingBox()
       return box ? box.x >= 0 && box.x + box.width <= 390 : false
     }).toBe(true)
   } catch (failure) {

@@ -50,6 +50,18 @@ class VaultSecretResolverTest {
     }
 
     @Test
+    void exactTenantGrantsAllowVaultWithoutExposingProviderBootstrapToken() {
+        SoarSecretProperties properties = properties("http://127.0.0.1:" + server.getAddress().getPort());
+        properties.setTenantGrants("{\"tenant-a\":[\"vault://secret/data/edr#token\"]}");
+        VaultSecretResolver resolver = new VaultSecretResolver(properties, new ObjectMapper(),
+                reference -> Optional.of("vault-token"));
+        assertThat(resolver.resolveForTenant("tenant-b", "vault://secret/data/edr#token")).isEmpty();
+        assertThat(token).hasNullValue();
+        assertThat(resolver.resolveForTenant("tenant-a", "vault://secret/data/edr#token")).contains("first");
+        assertThat(resolver.resolveForTenant("tenant-a", "env://VAULT_TOKEN")).isEmpty();
+    }
+
+    @Test
     void rejectsMalformedReferencesAndUnavailableTokens() {
         SoarSecretProperties properties = properties("http://127.0.0.1:" + server.getAddress().getPort());
         VaultSecretResolver resolver = new VaultSecretResolver(properties, new ObjectMapper(),

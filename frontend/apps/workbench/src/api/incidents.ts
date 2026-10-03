@@ -2,10 +2,8 @@ import { downloadFile, get, post, type ApiRequestOptions } from './core'
 import type { Alarm, CaseInfo, Paged, TimelineEvent } from './models'
 import { withQuery } from '../lib/query'
 
-export const addCaseNote = (id: string, content: string, idempotencyKey: string) =>
-  post(withQuery(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/notes`, { content, idempotencyKey }))
-export const listCases = (page = 1, size = 20, q?: string, status?: string, options?: ApiRequestOptions) =>
-  get<Paged<CaseInfo>>(withQuery('/incident-web/api/v1/incidents', { page, size, q, status }), options)
+export const listCases = (page = 1, size = 20, q?: string, status?: string, options?: ApiRequestOptions, queue?: 'mine' | 'unassigned') =>
+  get<Paged<CaseInfo>>(withQuery('/incident-web/api/v1/incidents', { page, size, q, status, queue }), options)
 export const getCase = (id: string, options?: ApiRequestOptions) =>
   get<CaseInfo>(withQuery(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}`, { includeAssociations: false }), options)
 export const getCaseByAlarm = (alarmId: string, options?: ApiRequestOptions) =>
@@ -30,3 +28,15 @@ export interface CreateCaseFromAlarmResult {
 export const createCaseFromAlarm = (alarm: Alarm) =>
   post<CreateCaseFromAlarmResult>('/incident-web/api/v1/incidents/from-alarm', alarm)
 export const exportCases = () => downloadFile('/incident-web/api/v1/incidents/export', 'cases.json')
+
+export interface CaseChanges {
+  status: string; assignee?: string; expectedVersion: number; idempotencyKey: string
+  classification?: string; result?: string; reason?: string; evidence?: string; remainingActions?: string
+}
+export const saveCaseChanges = (id: string, request: CaseChanges) =>
+  post<{ case: CaseInfo; duplicate: boolean; changed: boolean }>(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/changes`, request)
+export const claimCase = (id: string, expectedVersion: number, idempotencyKey: string) =>
+  post<{ case: CaseInfo }>(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/claim`, { expectedVersion, idempotencyKey })
+export const addCaseNote = (id: string, content: string, idempotencyKey: string) =>
+  post<{ case: CaseInfo }>(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/notes`, { content, idempotencyKey })
+export const exportCaseSummary = (id: string) => downloadFile(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/export`, 'case-summary.json')

@@ -1,42 +1,12 @@
-# SOCP Prometheus 抓取配置
-#
-# ⚠️ 现状说明（重要）
-#   1) 端口→服务映射已按 build/run-all.sh 的 BACKENDS 数组校准（此前的注释映射全部是错的）。
-#
-#   2) `micrometer-registry-prometheus` 是 **14 个服务的编译依赖**，且各服务的
-#      `management.endpoints.web.exposure.include` 已含 `prometheus`：
-#      - api-gateway（18092）无 context-path，走根路径 `/actuator/prometheus`；
-#      - 其余 13 个业务服务有 `server.servlet.context-path: /{服务名}`，
-#        指标真实路径为 `/{服务名}/actuator/prometheus`，由下方 `socp-services`
-#        job 的 relabel_configs 按 service 标签动态拼出 __metrics_path__。
-#      只要服务已用最新代码重新编译启动，两个 job 均能抓到数据。
-#
-#   3) 【已修正的路径 bug】13 个业务服务都配了 `server.servlet.context-path: /{服务名}`，
-#      其指标真实路径是 `/{服务名}/actuator/prometheus`；而 api-gateway 无 context-path，
-#      走根路径 `/actuator/prometheus`。原先单个 job 统一写死 `/actuator/prometheus`，
-#      即使端点启用了也会对 13 个业务服务全部 404。现拆成两个 job，业务服务用 relabel
-#      按 service 标签动态拼出带 context-path 的 __metrics_path__。
-#
-#   另注：全局 tracing 由 socp-obs 控制，SOCP_TRACING_ENABLED=true 时可通过
-#         Jaeger extra profile 接收 OTLP；traceId 同时写入 MDC 和日志。
-
+# SOCP metrics for the 13 servlet services. Gateway application metrics are
+# deliberately not exposed. Prometheus does NOT interpolate environment variables.
+# Mount the same metrics token configured on the services as a Docker secret file.
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
 scrape_configs:
-  # ── 网关：无 context-path，指标走根路径。当前唯一真正暴露 prometheus 端点的服务 ──
-  - job_name: 'socp-gateway'
-    metrics_path: /actuator/prometheus
-    authorization:
-      type: Bearer
-      credentials: ${SOCP_SECURITY_METRICS_TOKEN}
-    static_configs:
-      - targets: ['host.docker.internal:18092']
-        labels:
-          service: api-gateway
-
-  # ── 业务服务：16 个，容器内 8080 / 宿主 18080~18097 ──────────────
+  # ── 业务服务：13 个，宿主 18080~18097 ──────────────
   # 每个服务都有 server.servlet.context-path: /{服务名}，指标路径为
   # /{服务名}/actuator/prometheus，由下方 relabel_configs 依据 service 标签动态生成。
   # 端口分配以 build/run-all.sh 的 BACKENDS 数组为唯一事实来源。
@@ -44,7 +14,7 @@ scrape_configs:
   - job_name: 'socp-services'
     authorization:
       type: Bearer
-      credentials: ${SOCP_SECURITY_METRICS_TOKEN}
+      credentials_file: /run/secrets/socp_metrics_token
     static_configs:
       - targets: ['host.docker.internal:18080']
         labels: { service: alert-web }        # 告警 CRUD（H2）
@@ -78,7 +48,7 @@ scrape_configs:
         regex: (.+)
         target_label: __metrics_path__
         replacement: /$1/actuator/prometheus
-    # 注：18089 未分配；18092（api-gateway）在上面的 socp-gateway job 中单独抓取。
+    # Gateway application port exposes health only; no pretend metrics target.
 
   # 中间件 exporter 未纳入默认 compose，因此不把 PostgreSQL/Kafka/Redis
   # 原生端口伪装成 Prometheus target（这些端口不是 /metrics endpoint）。

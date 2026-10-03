@@ -23,14 +23,24 @@ public class AlarmQueryService {
         this.repository = repository;
     }
 
-    List<Alarm> query(Severity severity, String rule, String status, String text,
-                      String sort, String order) {
-        return repository.list(tenant(), criteria(severity, rule, status, text, sort, order));
-    }
-
     Page<Alarm> page(Severity severity, String rule, String status, String text,
                      String sort, String order, int page, int size) {
         return repository.page(tenant(), criteria(severity, rule, status, text, sort, order),
+                PageRequest.of(Math.max(0, page - 1), size));
+    }
+
+    Page<Alarm> investigationPage(Severity severity, String rule, String status, String text,
+            String sort, String order, int page, int size, String owner, String entity, java.time.Instant from, java.time.Instant to, String technique, String severityGroup) {
+        return investigationPage(severity, rule, status, text, sort, order, page, size, owner, entity, from, to, technique, severityGroup, null);
+    }
+
+    Page<Alarm> investigationPage(Severity severity, String rule, String status, String text,
+            String sort, String order, int page, int size, String owner, String entity, java.time.Instant from,
+            java.time.Instant to, String technique, String severityGroup, String assignee) {
+        String resolvedOwner = "mine".equals(owner) ? com.socp.platform.tenant.context.AuthenticatedIdentityContext.current()
+                .map(com.socp.platform.tenant.context.AuthenticatedIdentity::subject)
+                .orElseThrow(() -> com.socp.platform.error.exception.ApiException.of(401, "Authenticated owner required")) : blankToNull(owner);
+        return repository.page(tenant(), criteria(severity, rule, status, text, sort, order).withInvestigation(resolvedOwner, blankToNull(entity), from, to, technique, severityGroup).withAssignee(assignee),
                 PageRequest.of(Math.max(0, page - 1), size));
     }
 

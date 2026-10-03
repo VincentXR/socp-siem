@@ -79,7 +79,8 @@ bash build/compose.sh --profile extra up -d
 The startup scripts use the explicit `dev,pg` profiles by default. This keeps
 the core relational services on PostgreSQL so local verification exercises
 real transaction and uniqueness semantics. Use `SOCP_RUNTIME_PROFILES=dev` for
-the intentional all-H2 fallback. Use `SOCP_RUNTIME_PROFILES=prod` only with
+the intentional H2 fallback for services that support it. This does not remove
+the Kafka/OpenSearch/Redis/Temporal requirements of enabled features. Use `SOCP_RUNTIME_PROFILES=prod` only with
 explicit production environment configuration; `ProdGuard` rejects H2, demo
 credentials, authentication bypass, the default ingest token, and disabled
 Temporal.

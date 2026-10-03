@@ -10,7 +10,8 @@ test('reset abandons a pending answer and permits a new question', async ({ page
     const url = new URL(route.request().url()), path = url.pathname
     if (!isWorkbenchBackendUrl(url)) { await route.continue(); return }
     let data: unknown
-    if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
+    if (path === '/api/v1/system/health') data = { status: 'up', services: {}, checkedAt: '2026-10-02T00:00:00Z' }
+    else if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (path === '/auth/operators') data = { items: [] }
     else if (path === '/ai-assistant/api/v1/ai/ask') {
       const question = route.request().postDataJSON().question as string

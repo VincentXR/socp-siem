@@ -8,6 +8,10 @@ test('ATT&CK retains coverage and permits correction after a failed note save', 
   await page.route('**/*', async route => {
     const url = new URL(route.request().url()), path = url.pathname
     if (!isWorkbenchBackendUrl(url)) { await route.continue(); return }
+    if (path === '/api/v1/system/health') {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 0, data: { status: 'up', services: { 'detect-web': 'up' }, checkedAt: new Date().toISOString() } }) })
+      return
+    }
     let data: unknown
     if (path === '/auth/session') data = { username: 'analyst', role: 'analyst', tenant: 'default', locale: 'en-US' }
     else if (path === '/auth/operators') data = { items: [] }

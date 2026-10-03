@@ -3,8 +3,11 @@ package com.socp.asset.web.api.controller;
 import com.socp.asset.web.api.request.AssetCollectionRequest;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.socp.asset.web.domain.Asset;
 import com.socp.asset.web.persistence.store.AssetStore;
+import com.socp.asset.web.persistence.store.AssetCollectionStore;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.http.SocpHttpClient;
 import com.socp.platform.client.service.SocpService;
@@ -44,13 +47,15 @@ public class AssetCollectionController {
     private static final Logger log = LoggerFactory.getLogger(AssetCollectionController.class);
 
     private final AssetStore store;
+    private final AssetCollectionStore collectionStore;
     private final SocpHttpClient http;
     private final ObjectMapper objectMapper;
     private final int maxListSize;
 
-    public AssetCollectionController(AssetStore store, SocpHttpClient http, ObjectMapper objectMapper,
+    public AssetCollectionController(AssetStore store, AssetCollectionStore collectionStore, SocpHttpClient http, ObjectMapper objectMapper,
                                      @Value("${socp.web.list-max-size:500}") int maxListSize) {
         this.store = store;
+        this.collectionStore = collectionStore;
         this.http = http;
         this.objectMapper = objectMapper;
         this.maxListSize = maxListSize;
@@ -67,7 +72,7 @@ public class AssetCollectionController {
         source.put("owner", input.owner());
         source.put("criticality", input.criticality());
         Map<String, Object> event = canonicalEvent(source);
-        Asset saved = store.upsertByIp(Asset.create(
+        Asset saved = collectionStore.upsertByIp(Asset.create(
                 valueOr(input.name(), "unknown"),
                 valueOr(input.type(), "SERVER"),
                 valueOr(input.ip(), ""),
@@ -77,7 +82,8 @@ public class AssetCollectionController {
 
         ServiceCall forward = http.post(SocpService.SEARCH, "/api/v1/ingest", serialize(event),
                 SocpHttpClient.NDJSON, 5000);
-        if (!forward.ok()) {
+        boolean forwarded = exactAdmission(forward);
+        if (!forwarded) {
             log.warn("Asset collection event forwarding failed id={} reason={}",
                     event.get("id"), forward.failureReason());
         }
@@ -85,7 +91,28 @@ public class AssetCollectionController {
                 "accepted", true,
                 "assetId", saved.id(),
                 "total", store.count(),
-                "forwarded", forward.ok()));
+                "forwarded", forwarded));
+    }
+
+    /** A transport 2xx (including an HTML/error/quarantine body) is not an ingest acknowledgement. */
+    private boolean exactAdmission(ServiceCall call) {
+        if (!call.ok() || call.body() == null) return false;
+        try {
+            JsonNode envelope = objectMapper.reader()
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .with(DeserializationFeature.FAIL_ON_READING_DUP_TREE_KEY)
+                    .readTree(call.body());
+            if (envelope == null || !count(envelope, "code", 0)) return false;
+            JsonNode result = envelope.path("data");
+            return count(result, "accepted", 1) && count(result, "persisted", 1)
+                    && count(result, "acknowledged", 1) && count(result, "parseFailed", 0)
+                    && count(result, "quarantined", 0) && count(result, "skipped", 0);
+        } catch (JsonProcessingException invalid) { return false; }
+    }
+
+    private static boolean count(JsonNode result, String field, int expected) {
+        JsonNode value = result.path(field);
+        return value.isIntegralNumber() && value.canConvertToInt() && value.intValue() == expected;
     }
 
     /** 已采集资产列表：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */

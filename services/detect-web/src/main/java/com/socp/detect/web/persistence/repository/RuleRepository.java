@@ -40,6 +40,16 @@ public interface RuleRepository extends TenantScopedRepository<RuleEntity, Strin
                             @Param("status") String status, @Param("reference") String reference,
                             @Param("alias") String alias, Pageable pageable);
 
+    @Query("select r from RuleEntity r where r.tenantId = :tenant "
+            + "and (:keyword = '' or locate(:keyword, r.catalogSearch) > 0) "
+            + "and (:technique = '' or locate(:technique, concat(concat('\n', r.catalogTechniques), '\n')) > 0) and (:status = '' or r.catalogStatus = :status) "
+            + "and ((:reference = '' and :alias = '') "
+            + "or (:reference <> '' and locate(:reference, r.catalogReferences) > 0) "
+            + "or (:alias <> '' and locate(:alias, r.catalogReferences) > 0))")
+    Page<RuleEntity> searchTechnique(@Param("tenant") String tenant, @Param("keyword") String keyword,
+                            @Param("status") String status, @Param("reference") String reference,
+                            @Param("alias") String alias, @Param("technique") String technique, Pageable pageable);
+
     @Query("select new map(r.ruleId as id, r.catalogName as name, r.catalogType as type, r.catalogStatus as status) "
             + "from RuleEntity r where r.tenantId = :tenant "
             + "and (:keyword = '' or locate(:keyword, r.catalogSearch) > 0) order by r.ruleId")

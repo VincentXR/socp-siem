@@ -22,6 +22,9 @@ test('ingest summary failure preserves measured throughput and parse preview sta
       await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ code: 503, message: 'Summary unavailable' }) })
       return
     }
+    if (path === '/api/v1/system/health') {
+      await route.fulfill({ json: { code: 0, message: 'OK', data: { status: 'up', services: {}, checkedAt: '2026-10-02T00:00:00Z' } } }); return
+    }
     let data: unknown
     if (path === '/search-config/api/v1/sources') data = { items: [], total: 0, page: 1, size: 500, totalPages: 0 }
     else if (path === '/search-config/api/v1/outputs') data = []
@@ -37,7 +40,7 @@ test('ingest summary failure preserves measured throughput and parse preview sta
     else if (path === '/search-config/api/v1/ingest/parse-failures') data = { items: [], total: 0,
       page: 1, size: Number(url.searchParams.get('size')), totalPages: 0 }
     else if (path === '/search-config/api/v1/meta/categories') data = []
-    else if (path === '/search-config/api/v1/parse-rules/preview' && route.request().method() === 'POST') data = { matched: true, fields: { source: 'A' }, rule: 'R-A', format: 'AUTO' }
+    else if (path === '/search-config/api/v1/sources/task-a/preview' && route.request().method() === 'POST') data = { ok: true, matched: true, fields: { source: 'A' }, parserVersion: 'v1', writesEvent: false, mayTriggerDownstreamActions: false }
     else { unexpected.push(`${route.request().method()} ${path}`); await route.abort(); return }
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ code: 0, data }) })
   })
@@ -53,6 +56,8 @@ test('ingest summary failure preserves measured throughput and parse preview sta
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.getByRole('row', { name: /Source A/ }).getByRole('button', { name: 'Parse preview' }).click()
   const preview = page.getByRole('dialog', { name: 'Parse preview · Source A' })
+  await expect(preview.getByRole('button', { name: 'Run parse preview' })).toBeDisabled()
+  await preview.locator('textarea').fill('real sample from source A')
   await preview.getByRole('button', { name: 'Run parse preview' }).click()
   await expect(preview).toContainText('"source": "A"')
   await preview.getByRole('button', { name: 'Close', exact: true }).click()

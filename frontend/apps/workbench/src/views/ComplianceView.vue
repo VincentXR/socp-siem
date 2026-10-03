@@ -11,7 +11,11 @@ import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElEmpty from 'element-plus/es/components/empty/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import 'element-plus/es/components/drawer/style/css.mjs'
+import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
+import { useRouter } from 'vue-router'
+import { useWriteAccess } from '../composables/useWriteAccess'
 import ActionFeedback from '../components/ActionFeedback.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -20,6 +24,9 @@ import { useRequest } from '../composables/useRequest'
 import { useI18n } from '../composables/useI18n'
 
 const { t, locale } = useI18n()
+const router = useRouter()
+const canWrite = useWriteAccess()
+const selectedControl = ref<CoverageControl | null>(null)
 
 type Framework = { name: string; controls: Array<{ id: string; name: string; ruleIds: string[] }> }
 type Coverage = {
@@ -103,13 +110,28 @@ onUnmounted(() => { disposed = true; request.cancel() })
       <div class="compliance-card-head"><strong>{{ framework.framework }}</strong><span>{{ t('compliance.mappingCoverage') }} {{ framework.coverage }}%</span></div>
       <el-table :data="framework.controls" size="small" border>
         <el-table-column prop="id" :label="t('compliance.control')" width="120" />
-        <el-table-column prop="name" :label="t('compliance.name')" min-width="200" show-overflow-tooltip />
+        <el-table-column prop="name" :label="t('compliance.name')" min-width="200"><template #default="{ row }"><el-button link type="primary" @click="selectedControl = row as CoverageControl">{{ row.name }}</el-button></template></el-table-column>
         <el-table-column :label="t('compliance.assessmentStatus')" min-width="250"><template #default="{ row }"><div class="compliance-statuses"><el-tag :type="controlState(row).mapped ? 'success' : 'info'" size="small">{{ controlState(row).mapped ? t('compliance.mapped') : t('compliance.unmapped') }}</el-tag><el-tag :type="controlState(row).enabled ? 'success' : 'warning'" size="small">{{ controlState(row).enabled ? t('compliance.enabled') : t('compliance.notEnabled') }}</el-tag><el-tag :type="controlState(row).verified ? 'success' : 'info'" size="small">{{ controlState(row).verified ? t('compliance.verified') : t('compliance.notVerified') }}</el-tag></div></template></el-table-column>
-        <el-table-column prop="mappedRules" :label="t('compliance.mappedRules')" min-width="160" show-overflow-tooltip><template #default="{ row }"><div class="case-object-list"><router-link v-for="ruleId in row.mappedRules || []" :key="ruleId" :to="{ name: 'rule-edit', params: { ruleId } }">{{ ruleId }}</router-link><span v-if="!row.mappedRules?.length">{{ t('time.notAvailable') }}</span></div></template></el-table-column>
+        <el-table-column prop="mappedRules" :label="t('compliance.mappedRules')" min-width="160" show-overflow-tooltip><template #default="{ row }"><div class="case-object-list"><template v-for="ruleId in row.mappedRules || []" :key="ruleId"><router-link v-if="canWrite" :to="{ name: 'rule-edit', params: { ruleId } }">{{ rules.find(rule => rule.id === ruleId)?.name || ruleId }}</router-link><span v-else>{{ rules.find(rule => rule.id === ruleId)?.name || ruleId }}</span></template><span v-if="!row.mappedRules?.length">{{ t('time.notAvailable') }}</span></div></template></el-table-column>
         <el-table-column prop="validUntil" :label="t('compliance.validUntil')" width="155"><template #default="{ row }">{{ formatTime(row.validUntil) }}</template></el-table-column>
       </el-table>
     </el-card>
     <el-empty v-if="!loading && !loadError && !coverage?.byFramework?.length" :description="t('compliance.noData')" />
+    <el-drawer :model-value="Boolean(selectedControl)" :title="t('experience.control')" size="min(640px, 96vw)" @close="selectedControl = null">
+      <template v-if="selectedControl"><h2>{{ selectedControl.id }} · {{ selectedControl.name }}</h2>
+        <p>{{ t('experience.owner') }}: {{ selectedControl.owner || '—' }}</p><p>{{ t('experience.expires') }}: {{ formatTime(selectedControl.validUntil) }}</p>
+        <p>{{ t('compliance.assessmentStatus') }}: {{ selectedControl.assessment || t('compliance.notVerified') }}</p>
+        <h3>{{ t('experience.mappedRules') }}</h3>
+        <div v-for="id in selectedControl.mappedRules" :key="id"><el-button v-if="canWrite" link type="primary" @click="router.push({ name: 'rule-edit', params: { ruleId: id } })">{{ rules.find(rule => rule.id === id)?.name || id }}</el-button><span v-else>{{ rules.find(rule => rule.id === id)?.name || id }}</span> · {{ rules.find(rule => rule.id === id)?.status || t('experience.unavailable') }}</div>
+        <el-button v-if="canWrite && !selectedControl.mappedRules.length" @click="router.push({ name: 'detect' })">{{ t('experience.configureRule') }}</el-button>
+        <h3>{{ t('experience.evidence') }}</h3><pre class="control-evidence">{{ selectedControl.evidence ? JSON.stringify(selectedControl.evidence, null, 2) : '—' }}</pre>
+        <p>{{ t('compliance.assessmentNotice') }}</p>
+      </template>
+    </el-drawer>
     <div v-if="coverage" class="compliance-footnote">{{ t('compliance.contentVersion', { value: coverage.contentVersion || t('time.notAvailable') }) }} · {{ t('compliance.generatedAt', { value: formatTime(coverage.generatedAt) }) }}</div>
   </div>
 </template>
+
+<style scoped>
+.control-evidence { white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>

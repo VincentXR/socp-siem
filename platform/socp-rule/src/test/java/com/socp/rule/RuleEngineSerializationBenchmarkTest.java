@@ -42,7 +42,8 @@ class RuleEngineSerializationBenchmarkTest {
             scenarios.add(measure(keys, true));
         }
         Map<String, Object> report = new LinkedHashMap<>();
-        report.put("schemaVersion", 1);
+        report.put("schemaVersion", 2);
+        report.put("snapshotCacheMaxBytes", Long.getLong("socp.rule.snapshot-cache.max-bytes", 8L * 1024 * 1024));
         report.put("javaVersion", System.getProperty("java.version"));
         report.put("os", System.getProperty("os.name"));
         report.put("architecture", System.getProperty("os.arch"));

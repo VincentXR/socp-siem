@@ -19,6 +19,11 @@ public record SecurityEvent(
         Map<String, String> fields,    // 结构化字段
         Severity severity              // 解析出的严重级别（缺省 INFO）
 ) {
+    public SecurityEvent {
+        // Copy caller-owned fields before evidence can be queued or serialized.
+        fields = fields == null ? Map.of() : java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(fields));
+    }
+
     public SecurityEvent(Instant timestamp, String source, String host,
                          String raw, Map<String, String> fields, Severity severity) {
         this(UUID.randomUUID().toString(), timestamp, source, host, raw, fields, severity);

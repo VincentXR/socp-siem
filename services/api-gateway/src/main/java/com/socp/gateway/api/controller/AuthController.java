@@ -261,6 +261,14 @@ public class AuthController {
     }
 
     public String sign(String username, String role, String tenant, String locale) {
+        return sign(username, role, tenant, locale, java.util.Set.of(), java.util.Set.of());
+    }
+
+    public String sign(String username, String role, String tenant, String locale,
+                       java.util.Set<String> groups, java.util.Set<String> explicitPermissions) {
+        java.util.Set<String> permissions = new java.util.LinkedHashSet<>(
+                com.socp.platform.auth.security.Permission.roleDefaults(supportedRole(role)));
+        permissions.addAll(explicitPermissions);
         try {
             Instant now = Instant.now();
             String resolvedLocale = normalizeLocale(locale);
@@ -272,8 +280,8 @@ public class AuthController {
                     .audience(tokenIssuer.audiences())
                     .claim("tenant", tenant == null || tenant.isBlank() ? "default" : tenant)
                     .claim("role", supportedRole(role))
-                    .claim("permissions", com.socp.platform.auth.security.Permission
-                            .roleDefaults(supportedRole(role)))
+                    .claim("permissions", permissions)
+                    .claim("groups", groups)
                     .claim("locale", resolvedLocale)
                     .claim("identity_type", username != null && username.startsWith("service:")
                             ? "service" : "user")

@@ -55,12 +55,12 @@ class ServiceClientDelegationTest {
 
         client.createFromAlarm("alarm");
         client.list();
-        client.addNote("CASE/1", "analyst one", "summary & evidence");
+        client.addNote("CASE/1", "analyst one", "summary & evidence", "investigation-1");
 
         verify(http).postJson(SocpService.INCIDENT, "/api/v1/incidents/from-alarm", "alarm");
         verify(http).get(SocpService.INCIDENT, "/api/v1/incidents");
         verify(http).postJson(SocpService.INCIDENT,
-                "/api/v1/incidents/CASE%2F1/notes?author=analyst%20one&content=summary%20%26%20evidence",
-                "{}");
+                "/api/v1/incidents/CASE%2F1/notes?author=analyst%20one",
+                "{\"content\":\"summary & evidence\",\"idempotencyKey\":\"investigation-1\"}");
     }
 }

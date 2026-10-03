@@ -13,7 +13,8 @@ import ElRow from 'element-plus/es/components/row/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ActionFeedback from '../components/ActionFeedback.vue'
 import PageHeader from '../components/PageHeader.vue'
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRequest } from '../composables/useRequest'
 import {
   ApiError, appendWatchlist, createWatchlist as createWatchlistOnly, deleteWatchlist, getWatchlist, listWatchlists,
@@ -41,11 +42,21 @@ const riskEntities = ref<RiskEntity[]>([])
 const riskSummary = ref<RiskSummary | null>(null)
 const riskLimit = ref(20)
 const entityDrawer = ref(false)
+const route = useRoute()
+const router = useRouter()
+const investigationReturn = computed(() => typeof route.query.returnTo === 'string' && /^\/(alarms|cases)(?:[?#]|$)/.test(route.query.returnTo) ? route.query.returnTo : '')
+const entityLookup = ref('')
+const selectedEntityId = ref('')
+async function lookupEntity(): Promise<void> {
+  const entity = entityLookup.value.trim()
+  if (entity) await router.replace({ query: { ...route.query, entity } })
+}
+
 const entityDetail = ref<RiskEntity | null>(null)
 const entityRequest = useRequest<RiskEntity>()
 const { loading: entityLoading, error: entityError } = entityRequest
 const watchlists = ref<WatchlistSummary[]>([])
-const uebaTab = ref('entities')
+const uebaTab = ref(route.query.tab === 'watchlists' ? 'watchlists' : 'entities')
 const scoreForm = ref({ severity: 'HIGH', mitre: 'T1110', tiHits: 1, recentAlerts: 3, assetCriticality: 2 })
 const scoreRequest = useRequest<ScoreBreakdown>()
 const { data: scoreResult, loading: scoreLoading, error: scoreError } = scoreRequest
@@ -76,16 +87,15 @@ async function loadUeba() {
 }
 
 async function openEntity(entity: RiskEntity) {
-  entityDetail.value = entity
-  entityDrawer.value = true
-  await loadEntityDetail()
+  entityLookup.value = entity.entity
+  await lookupEntity()
 }
 
 async function loadEntityDetail() {
-  const id = entityDetail.value?.entity
+  const id = selectedEntityId.value
   if (!id || !entityDrawer.value) return
   const result = await entityRequest.execute(signal => uebaEntity(id, { signal }))
-  if (result && entityDrawer.value && entityDetail.value?.entity === id) entityDetail.value = result
+  if (result && entityDrawer.value && selectedEntityId.value === id) entityDetail.value = result
 }
 
 async function calcScore() {
@@ -97,7 +107,17 @@ async function calcScore() {
 // Sliders change their model before committing a calculation. Hide the old
 // answer immediately, including a response arriving during that interaction.
 watch(scoreForm, () => scoreRequest.reset(), { deep: true, flush: 'sync' })
-watch(entityDrawer, visible => { if (!visible) entityRequest.reset() }, { flush: 'sync' })
+watch(() => route.query.entity, entity => {
+  entityRequest.reset()
+  selectedEntityId.value = typeof entity === 'string' ? entity : ''
+  entityLookup.value = selectedEntityId.value
+  entityDetail.value = null
+  entityDrawer.value = Boolean(selectedEntityId.value)
+  if (entityDrawer.value) void loadEntityDetail()
+}, { immediate: true })
+watch(entityDrawer, visible => {
+  if (!visible) { entityRequest.reset(); if (route.query.entity) void router.replace({ query: { ...route.query, entity: undefined } }) }
+}, { flush: 'sync' })
 onUnmounted(() => { disposed = true; entityRequest.cancel(); scoreRequest.cancel() })
 
 function acceptWatchlist(saved: Watchlist) {
@@ -136,10 +156,12 @@ onMounted(loadUeba)
 
 <template>
   <div class="page-pad view-enter">
+    <el-button v-if="investigationReturn" @click="router.push(investigationReturn)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
     <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('ueba.title')" :description="t('ueba.description')">
       <template #actions><el-button size="small" :loading="loading" @click="loadUeba">{{ t('common.refresh') }}</el-button></template>
     </PageHeader>
     <ActionFeedback :error="loadError" />
+    <form class="workspace-hint" @submit.prevent="lookupEntity"><label>{{ t('analystJourney.entityLookup') }} <input v-model="entityLookup" :aria-label="t('analystJourney.entityLookupLabel')" :placeholder="t('analystJourney.entityPlaceholder')" /></label> <el-button native-type="submit" :disabled="!entityLookup.trim()">{{ t('analystJourney.investigate') }}</el-button><p>{{ t('analystJourney.entityLookupGuidance') }}</p></form>
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('ueba.readOnly') }}</div>
     <el-alert v-if="techniqueError" :title="t('ueba.techniqueDictionaryUnavailable')" :description="techniqueError" type="warning" :closable="false" show-icon style="margin-bottom:12px" />
     <el-row class="metrics-row" :gutter="12" style="margin-bottom:14px">
@@ -174,7 +196,7 @@ onMounted(loadUeba)
       </el-tab-pane>
       <el-tab-pane :label="t('ueba.advancedTools')" name="score">
         <div class="workspace-hint">{{ t('ueba.scoreSimulationHint') }}</div>
-        <UebaScorePanel :form="scoreForm" :result="scoreResult" :loading="scoreLoading" :error="scoreError?.message" :techniques="attackTechniques" :techniques-loading="techniquesLoading" @calculate="calcScore" />
+        <UebaScorePanel v-model:form="scoreForm" :result="scoreResult" :loading="scoreLoading" :error="scoreError?.message" :techniques="attackTechniques" :techniques-loading="techniquesLoading" @calculate="calcScore" />
       </el-tab-pane>
     </el-tabs>
 

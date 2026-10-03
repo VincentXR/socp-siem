@@ -10,6 +10,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "socp.soar.secrets")
 public class SoarSecretProperties {
     private String backend = "env";
+    private String tenantGrants = "{}";
+    public String getTenantGrants() { return tenantGrants; }
+    public void setTenantGrants(String tenantGrants) { this.tenantGrants = tenantGrants; }
     private String kubernetesMountPath = "/var/run/secrets/socp";
     private String vaultEndpoint = "";
     private String vaultTokenRef = "";

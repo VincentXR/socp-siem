@@ -10,31 +10,38 @@ import type { IngestTask, LogSource } from '../src/api'
 
 const api = vi.hoisted(() => ({
   listSourcesPage: vi.fn(), listOutputs: vi.fn(), listParseRulesPage: vi.fn(), resolveParseRules: vi.fn(),
-  listIngestTasks: vi.fn(), ingestSummary: vi.fn(), listCategories: vi.fn(), previewParse: vi.fn(),
+  listIngestTasks: vi.fn(), ingestSummary: vi.fn(), listCategories: vi.fn(), previewSource: vi.fn(),
   listIngestParseFailures: vi.fn(), replayIngestParseFailure: vi.fn(), updateSource: vi.fn(), createSource: vi.fn(),
-  startIngestTask: vi.fn(), stopIngestTask: vi.fn(), confirm: vi.fn(),
+  updateOutput: vi.fn(), createOutput: vi.fn(), validateOutputConfig: vi.fn(),
+  getSource: vi.fn(), getSourceSetup: vi.fn(), startIngestTask: vi.fn(), stopIngestTask: vi.fn(), confirm: vi.fn(),
 }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...api }))
 vi.mock('element-plus/es/components/message-box/index.mjs', () => ({ default: { confirm: api.confirm } }))
 const summary = { collectors: 1, accepted: 19, skipped: 2, forwarded: 17, bytes: 512, eps1m: 25,
   byHealth: { HEALTHY: 1 }, sources: 3, enabledSources: 2 }
 type View = { refreshAll: () => Promise<void>; sources: Array<{ id: string }>; logCategories: Array<{ id: string }>
-  openTest: (task: IngestTask) => void; runTest: () => Promise<void>; testDialog: boolean
+  openTest: (task: IngestTask) => void; runTest: () => Promise<void>; testDialog: boolean; testSample: string
   testResult: { fields: Record<string, string>; attempts?: Array<{ ruleId?: string }> } | null
   sourcePage: number; sourceTotal: number; sourceSearchDraft: string
   loadSources: () => Promise<void>; applySourceSearch: () => void
   rulePage: number; ruleTotal: number; ruleSearchDraft: string; parseRules: Array<{ id: string }>
   applyRuleSearch: () => void; openEditSource: (source: LogSource) => void
   sourceRuleOptionLabel: (id: string) => string; searchSourceRules: (query: string) => void
-  newSource: Record<string, unknown>; saveSource: () => Promise<void>
+  newSource: Record<string, unknown>; saveSource: (asDraft?: boolean) => Promise<void>; showSetup: boolean; setupId: string; openCreateSource: () => void
   parseFailures: Array<Record<string, unknown>>; replayParseFailure: (row: Record<string, unknown>) => Promise<void>
   sourcesLoading: boolean; refreshing: boolean; actionBusy: boolean; tasks: IngestTask[]
-  toggleTask: (task: IngestTask) => Promise<void> }
+  toggleTask: (task: IngestTask) => Promise<void>
+  openSetup: (id: string) => void; closeSetup: () => void; editSourceById: (id: string) => Promise<void>; showSourceDialog: boolean
+  openEditOutput: (output: import('../src/api').SinkTarget) => void; addOutput: () => Promise<void>; checkOutput: () => Promise<void>
+  newOutput: { name: string; type: string; uri: string; authToken: string; enabled: boolean }; credentialAction: 'KEEP' | 'REPLACE' | 'CLEAR'
+  outputErrors: Record<string, string>; outputValidation: string
+  editingSourceId: string | null; onIngestTab: (tab: string) => void }
 async function setup() {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: IngestView }] })
   await router.push('/')
-  const root = mount(RouterView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } } })
-  return { root, wrapper: root.findComponent(IngestView) }
+  const role = ref('admin')
+  const root = mount(RouterView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: role } } } })
+  return { root, router, role, wrapper: root.findComponent(IngestView) }
 }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
 beforeEach(() => {
@@ -46,14 +53,115 @@ beforeEach(() => {
   api.listIngestTasks.mockResolvedValue([])
   api.ingestSummary.mockResolvedValue(summary)
   api.listCategories.mockResolvedValue([])
-  api.previewParse.mockResolvedValue({ matched: true, fields: {} })
+  api.previewSource.mockResolvedValue({ matched: true, fields: {} })
   api.listIngestParseFailures.mockResolvedValue({ items: [], total: 0, page: 1, size: 50, totalPages: 0 })
-  api.updateSource.mockResolvedValue({ source: {} })
-  api.createSource.mockResolvedValue({})
+  api.updateSource.mockImplementation((id: string, body: object) => Promise.resolve({ source: { id, ...body } }))
+  api.createSource.mockImplementation((body: object) => Promise.resolve({ id: 'new-source', ...body }))
+  api.getSourceSetup.mockImplementation((id: string) => Promise.resolve({ source: { id, name: 'Saved source', enabled: false, type: 'FILE' }, nativeVector: true, pipeline: [], problems: [], output: null, configurationVersion: 'v1' }))
   api.confirm.mockResolvedValue('confirm')
 })
 
 describe('ingest independent reads', () => {
+  it('preserves output credentials by default and only replaces or clears with explicit intent', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const output = { id: 'output-a', name: 'Receiver', type: 'HTTP', uri: 'https://example.test/ingest', enabled: true, authTokenConfigured: true } as import('../src/api').SinkTarget
+    view.openEditOutput(output); await flushPromises()
+    expect(view.credentialAction).toBe('KEEP')
+    expect(view.newOutput.authToken).toBe('')
+    view.newOutput.name = 'Renamed'
+    await view.addOutput(); await flushPromises()
+    expect(api.updateOutput).toHaveBeenLastCalledWith('output-a', expect.objectContaining({ name: 'Renamed', authToken: null }), 'KEEP')
+
+    view.openEditOutput(output); view.credentialAction = 'REPLACE'; await flushPromises()
+    await view.addOutput()
+    expect(api.updateOutput).toHaveBeenCalledTimes(1)
+    expect(view.outputErrors.authToken).toBeTruthy()
+    view.newOutput.authToken = 'replacement-token'
+    await view.addOutput(); await flushPromises()
+    expect(api.updateOutput).toHaveBeenLastCalledWith('output-a', expect.objectContaining({ authToken: 'replacement-token' }), 'REPLACE')
+
+    view.openEditOutput(output); view.credentialAction = 'CLEAR'; await flushPromises()
+    await view.addOutput(); await flushPromises()
+    expect(api.updateOutput).toHaveBeenLastCalledWith('output-a', expect.objectContaining({ authToken: null }), 'CLEAR')
+    expect(api.createOutput).not.toHaveBeenCalled()
+    root.unmount()
+  })
+
+  it('retains static output validation without sending credentials for a keep operation', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    view.openEditOutput({ id: 'output-a', name: 'Receiver', type: 'HTTP', uri: 'https://example.test/ingest', enabled: true } as import('../src/api').SinkTarget)
+    await view.checkOutput(); await flushPromises()
+    expect(api.validateOutputConfig).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ authToken: null }))
+    expect(view.outputValidation).toBeTruthy()
+    expect(api.updateOutput).not.toHaveBeenCalled()
+    view.newOutput.uri = 'https://example.test/ingest#fragment'
+    await view.checkOutput()
+    expect(api.validateOutputConfig).toHaveBeenCalledTimes(1)
+    expect(view.outputErrors.uri).toBeTruthy()
+    root.unmount()
+  })
+
+  it('keeps guided source selection synchronized with opening, Back, Forward and closing', async () => {
+    const { root, router, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    view.openSetup('source-a'); await flushPromises()
+    expect(router.currentRoute.value.query.sourceId).toBe('source-a')
+    router.back(); await flushPromises()
+    expect(view.showSetup).toBe(false)
+    router.forward(); await flushPromises()
+    expect(view.showSetup).toBe(true)
+    expect(view.setupId).toBe('source-a')
+    view.closeSetup(); await flushPromises()
+    expect(router.currentRoute.value.query.sourceId).toBeUndefined()
+    root.unmount()
+  })
+
+  it('does not open a delayed source editor after closing or selecting another setup', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const pending = deferred<{ source: LogSource }>()
+    api.getSource.mockReturnValueOnce(pending.promise)
+    view.openSetup('source-a'); await flushPromises()
+    const editing = view.editSourceById('source-a')
+    view.closeSetup(); await flushPromises()
+    view.openSetup('source-b'); await flushPromises()
+    pending.resolve({ source: { id: 'source-a', name: 'Old source', enabled: false, type: 'FILE' } as LogSource })
+    await editing; await flushPromises()
+    expect(view.showSourceDialog).toBe(false)
+    expect(view.showSetup).toBe(true)
+    expect(view.setupId).toBe('source-b')
+    root.unmount()
+  })
+
+  it('does not replay a quarantine event after permission is revoked during confirmation', async () => {
+    const { root, wrapper, role } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const confirmation = deferred<string>()
+    api.confirm.mockReturnValueOnce(confirmation.promise)
+    const replay = view.replayParseFailure({ id: 'failure-a' })
+    role.value = 'viewer'; await flushPromises()
+    confirmation.resolve('confirm'); await replay
+    expect(api.replayIngestParseFailure).not.toHaveBeenCalled()
+    root.unmount()
+  })
+
+  it('saves an incomplete source as a disabled draft and opens its guided setup', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    view.openCreateSource()
+    view.newSource.name = 'Incomplete source'
+    await view.saveSource()
+    expect(api.createSource).not.toHaveBeenCalled()
+    await view.saveSource(true); await flushPromises()
+    expect(api.createSource).toHaveBeenCalledWith(expect.objectContaining({ name: 'Incomplete source', enabled: false, path: null }))
+    expect(view.showSetup).toBe(true)
+    expect(view.setupId).toBe('new-source')
+    expect(api.getSourceSetup).toHaveBeenCalledWith('new-source', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    root.unmount()
+  })
+
   it('keeps a newer source read loading when a superseded read finishes', async () => {
     const { root, wrapper } = await setup(); await flushPromises()
     const view = wrapper.vm as unknown as View
@@ -254,20 +362,20 @@ describe('ingest independent reads', () => {
     const view = wrapper.vm as unknown as View
     const task = (id: string) => ({ id, name: id, collector: 'vector', format: 'AUTO', parseRuleIds: [`R-${id}`] }) as unknown as IngestTask
     const old = deferred<{ matched: boolean; fields: Record<string, string> }>()
-    api.previewParse.mockReturnValueOnce(old.promise).mockResolvedValueOnce({ matched: true, fields: { task: 'B' } })
-    view.openTest(task('A'))
+    api.previewSource.mockReturnValueOnce(old.promise).mockResolvedValueOnce({ matched: true, fields: { task: 'B' } })
+    view.openTest(task('A')); view.testSample = 'sample A'
     const oldRun = view.runTest(); await flushPromises()
-    const oldSignal = api.previewParse.mock.calls[0]![1].signal as AbortSignal
-    view.openTest(task('B'))
+    const oldSignal = api.previewSource.mock.calls[0]![2].signal as AbortSignal
+    view.openTest(task('B')); view.testSample = 'sample B'
     expect(oldSignal.aborted).toBe(true)
     await view.runTest()
     old.resolve({ matched: true, fields: { task: 'A' } }); await oldRun
     expect(view.testResult?.fields.task).toBe('B')
     const closing = deferred<{ matched: boolean; fields: Record<string, string> }>()
-    api.previewParse.mockReturnValueOnce(closing.promise)
-    view.openTest(task('C'))
+    api.previewSource.mockReturnValueOnce(closing.promise)
+    view.openTest(task('C')); view.testSample = 'sample C'
     const closingRun = view.runTest(); await flushPromises()
-    const closingSignal = api.previewParse.mock.calls.at(-1)![1].signal as AbortSignal
+    const closingSignal = api.previewSource.mock.calls.at(-1)![2].signal as AbortSignal
     view.testDialog = false; await nextTick()
     expect(closingSignal.aborted).toBe(true)
     closing.resolve({ matched: true, fields: { task: 'C' } }); await closingRun
@@ -275,26 +383,30 @@ describe('ingest independent reads', () => {
     root.unmount()
   })
 
-  it('bounds parse previews to four requests while preserving rule order', async () => {
+  it('previews the effective source pipeline once instead of independently executing every bound rule', async () => {
     const { root, wrapper } = await setup(); await flushPromises()
     const view = wrapper.vm as unknown as View
-    const gates: Array<{ resolve: (value: { matched: boolean; fields: Record<string, string> }) => void }> = []
-    api.previewParse.mockImplementation(() => {
-      const gate = deferred<{ matched: boolean; fields: Record<string, string> }>()
-      gates.push(gate)
-      return gate.promise
-    })
     view.openTest({ id: 'many', name: 'many', collector: 'vector', format: 'AUTO',
       parseRuleIds: Array.from({ length: 10 }, (_, index) => `R-${index}`) } as unknown as IngestTask)
+    await view.runTest()
+    expect(api.previewSource).not.toHaveBeenCalled()
+    view.testSample = 'real raw sample'
+    await view.runTest()
+    expect(api.previewSource).toHaveBeenCalledTimes(1)
+    expect(api.previewSource).toHaveBeenCalledWith('many', 'real raw sample', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    root.unmount()
+  })
+
+  it('discards a pending preview after the visible sample changes', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const pending = deferred<{ matched: boolean; fields: Record<string, string> }>()
+    api.previewSource.mockReturnValueOnce(pending.promise)
+    view.openTest({ id: 'a' } as IngestTask); view.testSample = 'old sample'
     const run = view.runTest(); await flushPromises()
-    expect(gates).toHaveLength(4)
-    for (const gate of gates.slice(0, 4)) gate.resolve({ matched: false, fields: {} })
-    await flushPromises(); expect(gates).toHaveLength(8)
-    for (const gate of gates.slice(4, 8)) gate.resolve({ matched: false, fields: {} })
-    await flushPromises(); expect(gates).toHaveLength(10)
-    for (const gate of gates.slice(8)) gate.resolve({ matched: false, fields: {} })
-    await run
-    expect(view.testResult?.attempts?.map(attempt => attempt.ruleId)).toEqual(Array.from({ length: 10 }, (_, index) => `R-${index}`))
+    view.testSample = 'new sample'
+    pending.resolve({ matched: true, fields: { input: 'old sample' } }); await run
+    expect(view.testResult).toBeNull()
     root.unmount()
   })
 })

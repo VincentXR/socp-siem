@@ -19,7 +19,7 @@ const ingest = { collectors: 1, accepted: 5, skipped: 0, forwarded: 5, bytes: 40
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
 let client: QueryClient
 let wrapper: ReturnType<typeof mount<typeof SituationView>> | undefined
-let stream: { onerror?: () => void } | undefined
+let stream: { onerror?: () => void; onopen?: () => void; alert?: (event: MessageEvent) => void } | undefined
 
 function setup() {
   client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
@@ -35,7 +35,8 @@ beforeEach(() => {
   vi.stubGlobal('EventSource', class {
     onerror?: () => void
     constructor() { stream = this }
-    addEventListener() {}
+    alert?: (event: MessageEvent) => void
+    addEventListener(name: string, handler: (event: MessageEvent) => void) { if (name === 'alert') this.alert = handler }
     close() {}
   })
   api.alarmStats.mockResolvedValue(stats)
@@ -53,6 +54,30 @@ afterEach(() => {
 })
 
 describe('situation refresh ownership', () => {
+  it('coalesces SSE bursts without cancelling in-flight snapshots and bounds trailing refreshes', async () => {
+    vi.useFakeTimers()
+    const view = setup(); await flushPromises()
+    const pending = deferred<typeof engine>()
+    api.gasEngineStats.mockReturnValueOnce(pending.promise)
+    const frame = () => stream!.alert!(new MessageEvent('alert', { data: JSON.stringify({ id: 'alarm-stream', ruleId: 'r', timestamp: '2026-01-01T00:00:00Z' }) }))
+    const before = api.alarmStats.mock.calls.length
+    for (let n = 0; n < 50; n++) frame()
+    await vi.advanceTimersByTimeAsync(0); await flushPromises()
+    expect(api.alarmStats).toHaveBeenCalledTimes(before + 1)
+    const signal = api.gasEngineStats.mock.calls.at(-1)![0].signal as AbortSignal
+    for (let n = 0; n < 50; n++) frame()
+    await vi.advanceTimersByTimeAsync(4999); await flushPromises()
+    expect(signal.aborted).toBe(false)
+    expect(api.alarmStats).toHaveBeenCalledTimes(before + 1)
+    pending.resolve(engine); await flushPromises()
+    await vi.advanceTimersByTimeAsync(1); await flushPromises()
+    expect(api.alarmStats).toHaveBeenCalledTimes(before + 2)
+    frame(); view.unmount(); wrapper = undefined
+    const stopped = api.alarmStats.mock.calls.length
+    await vi.advanceTimersByTimeAsync(6000); await flushPromises()
+    expect(api.alarmStats).toHaveBeenCalledTimes(stopped)
+  })
+
   it('retains a failed source and identifies its values as stale', async () => {
     const view = setup(); await flushPromises()
     expect(view.findAll('.k-num').map(node => node.text())).toEqual(['91', '7', '4', '2', '25', '30%'])

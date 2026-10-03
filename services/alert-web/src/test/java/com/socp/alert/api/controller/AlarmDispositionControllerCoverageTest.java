@@ -65,8 +65,8 @@ class AlarmDispositionControllerCoverageTest {
 
     @Test
     void setStatusVerifiesTheAlarmThenDelegatesTheBodyValue() {
-        given(disposition.setStatus("a1", "RESOLVED")).willReturn(open());
-        AlarmStatusRequest body = new AlarmStatusRequest("RESOLVED");
+        given(disposition.setStatus("a1", "RESOLVED", "Verified outcome", "TRUE_POSITIVE")).willReturn(open());
+        AlarmStatusRequest body = new AlarmStatusRequest("RESOLVED", "Verified outcome", "TRUE_POSITIVE");
 
         AlarmDispositionService.Disposition result = controller.setStatus("a1", body).data();
 

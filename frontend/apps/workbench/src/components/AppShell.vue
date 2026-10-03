@@ -11,6 +11,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 type Theme = 'light' | 'dark'
 
 const props = defineProps<{
+  healthState?: string
+  healthCoverage?: string
   menuGroups: MenuGroup[]
   activeMenu: string
   activeLabel: string
@@ -95,7 +97,7 @@ const recentItems = computed(() => {
   const items = props.menuGroups.flatMap(group => group.items)
   return recentMenuKeys.value
     .map(key => items.find(item => item.key === key))
-    .filter((item): item is MenuGroup['items'][number] => Boolean(item))
+    .filter((item): item is MenuGroup['items'][number] => Boolean(item) && item?.key !== props.activeMenu)
 })
 
 function isGroupCollapsed(group: MenuGroup): boolean {
@@ -190,11 +192,11 @@ onUnmounted(() => {
           </div>
         </template>
       </nav>
-      <div class="socp-sidebar-footer" :aria-label="t('app.platformStatus')">
-        <span class="sidebar-status-dot" aria-hidden="true" />
-        <span>{{ t('app.platformStatus') }}</span>
+      <button type="button" class="socp-sidebar-footer" :aria-label="t('experience.serviceHealth')" @click="goOverview">
+        <span class="sidebar-status-dot" :data-state="healthState || 'unknown'" aria-hidden="true" />
+        <span>{{ t(`experience.state.${healthState || 'unknown'}`) }} · {{ healthCoverage || '—' }}</span>
         <span class="sidebar-version mono">{{ t('app.version') }}</span>
-      </div>
+      </button>
     </aside>
     <button v-if="mobileViewport && mobileSidebarOpen" type="button" class="socp-sidebar-backdrop" :aria-label="t('nav.closeNavigation')" @click="mobileSidebarOpen = false" />
 
@@ -222,7 +224,7 @@ onUnmounted(() => {
         </span>
         <span class="header-spacer" />
         <el-button size="small" :title="t('nav.commandPalette')" :aria-label="t('nav.commandPalette')" @click="paletteOpen = true">
-          <span class="header-icon" aria-hidden="true" v-html="`<svg viewBox='0 0 24 24' width='14' height='14' fill='none' stroke='currentColor' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>${MENU_ICONS.search}</svg>`" />
+          <span class="header-icon" aria-hidden="true" v-html="`<svg viewBox='0 0 24 24' width='14' height='14' fill='none' stroke='currentColor' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'>${MENU_ICONS.search}</svg>`" /><span class="quick-jump-label">{{ t('experience.quickJump') }} <kbd>⌘/Ctrl K</kbd></span>
         </el-button>
         <el-button class="header-action" size="small" :title="t('app.langToggle')" @click="toggleLocale">
           <span class="header-icon" aria-hidden="true">
@@ -275,6 +277,13 @@ button.socp-logo {
 }
 .header-crumb-link:hover { color: var(--ns-accent-fg); }
 .header-logout-icon { display: none; }
+.socp-sidebar-footer { font: inherit; cursor: pointer; background: transparent; border: 0; width: 100%; text-align: left; }
+.sidebar-status-dot { background: var(--ns-text-3); box-shadow: none; }
+.sidebar-status-dot[data-state="healthy"] { background: var(--ns-success); }
+.sidebar-status-dot[data-state="degraded"], .sidebar-status-dot[data-state="stale"] { background: var(--ns-warning); }
+.quick-jump-label { margin-left: 6px; }
+.quick-jump-label kbd { margin-left: 5px; color: var(--ns-text-3); }
+@media (max-width: 1000px) { .quick-jump-label { display: none; } }
 @media (max-width: 860px) {
   .socp-sider {
     position: fixed;

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.asset.web.api.request.AssetCollectionRequest;
 import com.socp.asset.web.domain.Asset;
 import com.socp.asset.web.persistence.store.AssetStore;
+import com.socp.asset.web.persistence.store.AssetCollectionStore;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -45,6 +46,9 @@ class AssetControllerTest {
 
     @MockitoBean
     private AssetStore store;
+
+    @MockitoBean
+    private AssetCollectionStore collectionStore;
 
     @Test
     void relatedLookupValidatesIdentityBoundsAndAuthorization() throws Exception {
@@ -173,7 +177,7 @@ class AssetControllerTest {
     @Test
     void collectUsesSafeDefaultsAndReturnsAcceptedEnvelope() throws Exception {
         Asset saved = Asset.create("collector-1", "SERVER", "", "", "collect", "HIGH");
-        given(store.upsertByIp(any(Asset.class))).willReturn(saved);
+        given(collectionStore.upsertByIp(any(Asset.class))).willReturn(saved);
         given(store.count()).willReturn(1L);
 
         mvc.perform(post("/api/v1/assets/collect")
@@ -187,7 +191,7 @@ class AssetControllerTest {
                 .andExpect(jsonPath("$.data.assetId").value(saved.id()))
                 .andExpect(jsonPath("$.data.total").value(1));
 
-        verify(store).upsertByIp(any(Asset.class));
+        verify(collectionStore).upsertByIp(any(Asset.class));
     }
 
     @Test

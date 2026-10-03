@@ -20,7 +20,7 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * 资产存储——JPA + H2 文件库（Flyway V1 建表），重启不丢；接口与原内存版一致。
+ * 资产存储——JPA + Flyway；开发环境支持 H2，pg/prod 使用 PostgreSQL。
  * 种子数据仅在空库时写入（避免重复）。
  */
 @Component
@@ -57,10 +57,6 @@ public class AssetStore {
         save(Asset.create("kafka-1", "MESSAGE", "10.0.0.20", "Kafka 4.0", "infra", "HIGH"));
     }
 
-    public List<Asset> list() {
-        return repo.findByTenantId(tenant()).stream().map(AssetStore::fromEntity).toList();
-    }
-
     /** Reads one bounded tenant page directly from the database. */
     public Page<Asset> page(int page, int size, String query) {
         Pageable pageable = PageRequest.of(page - 1, size,
@@ -70,6 +66,13 @@ public class AssetStore {
                 ? repo.findByTenantId(tenant(), pageable)
                 : repo.searchByTenantId(tenant(), normalized, pageable);
         return result.map(AssetStore::fromEntity);
+    }
+
+    public Page<Asset> page(int page, int size, String query, String type, String criticality, String owner) {
+        if (type.isEmpty() && criticality.isEmpty() && owner.isEmpty()) return page(page, size, query);
+        return repo.filterByTenantId(tenant(), query, type, criticality, owner,
+                PageRequest.of(page - 1, size, Sort.by(Sort.Order.asc("name"), Sort.Order.asc("id"))))
+                .map(AssetStore::fromEntity);
     }
 
     public Page<Asset> related(int page, int size, String ip, String name) {
@@ -99,24 +102,6 @@ public class AssetStore {
         return a;
     }
 
-    /** 按 IP 去重：已存在同 IP 资产则更新（保留原 id），否则新建。 */
-    public Asset upsertByIp(Asset a) {
-        String t = tenant();
-        List<AssetEntity> same = repo.findByIpAndTenantId(a.ip(), t);
-        if (!a.ip().isBlank() && !same.isEmpty()) {
-            AssetEntity existing = same.get(0);
-            existing.setName(a.name());
-            existing.setType(a.type());
-            existing.setOs(a.os());
-            existing.setOwner(a.owner());
-            existing.setCriticality(a.criticality());
-            repo.save(existing);
-            return new Asset(existing.getId(), a.name(), a.type(), a.ip(), a.os(), a.owner(),
-                    a.criticality(), existing.getCreatedAt());
-        }
-        return save(a);
-    }
-
     public boolean delete(String id) {
         Optional<AssetEntity> e = repo.findByIdAndTenantId(id, tenant());
         if (e.isEmpty()) return false;
@@ -128,12 +113,12 @@ public class AssetStore {
         return repo.findByIdAndTenantId(id, tenant()).map(AssetStore::fromEntity).orElse(null);
     }
 
-    private static Asset fromEntity(AssetEntity e) {
+    static Asset fromEntity(AssetEntity e) {
         return new Asset(e.getId(), e.getName(), e.getType(), e.getIp(), e.getOs(), e.getOwner(),
                 e.getCriticality(), e.getCreatedAt());
     }
 
-    private static AssetEntity toEntity(Asset a, String tenant) {
+    static AssetEntity toEntity(Asset a, String tenant) {
         AssetEntity e = new AssetEntity();
         e.setId(a.id());
         e.setName(a.name());

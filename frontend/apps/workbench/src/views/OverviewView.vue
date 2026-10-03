@@ -21,6 +21,8 @@ import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
 
 const props = defineProps<{
+  availability?: { alarms: boolean; stats: boolean; cases: boolean }
+  healthState?: string
   stat: { total: number; critical: number; high: number; activeCases: number; online: number }
   sitStats?: {
     trend7d?: Record<string, number>
@@ -48,17 +50,20 @@ const refreshLabel = computed(() => props.updatedAt
   ? t('overview.lastRefresh', { time: d(new Date(props.updatedAt), 'dateTime') })
   : t('overview.awaitingRefresh'))
 const trendSum = computed(() => Object.values(props.sitStats?.trend7d ?? {}).reduce((a, b) => a + b, 0))
-const highPending = computed(() => props.stat.critical + props.stat.high)
 const maxLevel = computed(() => Math.max(1, ...LEVELS.map(level => props.sitStats?.bySeverity?.[level] ?? 0)))
 const topRisk = computed(() => (props.sitStats?.topRisk ?? []).slice(0, 5))
 const latestAlarms = computed(() => props.filteredAlarms.slice(0, 5))
 const initialLoading = computed(() => Boolean(props.loading && !props.updatedAt))
 const knownServices = computed(() => HEALTH_TARGETS.filter(target => Boolean(props.healths[target.name])))
-const degradedServices = computed(() => knownServices.value.filter(target => props.healths[target.name] !== 'up').length)
 
 function onRefresh(): void { emit('refresh') }
 function openAllAlarms(): void { props.goAlarms?.() }
-function openHighRiskAlarms(): void { props.goAlarms?.({ severity: 'HIGH' }) }
+function openSeverityAlarms(severity: string): void {
+  const now = new Date()
+  const start = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6)
+  props.goAlarms?.({ severity, from: new Date(start).toISOString(), to: now.toISOString() })
+}
+function openHealth(): void { document.getElementById('overview-service-health')?.scrollIntoView({ behavior: 'auto', block: 'start' }) }
 function openCases(): void { props.goCases?.() }
 function openRecentAlarm(row: unknown): void {
   const id = (row as Alarm)?.id
@@ -66,7 +71,7 @@ function openRecentAlarm(row: unknown): void {
 }
 function serviceState(name: string): 'up' | 'down' | 'unknown' {
   const status = props.healths[name]
-  return status === 'up' ? 'up' : status ? 'down' : 'unknown'
+  return status === 'up' ? 'up' : status === 'down' ? 'down' : 'unknown'
 }
 function serviceStateLabel(name: string): string { return t(`overview.serviceState.${serviceState(name)}`) }
 const timeOnly = (iso: string) => (iso?.length >= 19 ? iso.slice(11, 19) : '—')
@@ -112,16 +117,15 @@ function severityLabel(level: string): string { return tOr(t, `severities.${leve
         </div>
 
         <div class="overview-kpis">
-          <MetricCard :label="t('overview.highCriticalAlarms7d')" tone="danger" :interactive="Boolean(props.goAlarms)" @click="openHighRiskAlarms">
-            <AnimatedNumber :value="highPending" />
-            <template #hint>{{ severityLabel('CRITICAL') }} <b class="mono">{{ stat.critical }}</b> · {{ severityLabel('HIGH') }} <b class="mono">{{ stat.high }}</b></template>
+          <MetricCard v-for="severity in ['CRITICAL', 'HIGH']" :key="severity" :label="t(severity === 'CRITICAL' ? 'experience.critical7d' : 'experience.high7d')" tone="danger" :interactive="Boolean(props.goAlarms)" @click="openSeverityAlarms(severity)">
+            <AnimatedNumber v-if="availability?.stats" :value="severity === 'CRITICAL' ? stat.critical : stat.high" /><span v-else>—</span>
           </MetricCard>
           <MetricCard :label="t('overview.activeCases')" tone="warning" :interactive="Boolean(props.goCases)" @click="openCases">
-            <AnimatedNumber :value="stat.activeCases" />
+            <AnimatedNumber v-if="availability?.cases" :value="stat.activeCases" /><span v-else>—</span>
             <template #hint>{{ t('overview.activeCasesHint') }}</template>
           </MetricCard>
-          <MetricCard :label="t('overview.degradedServices')" :tone="degradedServices ? 'danger' : 'success'">
-            <AnimatedNumber :value="degradedServices" />
+          <MetricCard :label="t('experience.serviceHealth')" :tone="healthState === 'healthy' ? 'success' : healthState === 'degraded' ? 'danger' : 'neutral'" interactive @click="openHealth">
+            <span class="overview-health-status">{{ t(`experience.state.${healthState || 'unknown'}`) }}</span>
             <template #hint>{{ knownServices.length ? t('overview.healthCoverage', { known: knownServices.length, total: HEALTH_TARGETS.length }) : t('overview.healthAwaiting') }}</template>
           </MetricCard>
         </div>
@@ -150,7 +154,7 @@ function severityLabel(level: string): string { return tOr(t, `severities.${leve
               <span class="overview-priority-arrow" aria-hidden="true">→</span>
             </button>
           </div>
-          <EmptyState v-else :title="t('overview.noHighRiskAlarms')" :description="t('overview.noUrgentRiskItems')" />
+          <EmptyState v-else-if="availability?.stats" :title="t('overview.noHighRiskAlarms')" :description="t('overview.noUrgentRiskItems')" /><p v-else role="status">{{ t('experience.unknownData') }}</p>
         </el-card>
 
         <el-card shadow="never" class="ov-card overview-actions-card">
@@ -176,14 +180,15 @@ function severityLabel(level: string): string { return tOr(t, `severities.${leve
         <div class="overview-analytics-grid">
           <el-card shadow="never" class="ov-card">
             <template #header><div class="ov-card-head"><span>{{ t('overview.alarmTrend') }}</span><span class="ov-card-sub">{{ t('overview.dailyTotal', { total: trendSum }) }}</span></div></template>
-            <TrendChart :data="sitStats?.trend7d" style="height: 216px" />
+            <TrendChart v-if="availability?.stats" :data="sitStats?.trend7d" style="height: 216px" /><p v-else role="status">{{ t('experience.unknownData') }}</p>
           </el-card>
           <el-card shadow="never" class="ov-card overview-severity-card">
             <template #header><span>{{ t('overview.sevDistribution') }}</span></template>
-            <div class="ov-level-bar">
+            <p v-if="!availability?.stats" role="status">{{ t('experience.unknownData') }}</p>
+            <div v-else class="ov-level-bar">
               <div v-for="level in LEVELS" :key="level" class="ov-level-seg" :style="{ flex: (sitStats?.bySeverity?.[level] ?? 0) / maxLevel + 0.02, background: sevColor(level) }" :title="`${severityLabel(level)}: ${sitStats?.bySeverity?.[level] ?? 0}`" />
             </div>
-            <div class="ov-level-legend">
+            <div v-if="availability?.stats" class="ov-level-legend">
               <span v-for="level in LEVELS" :key="level" class="ov-level-item"><i class="ov-level-dot" :style="{ background: sevColor(level) }" />{{ severityLabel(level) }}<b class="mono">{{ sitStats?.bySeverity?.[level] ?? 0 }}</b></span>
             </div>
           </el-card>
@@ -201,10 +206,10 @@ function severityLabel(level: string): string { return tOr(t, `severities.${leve
               <el-table-column :label="t('common.status')" width="96"><template #default="{ row }"><span class="ov-alert-status" :data-s="row.status">{{ getStatusLabel(row.status) }}</span></template></el-table-column>
             </el-table>
           </div>
-          <EmptyState v-else :title="t('overview.noLiveAlarms')" :description="t('overview.alarmsWillAppear')" />
+          <EmptyState v-else-if="availability?.alarms" :title="t('overview.noLiveAlarms')" :description="t('overview.alarmsWillAppear')" /><p v-else role="status">{{ t('experience.unknownData') }}</p>
         </el-card>
 
-        <el-card shadow="never" class="ov-card overview-health-card">
+        <el-card shadow="never" id="overview-service-health" class="ov-card overview-health-card">
           <template #header><div class="ov-card-head"><span>{{ t('overview.platformServiceHealth') }}</span><span class="ov-card-sub">{{ stat.online }} / {{ knownServices.length || '—' }} {{ t('overview.healthy') }}</span></div></template>
           <div class="overview-health-list">
             <div v-for="health in HEALTH_TARGETS" :key="health.name" class="overview-health-item">
@@ -223,7 +228,7 @@ function severityLabel(level: string): string { return tOr(t, `severities.${leve
 .overview-page { --overview-gap: 16px; }
 .overview-data-warning { display: flex; gap: 10px; margin-bottom: 16px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--ns-warning) 32%, var(--ns-border)); border-radius: 8px; background: color-mix(in srgb, var(--ns-warning) 7%, var(--ns-surface)); color: var(--ns-text-2); font-size: 12px; }
 .overview-data-warning strong { color: var(--ns-warning); }
-.overview-skeleton-kpis, .overview-kpis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--overview-gap); }
+.overview-skeleton-kpis, .overview-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--overview-gap); }
 .overview-skeleton-kpis .el-skeleton__item { height: 126px; border-radius: 10px; }
 .overview-skeleton-panels { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); gap: var(--overview-gap); margin-top: var(--overview-gap); }
 .overview-skeleton-panels .el-skeleton__item { height: 320px; border-radius: 10px; }
@@ -235,7 +240,7 @@ function severityLabel(level: string): string { return tOr(t, `severities.${leve
 .overview-work-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(290px, .85fr); gap: var(--overview-gap); margin-bottom: 26px; }
 .ov-card-head { width: 100%; }
 .ov-card-head > div, .overview-actions-card :deep(.el-card__header) > div { display: flex; flex-direction: column; gap: 3px; }
-.overview-card-hint { color: var(--ns-text-3); font-size: 11px; font-weight: 400; }
+.overview-card-hint { color: var(--ns-text-3); font-size: 12px; font-weight: 400; }
 .overview-priority-list { display: flex; flex-direction: column; }
 .overview-priority-item { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto 42px 20px; align-items: center; gap: 10px; width: 100%; min-height: 58px; padding: 8px 6px; border: 0; border-bottom: 1px solid var(--ns-border); background: transparent; color: var(--ns-text); cursor: pointer; font: inherit; text-align: left; }
 .overview-priority-item:last-child { border-bottom: 0; }
@@ -245,15 +250,15 @@ function severityLabel(level: string): string { return tOr(t, `severities.${leve
 .overview-priority-copy { min-width: 0; }
 .overview-priority-copy strong, .overview-priority-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .overview-priority-copy strong { font-size: 13px; font-weight: 620; }
-.overview-priority-copy span { margin-top: 3px; color: var(--ns-text-3); font-size: 11px; }
+.overview-priority-copy span { margin-top: 3px; color: var(--ns-text-3); font-size: 12px; }
 .overview-priority-score { color: var(--ns-text-2); font-weight: 650; text-align: right; }
 .overview-priority-arrow { color: var(--ns-text-3); }
 .overview-actions { display: grid; gap: 7px; }
 .overview-actions button { display: grid; grid-template-columns: 28px 1fr; gap: 2px 10px; width: 100%; padding: 10px; border: 1px solid var(--ns-border); border-radius: 8px; background: var(--ns-surface); color: var(--ns-text); cursor: pointer; font: inherit; text-align: left; }
 .overview-actions button:hover { border-color: color-mix(in srgb, var(--ns-accent) 32%, var(--ns-border)); background: var(--ns-accent-subtle); }
-.overview-actions button > span { grid-row: 1 / 3; align-self: center; color: var(--ns-accent-fg); font-family: var(--ns-font-mono); font-size: 11px; }
+.overview-actions button > span { grid-row: 1 / 3; align-self: center; color: var(--ns-accent-fg); font-family: var(--ns-font-mono); font-size: 12px; }
 .overview-actions strong { font-size: 12px; font-weight: 650; }
-.overview-actions small { color: var(--ns-text-3); font-size: 11px; }
+.overview-actions small { color: var(--ns-text-3); font-size: 12px; }
 .overview-analytics-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, .7fr); gap: var(--overview-gap); }
 .overview-severity-card :deep(.el-card__body) { padding-top: 22px; }
 .overview-lower-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(290px, .7fr); gap: var(--overview-gap); }
@@ -271,5 +276,16 @@ function severityLabel(level: string): string { return tOr(t, `severities.${leve
   .overview-section-head { align-items: flex-start; flex-direction: column; }
   .overview-priority-item { grid-template-columns: 24px minmax(0, 1fr) auto; }
   .overview-priority-score, .overview-priority-arrow { display: none; }
+}
+.overview-health-status { font-size: 18px; }
+.overview-priority-card :deep(.empty-state) { min-height: 110px; padding: 18px; }
+@media (max-width: 720px) {
+  .overview-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .overview-kpis :deep(.metric-card) { padding: 10px 12px; min-height: 74px; }
+  .overview-kpis :deep(.metric-card-value) { font-size: 23px; margin-top: 4px; }
+  .overview-kpis :deep(.metric-card-hint) { margin-top: 3px; }
+  .overview-section-head p, .overview-window { display: none; }
+  .overview-section { margin-bottom: 12px; }
+  .overview-page :deep(.page-header) { margin-bottom: 12px; }
 }
 </style>

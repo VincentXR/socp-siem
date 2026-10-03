@@ -28,6 +28,8 @@ import SoarEditor from '../components/soar/SoarEditor.vue'
 import SoarRunInspector from '../components/soar/SoarRunInspector.vue'
 import type { RunHighlightRow, RunOpenRequest } from '../components/soar/editor/runHighlight'
 import {
+  getRun, listNodes,
+  type SoarRun, type SoarNodeRun,
   approve,
   installTemplate as installTemplateApi,
   listApprovals,
@@ -80,6 +82,11 @@ const approvalsLoading = ref(false)
 /** Replacement reads cancel stale requests and keep the newest refresh authoritative. */
 let approvalController: AbortController | null = null
 let disposed = false
+const contextCaseId = computed(() => typeof route.query.caseId === 'string' ? route.query.caseId : '')
+const returnTo = computed(() => typeof route.query.returnTo === 'string' && /^\/(alarms|cases|assistant)(?:[?#]|$)/.test(route.query.returnTo) ? route.query.returnTo : '')
+const contextQuery = computed(() => ({ ...(typeof route.query.runId === 'string' ? { runId: route.query.runId } : {}), ...(returnTo.value ? { returnTo: returnTo.value } : {}), ...(contextAlarmId.value ? { alarmId: contextAlarmId.value } : {}), ...(contextCaseId.value ? { caseId: contextCaseId.value } : {}) }))
+const selectedRunId = computed(() => typeof route.query.runId === 'string' ? route.query.runId : '')
+function openRun(runId: string): void { void router.push({ name: 'soar', query: { ...contextQuery.value, tab: 'runs', runId } }) }
 const contextAlarmId = computed(() => typeof route.query.alarmId === 'string' ? route.query.alarmId : '')
 // Approval decision state
 const approvalFilter = ref<'PENDING' | 'ALL'>('PENDING')
@@ -92,6 +99,10 @@ const displayedApprovals = computed(() => {
   return approvals.value
 })
 
+const approvalContext = ref<{ approval: SoarApproval; run: SoarRun; node?: SoarNodeRun } | null>(null)
+const approvalContextLoading = ref(false)
+let approvalContextController: AbortController | null = null
+const approvalExpired = computed(() => Boolean(approvalContext.value?.approval.expiresAt && Date.parse(approvalContext.value.approval.expiresAt) <= Date.now()))
 const approvalModal = ref({
   visible: false,
   approvalId: '',
@@ -109,9 +120,16 @@ const approvalVisible = computed<boolean>({
   set: value => { approvalModal.value.visible = value },
 })
 const approvalGuard = useFormDialog(approvalVisible, () => approvalModal.value.reason, () => approvalModal.value.loading)
+watch(approvalVisible, visible => {
+  if (!visible) {
+    approvalContextController?.abort()
+    if (route.query.approvalId) void router.replace({ query: { ...route.query, approvalId: undefined } })
+  }
+})
 const approvalReasonMissing = computed(() => !approvalModal.value.reason.trim())
 
-function openApprovalModal(row: any, approve: boolean) {
+async function openApprovalModal(value: unknown, approve: boolean) {
+  const row = value as SoarApproval
   if (!soarAccess.canApprove.value || approvalModal.value.loading) return
   approvalModal.value = {
     visible: true,
@@ -123,11 +141,26 @@ function openApprovalModal(row: any, approve: boolean) {
     loading: false,
     error: '',
   }
+  approvalContextController?.abort()
+  const controller = new AbortController()
+  approvalContextController = controller
+  approvalContextLoading.value = true
+  approvalContext.value = null
+  try {
+    const [run, nodes] = await Promise.all([getRun(row.runId, { signal: controller.signal }), listNodes(row.runId, { signal: controller.signal })])
+    if (disposed || controller.signal.aborted || approvalModal.value.approvalId !== row.id) return
+    approvalContext.value = { approval: row, run, node: nodes.find(item => item.id === row.nodeRunId) }
+    void router.replace({ query: { ...route.query, tab: 'approvals', approvalId: row.id } })
+  } catch (failure) { if (!controller.signal.aborted) approvalModal.value.error = String(failure) }
+  finally { if (approvalContextController === controller) approvalContextLoading.value = false }
 }
 
 async function submitApprovalDecision() {
   const modal = approvalModal.value
-  if (!soarAccess.canApprove.value || modal.loading || !modal.reason.trim()) return
+  if (!modal.visible || !soarAccess.canApprove.value || modal.loading || !modal.reason.trim() || !approvalContext.value || approvalContextLoading.value || approvalExpired.value) return
+  if (approvalContext.value.approval.id !== modal.approvalId || approvalContext.value.run.runId !== modal.runId) return
+  const expiry = approvalContext.value?.approval.expiresAt
+  if (expiry && Date.parse(expiry) <= Date.now()) { modal.error = t('analystJourney.approvalExpired'); return }
   modal.loading = true
   modal.error = ''
   try {
@@ -195,6 +228,8 @@ async function loadApprovals(): Promise<void> {
     const result = await listApprovals({ signal: controller.signal })
     if (disposed || controller.signal.aborted || approvalController !== controller) return
     approvals.value = result
+    const selected = result.find(item => item.id === route.query.approvalId)
+    if (selected && selected.status === 'PENDING' && !approvalVisible.value) void openApprovalModal(selected, true)
   } catch (failure) {
     if (!disposed && !controller.signal.aborted && approvalController === controller) {
       approvalsError.value = failure instanceof Error ? failure.message : 'Unable to load SOAR approvals'
@@ -253,7 +288,7 @@ async function handleOpenRunInEditor(request: RunOpenRequest): Promise<void> {
   openRunRequest.value = { ...request }
   // Complete the route transition before changing the tab. Otherwise the
   // tab-query watcher can race this push with a replace back to `/soar`.
-  await router.push({ name: 'playbook-edit', params: { playbookId: request.playbookId } })
+  await router.push({ name: 'playbook-edit', params: { playbookId: request.playbookId }, query: { ...contextQuery.value, runId: request.runId } })
   activeTab.value = 'playbooks'
   showEditor.value = true
 }
@@ -262,7 +297,7 @@ async function openEditorForCreate(): Promise<void> {
   if (showEditor.value && editorRef.value?.hasUnsavedChanges && !(await discardEditorChanges())) return
   selectedPlaybookId.value = ''
   chooseTemplate.value = false
-  await router.push({ name: 'playbook-new' })
+  await router.push({ name: 'playbook-new', query: contextQuery.value })
   activeTab.value = 'playbooks'
   showEditor.value = true
 }
@@ -271,7 +306,7 @@ async function openEditorForPlaybook(id: string): Promise<void> {
   if (showEditor.value && editorRef.value?.hasUnsavedChanges && !(await discardEditorChanges())) return
   selectedPlaybookId.value = id
   chooseTemplate.value = false
-  await router.push({ name: 'playbook-edit', params: { playbookId: id } })
+  await router.push({ name: 'playbook-edit', params: { playbookId: id }, query: contextQuery.value })
   activeTab.value = 'playbooks'
   showEditor.value = true
 }
@@ -302,10 +337,11 @@ watch(() => route.fullPath, () => {
 })
 // Deep-link contract: /soar?tab=<pane>&filter=PENDING|ALL is shareable.
 const SOAR_TABS: readonly SoarTab[] = ['playbooks', 'rules', 'runs', 'approvals', 'connections']
+const contextDefaultTab = computed<SoarTab>(() => contextAlarmId.value || contextCaseId.value || selectedRunId.value ? 'runs' : 'playbooks')
 let applyingRouteQuery = false
 function readRouteQuery(): void {
   const tab = typeof route.query.tab === 'string' ? route.query.tab : ''
-  activeTab.value = SOAR_TABS.includes(tab as SoarTab) ? tab as SoarTab : 'playbooks'
+  activeTab.value = SOAR_TABS.includes(tab as SoarTab) ? tab as SoarTab : contextDefaultTab.value
   approvalFilter.value = route.query.filter === 'ALL' ? 'ALL' : 'PENDING'
 }
 function writeRouteQuery(): void {
@@ -316,7 +352,9 @@ function writeRouteQuery(): void {
   for (const [key, value] of Object.entries(route.query)) {
     if (key !== 'tab' && key !== 'filter' && typeof value === 'string') query[key] = value
   }
-  if (activeTab.value !== 'playbooks') query.tab = activeTab.value
+  // Preserve an explicit return to the catalog when retained run/alarm/case
+  // context would otherwise infer Runs as soon as this URL is read back.
+  if (activeTab.value !== 'playbooks' || contextDefaultTab.value !== 'playbooks') query.tab = activeTab.value
   if (approvalFilter.value !== 'PENDING') query.filter = approvalFilter.value
   void router.replace({ query })
 }
@@ -334,7 +372,7 @@ const canLeaveEditor = async (): Promise<boolean> => !editorRef.value?.hasUnsave
 onBeforeRouteLeave(canLeaveEditor)
 onBeforeRouteUpdate((to, from) => to.path === from.path || canLeaveEditor())
 onMounted(() => { void refreshSoarPage() })
-onUnmounted(() => { disposed = true; baseController?.abort(); approvalController?.abort() })
+onUnmounted(() => { disposed = true; baseController?.abort(); approvalController?.abort(); approvalContextController?.abort() })
 </script>
 
 <template>
@@ -346,13 +384,14 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
       </template>
     </PageHeader>
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('soar.readOnly') }}</div>
-    <div v-if="contextAlarmId" class="soar-context-banner">
+    <el-button v-if="returnTo" @click="router.push(returnTo)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
+    <div v-if="contextAlarmId || contextCaseId" class="soar-context-banner">
       <span>{{ t('soar.contextFromAlarm') }} <code>{{ contextAlarmId }}</code></span>
       <small>{{ t('soar.contextFromAlarmHint') }}</small>
     </div>
 
-    <el-button v-if="showEditor" @click="router.push({ name: 'soar' })">{{ t('forms.back') }}</el-button>
-    <SoarEditor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-execute="soarAccess.canExecute.value" @automate="versionId => router.push({ name: 'soar', query: { tab: 'rules', versionId } })" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id } })" />
+    <el-button v-if="showEditor" @click="router.push({ name: 'soar', query: contextQuery })">{{ t('forms.back') }}</el-button>
+    <SoarEditor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" :context-case-id="contextCaseId" @open-run="openRun" @automate="versionId => router.push({ name: 'soar', query: { ...contextQuery, tab: 'rules', versionId } })" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-execute="soarAccess.canExecute.value" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id }, query: contextQuery })" />
     <el-dialog v-model="chooseTemplate" :title="t('forms.selectTemplate')" width="640px" :close-on-click-modal="false">
       <el-button v-if="canWrite" type="primary" @click="openEditorForCreate">{{ t('forms.blank') }}</el-button>
       <div v-for="template in templates" :key="template.id" class="template-choice"><div><b>{{ template.name }}</b><p>{{ template.description }}</p></div><el-button v-if="canWrite" :loading="installingTemplateId === String(template.id)" :disabled="Boolean(installingTemplateId)" @click="installTemplate(String(template.id))">{{ t('soar.installDraft') }}</el-button></div>
@@ -425,7 +464,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
       <el-tab-pane :label="t('soar.tabRuns')" name="runs" lazy>
         <div class="soar-tab-content">
           <!-- Interactive Inspector -->
-          <SoarRunInspector :active="activeTab === 'runs'" :can-write="canWrite" :can-execute="soarAccess.canExecute.value" :can-operate="soarAccess.canOperate.value" @open-in-editor="handleOpenRunInEditor" />
+          <SoarRunInspector :initial-run-id="selectedRunId" :context-alarm-id="contextAlarmId" :context-case-id="contextCaseId" @select-run="openRun" :active="activeTab === 'runs'" :can-write="canWrite" :can-execute="soarAccess.canExecute.value" :can-operate="soarAccess.canOperate.value" @open-in-editor="handleOpenRunInEditor" />
         </div>
       </el-tab-pane>
 
@@ -448,7 +487,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
             </template>
             <div v-if="approvalsError" class="soar-load-error" role="alert">{{ approvalsError }}</div>
             <el-table v-loading="approvalsLoading" :data="displayedApprovals" size="small" border class="soar-approval-table" :empty-text="t('common.empty')">
-              <el-table-column prop="runId" :label="t('soar.runId')" min-width="180" show-overflow-tooltip />
+              <el-table-column prop="runId" :label="t('soar.runId')" min-width="180"><template #default="{ row }"><el-button link @click="openRun(row.runId)">{{ row.runId }}</el-button></template></el-table-column>
               <el-table-column prop="actionRef" :label="t('soar.action')" min-width="140" show-overflow-tooltip />
               <el-table-column prop="reason" :label="t('soar.reason')" min-width="250" show-overflow-tooltip />
               <el-table-column prop="status" :label="t('common.status')" width="110">
@@ -495,6 +534,18 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
       <div class="soar-approval-dialog-body">
         <p><strong>{{ t('soar.runId') }}:</strong> {{ approvalModal.runId }}</p>
         <p v-if="approvalModal.actionRef"><strong>{{ t('soar.action') }}:</strong> {{ approvalModal.actionRef }}</p>
+        <div v-if="approvalContextLoading" role="status">{{ t('analystJourney.loadingApproval') }}</div>
+        <div v-else-if="approvalContext">
+          <p>{{ t('analystJourney.approvalRequester', { requester: approvalContext.approval.requestedBy ?? '', expires: approvalContext.approval.expiresAt || t('analystJourney.noExpiry') }) }} </p>
+          <p>{{ t('analystJourney.approvalOrigin', { origin: JSON.stringify(approvalContext.run.subject) ?? '', revision: approvalContext.run.playbookVersion ?? '', hash: approvalContext.run.definitionHash ?? '' }) }} </p>
+          <el-button v-if="approvalContext.run.originAlarmId" link @click="router.push({ name: 'alarms', query: { alarmId: approvalContext.run.originAlarmId } })">{{ t('analystJourney.openAlarm') }}</el-button>
+          <el-button v-if="approvalContext.run.originCaseId" link @click="router.push({ name: 'case', query: { caseId: approvalContext.run.originCaseId } })">{{ t('analystJourney.openCase') }}</el-button>
+          <h4>{{ t('analystJourney.resolvedTarget') }}</h4><pre>{{ JSON.stringify(approvalContext.approval.targetSnapshot, null, 2) }}</pre>
+          <h4>{{ t('analystJourney.resolvedInputs') }}</h4><pre>{{ JSON.stringify(approvalContext.node?.input ?? approvalContext.approval.targetSnapshot, null, 2) }}</pre><pre>{{ JSON.stringify(approvalContext.approval.approvalPolicy, null, 2) }}</pre>
+          <p>{{ t('analystJourney.inputFingerprint', { hash: approvalContext.approval.inputHash ?? '' }) }} </p>
+          <el-button link @click="approvalVisible = false; openRun(approvalContext.run.runId)">{{ t('analystJourney.inspectRun') }}</el-button>
+          <p v-if="approvalExpired" role="alert">{{ t('analystJourney.approvalExpired') }}</p>
+        </div>
         <el-form label-position="top">
           <el-form-item :label="t('soar.decisionReason')" required :error="approvalModal.error">
             <el-input v-model="approvalModal.reason" type="textarea" :rows="3" :placeholder="t('soar.decisionPlaceholder')" />
@@ -508,7 +559,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
           v-if="soarAccess.canApprove.value"
           :type="approvalModal.isApprove ? 'success' : 'danger'"
           :loading="approvalModal.loading"
-          :disabled="approvalReasonMissing"
+          :disabled="approvalReasonMissing || approvalContextLoading || !approvalContext || approvalExpired"
           @click="submitApprovalDecision"
         >
           {{ approvalModal.isApprove ? t('soar.approve') : t('soar.reject') }}
@@ -519,6 +570,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
 </template>
 
 <style scoped>
+.soar-approval-dialog-body pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 200px; overflow: auto; }
 .soar-view { display: flex; flex-direction: column; gap: 16px; }
 .soar-tabs { margin-top: 8px; }
 .soar-tab-content { display: flex; flex-direction: column; gap: 16px; margin-top: 8px; }
@@ -535,6 +587,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
 .soar-load-error { margin-top: 10px; color: var(--ns-danger); font-size: 12px; }
 .soar-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .soar-approval-table { margin-top: 8px; }
+.soar-approval-dialog-body pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .soar-approval-dialog-body p { margin-bottom: 8px; font-size: 12px; color: var(--ns-text-2); }
 .soar-approval-dialog-body p.soar-approval-hint { margin: 4px 0 0; color: var(--ns-warning); }
 .soar-text-muted { color: var(--ns-text-3); font-size: 11px; }

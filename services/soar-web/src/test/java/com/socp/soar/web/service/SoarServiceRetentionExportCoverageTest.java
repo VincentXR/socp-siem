@@ -156,6 +156,12 @@ class SoarServiceRetentionExportCoverageTest {
                 .willReturn(List.of());
         Pageable pageable = PageRequest.of(0, 10);
 
+        given(playbooks.searchCatalog("tenant-a", null, null, SoarCatalogMetadata.tagToken("CONTAINMENT"), "MEDIUM", pageable))
+                .willReturn(new PageImpl<>(List.of(mediumRisk)));
+        given(playbooks.searchCatalog("tenant-a", null, null, SoarCatalogMetadata.tagToken("triage"), "LOW", pageable))
+                .willReturn(new PageImpl<>(List.of(noRisk)));
+        given(playbooks.searchCatalog("tenant-a", null, null, SoarCatalogMetadata.tagToken("triage"), "WHATEVER", pageable))
+                .willReturn(Page.empty(pageable));
         Page<Map<String, Object>> medium = service.listPlaybooks(pageable, null, null, "CONTAINMENT", "MEDIUM");
         assertThat(medium.getTotalElements()).isEqualTo(1);
         assertThat(medium.getContent().get(0)).containsEntry("id", "pb-a");
@@ -427,6 +433,10 @@ class SoarServiceRetentionExportCoverageTest {
     void listManualTasksSupportsPaging() {
         given(manualTasks.findByTenantIdAndStatusOrderByDueAtAsc("tenant-a", "PENDING"))
                 .willReturn(List.of(manualTask("t-1"), manualTask("t-2")));
+        given(manualTasks.findByTenantIdAndStatusOrderByDueAtAsc("tenant-a", "PENDING", PageRequest.of(0, 1)))
+                .willReturn(new PageImpl<>(List.of(manualTask("t-1")), PageRequest.of(0, 1), 2));
+        given(manualTasks.findByTenantIdAndStatusOrderByDueAtAsc("tenant-a", "PENDING", PageRequest.of(9, 10)))
+                .willReturn(Page.empty(PageRequest.of(9, 10)));
         Page<Map<String, Object>> firstPage = service.listManualTasks(true, PageRequest.of(0, 1));
         assertThat(firstPage.getTotalElements()).isEqualTo(2);
         assertThat(firstPage.getContent()).hasSize(1);
@@ -485,7 +495,7 @@ class SoarServiceRetentionExportCoverageTest {
         SoarApprovalEntity approval = approval("apr-1", "run-1", "PENDING");
         approval.setTargetSnapshotJson("{oops");
         approval.setPolicyJson("{oops");
-        given(approvals.findByTenantIdOrderByCreatedAtDesc("tenant-a")).willReturn(List.of(approval));
+        given(approvals.findByTenantIdOrderByCreatedAtDesc("tenant-a", PageRequest.of(0, 200))).willReturn(new PageImpl<>(List.of(approval)));
 
         List<Map<String, Object>> approvalsView = service.listApprovals();
         assertThat(approvalsView).hasSize(1);

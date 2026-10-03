@@ -155,16 +155,25 @@ public class NotifyController {
 
     /** 分发日志：租户级分页（page 从 1 起，size 上限 socp.web.list-max-size）。 */
     public ApiResult<PageResponse<Map<String, Object>>> log(int page, int size) {
-        return log(page, size, null);
+        return log(page, size, "", "", "");
+    }
+
+    public ApiResult<PageResponse<Map<String, Object>>> log(int page, int size, String status) {
+        return log(page, size, status == null ? "" : status, "", "");
     }
 
     @GetMapping("/dispatch-log")
     public ApiResult<PageResponse<Map<String, Object>>> log(@RequestParam(defaultValue = "1") int page,
-                                                            @RequestParam(defaultValue = "500") int size,
-                                                            @RequestParam(required = false) String status) {
+                                                            @RequestParam(defaultValue = "20") int size,
+                                                            @RequestParam(defaultValue = "") String status,
+                                                            @RequestParam(defaultValue = "") String alarmId,
+                                                            @RequestParam(defaultValue = "") String channel) {
         requireValidRange(page, size);
-        var pageable = org.springframework.data.domain.PageRequest.of(page - 1, size);
-        var result = status == null || status.isBlank() ? dispatcher.log(pageable) : dispatcher.log(pageable, status);
+        if (status.length() > 32 || alarmId.length() > 255 || channel.length() > 128) {
+            throw ApiException.badRequest("dispatch filters exceed supported length");
+        }
+        var result = dispatcher.log(org.springframework.data.domain.PageRequest.of(page - 1, size),
+                status.trim(), alarmId.trim(), channel.trim());
         return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
                 page, size, result.getTotalPages()));
     }

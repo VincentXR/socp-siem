@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import sys
 
-from runtime_topology import topology_report
+from runtime_topology import topology_report, quoted_list
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,11 +43,9 @@ METHOD_DECL = re.compile(r"^(?:public|private|protected|static|final|synchronize
 STATEMENT_LEADERS = {"if", "for", "while", "switch", "catch", "return", "throw", "else", "try", "do", "synchronized"}
 
 
-def quoted_list(text: str, name: str) -> list[str]:
-    match = re.search(rf'^{name}="([^"]+)"$', text, re.MULTILINE)
-    if not match:
-        raise ValueError(f"missing {name}")
-    return match.group(1).split()
+def has_unbounded_body_handler(source: str) -> bool:
+    """Identify the JDK unbounded handler, allowing harmless Java whitespace."""
+    return bool(re.search(r"(?<![\w$])(?:HttpResponse\s*\.\s*)?BodyHandlers\s*\.\s*ofString\s*\(", source))
 
 
 def relative(path: Path) -> str:
@@ -595,7 +593,7 @@ def main() -> int:
     )
     for path in bounded_response_clients:
         source = path.read_text(encoding="utf-8")
-        if re.search(r"(?<!Bounded)BodyHandlers\\.ofString", source):
+        if has_unbounded_body_handler(source):
             errors.append(f"{path.relative_to(ROOT)} must use the bounded response body handler")
 
     clickhouse = (ROOT / "infra/init-sql/clickhouse/init.sql").read_text(encoding="utf-8")

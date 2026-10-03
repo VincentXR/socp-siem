@@ -27,5 +27,17 @@ public interface PlaybookVersionRepository extends TenantScopedRepository<Playbo
             @Param("versionNo") Integer versionNo);
     Optional<PlaybookVersionEntity> findFirstByTenantIdAndPlaybookIdAndStatusOrderByVersionNoDesc(
             String tenantId, String playbookId, String status);
+    /** Metadata-only query bounded by the current catalogue page, independent of retained revisions. */
+    @Query("select v.playbookId as playbookId, max(v.versionNo) as versionNo "
+            + "from PlaybookVersionEntity v where v.tenantId = :tenantId "
+            + "and v.playbookId in :playbookIds and v.status = 'DRAFT' group by v.playbookId")
+    List<DraftMetadata> findDraftMetadata(@Param("tenantId") String tenantId,
+                                          @Param("playbookIds") java.util.Collection<String> playbookIds);
+
+    interface DraftMetadata {
+        String getPlaybookId();
+        Integer getVersionNo();
+    }
+
     int countByTenantIdAndPlaybookId(String tenantId, String playbookId);
 }

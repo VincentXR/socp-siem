@@ -117,7 +117,7 @@ public class AlarmController {
      *  传 page 返回分页结构 {items,total,page,size}。带限流（每租户 10/s）。 */
     public Object list(Severity severity, String rule, String status, String q,
                        String sort, String order, Integer page, Integer size) {
-        return list(severity, rule, status, q, sort, order, page, size, null, null, null);
+        return list(severity, rule, status, q, sort, order, page, size, null, null, null, null, null, null, null);
     }
 
     @RateLimit(permits = 10, seconds = 1)
@@ -131,15 +131,17 @@ public class AlarmController {
             @RequestParam(defaultValue = "descending") String order,
             @RequestParam(required = false) Integer page,
             @RequestParam(required = false) Integer size,
-            @RequestParam(required = false) String assignee,
+            @RequestParam(required = false) String owner,
+            @RequestParam(required = false) String entity,
             @RequestParam(required = false) java.time.Instant from,
-            @RequestParam(required = false) java.time.Instant to) {
+            @RequestParam(required = false) java.time.Instant to,
+            @RequestParam(required = false) String technique,
+            @RequestParam(required = false) String severityGroup,
+            @RequestParam(required = false) String assignee) {
         int sz = size == null || size <= 0 ? 20 : Math.min(size, 500);
         int pg = page == null || page < 1 ? 1 : page;
         if (page != null || size != null) {
-            var result = (assignee == null && from == null && to == null
-                    ? service.page(severity, rule, status, q, sort, order, pg, sz)
-                    : service.page(severity, rule, status, q, sort, order, pg, sz, assignee, from, to));
+            var result = filteredPage(severity, rule, status, q, sort, order, pg, sz, owner, entity, from, to, technique, severityGroup, assignee);
             if (page == null) {
                 return ApiResult.ok(result.getContent());
             }
@@ -151,9 +153,7 @@ public class AlarmController {
         // never materialize the entire tenant alarm table in the JVM. Older
         // versions called service.query() here, which made a large tenant turn
         // a harmless refresh into an OutOfMemoryError.
-        return ApiResult.ok((assignee == null && from == null && to == null
-                ? service.page(severity, rule, status, q, sort, order, 1, sz)
-                : service.page(severity, rule, status, q, sort, order, 1, sz, assignee, from, to)).getContent());
+        return ApiResult.ok(filteredPage(severity, rule, status, q, sort, order, 1, sz, owner, entity, from, to, technique, severityGroup, assignee).getContent());
     }
 
     /** 下钻单条告警 */
@@ -202,7 +202,7 @@ public class AlarmController {
      */
     public void export(Severity severity, String rule, String q, String format, String status,
                        String sort, String order, int limit, HttpServletResponse response) throws IOException {
-        export(severity, rule, q, format, status, sort, order, limit, response, null, null, null);
+        export(severity, rule, q, format, status, sort, order, limit, response, null, null, null, null, null, null, null);
     }
 
     @RequireRole({"admin", "analyst"})
@@ -217,16 +217,22 @@ public class AlarmController {
             @RequestParam(defaultValue = "descending") String order,
             @RequestParam(defaultValue = "" + EXPORT_DEFAULT_LIMIT) int limit,
             HttpServletResponse response,
-            @RequestParam(required = false) String assignee,
+            @RequestParam(required = false) String owner,
+            @RequestParam(required = false) String entity,
             @RequestParam(required = false) java.time.Instant from,
-            @RequestParam(required = false) java.time.Instant to) throws IOException {
+            @RequestParam(required = false) java.time.Instant to,
+            @RequestParam(required = false) String technique,
+            @RequestParam(required = false) String severityGroup,
+            @RequestParam(required = false) String assignee) throws IOException {
         if (limit < 1 || limit > EXPORT_MAX_LIMIT) {
             throw com.socp.platform.error.exception.ApiException.badRequest(
                     "limit must be between 1 and " + EXPORT_MAX_LIMIT);
         }
-        long total = assignee == null && from == null && to == null
-                ? service.count(severity, rule, status, q, sort, order)
-                : service.count(severity, rule, status, q, sort, order, assignee, from, to);
+        long total = hasInvestigation(owner, entity, technique, severityGroup)
+                ? filteredPage(severity, rule, status, q, sort, order, 1, 1, owner, entity, from, to, technique, severityGroup, assignee).getTotalElements()
+                : assignee == null && from == null && to == null
+                    ? service.count(severity, rule, status, q, sort, order)
+                    : service.count(severity, rule, status, q, sort, order, assignee, from, to);
         if (total > limit) {
             throw com.socp.platform.error.exception.ApiException.of(413,
                     "export contains " + total + " alarms; limit is " + limit);
@@ -245,9 +251,7 @@ public class AlarmController {
         int exported = 0;
         boolean first = true;
         while (exported < limit) {
-            var result = assignee == null && from == null && to == null
-                    ? service.page(severity, rule, status, q, sort, order, page, EXPORT_BATCH_SIZE)
-                    : service.page(severity, rule, status, q, sort, order, page, EXPORT_BATCH_SIZE, assignee, from, to);
+            var result = filteredPage(severity, rule, status, q, sort, order, page, EXPORT_BATCH_SIZE, owner, entity, from, to, technique, severityGroup, assignee);
             List<Alarm> batch = result.getContent();
             for (Alarm alarm : batch) {
                 if (exported >= limit) break;
@@ -262,6 +266,23 @@ public class AlarmController {
         }
         if (json) writer.write(']');
         writer.flush();
+    }
+
+    private org.springframework.data.domain.Page<Alarm> filteredPage(Severity severity, String rule, String status,
+            String text, String sort, String order, int page, int size, String owner, String entity,
+            java.time.Instant from, java.time.Instant to, String technique, String severityGroup, String assignee) {
+        if (hasInvestigation(owner, entity, technique, severityGroup)) {
+            return assignee == null
+                    ? service.investigationPage(severity, rule, status, text, sort, order, page, size, owner, entity, from, to, technique, severityGroup)
+                    : service.investigationPage(severity, rule, status, text, sort, order, page, size, owner, entity, from, to, technique, severityGroup, assignee);
+        }
+        return assignee == null && from == null && to == null
+                ? service.page(severity, rule, status, text, sort, order, page, size)
+                : service.page(severity, rule, status, text, sort, order, page, size, assignee, from, to);
+    }
+
+    private static boolean hasInvestigation(String owner, String entity, String technique, String severityGroup) {
+        return owner != null || entity != null || technique != null || severityGroup != null;
     }
 
     private static String csvRow(Alarm a) {

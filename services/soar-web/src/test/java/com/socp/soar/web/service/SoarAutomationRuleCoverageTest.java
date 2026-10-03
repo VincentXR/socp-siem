@@ -338,7 +338,10 @@ class SoarAutomationRuleCoverageTest {
         given(soar.queueManualRun(any(), any(), any(), any()))
                 .willReturn(Map.of("runId", "run-1", "status", "QUEUED"));
 
-        Map<String, Object> result = service.evaluate(event("evt-1", Map.of("riskLevel", "HIGH")));
+        Map<String, Object> envelope = event("evt-1", Map.of("riskLevel", "HIGH"));
+        Map<String, Object> subject = Map.of("type", "alert.created", "id", "alarm-actual", "caseId", "case-linked");
+        envelope.put("subject", subject);
+        Map<String, Object> result = service.evaluate(envelope);
 
         assertThat(result).containsEntry("eventId", "evt-1").containsEntry("matchedRuns", 1);
         @SuppressWarnings("unchecked")
@@ -356,7 +359,7 @@ class SoarAutomationRuleCoverageTest {
         ArgumentCaptor<String> requestId = ArgumentCaptor.forClass(String.class);
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> inputs = ArgumentCaptor.forClass(Map.class);
-        verify(soar).queueManualRun(requestId.capture(), eq("pv-1"), any(), inputs.capture());
+        verify(soar).queueManualRun(requestId.capture(), eq("pv-1"), eq(subject), inputs.capture());
         assertThat(requestId.getValue()).startsWith("rule-r-1-r1-");
         assertThat(inputs.getValue()).containsEntry("eventId", "evt-1").containsEntry("automationDepth", 1);
 
@@ -366,6 +369,17 @@ class SoarAutomationRuleCoverageTest {
         assertThat(saved.getValue().getEventId()).isEqualTo("evt-1");
         assertThat(saved.getValue().getStatus()).isEqualTo("ACCEPTED");
         assertThat(saved.getValue().getRunId()).isEqualTo("run-1");
+    }
+
+    @Test
+    void evaluateRejectsForeignTenantBeforeForwardingInvestigationSubject() {
+        Map<String, Object> envelope = event("foreign-event", Map.of());
+        envelope.put("tenantId", "tenant-b");
+        envelope.put("subject", Map.of("type", "alert.created", "id", "alarm-secret"));
+        assertThatThrownBy(() -> service.evaluate(envelope)).isInstanceOf(ResponseStatusException.class)
+                .satisfies(failure -> assertThat(((ResponseStatusException) failure).getStatusCode())
+                        .isEqualTo(HttpStatus.FORBIDDEN));
+        verify(soar, never()).queueManualRun(any(), any(), any(), any());
     }
 
     @Test

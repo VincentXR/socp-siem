@@ -1,4 +1,9 @@
 <script setup lang="ts">
+import { useIdentitySession } from '../../composables/useIdentitySession'
+import { initialRunInputs } from './editor/runInputs'
+import { declaredEffects } from './editor/executionReview'
+import SchemaInputForm from '../SchemaInputForm.vue'
+import { validateSchemaInput } from '../../utils/schemaValidation'
 import { useFormDialog } from '../../composables/useFormDialog'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
@@ -94,14 +99,15 @@ const props = withDefaults(defineProps<{
   createRequest?: number
   /** Optional alert context passed from the alarm workbench. */
   contextAlarmId?: string
+  contextCaseId?: string
   /** Whether the current operator can change the draft. */
   canWrite?: boolean
   /** Whether the current operator can execute a published run. */
   canExecute?: boolean
   /** Whether the current operator can publish or deprecate a version. */
   canPublish?: boolean
-}>(), { initialPlaybookId: '', openRun: null, createRequest: 0, contextAlarmId: '', canWrite: true, canExecute: true, canPublish: true })
-const emit = defineEmits<{ automate: [versionId: string]; saved: [SoarVersion]; created: [id: string]; 'dirty-change': [dirty: boolean] }>()
+}>(), { initialPlaybookId: '', openRun: null, createRequest: 0, contextAlarmId: '', contextCaseId: '', canWrite: true, canExecute: true, canPublish: true })
+const emit = defineEmits<{ automate: [versionId: string]; saved: [SoarVersion]; created: [id: string]; 'dirty-change': [dirty: boolean]; 'open-run': [runId: string] }>()
 
 const { t } = useI18n()
 const { confirmDanger, promptInput } = useConfirm()
@@ -119,6 +125,14 @@ const definitionText = ref('')
 const rowVersion = ref<number | undefined>()
 const validation = ref<ValidationResult | null>(null)
 const dryRunText = ref('')
+const liveRunText = ref('{}')
+type LiveRunAttempt = { requestId: string; playbookVersionId: string; subject: JsonObject; inputs: JsonObject; fingerprint: string }
+const unresolvedLiveRuns = ref<LiveRunAttempt[]>([])
+let executionPermissionGeneration = 0
+watch(() => props.canExecute, () => { executionPermissionGeneration++ }, { flush: 'sync' })
+const liveInputs = ref<Record<string, unknown>>({})
+const liveInputsValid = ref(true)
+const liveSchema = computed(() => (selectedVersion.value?.definition as Record<string, unknown> | undefined)?.inputSchema)
 const dryRunResult = ref<JsonObject | null>(null)
 const loading = ref(false)
 const saving = ref(false)
@@ -137,6 +151,29 @@ const newPlaybookError = ref('')
 const newPlaybookForm = ref({ name: '', description: '', tags: '' })
 const newPlaybookGuard = useFormDialog(newPlaybookVisible, () => newPlaybookForm.value, () => newPlaybookSaving.value)
 let disposed = false
+// One identity owns the graph, revision token and every asynchronous result.
+// A route switch invalidates this before another command can observe the old graph.
+const session = useIdentitySession()
+const loadedIdentity = ref('')
+const identity = () => `${selectedPlaybookId.value}:${selectedVersionNo.value ?? ''}`
+const sessionReady = computed(() => !loading.value && loadedIdentity.value === identity() && Boolean(selectedVersionNo.value))
+const currentSession = session.isCurrent
+function beginSession(): number {
+  session.begin()
+  loadedIdentity.value = ''
+  selectedVersionNo.value = null
+  rowVersion.value = undefined
+  versions.value = []
+  validation.value = null
+  dryRunResult.value = null
+  clearRunHighlights()
+  flow.resetToEmpty()
+  message.value = ''
+  errorMessage.value = ''
+  saving.value = validating.value = dryRunBusy.value = publishing.value = runBusy.value = false
+  loading.value = true
+  return session.generation
+}
 
 function defaultDryRunInput(): JsonObject {
   return {
@@ -154,6 +191,11 @@ function resetDryRunInput(): void {
 const runLegendEntries = computed(() => summarizeRunHighlights(flow.runHighlights.value))
 
 const selectedVersion = computed(() => versions.value.find(version => version.version === selectedVersionNo.value))
+watch(() => [selectedVersion.value?.id, props.contextAlarmId, props.contextCaseId], () => {
+  liveInputs.value = initialRunInputs(liveSchema.value, { alarmId: props.contextAlarmId, caseId: props.contextCaseId })
+  liveRunText.value = JSON.stringify(liveInputs.value, null, 2)
+})
+watch(liveInputs, value => { liveRunText.value = JSON.stringify(value, null, 2) }, { deep: true, flush: 'sync' })
 const isDraft = computed(() => selectedVersion.value?.status === 'DRAFT')
 const hasUnsavedChanges = computed(() => flow.dirty.value)
 const issueCount = computed(() =>
@@ -201,54 +243,59 @@ function unsavedDraftBlocks(): boolean {
 
 /* ---------------- playbook/version API (unchanged clients) ---------------- */
 async function loadCatalog() {
-  if (!(await discardGuard())) return
-  loading.value = true
-  errorMessage.value = ''
+  const previous = session.generation
+  if (!(await discardGuard()) || !currentSession(previous)) return
+  const generation = beginSession()
+  const options = { signal: session.signal }
   try {
-    const result = await listPlaybooks(0, 100)
-    playbooks.value = result.items
+    const result = await listPlaybooks(0, 100, options)
     const wanted = props.initialPlaybookId || selectedPlaybookId.value
-    if (wanted && !playbooks.value.some(item => item.id === wanted)) {
-      playbooks.value = [await getPlaybook(wanted), ...playbooks.value]
-    }
+    const catalog = wanted && !result.items.some(item => item.id === wanted)
+      ? [await getPlaybook(wanted, options), ...result.items] : result.items
+    if (!currentSession(generation)) return
+    playbooks.value = catalog
     selectedPlaybookId.value = wanted
-    if (wanted) await loadVersions()
-    else flow.resetToEmpty()
+    if (wanted) await loadVersions(undefined, generation)
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadPlaybooks')
-  } finally {
-    loading.value = false
-  }
+    if (currentSession(generation)) errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadPlaybooks')
+  } finally { if (currentSession(generation)) loading.value = false }
 }
 
-async function loadVersions(preferVersion?: number) {
-  if (!selectedPlaybookId.value) return
-  const result = await listVersions(selectedPlaybookId.value)
-  versions.value = result
-  const requested = preferVersion !== undefined ? result.find(version => version.version === preferVersion) : undefined
-  const draft = result.find(version => version.status === 'DRAFT')
-  const target = requested ?? draft ?? result[0]
-  selectedVersionNo.value = target?.version ?? null
-  if (target) await loadVersion(target.version)
-}
-
-async function loadVersion(versionNo = selectedVersionNo.value ?? 0) {
-  if (!selectedPlaybookId.value || !versionNo) return
-  loading.value = true
-  errorMessage.value = ''
+async function loadVersions(preferVersion?: number, existingGeneration?: number) {
+  const playbookId = selectedPlaybookId.value
+  const generation = existingGeneration ?? beginSession()
+  if (!playbookId) { loading.value = false; return }
+  const options = { signal: session.signal }
   try {
-    const result = await getVersion(selectedPlaybookId.value, versionNo)
+    const result = await listVersions(playbookId, options)
+    if (!currentSession(generation)) return
+    const target = (preferVersion !== undefined ? result.find(version => version.version === preferVersion) : undefined)
+      ?? result.find(version => version.status === 'DRAFT') ?? result[0]
+    if (target) await loadVersion(target.version, generation, result)
+  } catch (failure) {
+    if (currentSession(generation)) errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadVersion')
+  } finally { if (currentSession(generation)) loading.value = false }
+}
+
+async function loadVersion(versionNo = selectedVersionNo.value ?? 0, existingGeneration?: number, catalog = versions.value) {
+  const playbookId = selectedPlaybookId.value
+  if (!playbookId || !versionNo) return
+  const generation = existingGeneration ?? beginSession()
+  try {
+    const result = await getVersion(playbookId, versionNo, { signal: session.signal })
+    if (!currentSession(generation) || selectedPlaybookId.value !== playbookId) return
+    // Commit the version token and its definition together, never before this read.
+    versions.value = catalog.map(item => item.version === result.version ? result : item)
     selectedVersionNo.value = result.version
     rowVersion.value = result.rowVersion
     flow.applyDefinition(result.definition, result.layout)
+    loadedIdentity.value = identity()
     validation.value = null
     dryRunResult.value = null
     message.value = t('soar.loadedVersion', { version: result.version })
   } catch (failure) {
-    errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadVersion')
-  } finally {
-    loading.value = false
-  }
+    if (currentSession(generation)) errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadVersion')
+  } finally { if (currentSession(generation)) loading.value = false }
 }
 
 /* ---------------- run-path highlight (Slice 4) ---------------- */
@@ -273,8 +320,9 @@ function clearRunHighlights(): void {
 /** Re-overlays the canvas with a run's node statuses and follows that run. */
 async function overlayRun(runId: string): Promise<void> {
   activeRunId.value = runId
+  const generation = session.generation
   const rows = await listNodes(runId)
-  if (disposed || activeRunId.value !== runId) return
+  if (!currentSession(generation) || activeRunId.value !== runId) return
   runRows.value = rows
   flow.applyRunHighlights(runRows.value)
 }
@@ -326,45 +374,27 @@ async function rerunFromCanvas(): Promise<void> {
 async function handleOpenRunRequest(request: RunOpenRequest): Promise<void> {
   if (request.token === handledOpenRunToken.value) return
   handledOpenRunToken.value = request.token
-  loading.value = true
-  errorMessage.value = ''
+  selectedPlaybookId.value = request.playbookId
+  const generation = beginSession()
   try {
-    let catalog = playbooks.value
-    if (!catalog.some(playbook => playbook.id === request.playbookId)) {
-      try {
-        catalog = (await listPlaybooks(0, 100)).items
-      } catch {
-        catalog = []
-      }
-      if (!catalog.some(playbook => playbook.id === request.playbookId)) {
-        const single = await getPlaybook(request.playbookId)
-        catalog = catalog.filter(playbook => playbook.id !== single.id)
-        catalog = [single, ...catalog]
-      }
-      if (handledOpenRunToken.value !== request.token) return
-      playbooks.value = catalog
-    }
-    if (selectedPlaybookId.value !== request.playbookId) selectedPlaybookId.value = request.playbookId
-    await loadVersions(request.version)
-    if (handledOpenRunToken.value !== request.token) return
+    const single = await getPlaybook(request.playbookId, { signal: session.signal })
+    if (!currentSession(generation)) return
+    playbooks.value = [single, ...playbooks.value.filter(item => item.id !== single.id)]
+    await loadVersions(request.version, generation)
+    if (!currentSession(generation)) return
     if (selectedVersionNo.value !== request.version) {
-      handledOpenRunToken.value = ''
       errorMessage.value = t('soar.runVersionUnavailable', { version: request.version, playbookId: request.playbookId })
       return
     }
-    flow.applyRunHighlights(request.rows)
+    const rows = await listNodes(request.runId, { signal: session.signal })
+    if (!currentSession(generation)) return
     activeRunId.value = request.runId
-    // The inspector payload only carries statuses; fetch the full rows so the
-    // property panel can show each node's input/output for this run.
-    runRows.value = await listNodes(request.runId)
+    runRows.value = rows
+    flow.applyRunHighlights(rows)
     message.value = t('soar.loadedRunPath', { version: request.version })
   } catch (failure) {
-    handledOpenRunToken.value = ''
-    activeRunId.value = ''
-    errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableOpenRunInEditor')
-  } finally {
-    loading.value = false
-  }
+    if (currentSession(generation)) errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableOpenRunInEditor')
+  } finally { if (currentSession(generation)) loading.value = false }
 }
 
 async function openNewPlaybookDialog(): Promise<void> {
@@ -383,6 +413,7 @@ async function createPlaybookAndVersion() {
     newPlaybookError.value = t('soar.playbookNameRequired')
     return
   }
+  const generation = beginSession()
   newPlaybookSaving.value = true
   newPlaybookError.value = ''
   loading.value = true
@@ -391,39 +422,49 @@ async function createPlaybookAndVersion() {
     const tags = newPlaybookForm.value.tags.split(/[,，\n]/).map(tag => tag.trim()).filter(Boolean)
     const playbook = await createPlaybook({ name, description, tags })
     const version = await createVersionApi(playbook.id)
+    if (!currentSession(generation)) return
     playbooks.value = [playbook, ...playbooks.value.filter(item => item.id !== playbook.id)]
     selectedPlaybookId.value = playbook.id
     versions.value = [version]
     selectedVersionNo.value = version.version
     rowVersion.value = version.rowVersion
+    loadedIdentity.value = identity()
     flow.applyDefinition(version.definition, version.layout)
     validation.value = null
     newPlaybookVisible.value = false
     emit('created', playbook.id)
     message.value = t('soar.createdDraft')
   } catch (failure) {
+    if (!currentSession(generation)) return
     newPlaybookError.value = failure instanceof Error ? failure.message : t('soar.createFailed')
   } finally {
+    if (!currentSession(generation)) return
     loading.value = false
     newPlaybookSaving.value = false
   }
 }
 
 async function createVersion() {
-  if (!props.canWrite || !selectedPlaybookId.value) return
-  if (!(await discardGuard())) return
+  const generation = session.generation
+
+  if (!sessionReady.value || !props.canWrite || !selectedPlaybookId.value) return
+  if (!(await discardGuard()) || !currentSession(generation)) return
   loading.value = true
   try {
     const result = await createVersionApi(selectedPlaybookId.value)
+    if (!currentSession(generation)) return
     versions.value = [result, ...versions.value.filter(item => item.version !== result.version)]
     selectedVersionNo.value = result.version
     rowVersion.value = result.rowVersion
+    loadedIdentity.value = identity()
     flow.applyDefinition(result.definition, result.layout)
     validation.value = null
     message.value = t('soar.versionCreated', { version: result.version })
   } catch (failure) {
+    if (!currentSession(generation)) return
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableCreateVersion')
   } finally {
+    if (!currentSession(generation)) return
     loading.value = false
   }
 }
@@ -436,7 +477,9 @@ async function changeVersion(version: number): Promise<void> {
 
 /* ---------------- apply JSON ---------------- */
 async function applyDefinitionJson() {
-  if (!props.canWrite) return
+  const generation = session.generation
+  const revision = flow.graphRevision.value
+  if (!props.canWrite || !sessionReady.value) return
   let parsed: unknown
   try {
     parsed = JSON.parse(definitionText.value)
@@ -457,6 +500,7 @@ async function applyDefinitionJson() {
   }
   const current = flow.nodeCount.value
   if (incomingNodes.length < current && !(await confirmDanger(t('soar.applyJsonConfirmNodes', { current, next: incomingNodes.length })))) return
+  if (!currentSession(generation) || revision !== flow.graphRevision.value) return
   flow.applyWorkingCopy(parsed)
   syncDefinitionText()
   validation.value = null
@@ -466,7 +510,9 @@ async function applyDefinitionJson() {
 
 /* ---------------- save / validate / dry-run / publish ---------------- */
 async function save(): Promise<boolean> {
-  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value || !hasUnsavedChanges.value || saving.value || loading.value || publishing.value) return false
+  const generation = session.generation
+
+  if (!sessionReady.value || !props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || !isDraft.value || !hasUnsavedChanges.value || saving.value || loading.value || publishing.value) return false
   const playbookId = selectedPlaybookId.value
   const versionNo = selectedVersionNo.value
   const revision = flow.graphRevision.value
@@ -476,7 +522,7 @@ async function save(): Promise<boolean> {
     const payload = flow.serializeForSave()
     const result = await saveVersion(playbookId, versionNo,
       payload.definition, payload.layout, rowVersion.value)
-    if (disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo) return false
+    if (!currentSession(generation) || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo) return false
     rowVersion.value = result.rowVersion
     versions.value = versions.value.map(item => item.version === result.version ? result : item)
     // The server acknowledges the submitted snapshot. Edits made while that
@@ -487,20 +533,27 @@ async function save(): Promise<boolean> {
     emit('saved', result)
     return true
   } catch (failure) {
+    if (!currentSession(generation)) return false
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableSaveDraft')
     return false
   } finally {
+    if (!currentSession(generation)) return false
     saving.value = false
   }
 }
 
 /** Returns true only when the server produced a verdict that marks the draft publishable. */
 async function validate(): Promise<boolean> {
-  if (!props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || validating.value) return false
+  const generation = session.generation
+  const graphRevision = flow.graphRevision.value
+
+  if (!sessionReady.value || !props.canWrite || !selectedPlaybookId.value || !selectedVersionNo.value || validating.value) return false
   if (unsavedDraftBlocks()) return false
   validating.value = true
   try {
     const result = await validateVersion(selectedPlaybookId.value, selectedVersionNo.value) as ValidationResult
+    if (!currentSession(generation)) return false
+    if (graphRevision !== flow.graphRevision.value) return false
     validation.value = result
     const issues: ValidationIssue[] = [
       ...(result.errors ?? []),
@@ -511,81 +564,123 @@ async function validate(): Promise<boolean> {
     message.value = result.valid ? t('soar.definitionPublishable') : t('soar.definitionNeedsAttention')
     return result.valid === true
   } catch (failure) {
+    if (!currentSession(generation)) return false
     // Fail closed: without a server verdict the draft must not be publishable.
     validation.value = null
     flow.applyIssues([])
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.validationFailed')
     return false
   } finally {
+    if (!currentSession(generation)) return false
     validating.value = false
   }
 }
 
 async function dryRun() {
-  if (!props.canExecute || !selectedPlaybookId.value || !selectedVersionNo.value || dryRunBusy.value) return
+  const generation = session.generation
+
+  if (!sessionReady.value || !props.canExecute || !selectedPlaybookId.value || !selectedVersionNo.value || dryRunBusy.value) return
   if (unsavedDraftBlocks()) return
   dryRunBusy.value = true
+  const inputSnapshot = dryRunText.value
+  const graphRevision = flow.graphRevision.value
   try {
-    const inputs = JSON.parse(dryRunText.value) as JsonObject
-    dryRunResult.value = await dryRunVersion(selectedPlaybookId.value, selectedVersionNo.value, contextSubject(), inputs) as JsonObject
+    const inputs = JSON.parse(inputSnapshot) as JsonObject
+    const result = await dryRunVersion(selectedPlaybookId.value, selectedVersionNo.value, contextSubject(), inputs) as JsonObject
+    if (!currentSession(generation)) return
+    if (inputSnapshot !== dryRunText.value || graphRevision !== flow.graphRevision.value) { errorMessage.value = t('analystJourney.testChanged'); return }
+    dryRunResult.value = result
     errorMessage.value = ''
   } catch (failure) {
+    if (!currentSession(generation)) return
     const detail = failure instanceof Error ? failure.message : t('soar.invalidInput')
     errorMessage.value = `${t('soar.dryRunFailed')}: ${detail}`
   } finally {
+    if (!currentSession(generation)) return
     dryRunBusy.value = false
   }
 }
 
 function contextSubject(): JsonObject {
-  return props.contextAlarmId ? { alarmId: props.contextAlarmId } : {}
+  return { ...(props.contextAlarmId ? { type: 'alert', id: props.contextAlarmId } : props.contextCaseId ? { type: 'case', id: props.contextCaseId } : {}), ...(props.contextAlarmId ? { alarmId: props.contextAlarmId } : {}), ...(props.contextCaseId ? { caseId: props.contextCaseId } : {}) }
 }
 
+/** Match semantic JSON payloads even when the operator reformats object keys. */
+function runFingerprint(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(runFingerprint).join(',')}]`
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${runFingerprint((value as JsonObject)[key])}`).join(',')}}`
+  return JSON.stringify(value) ?? 'null'
+}
 async function queueRun(): Promise<void> {
+  const generation = session.generation
+  const permissionGeneration = executionPermissionGeneration
   const version = selectedVersion.value
-  if (!props.canExecute || !version || version.status !== 'PUBLISHED' || runBusy.value) return
+  if (!sessionReady.value || !props.canExecute || !version || version.status !== 'PUBLISHED' || runBusy.value) return
   runBusy.value = true
   errorMessage.value = ''
   try {
-    const inputs = JSON.parse(dryRunText.value || '{}') as JsonObject
-    const requestId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-      ? crypto.randomUUID()
-      : `workbench-${Date.now()}`
-    const result = await queueRunApi({
-      requestId,
-      playbookVersionId: version.id,
-      subject: contextSubject(),
-      inputs,
-    })
+    const inputSnapshot = liveRunText.value
+    const inputs = JSON.parse(inputSnapshot || '{}') as JsonObject
+    if (!inputs || typeof inputs !== 'object' || Array.isArray(inputs)) throw new Error(t('analystJourney.liveInputsObject'))
+    const subject = contextSubject()
+    if (liveSchema.value && (!liveInputsValid.value || validateSchemaInput(inputs, liveSchema.value).length)) throw new Error(t('analystJourney.liveInputsRequired'))
+    const payload = { playbookVersionId: version.id, subject, inputs }
+    const fingerprint = runFingerprint(payload)
+    const previous = unresolvedLiveRuns.value.find(attempt => attempt.fingerprint === fingerprint)
+    if (!previous && unresolvedLiveRuns.value.length >= 10) throw new Error(t('analystJourney.unresolvedRunLimit'))
+    const warning = !previous && unresolvedLiveRuns.value.length
+      ? `${t('analystJourney.distinctRunWarning', { requests: unresolvedLiveRuns.value.map(attempt => attempt.requestId).join(', ') })}\n\n` : ''
+    const stillAuthorized = () => currentSession(generation) && props.canExecute
+      && permissionGeneration === executionPermissionGeneration && inputSnapshot === liveRunText.value
+      && JSON.stringify(subject) === JSON.stringify(contextSubject())
+    if (!(await confirmDanger(warning + t('analystJourney.liveExecutionConfirmation', { revision: version.version, target: JSON.stringify(subject), inputs: JSON.stringify(inputs), risk: JSON.stringify(version.riskSummary) ?? '', effects: JSON.stringify(declaredEffects(version.definition)) }))) || !stillAuthorized()) return
+    const attempt = previous ?? { ...payload, fingerprint, requestId: typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID() : `workbench-${Date.now()}-${Math.random().toString(36).slice(2)}` }
+    // Retain the exact request until a receipt is received. Changing inputs never
+    // silently reuses a key, nor silently issues a replacement for an unknown run.
+    if (!previous) unresolvedLiveRuns.value = [...unresolvedLiveRuns.value, attempt]
+    const result = await queueRunApi({ requestId: attempt.requestId, playbookVersionId: attempt.playbookVersionId,
+      subject: attempt.subject, inputs: attempt.inputs })
+    unresolvedLiveRuns.value = unresolvedLiveRuns.value.filter(item => item.requestId !== attempt.requestId)
+    if (!stillAuthorized()) return
+    emit('open-run', result.runId)
     message.value = `${t('soar.runQueued')} ${result.runId}`
   } catch (failure) {
+    if (!currentSession(generation)) return
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.runQueueFailed')
   } finally {
-    runBusy.value = false
+    if (currentSession(generation)) runBusy.value = false
   }
 }
 
 async function publish() {
+  const generation = session.generation
+
   const playbookId = selectedPlaybookId.value
   const versionNo = selectedVersionNo.value
-  if (!props.canPublish || !playbookId || !versionNo || !isDraft.value || publishing.value || saving.value || loading.value) return
+  if (!sessionReady.value || !props.canPublish || !playbookId || !versionNo || !isDraft.value || publishing.value || saving.value || loading.value) return
   // Publish is only allowed once the canvas edits are saved and the stored
   // revision has a fresh server verdict of "valid" — never on a stale result.
   if (unsavedDraftBlocks()) return
   publishing.value = true
   try {
-    if (!(await confirmDanger(t('soar.publishConfirm', { version: versionNo }))) || !props.canPublish || disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo || unsavedDraftBlocks()) return
+    if (!(await confirmDanger(t('soar.publishConfirm', { version: versionNo }))) || !props.canPublish || !currentSession(generation) || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo || unsavedDraftBlocks()) return
     if (!(await validate())) return
-    if (!props.canPublish || disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo || unsavedDraftBlocks()) return
+    if (!props.canPublish || !currentSession(generation) || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo || unsavedDraftBlocks()) return
     const result = await publishVersion(playbookId, versionNo)
-    if (disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo) return
+    if (!currentSession(generation) || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== versionNo) return
     versions.value = versions.value.map(item => item.version === result.version ? result : item)
     rowVersion.value = result.rowVersion
-    await loadVersions()
+    const refresh = loadVersions()
+    const refreshGeneration = session.generation
+    await refresh
+    if (!currentSession(refreshGeneration)) return
     message.value = t('soar.publishedRevision', { version: result.version })
   } catch (failure) {
+    if (!currentSession(generation)) return
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.publishFailed')
   } finally {
+    if (!currentSession(generation)) return
     publishing.value = false
   }
 }
@@ -601,19 +696,24 @@ const publishedVersion = computed(() => versions.value
 
 /** Diffs the open definition against the newest published revision. */
 async function openPublishedDiff(): Promise<void> {
-  if (!selectedPlaybookId.value || !publishedVersion.value || !selectedVersionNo.value) return
+  const generation = session.generation
+
+  if (!sessionReady.value || !selectedPlaybookId.value || !publishedVersion.value || !selectedVersionNo.value) return
   loading.value = true
   errorMessage.value = ''
   try {
     const baseline = await getVersion(selectedPlaybookId.value, publishedVersion.value.version)
+    if (!currentSession(generation)) return
     diffResult.value = diffDefinitions(
       normalizeDefinition(baseline.definition),
       normalizeDefinition(flow.getDefinition()),
     )
     diffVisible.value = true
   } catch (failure) {
+    if (!currentSession(generation)) return
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.unableLoadVersion')
   } finally {
+    if (!currentSession(generation)) return
     loading.value = false
   }
 }
@@ -717,20 +817,27 @@ async function contextAction(action: 'copy' | 'delete' | 'rename'): Promise<void
 
 /** Retires a published revision; the server keeps it for audit but stops running it. */
 async function deprecateSelected(): Promise<void> {
+  const generation = session.generation
+
   const playbookId = selectedPlaybookId.value
   const version = selectedVersion.value
-  if (!props.canPublish || !playbookId || !version || version.status !== 'PUBLISHED' || loading.value || publishing.value || saving.value) return
+  if (!sessionReady.value || !props.canPublish || !playbookId || !version || version.status !== 'PUBLISHED' || loading.value || publishing.value || saving.value) return
   loading.value = true
   errorMessage.value = ''
   try {
-    if (!(await confirmDanger(t('soar.deprecateConfirm', { version: version.version }))) || !props.canPublish || disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
+    if (!(await confirmDanger(t('soar.deprecateConfirm', { version: version.version }))) || !props.canPublish || !currentSession(generation) || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
     await deprecateVersion(playbookId, version.version)
-    if (disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
-    await loadVersions(version.version)
+    if (!currentSession(generation) || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
+    const refresh = loadVersions(version.version)
+    const refreshGeneration = session.generation
+    await refresh
+    if (!currentSession(refreshGeneration)) return
     message.value = t('soar.versionDeprecated', { version: version.version })
   } catch (failure) {
+    if (!currentSession(generation)) return
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.deprecateFailed')
   } finally {
+    if (!currentSession(generation)) return
     loading.value = false
   }
 }
@@ -741,24 +848,29 @@ async function deprecateSelected(): Promise<void> {
  * still has to review, validate and publish.
  */
 async function rollbackSelected(): Promise<void> {
+  const generation = session.generation
+
   const playbookId = selectedPlaybookId.value
   const version = selectedVersion.value
-  if (!props.canWrite || !playbookId || !version || version.status === 'DRAFT' || loading.value || publishing.value || saving.value) return
+  if (!sessionReady.value || !props.canWrite || !playbookId || !version || version.status === 'DRAFT' || loading.value || publishing.value || saving.value) return
   loading.value = true
   errorMessage.value = ''
   try {
-    if (!(await discardGuard()) || !(await confirmDanger(t('soar.rollbackConfirm', { version: version.version }))) || !props.canWrite || disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
+    if (!(await discardGuard()) || !(await confirmDanger(t('soar.rollbackConfirm', { version: version.version }))) || !props.canWrite || !currentSession(generation) || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
     const draft = await rollbackVersion(playbookId, version.version)
-    if (disposed || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
+    if (!currentSession(generation) || selectedPlaybookId.value !== playbookId || selectedVersionNo.value !== version.version) return
     versions.value = [draft, ...versions.value.filter(item => item.version !== draft.version)]
     selectedVersionNo.value = draft.version
     rowVersion.value = draft.rowVersion
+    loadedIdentity.value = identity()
     flow.applyDefinition(draft.definition, draft.layout)
     validation.value = null
     message.value = t('soar.rollbackCreated', { source: version.version, version: draft.version })
   } catch (failure) {
+    if (!currentSession(generation)) return
     errorMessage.value = failure instanceof Error ? failure.message : t('soar.rollbackFailed')
   } finally {
+    if (!currentSession(generation)) return
     loading.value = false
   }
 }
@@ -875,11 +987,11 @@ function statusLabel(status: string): string {
 }
 
 watch(() => props.initialPlaybookId, (value) => {
-  if (value && value !== selectedPlaybookId.value) {
+  if (value !== selectedPlaybookId.value) {
     selectedPlaybookId.value = value
     void loadVersions()
   }
-})
+}, { flush: 'sync' })
 
 watch(() => props.openRun, (request) => {
   if (request && request.token !== handledOpenRunToken.value) void handleOpenRunRequest(request)
@@ -917,6 +1029,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   disposed = true
+  session.dispose()
   window.removeEventListener('beforeunload', beforeUnloadHandler)
 })
 </script>
@@ -957,11 +1070,11 @@ onUnmounted(() => {
 
     <div class="soar-editor-toolbar">
       <el-button v-if="props.canWrite && !selectedPlaybookId" type="primary" size="small" @click="openNewPlaybookDialog">{{ t('soar.blankPlaybook') }}</el-button>
-      <details class="soar-secondary-tools"><summary>{{ t('forms.more') }}</summary>
+      <details class="soar-secondary-tools soar-version-tools"><summary>{{ t('forms.more') }}</summary>
       <el-button v-if="props.canWrite" size="small" :disabled="!selectedPlaybookId" @click="createVersion">{{ t('soar.newDraftVersion') }}</el-button>
       <el-button size="small" :loading="loading" @click="loadCatalog">{{ t('common.refresh') }}</el-button>
       </details>
-      <el-button
+<details class="soar-secondary-tools"><summary>{{ t('analystJourney.canvasTools') }}</summary><div>      <el-button
         v-if="props.canWrite"
         size="small"
         :disabled="!flow.canUndo.value"
@@ -981,6 +1094,7 @@ onUnmounted(() => {
         :title="t('soar.editorAutoLayoutHint')"
         @click="flow.autoLayout()"
       >{{ t('soar.editorAutoLayout') }}</el-button>
+</div></details>
       <el-select
         class="soar-node-search"
         :model-value="''"
@@ -997,6 +1111,14 @@ onUnmounted(() => {
       <el-tag v-if="validation" size="small" :type="flow.validationStale.value ? 'info' : validation.valid ? 'success' : 'danger'">
         {{ flow.validationStale.value ? t('soar.validationOutdated') : validation.valid ? t('soar.validationValid') : t('soar.validationInvalid') }}{{ issueCount ? ` · ${issueCount}` : '' }}
       </el-tag>
+      <el-button
+        v-if="props.canWrite"
+        size="small"
+        :type="hasUnsavedChanges ? 'primary' : 'default'"
+        :loading="saving"
+        :disabled="!isDraft || !hasUnsavedChanges"
+        @click="save"
+      >{{ t('soar.saveDraft') }}</el-button>
       <el-button v-if="props.canWrite" size="small" :loading="validating" @click="validate" :disabled="!selectedVersionNo || validating || publishing">{{ t('soar.validate') }}</el-button>
       <el-button
         v-if="props.canWrite"
@@ -1006,23 +1128,29 @@ onUnmounted(() => {
       >{{ t('soar.diff.compareWithPublished') }}</el-button>
       <el-button v-if="props.canExecute" size="small" :loading="dryRunBusy" @click="dryRun" :disabled="!selectedVersionNo || dryRunBusy">{{ t('soar.dryRun') }}</el-button>
       <el-button v-if="props.canExecute" size="small" type="warning" plain :loading="runBusy" :disabled="selectedVersion?.status !== 'PUBLISHED'" @click="queueRun">{{ t('soar.queueRun') }}</el-button>
-      <el-button
-        v-if="props.canWrite"
-        size="small"
-        :type="hasUnsavedChanges ? 'primary' : 'default'"
-        :loading="saving"
-        :disabled="!isDraft || !hasUnsavedChanges"
-        @click="save"
-      >{{ t('soar.saveDraft') }}</el-button>
       <el-button v-if="props.canPublish" size="small" type="success" :loading="publishing" @click="publish" :disabled="!isDraft || publishing">{{ t('soar.publish') }}</el-button>
     </div>
 
-    <div v-if="props.canWrite && selectedVersion?.status === 'PUBLISHED'" class="workflow-guide"><el-button type="primary" plain @click="emit('automate', selectedVersion.id)">{{ t('workflow.automatePublished') }}</el-button></div>
+    <div v-if="props.canWrite && sessionReady && selectedVersion?.status === 'PUBLISHED'" class="workflow-guide"><el-button type="primary" plain @click="emit('automate', selectedVersion.id)">{{ t('workflow.automatePublished') }}</el-button></div>
     <div v-if="message" class="soar-editor-message">{{ message }}</div>
     <div v-if="errorMessage" class="soar-editor-error">{{ errorMessage }}</div>
 
+    <section v-if="unresolvedLiveRuns.length" class="soar-editor-error" role="status">
+      <p>{{ t('analystJourney.unresolvedRunHint') }}</p>
+      <details v-for="attempt in unresolvedLiveRuns" :key="attempt.requestId">
+        <summary>{{ attempt.requestId }}</summary>
+        <pre>{{ JSON.stringify({ playbookVersionId: attempt.playbookVersionId, subject: attempt.subject, inputs: attempt.inputs }, null, 2) }}</pre>
+      </details>
+    </section>
+    <details v-if="props.canExecute && selectedVersion?.status === 'PUBLISHED'" class="soar-live-inputs">
+      <summary>{{ t('analystJourney.liveInputsSummary') }}</summary>
+      <p>{{ t('analystJourney.liveContext', { target: JSON.stringify(contextSubject()), revision: selectedVersionNo ?? '', effects: JSON.stringify(selectedVersion?.riskSummary) ?? '' }) }} </p>
+      <SchemaInputForm v-if="liveSchema" :key="`${selectedVersion?.id}:${props.contextAlarmId}:${props.contextCaseId}`" v-model="liveInputs" :schema="liveSchema" @valid="liveInputsValid = $event" :disabled="runBusy" />
+      <p v-else>{{ t('analystJourney.noEditorInputSchema') }}</p>
+      <el-input v-if="!liveSchema" v-model="liveRunText" type="textarea" :rows="4" :disabled="runBusy" :aria-label="t('analystJourney.liveInputsJson')" />
+    </details>
     <div class="soar-editor-body">
-      <SoarFlowPalette :flow="flow" :read-only="!props.canWrite" />
+      <SoarFlowPalette :flow="flow" :read-only="!props.canWrite || !sessionReady" />
 
       <section class="soar-canvas-panel" :aria-label="t('soar.playbookGraph')">
         <div ref="canvasRef" class="soar-canvas" @dragover.prevent @drop="onCanvasDrop">
@@ -1034,8 +1162,8 @@ onUnmounted(() => {
             :min-zoom="0.2"
             :max-zoom="2"
             :zoom-on-scroll="true"
-            :nodes-draggable="props.canWrite"
-            :nodes-connectable="props.canWrite"
+            :nodes-draggable="props.canWrite && sessionReady"
+            :nodes-connectable="props.canWrite && sessionReady"
             @node-context-menu="openNodeContextMenu"
             @node-double-click="onNodeDoubleClick"
             @node-click="closeContextMenu()"
@@ -1087,7 +1215,7 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <SoarFlowPropertyPanel :flow="flow" :node="selectedRawNode" :run-rows="runRows" :read-only="!props.canWrite" />
+      <SoarFlowPropertyPanel :flow="flow" :node="selectedRawNode" :run-rows="runRows" :read-only="!props.canWrite || !sessionReady" />
     </div>
 
     <el-dialog v-if="props.canWrite" v-model="newPlaybookVisible" :before-close="newPlaybookGuard.beforeClose" :title="t('soar.createBlankTitle')" width="520px">
@@ -1155,7 +1283,7 @@ onUnmounted(() => {
     <div class="soar-editor-lower">
       <div class="soar-json-panel">
         <div class="soar-panel-title">{{ t('soar.definitionJson') }} · {{ t('soar.advancedImportExport') }}</div>
-        <el-input type="textarea" v-model="definitionText" :rows="12" :readonly="!props.canWrite" spellcheck="false" :aria-label="t('soar.definitionJson')"  />
+        <el-input type="textarea" v-model="definitionText" :rows="12" :readonly="!props.canWrite || !sessionReady" spellcheck="false" :aria-label="t('soar.definitionJson')"  />
         <el-button v-if="props.canWrite" size="small" @click="applyDefinitionJson">{{ t('soar.applyJson') }}</el-button>
       </div>
       <div class="soar-json-panel">
@@ -1175,15 +1303,17 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.soar-editor { margin-top: 16px; border: 1px solid var(--ns-border); }
+.soar-editor { container-type: inline-size; margin-top: 16px; border: 1px solid var(--ns-border); }
 .soar-editor-header { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
 .soar-subtitle { display: block; margin-top: 4px; color: var(--ns-text-3); font-size: 11px; }
 .soar-editor-selects { display: flex; gap: 8px; flex-wrap: wrap; }
 .soar-editor select, .soar-editor input, .soar-editor textarea { box-sizing: border-box; border: 1px solid var(--ns-border); border-radius: 5px; background: var(--ns-bg); color: var(--ns-text); font: inherit; }
 .soar-editor select, .soar-editor input { min-height: 30px; padding: 5px 8px; }
 .soar-editor textarea { width: 100%; padding: 8px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.45; }
+.soar-secondary-tools { position: relative; }
 .soar-secondary-tools summary { cursor: pointer; padding: 6px; color: var(--ns-text-2); }
-.soar-secondary-tools[open] { flex: 1 1 100%; padding: 8px; border: 1px solid var(--ns-border); border-radius: 6px; }
+.soar-version-tools[open] { flex: 1 1 100%; padding: 8px; border: 1px solid var(--ns-border); border-radius: 6px; }
+.soar-secondary-tools > div { position: absolute; z-index: 6; display: flex; flex-wrap: wrap; width: 260px; padding: 8px; border: 1px solid var(--ns-border); background: var(--ns-surface); }
 .soar-editor-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-bottom: 10px; }
 .soar-toolbar-spacer { flex: 1; }
 .soar-editor-message, .soar-editor-error { margin: 6px 0 10px; border-radius: 5px; padding: 7px 10px; font-size: 12px; }
@@ -1199,7 +1329,7 @@ onUnmounted(() => {
 .soar-diff-row b { margin-right: 6px; }
 .soar-diff-row small { color: var(--ns-text-3); }
 .soar-diff-field { margin-top: 3px; color: var(--ns-text-2); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 10px; overflow-wrap: anywhere; }
-.soar-editor-body { display: grid; grid-template-columns: 180px minmax(560px, 1fr) 260px; min-height: 570px; border: 1px solid var(--ns-border); border-radius: 6px; overflow: hidden; }
+.soar-editor-body { display: grid; grid-template-columns: 180px minmax(0, 1fr) 260px; min-height: 570px; border: 1px solid var(--ns-border); border-radius: 6px; overflow: hidden; }
 .soar-canvas-panel { display: flex; min-width: 0; flex-direction: column; background: var(--ns-bg); }
 .soar-canvas { position: relative; min-height: 540px; flex: 1; background: var(--ns-bg); }
 .soar-canvas .vue-flow { height: 540px; }
@@ -1295,13 +1425,13 @@ onUnmounted(() => {
 .soar-issue span { color: var(--ns-text-3); }
 .soar-issue p { margin: 3px 0 0; color: var(--ns-text-2); }
 .soar-hash { color: var(--ns-text-3); font-family: ui-monospace, monospace; font-size: 9px; overflow-wrap: anywhere; }
-@media (max-width: 1100px) {
-  .soar-editor-body { grid-template-columns: 155px minmax(520px, 1fr); }
+@container (max-width: 1000px) {
+  .soar-editor-body { grid-template-columns: 155px minmax(0, 1fr); }
   :deep(.soar-flow-inspector) { grid-column: 1 / -1; border-top: 1px solid var(--ns-border); border-left: 0; }
   .soar-editor-lower { grid-template-columns: 1fr 1fr; }
   .soar-validation-panel { grid-column: 1 / -1; }
 }
-@media (max-width: 720px) {
+@container (max-width: 720px) {
   .soar-editor-header { align-items: flex-start; flex-direction: column; }
   .soar-editor-body { display: block; }
   :deep(.soar-flow-palette) { border-right: 0; border-bottom: 1px solid var(--ns-border); display: grid; grid-template-columns: repeat(2, 1fr); gap: 3px; }

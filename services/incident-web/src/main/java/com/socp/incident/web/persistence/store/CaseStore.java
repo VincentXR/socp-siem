@@ -115,6 +115,10 @@ public class CaseStore {
         String normalizedStatus = status == null ? "" : status.trim();
         String tenant = tenant();
         Page<CaseEntity> entities = repo.searchByTenantId(tenant, normalizedQuery, normalizedStatus, pageable);
+        return summarize(entities, tenant);
+    }
+
+    private Page<Case> summarize(Page<CaseEntity> entities, String tenant) {
         if (entities.isEmpty() || alarmLinkRepo == null || ruleLinkRepo == null) {
             return entities.map(entity -> fromEntity(entity, false));
         }
@@ -126,6 +130,13 @@ public class CaseStore {
                         () -> normalizedRuleIds(entity)),
                 associationCount(alarmCounts.get(entity.getId()), legacyAlarms(entity),
                         () -> normalizedAlarmIds(entity))));
+    }
+
+    @Transactional(readOnly = true)
+    public Page<Case> queue(int page, int size, String query, String status, String queue, String actor) {
+        String tenant = tenant();
+        return summarize(repo.searchQueue(tenant, query, status, queue, actor,
+                PageRequest.of(page - 1, size, Sort.by(Sort.Order.desc("updatedAt"), Sort.Order.asc("id")))), tenant);
     }
 
     public long count() {
@@ -199,6 +210,17 @@ public class CaseStore {
         return false;
     }
 
+    /** Exact tenant/case-scoped lookup for replay compatibility, never a timeline scan. */
+    public java.util.Optional<TimelineEvent> timelineEvent(String caseId, String eventKey) {
+        if (timelineRepo == null) {
+            Case current = get(caseId);
+            return current == null ? java.util.Optional.empty() : current.timeline().stream()
+                    .filter(event -> eventKey.equals(event.idempotencyKey())).findFirst();
+        }
+        return timelineRepo.findByTenantIdAndCaseIdAndEventKey(tenant(), caseId, eventKey)
+                .map(CaseStore::fromTimelineEntity);
+    }
+
     /** Update mutable case metadata without traversing every historical association. */
     @Transactional
     public Case saveMetadata(Case incident) {
@@ -211,8 +233,8 @@ public class CaseStore {
         entity.setStatus(incident.status());
         entity.setAssignee(incident.assignee());
         entity.setUpdatedAt(incident.updatedAt());
-        repo.save(entity);
-        return incident;
+        repo.saveAndFlush(entity);
+        return fromEntitySummary(entity, incident.ruleCount(), incident.alarmCount());
     }
 
     /** Persist only the one association delta represented by an incoming alarm. */

@@ -43,6 +43,19 @@ public interface EndpointRepository extends TenantScopedRepository<EndpointEntit
                                               @Param("hostname") String hostname,
                                               Pageable pageable);
 
+    @Query("""
+            select e from EndpointEntity e where e.tenantId = :tenantId
+              and (:query = '' or lower(coalesce(e.hostname, '')) like lower(concat('%', :query, '%'))
+                   or lower(coalesce(e.ip, '')) like lower(concat('%', :query, '%'))
+                   or lower(coalesce(e.os, '')) like lower(concat('%', :query, '%'))
+                   or lower(coalesce(e.agentVersion, '')) like lower(concat('%', :query, '%')))
+              and ((:status = 'ONLINE' and e.status = 'ONLINE' and (e.lastHeartbeat is null or e.lastHeartbeat >= :cutoff))
+                   or (:status = 'OFFLINE' and (e.status is null or e.status <> 'ONLINE' or e.lastHeartbeat < :cutoff)))
+            """)
+    Page<EndpointEntity> searchStatusByTenantId(@Param("tenantId") String tenantId,
+            @Param("query") String query, @Param("status") String status,
+            @Param("cutoff") Instant cutoff, Pageable pageable);
+
     Optional<EndpointEntity> findByStorageIdAndTenantId(String storageId, String tenantId);
     Optional<EndpointEntity> findByTenantIdAndEndpointId(String tenantId, String endpointId);
     Optional<EndpointEntity> findFirstByTenantIdAndHostname(String tenantId, String hostname);

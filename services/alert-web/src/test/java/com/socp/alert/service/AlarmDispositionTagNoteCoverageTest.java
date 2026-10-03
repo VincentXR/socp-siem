@@ -246,10 +246,10 @@ class AlarmDispositionTagNoteCoverageTest {
 
         assertThat(result.status()).isEqualTo("RESOLVED");
         assertThat(result.assignee()).isEqualTo("alice");
-        assertThat(result.notes()).hasSize(1);
-        // setStatus predates tags and uses the compatibility constructor, so
-        // the returned snapshot carries no tags (documented behaviour)
-        assertThat(result.tags()).isEmpty();
+        assertThat(result.notes()).hasSize(2);
+        assertThat(result.notes().get(0).content()).isEqualTo("keep");
+        assertThat(result.notes().get(1).content()).contains("OPEN", "RESOLVED");
+        assertThat(result.tags()).containsExactly("prod");
 
         assertThatThrownBy(() -> service.setStatus("a1", "GARBAGE"))
                 .isInstanceOf(ApiException.class)

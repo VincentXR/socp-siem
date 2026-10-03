@@ -48,9 +48,13 @@ public class EndpointController {
     @GetMapping
     public ApiResult<PageResponse<Endpoint>> list(@RequestParam(defaultValue = "1") int page,
                                                   @RequestParam(defaultValue = "500") int size,
-                                                  @RequestParam(defaultValue = "") String q) {
+                                                  @RequestParam(defaultValue = "") String q,
+                                                  @RequestParam(defaultValue = "") String status) {
         requireValidRange(page, size);
-        Page<Endpoint> result = store.page(page, size, normalizeQuery(q));
+        if (!status.isEmpty() && !List.of("ONLINE", "OFFLINE").contains(status)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "status must be ONLINE or OFFLINE");
+        }
+        Page<Endpoint> result = store.page(page, size, normalizeQuery(q), status);
         return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
                 result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }

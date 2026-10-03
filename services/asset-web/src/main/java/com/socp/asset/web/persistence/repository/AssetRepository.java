@@ -7,6 +7,8 @@ import com.socp.platform.tenant.persistence.TenantScopedRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.Lock;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
@@ -35,6 +37,23 @@ public interface AssetRepository extends TenantScopedRepository<AssetEntity, Str
 
     @Query("""
             select a from AssetEntity a where a.tenantId = :tenantId
+              and (:type = '' or upper(a.type) = upper(:type))
+              and (:criticality = '' or upper(a.criticality) = upper(:criticality))
+              and (:owner = '' or lower(a.owner) = lower(:owner))
+              and (:query = '' or lower(concat(coalesce(a.name, ''), ' ', coalesce(a.ip, ''), ' ',
+                   coalesce(a.os, ''), ' ', coalesce(a.owner, ''))) like lower(concat('%', :query, '%')))
+            """)
+    Page<AssetEntity> filterByTenantId(@Param("tenantId") String tenantId, @Param("query") String query,
+                                       @Param("type") String type, @Param("criticality") String criticality,
+                                       @Param("owner") String owner, Pageable pageable);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select a from AssetEntity a where a.tenantId = :tenantId and lower(trim(a.ip)) = :ip")
+    List<AssetEntity> findCollectionCandidate(@Param("tenantId") String tenantId, @Param("ip") String ip,
+                                              Pageable pageable);
+
+    @Query("""
+            select a from AssetEntity a where a.tenantId = :tenantId
               and ((:ip <> '' and lower(trim(a.ip)) = lower(:ip))
                    or (:name <> '' and lower(trim(a.name)) = lower(:name)))
             """)
@@ -43,7 +62,9 @@ public interface AssetRepository extends TenantScopedRepository<AssetEntity, Str
 
     Optional<AssetEntity> findByIdAndTenantId(String id, String tenantId);
 
-    List<AssetEntity> findByIpAndTenantId(String ip, String tenantId);
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select a from AssetEntity a where a.id = :id and a.tenantId = :tenantId")
+    Optional<AssetEntity> findCollectionTarget(@Param("id") String id, @Param("tenantId") String tenantId);
 
     long countByTenantId(String tenantId);
 

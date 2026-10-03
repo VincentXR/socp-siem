@@ -26,6 +26,10 @@
 #  - 仓库包含 14 个可执行服务模块；二次分析及 asset/hips 采集入口已并入领域服务。
 #  - 宿主端口冲突约定：避开 8080（旧 SIEM 控制台占用）；ClickHouse 原生口让位给 MinIO，见下。
 
+secrets:
+  socp_metrics_token:
+    file: ${SOCP_METRICS_TOKEN_FILE:-./secrets/metrics-token}
+
 networks:
   socp:
     driver: bridge
@@ -375,16 +379,16 @@ services:
     mem_limit: 768m
 
   # ── 可观测栈（Prometheus + Grafana + Loki + Jaeger，P18） ─
-  # 14 个服务均编译并暴露 Micrometer Prometheus 指标；Prometheus 配置按
-  # gateway/context-path 分开抓取。OTel trace 上报通过 SOCP_TRACING_ENABLED
+  # 13 个 Servlet 服务暴露 Prometheus 指标；网关应用端口仅暴露 health。
+  # Prometheus 通过只读 secret 文件认证，不会展开配置文件中的环境变量。OTel trace 上报通过 SOCP_TRACING_ENABLED
   # 开关控制，开启时由 extra profile 提供 Jaeger OTLP 接收端。
   prometheus:
     <<: *socp-runtime
     image: ${SOCP_PROMETHEUS_IMAGE:?load infra/middleware-images.env}
     container_name: socp-prometheus
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
-    environment:
-      SOCP_SECURITY_METRICS_TOKEN: ${SOCP_SECURITY_METRICS_TOKEN:-socp-demo-metrics-token}
+    secrets:
+      - socp_metrics_token
     ports:
       - "9090:9090"
     volumes:

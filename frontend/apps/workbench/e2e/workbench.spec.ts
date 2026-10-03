@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { CaseInfo } from '../src/api/models'
 import { readFile } from 'node:fs/promises'
-import { workbenchOrigin, isWorkbenchBackendUrl as isMockedBackendUrl } from './helpers'
+import { workbenchOrigin, isWorkbenchBackendUrl as isMockedBackendUrl, mockInvestigationReadiness } from './helpers'
 
 const WORKBENCH_ORIGIN = workbenchOrigin()
 
@@ -63,6 +63,7 @@ async function mockWorkbenchReads(page: Page) {
       await route.fallback()
     }
   })
+  await mockInvestigationReadiness(page)
 }
 
 test('endpoint deep links page complete associations and keep unregister failures reviewable', async ({ page }, testInfo) => {
@@ -132,6 +133,10 @@ test('endpoint deep links page complete associations and keep unregister failure
   const pagerBox = await history.locator('.el-pagination').boundingBox()
   expect(pagerBox).not.toBeNull(); expect(pagerBox!.x + pagerBox!.width).toBeLessThanOrEqual(390)
   await page.setViewportSize({ width: 1440, height: 1000 })
+  const management = drawer.locator('.el-drawer__footer details')
+  await expect(management).not.toHaveAttribute('open', '')
+  await management.locator('summary').filter({ hasText: 'More / management' }).click()
+  await expect(management).toHaveAttribute('open', '')
   await drawer.getByRole('button', { name: 'Unregister', exact: true }).click()
   await expect(page.locator('.el-message-box')).toContainText('outside')
   await page.locator('.el-message-box').getByRole('button', { name: 'Confirm', exact: true }).click()
@@ -251,7 +256,7 @@ test('case deep links retain drafts, page the full timeline and survive a failed
   await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
   await mockSession(page)
   const incident = { id: 'outside-page', caseNo: 'INC-20260921-ABC123', title: 'Linked investigation', entity: 'host-one',
-    severity: 'HIGH', status: 'OPEN', assignee: 'alice', alarmIds: ['alarm-one'], ruleIds: ['rule-one'], timeline: [] }
+    severity: 'HIGH', status: 'OPEN', rowVersion: 0, assignee: 'alice', alarmIds: ['alarm-one'], ruleIds: ['rule-one'], timeline: [] }
   let writes = 0
   let releaseFirst!: () => void
   const firstWrite = new Promise<void>(resolve => { releaseFirst = resolve })
@@ -280,14 +285,17 @@ test('case deep links retain drafts, page the full timeline and survive a failed
       return fulfill({ total: 121, items: Array.from({ length: size }, (_, index) => ({ ts: '2026-09-21T01:00:00Z',
         type: 'NOTE', source: 'analyst', message: `Timeline event ${(currentPage - 1) * size + index + 1}` })) })
     }
-    if (url.pathname.endsWith('/incidents/outside-page/status') && method === 'POST') {
+    if (url.pathname.endsWith('/incidents/outside-page/changes') && method === 'POST') {
       writes++
       if (writes === 1) { await firstWrite; return fulfill(null, 503) }
-      incident.status = url.searchParams.get('status')!
+      incident.status = route.request().postDataJSON().status
+      incident.rowVersion++
       return fulfill({ case: incident })
     }
     await route.fallback()
   })
+  await page.route('**/alert-web/api/alarms/alarm-one', route => route.fulfill({ json: { id: 'alarm-one', title: 'SSH investigation alarm', entity: 'host-one', severity: 'HIGH', ruleId: 'rule-one' } }))
+  await page.route('**/detect-web/api/v1/rules/lookup', route => route.fulfill({ json: [{ id: 'rule-one', name: 'SSH rule', status: 'ACTIVE' }] }))
   await page.goto('/cases?page=2&status=OPEN&caseId=outside-page')
   const drawer = page.locator('.el-drawer')
   await expect(drawer).toContainText('Linked investigation')
@@ -302,7 +310,7 @@ test('case deep links retain drafts, page the full timeline and survive a failed
   await expect(page.getByRole('dialog').filter({ hasText: 'unsaved' })).toBeVisible()
   await page.getByRole('button', { name: 'Keep editing', exact: true }).click()
   await expect(page).toHaveURL(/caseId=outside-page/)
-  await drawer.getByRole('button', { name: 'Update Status', exact: true }).click()
+  await drawer.getByRole('button', { name: 'Save changes', exact: true }).click()
   await expect(drawer.locator('.case-status-row input')).toBeDisabled()
   await expect(drawer.locator('.el-descriptions input')).toBeDisabled()
   await drawer.locator('.el-drawer__close-btn').click()
@@ -313,7 +321,7 @@ test('case deep links retain drafts, page the full timeline and survive a failed
   await expect(drawer.locator('.case-status-row input')).toBeEnabled()
   await expect(page.locator('.el-message')).not.toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('case-failed-status.png'), fullPage: true })
-  await drawer.getByRole('button', { name: 'Update Status', exact: true }).click()
+  await drawer.getByRole('button', { name: 'Save changes', exact: true }).click()
   await expect(drawer.getByRole('alert')).not.toBeVisible()
   expect(writes).toBe(2)
   await drawer.locator('.el-drawer__close-btn').click()
@@ -743,6 +751,7 @@ test('alarm deep links load exact detail and expose downstream delivery recovery
     if (url.pathname.endsWith('/alarms/off-page-alarm') && method === 'GET') return fulfill(alarm)
     if (url.pathname.endsWith('/alarms/off-page-alarm/disposition')) return fulfill({ status: 'OPEN', assignee: 'analyst', notes: [] })
     if (url.pathname.endsWith('/alarms/off-page-alarm/evidence')) return fulfill({ alarmId: alarm.id, query: `eventId="${alarm.id}"`, complete: true, total: 0, items: [] })
+    if (url.pathname.endsWith('/alarms/off-page-alarm/similar') && method === 'GET') return fulfill([])
     if (url.pathname.endsWith('/alarms/off-page-alarm/deliveries')) return fulfill([{
       deliveryId: 'delivery-dead', alarmId: alarm.id, destination: 'INCIDENT', status: requeues ? 'PENDING' : 'DEAD',
       attempts: 5, lastError: requeues ? null : 'incident service unavailable', nextAttemptAt: '2026-09-20T00:05:00Z',
@@ -778,13 +787,19 @@ test('alarm deep links load exact detail and expose downstream delivery recovery
   await drawer.getByRole('tab', { name: 'Delivery', exact: true }).click()
   await expect(drawer).toContainText('Pending')
   await page.screenshot({ path: testInfo.outputPath('alarm-deep-link-delivery.png'), fullPage: true })
+  const alarmLocation = new URL(page.url())
+  const alarmReturnTo = `${alarmLocation.pathname}${alarmLocation.search}`
+  const isLinkedCaseContext = (url: URL) => url.pathname === '/cases'
+    && url.searchParams.get('caseId') === linkedCase.id
+    && url.searchParams.get('alarmId') === alarm.id
+    && url.searchParams.get('returnTo') === alarmReturnTo
   await drawer.getByRole('button', { name: 'Go to Case', exact: true }).first().click()
-  await expect(page).toHaveURL(/\/cases\?caseId=linked-case$/)
+  await expect(page).toHaveURL(isLinkedCaseContext)
   await expect(page.locator('.el-drawer.open')).toContainText(linkedCase.title)
   await page.goBack()
   await expect(page).toHaveURL(/alarmId=off-page-alarm/)
   await page.locator('.el-drawer.open').getByRole('button', { name: 'Go to Case', exact: true }).last().click()
-  await expect(page).toHaveURL(/\/cases\?caseId=linked-case$/)
+  await expect(page).toHaveURL(isLinkedCaseContext)
   expect(unexpected).toEqual([])
 })
 
@@ -827,4 +842,60 @@ test('metadata edits stay in a dialog and retain inputs across a failed save', a
   expect(type.id).toBe('source-type-1')
   expect(attempts).toBe(2)
   expect(unexpected).toEqual([])
+})
+
+test('case workspace claims work, records evidence and shows the closure outcome', async ({ page }, testInfo) => {
+  const unexpected = await installNetworkGuard(page)
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  await mockSession(page)
+  const item = { id: 'workspace-case', caseNo: 'INC-20261003-ABC123', title: 'Analyst workspace case',
+    status: 'OPEN', entity: 'host-a', severity: 'HIGH', assignee: '', rowVersion: 0, ruleIds: [], alarmIds: [], timeline: [] }
+  const history: Array<{ ts: string; type: string; source: string; message: string }> = []
+  const writes: Array<{ path: string; body: Record<string, unknown> }> = []
+  await page.route('**/incident-web/api/v1/**', async route => {
+    const url = new URL(route.request().url())
+    const path = url.pathname
+    const fulfill = (data: unknown) => route.fulfill({ json: { code: 0, data } })
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON()
+      writes.push({ path, body })
+      if (path.endsWith('/claim')) item.assignee = 'analyst-user'
+      else if (path.endsWith('/notes')) history.push({ ts: '2026-10-03T00:00:00Z', type: 'NOTE', source: 'analyst', message: `analyst-user: ${body.content}` })
+      else if (path.endsWith('/changes')) {
+        item.status = body.status
+        history.push({ ts: '2026-10-03T00:01:00Z', type: 'CLOSURE', source: 'analyst', message: `analyst-user: ${body.classification}\n${body.result}\n${body.reason}\n${body.evidence}\n${body.remainingActions}` })
+      } else return route.fallback()
+      item.rowVersion++
+      return fulfill({ case: item, changed: true, duplicate: false })
+    }
+    if (path.endsWith('/workspace-case')) return fulfill(item)
+    if (path.endsWith('/timeline')) return fulfill({ items: history, total: history.length })
+    if (path.endsWith('/alarms') || path.endsWith('/rules')) return fulfill({ items: [], total: 0 })
+    if (path.endsWith('/stats')) return fulfill({ total: 1, open: 1, resolved: 0 })
+    if (path.endsWith('/incidents')) return fulfill({ items: [item], total: 1 })
+    return route.fallback()
+  })
+  await page.goto('/cases?caseId=workspace-case&queue=unassigned')
+  const drawer = page.locator('.el-drawer')
+  await drawer.getByRole('button', { name: 'Claim case', exact: true }).click()
+  await expect(drawer.getByRole('button', { name: 'Claim case', exact: true })).not.toBeVisible()
+  await drawer.getByRole('textbox', { name: 'Investigation note', exact: true }).fill('Reviewed matching login evidence')
+  await drawer.getByRole('textbox', { name: 'Evidence links (one HTTP/HTTPS URL per line)', exact: true }).fill('https://evidence.test/login/42')
+  await drawer.getByRole('button', { name: 'Add note', exact: true }).click()
+  await expect(drawer.locator('.case-timeline')).toContainText('Reviewed matching login evidence')
+  await drawer.locator('.case-status-row .el-select').click()
+  await page.getByRole('option', { name: 'Closed', exact: true }).click()
+  await drawer.locator('.el-select').filter({ has: page.getByRole('combobox', { name: 'Classification', exact: true }) }).click()
+  await page.getByRole('option', { name: 'False positive', exact: true }).click()
+  await drawer.getByRole('textbox', { name: 'Outcome', exact: true }).fill('No compromise found')
+  await drawer.getByRole('textbox', { name: 'Reason', exact: true }).fill('Authorized test')
+  await drawer.getByRole('textbox', { name: 'Supporting evidence', exact: true }).fill('https://evidence.test/login/42')
+  await drawer.getByRole('textbox', { name: 'Remaining actions (enter none if complete)', exact: true }).fill('None')
+  await drawer.getByRole('button', { name: 'Save changes', exact: true }).click()
+  await page.getByRole('dialog').filter({ hasText: 'Save this closure outcome?' }).getByRole('button', { name: 'Confirm', exact: true }).click()
+  await expect(drawer.locator('.case-timeline')).toContainText('No compromise found')
+  expect(writes[0].body).toMatchObject({ expectedVersion: 0, idempotencyKey: expect.any(String) })
+  expect(writes[2].body).toMatchObject({ expectedVersion: 2, status: 'CLOSED', classification: 'FALSE_POSITIVE', remainingActions: 'None' })
+  expect(unexpected).toEqual([])
+  await page.screenshot({ path: testInfo.outputPath('case-workspace-closure.png'), fullPage: true })
 })

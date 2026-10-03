@@ -1,16 +1,19 @@
 package com.socp.platform.client.service;
 
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.http.SocpHttpClient;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
+import java.util.UUID;
 
 /** 案件服务（incident-web）客户端：由告警自动建案 / 归并。 */
 @Component
 public class IncidentClient {
 
+    private static final ObjectMapper JSON = new ObjectMapper();
     private final SocpHttpClient http;
 
     public IncidentClient(SocpHttpClient http) {
@@ -52,14 +55,20 @@ public class IncidentClient {
         return addNote(caseId, author, content, null);
     }
 
-    /** Append a note with a stable key so a remote success can be safely replayed. */
+    /**
+     * Append the JSON mutation DTO with a stable key so a remote success can be
+     * safely replayed. Unkeyed calls get one key per invocation, retained across
+     * transport retries; callers needing command replay must supply their key.
+     */
     public ServiceCall addNote(String caseId, String author, String content, String idempotencyKey) {
-        String id = encode(caseId);
-        String query = "?author=" + encode(author) + "&content=" + encode(content);
-        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
-            query += "&idempotencyKey=" + encode(idempotencyKey);
-        }
-        return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/" + id + "/notes" + query, "{}");
+        String key = idempotencyKey == null || idempotencyKey.isBlank()
+                ? UUID.randomUUID().toString() : idempotencyKey;
+        String body = JSON.createObjectNode().put("content", content).put("idempotencyKey", key).toString();
+        // The server resolves this delegate against the authenticated identity;
+        // human callers cannot override the recorded author.
+        String query = author == null || author.isBlank() ? "" : "?author=" + encode(author);
+        return http.postJson(SocpService.INCIDENT,
+                "/api/v1/incidents/" + encode(caseId) + "/notes" + query, body);
     }
 
     public ServiceCall setStatus(String caseId, String status, String assignee) {

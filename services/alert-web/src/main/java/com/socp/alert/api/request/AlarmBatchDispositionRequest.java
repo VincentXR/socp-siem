@@ -24,6 +24,10 @@ public record AlarmBatchDispositionRequest(
         @Size(max = 128, message = "assignee is too long")
         String assignee,
         @Size(max = 4096, message = "reason is too long")
-        String reason
+        String reason,
+        @Pattern(regexp = "TRUE_POSITIVE|FALSE_POSITIVE|BENIGN|UNDETERMINED") String classification
 ) {
+    public AlarmBatchDispositionRequest(List<String> alarmIds, String status, String assignee, String reason) {
+        this(alarmIds, status, assignee, reason, null);
+    }
 }

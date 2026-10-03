@@ -19,6 +19,8 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+const MENU_SYNONYMS = computed<Record<string, string>>(() => Object.fromEntries(
+  ['endpoints', 'assets', 'meta', 'refset', 'report', 'situation', 'search'].map(key => [key, t(`experience.searchSynonyms.${key}`)])))
 const query = ref('')
 const highlighted = ref(0)
 const paletteRef = ref<HTMLElement>()
@@ -30,7 +32,8 @@ const matches = computed(() => {
   const needle = query.value.trim().toLowerCase()
   if (!needle) return entries.value
   return entries.value.filter(entry =>
-    entry.label.toLowerCase().includes(needle) || entry.group.toLowerCase().includes(needle))
+    entry.label.toLowerCase().includes(needle) || entry.group.toLowerCase().includes(needle)
+    || entry.key.includes(needle) || (MENU_SYNONYMS.value[entry.key] ?? '').includes(needle))
 })
 
 watch(matches, () => { highlighted.value = 0 })

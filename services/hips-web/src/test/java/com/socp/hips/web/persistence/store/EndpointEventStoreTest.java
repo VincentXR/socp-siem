@@ -26,7 +26,6 @@ class EndpointEventStoreTest {
     @Test
     void eventsAreIsolatedAndRequestTenantCannotOverrideContext() {
         EndpointStore endpoints = mock(EndpointStore.class);
-        given(endpoints.list()).willReturn(List.<Endpoint>of());
         EndpointEventRepository repository = mock(EndpointEventRepository.class);
         EndpointEventStore store = new EndpointEventStore(endpoints, repository, new ObjectMapper());
 

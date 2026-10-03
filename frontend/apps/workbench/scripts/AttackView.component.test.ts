@@ -6,11 +6,15 @@ import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import { ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable } from 'element-plus/es/components/table/index.mjs'
+import PagerBar from '../src/components/PagerBar.vue'
 import AttackView from '../src/views/AttackView.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import { translate } from '../src/i18n'
-const api = vi.hoisted(() => ({ alarmTechniqueCounts: vi.fn(), listTactics: vi.fn(), listTechniques: vi.fn(), activeRuleTechniques: vi.fn(), attackCoverage: vi.fn(), getTechniqueNote: vi.fn(), saveTechniqueNote: vi.fn(), success: vi.fn(), warning: vi.fn(), info: vi.fn() }))
+const api = vi.hoisted(() => ({ alarmTechniqueCounts: vi.fn(), listTactics: vi.fn(), listTechniques: vi.fn(), activeRuleTechniques: vi.fn(), attackCoverage: vi.fn(), getTechniqueNote: vi.fn(), saveTechniqueNote: vi.fn(), detailRules: vi.fn(), detailAlarms: vi.fn(), push: vi.fn(), success: vi.fn(), warning: vi.fn(), info: vi.fn() }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...api }))
+vi.mock('../src/api/core', async original => ({ ...await original<typeof import('../src/api/core')>(), get: api.detailRules }))
+vi.mock('../src/api/investigation-context', () => ({ techniqueAlarms: api.detailAlarms }))
+vi.mock('vue-router', async original => ({ ...await original<typeof import('vue-router')>(), useRouter: () => ({ push: api.push }) }))
 vi.mock('element-plus/es/components/message/index.mjs', () => ({ default: api }))
 const first = { id: 'T1', name: 'First technique', tactic: 'A', url: 'https://example.com/T1', description: '' }
 const second = { ...first, id: 'T2', name: 'Second technique', tactic: 'B' }
@@ -27,8 +31,44 @@ beforeEach(() => {
   api.attackCoverage.mockResolvedValue(cov)
   api.getTechniqueNote.mockResolvedValue({ note: 'Saved note' })
   api.saveTechniqueNote.mockResolvedValue({ note: 'Saved note' })
+  api.detailRules.mockResolvedValue({ items: [{ id: 'rule-1', name: 'Related rule', status: 'ACTIVE' }], total: 25 })
+  api.detailAlarms.mockResolvedValue({ items: [{ id: 'alarm-1', ruleName: 'Related rule', entity: 'host-1', occurredAt: '2026-09-23T00:00:00Z' }], total: 1 })
 })
 describe('ATT&CK request ownership', () => {
+  it('keeps the contextual technique drawer while paging all mapped rules and preserving pivots', async () => {
+    const wrapper = setup(); await flushPromises()
+    await wrapper.find('.am-cell').trigger('click'); await flushPromises()
+    expect(api.detailRules).toHaveBeenLastCalledWith('/detect-web/api/v1/rules/by-technique?technique=T1&page=1&size=20', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(api.detailAlarms).toHaveBeenCalledWith('T1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(wrapper.findComponent(PagerBar).props('total')).toBe(25)
+    wrapper.findComponent(PagerBar).vm.$emit('update:currentPage', 2); await flushPromises()
+    expect(api.detailRules).toHaveBeenLastCalledWith('/detect-web/api/v1/rules/by-technique?technique=T1&page=2&size=20', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    button(wrapper, 'workflow.relatedAlarms').vm.$emit('click')
+    expect(api.push).toHaveBeenLastCalledWith({ name: 'alarms', query: { rule: 'rule-1', technique: 'T1' } })
+    wrapper.findAllComponents(ElButton).find(node => node.text() === 'Related rule')!.vm.$emit('click')
+    expect(api.push).toHaveBeenLastCalledWith({ name: 'rule-edit', params: { ruleId: 'rule-1' } })
+    expect(wrapper.text()).toContain('Saved note')
+    await wrapper.findAll('.am-cell')[1]!.trigger('click'); await flushPromises()
+    expect(api.detailRules).toHaveBeenLastCalledWith('/detect-web/api/v1/rules/by-technique?technique=T2&page=1&size=20', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    wrapper.unmount()
+  })
+
+  it('cancels paged rule reads on close and ignores their late results for another technique', async () => {
+    const wrapper = setup(); await flushPromises()
+    await wrapper.find('.am-cell').trigger('click'); await flushPromises()
+    const pending = deferred<{ items: Array<{ id: string; name: string; status: string }>; total: number }>()
+    api.detailRules.mockReturnValueOnce(pending.promise)
+    wrapper.findComponent(PagerBar).vm.$emit('update:currentPage', 2); await flushPromises()
+    const signal = api.detailRules.mock.calls.at(-1)![1].signal as AbortSignal
+    const view = wrapper.vm as unknown as { closeTechnique: () => void }
+    view.closeTechnique(); await flushPromises()
+    expect(signal.aborted).toBe(true)
+    await wrapper.findAll('.am-cell')[1]!.trigger('click'); await flushPromises()
+    pending.resolve({ items: [{ id: 'old-rule', name: 'Obsolete rule', status: 'ACTIVE' }], total: 80 }); await flushPromises()
+    expect(wrapper.text()).not.toContain('Obsolete rule')
+    expect(wrapper.findComponent(PagerBar).props('total')).toBe(25)
+    wrapper.unmount()
+  })
   it('loads exact activity directly and retains it on refresh failure', async () => {
     const wrapper = setup(); await flushPromises()
     expect(api.alarmTechniqueCounts).toHaveBeenCalledWith(['T1', 'T2'], expect.objectContaining({ signal: expect.any(AbortSignal) }))

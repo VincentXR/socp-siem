@@ -67,7 +67,8 @@
         "existingSecret",
         "gatewaySigningSecret",
         "metricsSecret",
-        "config"
+        "config",
+        "detectionPartitions"
       ],
       "properties": {
         "existingSecret": {
@@ -87,6 +88,10 @@
         },
         "extraConfig": {
           "type": "object"
+        },
+        "detectionPartitions": {
+          "type": "integer",
+          "minimum": 1
         }
       }
     },

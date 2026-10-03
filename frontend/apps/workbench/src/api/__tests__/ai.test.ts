@@ -21,6 +21,15 @@ describe('durable investigation polling', () => {
     expect(get).toHaveBeenLastCalledWith('/ai-assistant/api/v1/ai/investigations/job%2F1', {})
   })
 
+  it('resumes a persisted job without submitting duplicate work', async () => {
+    vi.mocked(get).mockResolvedValue({ status: 'COMPLETED', investigationId: 'existing-job', alertId: 'alarm-1' })
+    const onJob = vi.fn()
+    const result = await investigateAlert('alarm-1', { jobId: 'existing-job', onJob })
+    expect(post).not.toHaveBeenCalled()
+    expect(onJob).toHaveBeenCalledWith('existing-job')
+    expect(result.investigationId).toBe('existing-job')
+  })
+
   it('cancels polling without submitting another task', async () => {
     vi.useFakeTimers()
     vi.mocked(post).mockResolvedValue({ jobId: 'job' })

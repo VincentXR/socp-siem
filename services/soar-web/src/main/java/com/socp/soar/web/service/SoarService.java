@@ -1,25 +1,13 @@
 package com.socp.soar.web.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
-import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.definition.SoarDefinitionValidator;
 import com.socp.soar.web.domain.DefinitionValidationResult;
-import com.socp.soar.web.domain.SoarPlaybookVersionStatus;
 import com.socp.soar.web.domain.SoarRunStatus;
-import com.socp.soar.web.persistence.entity.PlaybookVersionEntity;
-import com.socp.soar.web.persistence.entity.SoarNodeRunEntity;
-import com.socp.soar.web.persistence.entity.SoarPlaybookEntity;
 import com.socp.soar.web.persistence.entity.SoarRunEntity;
-import com.socp.soar.web.persistence.entity.SoarRunEventEntity;
-import com.socp.soar.web.persistence.entity.SoarApprovalEntity;
-import com.socp.soar.web.persistence.entity.SoarActionAttemptEntity;
-import com.socp.soar.web.persistence.entity.SoarManualTaskEntity;
-import com.socp.soar.web.persistence.entity.SoarSignalOutboxEntity;
-import com.socp.soar.web.persistence.entity.SoarArtifactEntity;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
 import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
 import com.socp.soar.web.persistence.repository.SoarNodeRunRepository;
@@ -42,42 +30,17 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
-
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import java.util.Set;
 
 /** Application service for the durable SOAR control plane. */
 @Service
 public class SoarService {
-    final SoarPlaybookRepository playbooks;
-    final PlaybookVersionRepository versions;
-    final SoarRunRepository runs;
-    final SoarDispatchOutboxRepository dispatches;
-    final SoarNodeRunRepository nodes;
-    final SoarRunEventRepository events;
-    final SoarApprovalRepository approvals;
-    SoarApprovalDecisionRepository approvalDecisions;
-    final TemporalExecutor temporal;
-    final SoarDefinitionValidator validator;
-    final ObjectMapper mapper;
-    final SoarManualInputValidator manualInputValidator;
-    final SoarActionAttemptRepository attempts;
-    final SoarManualTaskRepository manualTasks;
-    final SoarSignalOutboxRepository signals;
-    final SoarConnectorRepository connectors;
-    final SoarConnectorRegistry connectorRegistry;
-    SoarArtifactRepository artifacts;
-    SoarArtifactStore artifactStore;
-    SoarRuntimeProperties runtimeProperties;
-    final SoarReadModelMapper readModels;
     private final SoarPlaybookCommandService playbookCommands;
     private final SoarRunCommandService runCommands;
     private final SoarArtifactCommandService artifactCommands;
@@ -85,6 +48,9 @@ public class SoarService {
     private final SoarOutboxCommandService outboxCommands;
     private final SoarDefinitionPolicy definitionPolicy;
     private final SoarQueryService queries;
+    private final SoarRecords records;
+    private final SoarRuntimeGate gates;
+    private final SoarEventWriter eventWriter;
 
     @org.springframework.beans.factory.annotation.Autowired
     public SoarService(SoarPlaybookRepository playbooks, PlaybookVersionRepository versions,
@@ -95,57 +61,50 @@ public class SoarService {
                          SoarActionAttemptRepository attempts, SoarManualTaskRepository manualTasks,
                          SoarSignalOutboxRepository signals, SoarConnectorRepository connectors,
                          SoarConnectorRegistry connectorRegistry) {
-        this.playbooks = playbooks;
-        this.versions = versions;
-        this.runs = runs;
-        this.dispatches = dispatches;
-        this.nodes = nodes;
-        this.events = events;
-        this.approvals = approvals;
-        this.temporal = temporal;
-        this.validator = validator;
-        this.mapper = mapper;
-        this.readModels = new SoarReadModelMapper(versions, playbooks, mapper);
-        this.playbookCommands = new SoarPlaybookCommandService(this);
-        this.manualInputValidator = new SoarManualInputValidator(mapper);
-        this.attempts = attempts;
-        this.manualTasks = manualTasks;
-        this.signals = signals;
-        this.connectors = connectors;
-        this.connectorRegistry = connectorRegistry;
-        this.runCommands = new SoarRunCommandService(this);
-        this.artifactCommands = new SoarArtifactCommandService(this);
-        this.approvalCommands = new SoarApprovalCommandService(this);
-        this.outboxCommands = new SoarOutboxCommandService(this);
-        this.definitionPolicy = new SoarDefinitionPolicy(this);
-        this.queries = new SoarQueryService(this);
+        SoarReadModelMapper readModels = new SoarReadModelMapper(mapper);
+        SoarManualInputValidator manualInputValidator = new SoarManualInputValidator(mapper);
+        SoarJson json = new SoarJson(mapper);
+        this.records = new SoarRecords(playbooks, versions, runs);
+        this.gates = new SoarRuntimeGate();
+        this.eventWriter = new SoarEventWriter(runs, events, signals, mapper, json);
+        this.definitionPolicy = new SoarDefinitionPolicy(playbooks, versions, mapper, connectors, connectorRegistry, json);
+        this.playbookCommands = new SoarPlaybookCommandService(playbooks, versions, validator, mapper, readModels,
+                json, records, gates, definitionPolicy);
+        this.runCommands = new SoarRunCommandService(playbooks, versions, runs, dispatches, nodes, approvals,
+                validator, mapper, manualInputValidator, manualTasks, readModels, json, records, gates, eventWriter,
+                definitionPolicy);
+        this.artifactCommands = new SoarArtifactCommandService(nodes, mapper, readModels, json, records, eventWriter);
+        this.approvalCommands = new SoarApprovalCommandService(versions, runs, dispatches, approvals, readModels, json, eventWriter);
+        this.outboxCommands = new SoarOutboxCommandService(runs, dispatches, signals, eventWriter);
+        this.queries = new SoarQueryService(playbooks, versions, runs, dispatches, nodes, events, approvals,
+                attempts, manualTasks, signals, readModels, records);
     }
 
     /** Optional setter keeps isolated control-plane tests independent of artifact storage. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setArtifacts(SoarArtifactRepository artifacts) {
-        this.artifacts = artifacts;
         this.artifactCommands.setArtifacts(artifacts);
+        this.records.setArtifacts(artifacts);
+        this.queries.setArtifacts(artifacts);
     }
 
     /** Optional in preview; production supplies the configured S3-compatible store. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setArtifactStore(SoarArtifactStore artifactStore) {
-        this.artifactStore = artifactStore;
         this.artifactCommands.setArtifactStore(artifactStore);
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setRuntimeProperties(SoarRuntimeProperties runtimeProperties) {
-        this.runtimeProperties = runtimeProperties;
+        this.gates.setRuntimeProperties(runtimeProperties);
+        this.definitionPolicy.setRuntimeProperties(runtimeProperties);
     }
 
     /** Optional setter keeps compatibility/unit tests independent of the V14 vote projection. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setApprovalDecisions(SoarApprovalDecisionRepository approvalDecisions) {
-        this.approvalDecisions = approvalDecisions;
-        this.readModels.setApprovalDecisions(approvalDecisions);
         this.approvalCommands.setApprovalDecisions(approvalDecisions);
+        this.queries.setApprovalDecisions(approvalDecisions);
     }
 
     @Transactional
@@ -169,9 +128,8 @@ public class SoarService {
 
     /**
      * Filtered playbook listing used by operators and automation pickers.  The
-     * unfiltered path stays a database Page; tag/risk predicates are applied
-     * over the tenant-owned set so JSON tag semantics and the published risk
-     * summary remain exact on both PostgreSQL and H2.
+     * database applies exact tag tokens and the latest published numeric risk
+     * metadata before paging, with the same semantics on PostgreSQL and H2.
      */
     @Transactional(readOnly = true)
     public Page<Map<String, Object>> listPlaybooks(Pageable pageable, String status,
@@ -471,125 +429,15 @@ public class SoarService {
         return approvalCommands.expireApproval(id, now);
     }
 
+    /** Helpers run within the public facade's existing Spring transaction. */
     void enqueueSignal(SoarRunEntity run, String type, Map<String, Object> payload) {
-        if (signals == null) return;
-        Instant now = Instant.now();
-        String signalKey = signalKey(type, payload);
-        String encoded = write(payload);
-        try { SoarSignalPayload.parse(mapper, type, signalKey, encoded); }
-        catch (SoarSignalPayload.Invalid invalid) {
-            // Approval expiry deliberately commits ResponseStatusException;
-            // invalid signal creation must instead roll back the decision too.
-            throw com.socp.platform.error.exception.ApiException.badRequest("SOAR_INVALID_SIGNAL: " + invalid.getMessage());
-        }
-        java.util.Optional<SoarSignalOutboxEntity> existing = signals
-                .findByTenantIdAndRunIdAndSignalTypeAndSignalKey(
-                        run.getTenantId(), run.getId(), type, signalKey);
-        // Isolated compatibility tests and rows written by V10 may not expose
-        // the keyed projection. Reuse the legacy singleton only for the empty
-        // key; keyed gates must never overwrite one another.
-        if ((existing == null || existing.isEmpty()) && signalKey.isBlank()) {
-            existing = signals.findByTenantIdAndRunIdAndSignalType(run.getTenantId(), run.getId(), type);
-        }
-        SoarSignalOutboxEntity signal = (existing == null ? java.util.Optional.<SoarSignalOutboxEntity>empty() : existing)
-                .orElseGet(() -> {
-                    SoarSignalOutboxEntity created = new SoarSignalOutboxEntity();
-                    created.setId(UUID.randomUUID().toString()); created.setTenantId(run.getTenantId());
-                    created.setRunId(run.getId()); created.setSignalType(type); created.setSignalKey(signalKey);
-                    created.setAttempts(0);
-                    created.setCreatedAt(now); return created;
-                });
-        signal.setPayloadJson(encoded); signal.setStatus("PENDING");
-        signal.setNextAttemptAt(now); signal.setUpdatedAt(now); signals.save(signal);
+        eventWriter.enqueueSignal(run, type, payload);
     }
 
-    /**
-     * Signal delivery is at-least-once, but its durable business key must be
-     * gate-specific. The payload remains the source of truth for old workers;
-     * empty keys preserve compatibility with V10 rows and legacy signals.
-     */
-    private static String signalKey(String type, Map<String, Object> payload) {
-        if (payload == null) return "";
-        String field = switch (type == null ? "" : type.toUpperCase(Locale.ROOT)) {
-            case "APPROVAL" -> "approvalKey";
-            case "MANUAL_TASK", "UNKNOWN_RESOLUTION" -> "nodeId";
-            default -> "signalKey";
-        };
-        Object value = payload.get(field);
-        if (value == null && "APPROVAL".equalsIgnoreCase(type)) value = payload.get("approvalId");
-        return value == null ? "" : limit(String.valueOf(value).trim(), 255);
-    }
+    void requireControlPlane() { gates.requireControlPlane(); }
+    void requireEvaluation() { gates.requireEvaluation(); }
 
-
-
-    void validateConnections(String definitionJson, String tenant) {
-        definitionPolicy.validateConnections(definitionJson, tenant);
-    }
-
-    /** Per-connection readiness summary referenced by a definition. Used by the
-     * publish result (design 6.4); never treated as a live connectivity test. */
-    List<Map<String, Object>> connectionHealth(String definitionJson, String tenant) {
-        return definitionPolicy.connectionHealth(definitionJson, tenant);
-    }
-
-    record ApprovalContext(String actionRef, String inputHash, String targetSnapshotJson) {
-        private static ApprovalContext empty(String inputJson) {
-            return new ApprovalContext("", sha256(inputJson == null ? "" : inputJson), "{}");
-        }
-    }
-
-    /**
-     * Build the pre-dispatch approval evidence from the immutable published
-     * definition.  A high-risk run can contain several actions, therefore the
-     * snapshot carries every risky action and uses MULTIPLE as the summary
-     * actionRef instead of pretending that the first action is the only one.
-     */
-    ApprovalContext buildApprovalContext(String definitionJson, String inputJson) {
-        return definitionPolicy.buildApprovalContext(definitionJson, inputJson);
-    }
-
-    String approvalPolicyJson(String targetSnapshotJson) {
-        return definitionPolicy.approvalPolicyJson(targetSnapshotJson);
-    }
-
-    Map<String, Object> attemptView(SoarActionAttemptEntity attempt) {
-        return readModels.attemptView(attempt);
-    }
-
-    Map<String, Object> manualTaskView(SoarManualTaskEntity task) {
-        return readModels.manualTaskView(task);
-    }
-
-    @SuppressWarnings("unchecked")
-    Map<String, Object> readMap(String json) {
-        try { Map<String, Object> value = mapper.readValue(json == null ? "{}" : json, Map.class);
-            return value == null ? new LinkedHashMap<>() : new LinkedHashMap<>(value); }
-        catch (Exception ignored) { return new LinkedHashMap<>(); }
-    }
-
-    Object redact(Object value) {
-        if (value instanceof Map<?, ?> map) {
-            Map<String, Object> output = new LinkedHashMap<>();
-            map.forEach((key, item) -> {
-                String name = String.valueOf(key).toLowerCase(Locale.ROOT);
-                output.put(String.valueOf(key), name.contains("secret") || name.contains("token")
-                        || name.contains("password") || name.contains("authorization") || name.equals("cookie")
-                        ? "[REDACTED]" : redact(item));
-            }); return output;
-        }
-        if (value instanceof List<?> list) return list.stream().map(this::redact).toList();
-        return value;
-    }
-
-    /** Redact credential-shaped material even when an operator pasted it into
-     * free-text evidence/reason rather than a structured JSON field. */
-    static String redactFreeText(String value, int max) {
-        if (value == null) return "";
-        String safe = value.replaceAll("(?i)(bearer\\s+)[^\\s,;]+", "$1[REDACTED]")
-                .replaceAll("(?i)((?:secret|token|password|authorization|api[_-]?key)\\s*[:=]\\s*)[^\\s,;]+",
-                        "$1[REDACTED]");
-        return safe.length() <= max ? safe : safe.substring(0, max);
-    }
+    static String redactFreeText(String value, int max) { return SoarRedaction.freeText(value, max); }
 
     static Map<String, Object> castObjectMap(Map<?, ?> value) {
         Map<String, Object> result = new LinkedHashMap<>();
@@ -597,86 +445,6 @@ public class SoarService {
         return result;
     }
 
-    String shortHash(String value) {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(String.valueOf(value)
-                    .getBytes(StandardCharsets.UTF_8));
-            StringBuilder out = new StringBuilder(); for (int i = 0; i < 8; i++) out.append(String.format("%02x", digest[i]));
-            return out.toString();
-        } catch (Exception ignored) { return Integer.toHexString(String.valueOf(value).hashCode()); }
-    }
-
-    Map<String, Object> playbookView(SoarPlaybookEntity playbook) {
-        return readModels.playbookView(tenant(), playbook);
-    }
-
-    Map<String, Object> playbookView(SoarPlaybookEntity playbook, PlaybookVersionEntity draft) {
-        return readModels.playbookView(playbook, draft);
-    }
-
-    Map<String, Object> versionView(PlaybookVersionEntity version) {
-        return readModels.versionView(tenant(), version);
-    }
-
-    Map<String, Object> runView(SoarRunEntity run) {
-        return readModels.runView(run);
-    }
-
-    Map<String, Object> nodeView(SoarNodeRunEntity node) {
-        return readModels.nodeView(node);
-    }
-
-    Map<String, Object> artifactView(SoarArtifactEntity artifact) {
-        return readModels.artifactView(artifact);
-    }
-
-    Map<String, Object> eventView(SoarRunEventEntity event) {
-        return readModels.eventView(event);
-    }
-
-    Map<String, Object> approvalView(SoarApprovalEntity approval) {
-        return readModels.approvalView(tenant(), approval);
-    }
-
-    // No @Transactional here on purpose: this facade hands the raw target (not a
-    // proxy) to the package-private command services, so an annotation on this
-    // method would never be intercepted. The FOR UPDATE below is only durable
-    // inside the caller's transaction — every public facade method that reaches
-    // this path is @Transactional and is invoked through the Spring proxy.
-    protected void appendEvent(String runId, String type, String actor, String summary, Map<String, Object> detail) {
-        String tenant = tenant();
-        // Event sequence numbers are part of the public SSE cursor contract.
-        // Lock the owning run before reading the current tail so concurrent
-        // activity completions cannot allocate the same (tenant, run, seq).
-        java.util.Optional<SoarRunEntity> locked = runs.findByTenantIdAndIdForUpdate(tenant, runId);
-        if (locked == null || locked.isEmpty()) locked = runs.findByTenantIdAndId(tenant, runId);
-        (locked == null ? java.util.Optional.<SoarRunEntity>empty() : locked)
-                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "run not found"));
-        SoarRunEventEntity event = new SoarRunEventEntity();
-        event.setId(UUID.randomUUID().toString());
-        event.setTenantId(tenant);
-        event.setRunId(runId);
-        long previousSequence = events.findTopByTenantIdAndRunIdOrderBySequenceNoDesc(tenant, runId)
-                .map(SoarRunEventEntity::getSequenceNo)
-                .orElseGet(() -> {
-                    List<SoarRunEventEntity> legacyTail = events.findByTenantIdAndRunIdOrderBySequenceNoAsc(tenant, runId);
-                    return legacyTail.isEmpty() ? 0L : legacyTail.get(legacyTail.size() - 1).getSequenceNo();
-                });
-        event.setSequenceNo(previousSequence + 1);
-        event.setEventType(type);
-        event.setActor(actor);
-        event.setSummary(redactFreeText(limit(summary, 1024), 1024));
-        event.setDetailJson(write(redact(detail == null ? Map.of() : detail)));
-        event.setCreatedAt(Instant.now());
-        events.save(event);
-    }
-
-    /**
-     * A run projection is one-way once it has a terminal outcome.  Keep this
-     * helper in the control-plane service (rather than relying on callers to
-     * remember the enum list) so late human/API requests cannot resurrect a
-     * PARTIALLY_SUCCEEDED run either.
-     */
     static boolean terminalRunProjection(SoarRunEntity run) {
         return run != null && run.getStatus() != null && Set.of(
                 SoarRunStatus.SUCCEEDED.name(), SoarRunStatus.PARTIALLY_SUCCEEDED.name(),
@@ -684,85 +452,6 @@ public class SoarService {
                 SoarRunStatus.CANCELLED.name(), SoarRunStatus.SUPPRESSED.name(),
                 SoarRunStatus.DEAD.name()).contains(run.getStatus());
     }
-
-    SoarPlaybookEntity playbook(String id) {
-        return playbooks.findByTenantIdAndId(tenant(), id)
-                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_PLAYBOOK_NOT_FOUND", "playbook not found"));
-    }
-
-    /**
-     * Validate the immutable SUB_PLAYBOOK call graph at the publication
-     * boundary. Runtime resolution remains a defensive check, but it must not
-     * be the first place where existence, publication state or recursion is
-     * discovered. Inline definitions are intentionally rejected for published
-     * versions: a child is a versioned, tenant-scoped artifact and therefore
-     * has to be pinned before it can be executed.
-     */
-    void validateSubPlaybookGraph(String tenant, PlaybookVersionEntity rootVersion) {
-        definitionPolicy.validateSubPlaybookGraph(tenant, rootVersion);
-    }
-
-    PlaybookVersionEntity version(String playbookId, int versionNo) {
-        playbook(playbookId);
-        return versions.findByTenantIdAndPlaybookIdAndVersionNo(tenant(), playbookId, versionNo)
-                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_VERSION_NOT_FOUND", "version not found"));
-    }
-
-    SoarRunEntity run(String id) {
-        return runs.findByTenantIdAndId(tenant(), id)
-                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "run not found"));
-    }
-
-    SoarArtifactEntity artifact(String id) {
-        if (artifacts == null) {
-            throw error(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_ARTIFACT_STORAGE_UNAVAILABLE",
-                    "artifact storage adapter is not configured");
-        }
-        SoarArtifactEntity value = artifacts.findByTenantIdAndId(tenant(), id)
-                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_ARTIFACT_NOT_FOUND", "artifact not found"));
-        if (value.getExpiresAt() != null && value.getExpiresAt().isBefore(Instant.now())) {
-            throw error(HttpStatus.GONE, "SOAR_ARTIFACT_EXPIRED", "artifact has expired");
-        }
-        return value;
-    }
-
-    /** Package-visible rollout gates used by the automation/control-plane
-     * services as well as this service.  A null properties object is retained
-     * for focused compatibility tests that construct the service directly. */
-    void requireControlPlane() {
-        if (runtimeProperties != null && !runtimeProperties.isControlPlaneEnabled()) {
-            throw error(HttpStatus.GONE, "SOAR_CONTROL_PLANE_DISABLED",
-                    "SOAR control plane is disabled for this deployment");
-        }
-    }
-
-    void requireEvaluation() {
-        requireExecution(tenant());
-        if (runtimeProperties != null && !runtimeProperties.isEvaluationEnabled()) {
-            throw error(HttpStatus.GONE, "SOAR_EVALUATION_DISABLED",
-                    "SOAR event evaluation is disabled for this deployment");
-        }
-    }
-
-    void requireExecution(String tenant) {
-        requireControlPlane();
-        if (runtimeProperties == null) return;
-        if (!runtimeProperties.isExecutionEnabled()) {
-            throw error(HttpStatus.SERVICE_UNAVAILABLE, "SOAR_EXECUTION_DISABLED",
-                    "SOAR execution is paused by the deployment feature flag");
-        }
-        String configured = runtimeProperties.getExecutionTenantAllowlist();
-        if (configured == null || configured.isBlank()) return;
-        boolean allowed = java.util.Arrays.stream(configured.split(","))
-                .map(String::trim).filter(value -> !value.isBlank())
-                .anyMatch(value -> value.equals(tenant));
-        if (!allowed) {
-            throw error(HttpStatus.FORBIDDEN, "SOAR_TENANT_NOT_ENABLED",
-                    "SOAR execution is not enabled for this tenant");
-        }
-    }
-
-    String tenant() { return TenantContext.require(); }
 
     static String actor() {
         return AuthenticatedIdentityContext.current()
@@ -774,11 +463,6 @@ public class SoarService {
         if (map == null || map.get(key) == null) return null;
         String value = String.valueOf(map.get(key)).trim();
         return value.isBlank() ? null : limit(value, 255);
-    }
-
-    String write(Object value) {
-        try { return mapper.writeValueAsString(value); }
-        catch (JsonProcessingException failure) { throw new IllegalArgumentException("cannot serialize SOAR data", failure); }
     }
 
     static String sha256(String value) {
@@ -797,56 +481,6 @@ public class SoarService {
         }
     }
 
-    JsonNode readTree(String value) {
-        if (value == null || value.isBlank()) return mapper.createObjectNode();
-        try { return mapper.readTree(value); }
-        catch (JsonProcessingException ignored) { return mapper.createObjectNode(); }
-    }
-
-    /** Parse persisted JSON through the structured redactor before exposing it. */
-    private JsonNode redactedTree(String value) {
-        try {
-            Object parsed = mapper.readValue(value == null || value.isBlank() ? "{}" : value, Object.class);
-            return mapper.valueToTree(redact(parsed));
-        } catch (Exception ignored) {
-            return mapper.createObjectNode();
-        }
-    }
-
-    private List<String> readList(String value) {
-        try {
-            JsonNode node = mapper.readTree(value == null ? "[]" : value);
-            List<String> result = new ArrayList<>();
-            if (node != null && node.isArray()) node.forEach(item -> result.add(item.asText()));
-            return result;
-        } catch (JsonProcessingException ignored) { return List.of(); }
-    }
-
-    boolean hasTag(SoarPlaybookEntity playbook, String requested) {
-        return readList(playbook.getTagsJson()).stream()
-                .anyMatch(tag -> requested.equalsIgnoreCase(tag));
-    }
-
-    boolean riskMatches(SoarPlaybookEntity playbook, String requested) {
-        String risk = requested.toUpperCase(Locale.ROOT);
-        List<PlaybookVersionEntity> history = versions.findByTenantIdAndPlaybookIdOrderByVersionNoDesc(
-                tenant(), playbook.getId());
-        PlaybookVersionEntity published = history.stream()
-                .filter(version -> SoarPlaybookVersionStatus.PUBLISHED.name().equals(version.getStatus()))
-                .findFirst().orElse(null);
-        if (published == null) return "NONE".equals(risk);
-        JsonNode summary = readTree(published.getRiskSummaryJson());
-        int high = summary.path("highRiskActionCount").asInt(0);
-        int actions = summary.path("actionCount").asInt(0);
-        return switch (risk) {
-            case "HIGH", "CRITICAL" -> high > 0;
-            case "LOW", "READ_ONLY" -> high == 0;
-            case "MEDIUM" -> high == 0 && actions > 0;
-            case "NONE" -> actions == 0;
-            default -> false;
-        };
-    }
-
     static String normalizeFilter(String value) {
         if (value == null) return null;
         String normalized = value.trim();
@@ -863,8 +497,6 @@ public class SoarService {
         if (value.length() <= max) return value;
         return value.substring(0, max);
     }
-
-    private static String nullSafe(String value) { return value == null ? "" : value; }
 
     static ResponseStatusException error(HttpStatus status, String code, String message) {
         return new ResponseStatusException(status, code + ": " + message);

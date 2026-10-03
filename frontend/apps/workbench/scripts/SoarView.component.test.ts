@@ -8,7 +8,7 @@ import { WORKBENCH_STATE } from '../src/app/workbenchState'
 
 const mocks = vi.hoisted(() => ({
   listPlaybooks: vi.fn(),
-  listRuns: vi.fn(),
+  listRuns: vi.fn(), getRun: vi.fn(), listNodes: vi.fn(), listEvents: vi.fn(), listArtifacts: vi.fn(),
   listTemplates: vi.fn(),
   listApprovals: vi.fn(),
   approve: vi.fn(),
@@ -42,6 +42,10 @@ describe('soar approvals lifecycle', () => {
     Object.values(mocks).forEach(mock => mock.mockReset())
     mocks.listPlaybooks.mockResolvedValue(emptyPage)
     mocks.listRuns.mockResolvedValue(emptyPage)
+    mocks.getRun.mockResolvedValue({ runId: 'run-1', status: 'SUCCEEDED', subject: { type: 'alert', id: 'alarm-1' }, playbookVersion: 2, definitionHash: 'hash-v2' })
+    mocks.listNodes.mockResolvedValue([])
+    mocks.listEvents.mockResolvedValue(emptyPage)
+    mocks.listArtifacts.mockResolvedValue([])
     mocks.listTemplates.mockResolvedValue([])
     mocks.listManualTasksPage.mockResolvedValue(emptyPage)
     mocks.approve.mockResolvedValue({ id: 'approval-1', status: 'APPROVED' })
@@ -52,6 +56,25 @@ describe('soar approvals lifecycle', () => {
 
   afterEach(() => {
     document.body.textContent = ''
+  })
+
+  it('loads immutable target, parameters, policy and origin before allowing approval', async () => {
+    let finish!: (value: unknown[]) => void
+    mocks.listNodes.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    mocks.listApprovals.mockResolvedValue([{ id: 'approval-1', runId: 'run-1', nodeRunId: 'node-1', actionRef: 'firewall.block', status: 'PENDING', requestedBy: 'analyst', targetSnapshot: { ip: '192.0.2.1' }, inputHash: 'exact-hash', approvalPolicy: { mode: 'two-person' } }])
+    const { wrapper } = await mountSoar('/soar?tab=approvals&approvalId=approval-1')
+    const view = wrapper.vm as unknown as { approvalModal: { reason: string }; submitApprovalDecision: () => Promise<void> }
+    view.approvalModal.reason = 'Reviewed'
+    await view.submitApprovalDecision()
+    expect(mocks.approve).not.toHaveBeenCalled()
+    finish([{ id: 'node-1', input: { target: '192.0.2.1', duration: 60 } }]); await flushPromises()
+    expect(document.querySelector('.soar-approval-dialog-body')?.textContent).toContain('192.0.2.1')
+    expect(document.querySelector('.soar-approval-dialog-body')?.textContent).toContain('duration')
+    expect(document.querySelector('.soar-approval-dialog-body')?.textContent).toContain('two-person')
+    expect(document.querySelector('.soar-approval-dialog-body')?.textContent).toContain('exact-hash')
+    await view.submitApprovalDecision()
+    expect(mocks.approve).toHaveBeenCalledWith('approval-1', 'Reviewed')
+    wrapper.unmount()
   })
 
   it('refetches the approval list itself after a decision is submitted', async () => {
@@ -121,6 +144,28 @@ describe('soar approvals lifecycle', () => {
     wrapper.unmount()
   })
 
+  it.each(['runId=run-1', 'alarmId=alarm-1', 'caseId=case-1'])('preserves an explicit catalog tab across route history with %s context', async context => {
+    const { wrapper, router } = await mountSoar(`/soar?${context}`)
+    try {
+      expect(wrapper.get('#tab-runs').attributes('aria-selected')).toBe('true')
+      await wrapper.get('#tab-playbooks').trigger('click')
+      await flushPromises()
+      const catalogQuery = { ...Object.fromEntries(new URLSearchParams(context)), tab: 'playbooks' }
+      expect(router.currentRoute.value.query).toEqual(catalogQuery)
+      expect(wrapper.get('#tab-playbooks').attributes('aria-selected')).toBe('true')
+      await router.push(`/soar?${context}&tab=runs`)
+      await flushPromises()
+      expect(wrapper.get('#tab-runs').attributes('aria-selected')).toBe('true')
+      router.back()
+      await flushPromises()
+      expect(router.currentRoute.value.query).toEqual(catalogQuery)
+      expect(wrapper.get('#tab-playbooks').attributes('aria-selected')).toBe('true')
+      router.forward()
+      await flushPromises()
+      expect(wrapper.get('#tab-runs').attributes('aria-selected')).toBe('true')
+    } finally { wrapper.unmount() }
+  })
+
   it('navigates beyond 100 playbooks and uses the authoritative retained-run summary', async () => {
     const catalog = Array.from({ length: 137 }, (_, index) => ({
       id: `pb-${index}`, name: `Playbook ${index}`, status: 'ACTIVE', tags: [],
@@ -129,7 +174,8 @@ describe('soar approvals lifecycle', () => {
     mocks.listPlaybooks.mockImplementation((page: number, size: number) => Promise.resolve({
       page, size, total: catalog.length, totalPages: Math.ceil(catalog.length / size), items: catalog.slice(page * size, (page + 1) * size),
     }))
-    const { wrapper } = await mountSoar('/soar')
+    mocks.listRuns.mockResolvedValue({ ...emptyPage, total: 1, totalPages: 1, items: [{ runId: 'run-1', status: 'SUCCEEDED' }] })
+    const { wrapper, router } = await mountSoar('/soar')
     expect(mocks.listPlaybooks.mock.calls[0].slice(0, 2)).toEqual([0, 25])
     expect(wrapper.findAll('.soar-playbook-name')).toHaveLength(25)
     wrapper.findComponent(SoarCatalogPager).vm.$emit('change', 5)
@@ -139,6 +185,17 @@ describe('soar approvals lifecycle', () => {
     expect(wrapper.text()).toContain('2025-01-01T00:00:00Z')
     expect(wrapper.findAll('.soar-playbook-name')).toHaveLength(12)
     expect(mocks.listRuns).not.toHaveBeenCalled()
+    await wrapper.get('#tab-runs').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.runId).toBe('run-1')
+    expect(wrapper.find('.soar-run-summary').text()).toContain('run-1')
+    await wrapper.get('#tab-playbooks').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('#tab-playbooks').attributes('aria-selected')).toBe('true')
+    expect(router.currentRoute.value.query).toEqual({ tab: 'playbooks', runId: 'run-1' })
+    expect(wrapper.get('#pane-playbooks').isVisible()).toBe(true)
+    expect(wrapper.findAll('.soar-playbook-name')[0].text()).toBe('Playbook 125')
+    expect(wrapper.findComponent(SoarCatalogPager).props('page')).toBe(5)
     wrapper.findComponent(SoarCatalogPager).vm.$emit('change', 0)
     await flushPromises()
     expect(wrapper.findAll('.soar-playbook-name')[0].text()).toBe('Playbook 0')

@@ -76,6 +76,7 @@ class CaseTimelinePostgresTest {
     @Autowired private EntityManagerFactory entityManagerFactory;
     @Autowired private CaseController controller;
     @Autowired private CaseService caseService;
+    @Autowired private com.socp.incident.web.service.CaseWorkspaceService workspace;
     @Autowired private JdbcTemplate jdbc;
     @Autowired private AuditSink auditSink;
     @Autowired private PlatformTransactionManager transactionManager;
@@ -232,6 +233,31 @@ class CaseTimelinePostgresTest {
         return count == null ? 0 : count;
     }
 
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void workspaceConcurrentClaimKeepsOneOwnerAndOneVisibleTransition() throws Exception {
+        Case incident = store.save(Case.create("claim race", "host-claim", "HIGH"));
+        CyclicBarrier start = new CyclicBarrier(2);
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var tasks = java.util.List.of("alice", "bob").stream().map(actor -> executor.submit(() -> {
+                TenantContext.set("tenant-a");
+                try {
+                    start.await();
+                    workspace.claim(incident.id(), actor, incident.rowVersion(), "claim-" + actor);
+                    return true;
+                } catch (com.socp.platform.error.exception.ApiException conflict) {
+                    assertThat(conflict.getCode()).isEqualTo(409);
+                    return false;
+                } finally { TenantContext.clear(); }
+            })).toList();
+            int winners = 0;
+            for (var task : tasks) if (task.get(15, java.util.concurrent.TimeUnit.SECONDS)) winners++;
+            assertThat(winners).isEqualTo(1);
+        }
+        assertThat(store.getMetadata(incident.id()).assignee()).isIn("alice", "bob");
+        assertThat(store.timeline(incident.id(), 0, 10).getTotalElements()).isEqualTo(1);
+    }
+
     @TestConfiguration
     @EnableAspectJAutoProxy
     static class ProxyConfiguration {
@@ -246,6 +272,13 @@ class CaseTimelinePostgresTest {
         @Bean CaseService caseService(CaseStore store, AlarmCaseLinkRepository alarms,
                                      IncidentAggregationLock lock) {
             return new CaseService(store, alarms, lock);
+        }
+        @Bean com.socp.incident.web.service.CaseWorkspaceService workspace(CaseStore store,
+                com.socp.incident.web.persistence.repository.CaseRepository cases,
+                com.socp.incident.web.persistence.repository.CaseMutationRepository receipts,
+                jakarta.persistence.EntityManager entityManager) {
+            return new com.socp.incident.web.service.CaseWorkspaceService(store, cases, receipts, entityManager,
+                    new com.fasterxml.jackson.databind.ObjectMapper());
         }
         @Bean CaseController caseController(CaseService service) {
             return new CaseController(service, 500,

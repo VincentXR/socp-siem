@@ -4,6 +4,7 @@ import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import EndpointsView from '../src/views/EndpointsView.vue'
 import { translate } from '../src/i18n'
+import MetricCard from '../src/components/MetricCard.vue'
 import PagerBar from '../src/components/PagerBar.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import type { Endpoint } from '../src/api/models'
@@ -23,6 +24,7 @@ let wrapper: ReturnType<typeof mount>
 async function open(path = '/endpoints?endpointId=outside', role = 'analyst') {
   const router = createRouter({ history: createMemoryHistory(), routes: [
     { name: 'endpoints', path: '/endpoints', component: EndpointsView },
+    { name: 'search', path: '/search', component: { template: '<p>Search</p>' } },
     { name: 'assets', path: '/assets', component: { template: '<p>Assets</p>' } },
   ] })
   await router.push(path); await router.isReady()
@@ -50,6 +52,18 @@ describe('endpoint investigation', () => {
     mocks.confirm.mockResolvedValue('confirm')
   })
   afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
+
+  it('applies effective offline filtering and opens the exact retained event', async () => {
+    const router = await open('/endpoints?status=OFFLINE&page=2&endpointId=outside')
+    expect(mocks.list).toHaveBeenLastCalledWith(2, 10, undefined, expect.anything(), 'OFFLINE')
+    wrapper.findAllComponents(MetricCard).find(card => card.props('tone') === 'success')!.vm.$emit('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query.status).toBe('ONLINE')
+    expect(mocks.list.mock.calls.at(-1)![0]).toBe(1)
+    await click('查看匹配事件', '.el-drawer')
+    expect(router.currentRoute.value.name).toBe('search')
+    expect(router.currentRoute.value.query).toEqual({ eventId: 'outside-event', range: 'all' })
+  })
 
   it('opens off-page details and pages both associations without global prefix fetches', async () => {
     const router = await open('/endpoints?page=2&q=unrelated&endpointId=outside')
@@ -159,6 +173,6 @@ describe('endpoint investigation', () => {
     await router.push('/endpoints?page=3&q=after&endpointId=outside'); await flushPromises()
     await new Promise(resolve => setTimeout(resolve, 400)); await flushPromises()
     expect(router.currentRoute.value.query.page).toBe('3')
-    expect(mocks.list).toHaveBeenLastCalledWith(3, 10, 'after', expect.anything())
+    expect(mocks.list).toHaveBeenLastCalledWith(3, 10, 'after', expect.anything(), undefined)
   })
 })

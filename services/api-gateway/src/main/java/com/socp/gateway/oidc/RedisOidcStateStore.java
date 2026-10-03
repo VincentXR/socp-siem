@@ -18,7 +18,10 @@ class RedisOidcStateStore implements OidcStateStore {
 
     private static final DefaultRedisScript<String> CONSUME = new DefaultRedisScript<>("""
             local value = redis.call('GET', KEYS[1])
-            if value then redis.call('DEL', KEYS[1]) end
+            if not value then return nil end
+            local entry = cjson.decode(value)
+            if entry.browserBinding ~= ARGV[1] then return nil end
+            redis.call('DEL', KEYS[1])
             return value
             """, String.class);
 
@@ -39,9 +42,9 @@ class RedisOidcStateStore implements OidcStateStore {
     }
 
     @Override
-    public Mono<Entry> consume(String state) {
-        if (!validState(state)) return Mono.empty();
-        return redis.execute(CONSUME, List.of(key(state)))
+    public Mono<Entry> consume(String state, String browserBinding) {
+        if (!validState(state) || browserBinding == null || browserBinding.isBlank()) return Mono.empty();
+        return redis.execute(CONSUME, List.of(key(state)), List.of(browserBinding))
                 .next()
                 .flatMap(value -> value == null || value.isBlank() ? Mono.empty() : Mono.just(deserialize(value)));
     }

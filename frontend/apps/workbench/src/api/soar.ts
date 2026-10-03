@@ -1,3 +1,4 @@
+import { withQuery } from '../lib/query'
 import { del, get, patch, post, put, type ApiRequestOptions } from './core'
 
 export interface SoarPlaybook {
@@ -15,6 +16,7 @@ export interface SoarVersion {
 export interface SoarRun {
   runId: string; requestId: string; playbookId: string; playbookVersionId: string
   playbookVersion: number; status: string; triggerType: string; definitionHash: string
+  subject?: { type: string; id: string }; originAlarmId?: string; originCaseId?: string; requestedBy?: string
   temporalWorkflowId?: string; temporalRunId?: string; errorCode?: string; errorMessage?: string
   /** True when the API returned an existing run for an idempotent request. */
   duplicate?: boolean
@@ -22,7 +24,7 @@ export interface SoarRun {
 }
 export interface SoarApproval {
   id: string; runId: string; approvalKey?: string; nodeRunId?: string; actionRef?: string
-  inputHash?: string; targetSnapshot?: unknown; requiredApprovals?: number; approvedVotes?: number
+  inputHash?: string; targetSnapshot?: unknown; approvalPolicy?: unknown; requiredApprovals?: number; approvedVotes?: number
   decisions?: Array<{ id: string; actor: string; decision: string; reason?: string; createdAt?: string }>
   status: string; requestedBy: string; approver?: string
   reason?: string; decisionReason?: string; createdAt?: string; expiresAt?: string; decidedAt?: string
@@ -61,8 +63,8 @@ export const createPlaybook = (p: { name: string; description?: string; tags?: s
   post<SoarPlaybook>('/soar-web/api/playbooks', p)
 export const importPlaybook = (p: { name: string; description?: string; tags?: string[]; definition: unknown; layout?: unknown }) =>
   post<SoarVersion & { imported?: boolean }>('/soar-web/api/playbooks/import', p)
-export const listRuns = (page = 0, size = 20, options?: ApiRequestOptions) =>
-  get<SoarPage<SoarRun>>(`/soar-web/api/runs?page=${page}&size=${size}`, options)
+export const listRuns = (page = 0, size = 20, options?: ApiRequestOptions, filters: { alarmId?: string; caseId?: string; q?: string; status?: string } = {}) =>
+  get<SoarPage<SoarRun>>(withQuery('/soar-web/api/runs', { page, size, ...filters }), options)
 export const queueRun = (p: { requestId: string; playbookVersionId: string; subject?: Record<string, unknown>; inputs?: Record<string, unknown> }) =>
   post<SoarRun>('/soar-web/api/runs', p)
 export const cancelWorkflowRun = (id: string, reason?: string) =>
@@ -79,14 +81,14 @@ export const validateVersion = (playbookId: string, version: number) =>
   post<Record<string, unknown>>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}/validate`)
 export const dryRunVersion = (playbookId: string, version: number, subject?: Record<string, unknown>, inputs?: Record<string, unknown>) =>
   post<Record<string, unknown>>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}/dry-run`, { subject, inputs })
-export const getPlaybook = (id: string) => get<SoarPlaybook>(`/soar-web/api/playbooks/${encodeURIComponent(id)}`)
+export const getPlaybook = (id: string, options?: ApiRequestOptions) => get<SoarPlaybook>(`/soar-web/api/playbooks/${encodeURIComponent(id)}`, options)
 export const updatePlaybook = (id: string, changes: { name?: string; description?: string; tags?: string[]; status?: 'ACTIVE' | 'ARCHIVED'; rowVersion?: number }) =>
   patch<SoarPlaybook>(`/soar-web/api/playbooks/${encodeURIComponent(id)}`, changes)
 export const listVersions = (playbookId: string, options?: ApiRequestOptions) => get<SoarVersion[]>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions`, options)
 export const createVersion = (playbookId: string) => post<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions`)
 export const createDraft = (playbookId: string) => post<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/drafts`)
-export const getVersion = (playbookId: string, version: number) =>
-  get<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}`)
+export const getVersion = (playbookId: string, version: number, options?: ApiRequestOptions) =>
+  get<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}`, options)
 export const saveVersion = (playbookId: string, version: number, definition: unknown, layout?: unknown, rowVersion?: number) =>
   put<SoarVersion>(`/soar-web/api/playbooks/${encodeURIComponent(playbookId)}/versions/${version}`, { definition, layout, rowVersion })
 export const publishVersion = (playbookId: string, version: number) =>

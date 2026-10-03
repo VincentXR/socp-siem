@@ -47,6 +47,13 @@ class EndpointStoreTest {
             String tenant = invocation.getArgument(0);
             return rows.values().stream().filter(row -> tenant.equals(row.getTenantId())).toList();
         });
+        when(repo.findByTenantId(anyString(), any(org.springframework.data.domain.Pageable.class))).thenAnswer(invocation -> {
+            String tenant = invocation.getArgument(0);
+            org.springframework.data.domain.Pageable pageable = invocation.getArgument(1);
+            var matched = rows.values().stream().filter(row -> tenant.equals(row.getTenantId())).toList();
+            return new org.springframework.data.domain.PageImpl<>(matched.stream().skip(pageable.getOffset())
+                    .limit(pageable.getPageSize()).toList(), pageable, matched.size());
+        });
         when(repo.countByTenantId(anyString())).thenAnswer(invocation -> rows.values().stream()
                 .filter(row -> invocation.getArgument(0, String.class).equals(row.getTenantId())).count());
         when(repo.countOnlineByTenantId(anyString(), any(Instant.class))).thenAnswer(invocation -> rows.values().stream()
@@ -84,23 +91,23 @@ class EndpointStoreTest {
         store.save(shared);
 
         TenantContext.set("tenant-b");
-        assertTrue(store.list().isEmpty());
+        assertTrue(store.page(1, 20, "").getContent().isEmpty());
         assertNull(store.heartbeat("shared-id"));
         store.save(new Endpoint("shared-id", "tenant-b-host", "10.2.0.1", "Linux",
                 "1.0", "ONLINE", Instant.now()));
 
         TenantContext.set("tenant-a");
         assertEquals("tenant-a-host", store.heartbeat("shared-id").hostname());
-        assertEquals(1, store.list().size());
+        assertEquals(1, store.page(1, 20, "").getContent().size());
     }
 
     @Test
     void seedsThreeAgents() {
         EndpointStore store = freshStore();
 
-        assertEquals(3, store.list().size());
-        assertTrue(store.list().stream().allMatch(e -> "ONLINE".equals(e.status())));
-        assertTrue(store.list().stream().anyMatch(e -> "db-master".equals(e.hostname())));
+        assertEquals(3, store.page(1, 20, "").getContent().size());
+        assertTrue(store.page(1, 20, "").getContent().stream().allMatch(e -> "ONLINE".equals(e.status())));
+        assertTrue(store.page(1, 20, "").getContent().stream().anyMatch(e -> "db-master".equals(e.hostname())));
     }
 
     @Test
@@ -131,7 +138,7 @@ class EndpointStoreTest {
 
         assertTrue(store.delete(e.id()));
         assertFalse(store.delete(e.id()));
-        assertEquals(3, store.list().size(), "只剩种子端点");
+        assertEquals(3, store.page(1, 20, "").getContent().size(), "只剩种子端点");
     }
 
     @Test
