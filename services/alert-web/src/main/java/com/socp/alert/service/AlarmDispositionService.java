@@ -8,6 +8,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.socp.alert.domain.AlarmState;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.AuthenticatedIdentity;
 import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
@@ -20,12 +21,12 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -36,7 +37,7 @@ import java.util.Set;
  * <p>The database is the sole authority, so every instance observes the same
  * disposition state and a failed write cannot leak into a process-local view.</p>
  *
- * <p>状态机：OPEN → INVESTIGATING → RESOLVED / CLOSED（可回退）。
+ * <p>状态机见 {@link AlarmState}：非法跳转返回 409 并列出当前合法目标。
  */
 @Service
 public class AlarmDispositionService {
@@ -50,6 +51,13 @@ public class AlarmDispositionService {
         /** Compatibility constructor for callers that predate disposition tags. */
         public Disposition(String status, String assignee, List<Note> notes) {
             this(status, assignee, notes, List.of());
+        }
+
+        @com.fasterxml.jackson.annotation.JsonProperty
+        public List<String> allowedTransitions() {
+            return AlarmState.from(status).map(current -> Arrays.stream(AlarmState.values())
+                    .filter(target -> target == current || current.canMoveTo(target))
+                    .map(Enum::name).toList()).orElse(List.of());
         }
 
         public record Note(String author, String content, Instant at) {
@@ -69,29 +77,37 @@ public class AlarmDispositionService {
     };
 
     private final DispositionRepository repo;
+    private final com.socp.alert.persistence.repository.AlarmRepository alarms;
 
-    public AlarmDispositionService(DispositionRepository repo) {
+    @org.springframework.beans.factory.annotation.Autowired
+    public AlarmDispositionService(DispositionRepository repo,
+            com.socp.alert.persistence.repository.AlarmRepository alarms) {
         this.repo = repo;
+        this.alarms = alarms;
+    }
+
+    /** Focused legacy unit-test constructor; production always resolves the alarm. */
+    public AlarmDispositionService(DispositionRepository repo) {
+        this(repo, null);
     }
 
     @Transactional(readOnly = true)
     public Disposition get(String alarmId) {
         return repo.findByAlarmIdAndTenantId(alarmId, tenant())
                 .map(AlarmDispositionService::toDisposition)
-                .orElseGet(() -> new Disposition("OPEN", null, List.of()));
+                .orElseGet(() -> toDisposition(newRow(alarmId, tenant())));
     }
 
     @Transactional
     public Disposition setStatus(String alarmId, String status) {
-        String s = status == null ? "" : status.trim().toUpperCase(Locale.ROOT);
-        if (!List.of("OPEN", "INVESTIGATING", "RESOLVED", "CLOSED").contains(s)) {
-            throw ApiException.badRequest("非法状态: " + status + "（可选 OPEN/INVESTIGATING/RESOLVED/CLOSED）");
-        }
+        AlarmState target = requireState(status);
         Disposition cur = currentForUpdate(alarmId);
-        Disposition next = new Disposition(s, cur.assignee(), appendHistory(cur, "Status: " + cur.status() + " → " + s), cur.tags());
         // Deterministic idempotency: re-applying the current status is a no-op, so a
         // retried or duplicated request neither rewrites the row nor churns updated_at.
-        if (s.equals(cur.status())) return cur;
+        if (target.name().equals(cur.status())) return cur;
+        requireLegalMove(cur.status(), target);
+        Disposition next = new Disposition(target.name(), cur.assignee(),
+                appendHistory(cur, "Status: " + cur.status() + " → " + target.name()), cur.tags());
         return persist(alarmId, next);
     }
 
@@ -189,6 +205,7 @@ public class AlarmDispositionService {
             throw ApiException.badRequest("alarmIds must contain at least one non-blank id");
         }
         String normalizedStatus = normalizeOptionalStatus(status);
+        AlarmState targetState = normalizedStatus == null ? null : requireState(normalizedStatus);
         String normalizedAssignee = normalizeOptional(assignee);
         String normalizedReason = normalizeOptional(reason);
         if (normalizedStatus == null && normalizedAssignee == null && normalizedReason == null) {
@@ -202,6 +219,11 @@ public class AlarmDispositionService {
         normalizedIds.stream().sorted(Comparator.naturalOrder()).forEach(alarmId -> {
             DispositionEntity row = lockedRow(alarmId);
             Disposition current = toDisposition(row);
+            // The batch is one transaction, so a single illegal move rolls the whole
+            // selection back rather than half-applying a triage decision.
+            if (targetState != null && !targetState.name().equals(current.status())) {
+                requireLegalMove(current.status(), targetState);
+            }
             boolean reasonPending = reasonKey != null
                     && !readNoteKeys(row.getNoteKeys()).contains(reasonKey);
             List<Disposition.Note> notes = new ArrayList<>(current.notes());
@@ -271,13 +293,22 @@ public class AlarmDispositionService {
     /** The row locked for update, or an unsaved new one. */
     private DispositionEntity lockedRow(String alarmId) {
         String tenant = tenant();
+        // Lock the durable parent even before a disposition exists. This fences
+        // first-note/assign/status races across replicas without a second transaction.
+        if (alarms != null) alarms.findForDispositionUpdate(tenant, alarmId)
+                .orElseThrow(() -> ApiException.notFound("Alarm does not exist: " + alarmId));
         return repo.findForUpdate(alarmId, tenant).orElseGet(() -> newRow(alarmId, tenant));
     }
 
-    private static DispositionEntity newRow(String alarmId, String tenant) {
+    private DispositionEntity newRow(String alarmId, String tenant) {
         DispositionEntity created = new DispositionEntity();
         created.setAlarmId(alarmId);
         created.setTenantId(tenant);
+        if (alarms != null) {
+            var alarm = alarms.findByTenantIdAndId(tenant, alarmId)
+                    .orElseThrow(() -> ApiException.notFound("Alarm does not exist: " + alarmId));
+            created.setStatus(alarm.getStatus() == null ? "OPEN" : alarm.getStatus());
+        }
         return created;
     }
 
@@ -360,12 +391,27 @@ public class AlarmDispositionService {
 
     private static String normalizeOptionalStatus(String status) {
         String normalized = normalizeOptional(status);
-        if (normalized == null) return null;
-        normalized = normalized.toUpperCase(Locale.ROOT);
-        if (!List.of("OPEN", "INVESTIGATING", "RESOLVED", "CLOSED").contains(normalized)) {
-            throw ApiException.badRequest("非法状态: " + status + "（可选 OPEN/INVESTIGATING/RESOLVED/CLOSED）");
+        return normalized == null ? null : requireState(normalized).name();
+    }
+
+    /** Reject an unknown status vocabulary before any row is locked. */
+    private static AlarmState requireState(String status) {
+        return AlarmState.from(status).orElseThrow(() -> ApiException.badRequest(
+                "非法状态: " + status + "（可选 " + String.join("/", AlarmState.PATTERN.split("\\|")) + "）"));
+    }
+
+    /**
+     * The stored state is authoritative, so an illegal move is reported as a
+     * conflict rather than a format error and the analyst is told the legal targets.
+     */
+    private static void requireLegalMove(String current, AlarmState target) {
+        AlarmState from = AlarmState.from(current).orElse(AlarmState.OPEN);
+        if (!from.canMoveTo(target)) {
+            List<String> legal = Arrays.stream(AlarmState.values())
+                    .filter(from::canMoveTo).map(Enum::name).toList();
+            throw ApiException.conflict("状态不能从 " + from.name() + " 变更为 " + target.name()
+                    + "（当前可选: " + String.join("/", legal) + "）");
         }
-        return normalized;
     }
 
     private static String normalizeOptional(String value) {

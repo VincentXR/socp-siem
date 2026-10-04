@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.socp.incident.web.domain.Case;
+import com.socp.incident.web.domain.CaseState;
 import com.socp.incident.web.domain.TimelineEvent;
 import com.socp.incident.web.persistence.store.CaseStore;
 import com.socp.incident.web.persistence.entity.AlarmCaseLinkEntity;
@@ -187,17 +188,16 @@ public class CaseService {
         return incident;
     }
 
-    /** The documented Case lifecycle; anything else is a client error, not storage. */
-    private static final java.util.Set<String> ALLOWED_STATUSES =
-            java.util.Set.of("OPEN", "INVESTIGATING", "CONTAINED", "RESOLVED", "CLOSED");
-
     public Map<String, Object> setStatus(String id, String status, String assignee) {
         Case c = store.getMetadata(id);
         if (c == null) throw ApiException.notFound("未找到案件 " + id);
-        if (status == null || !ALLOWED_STATUSES.contains(status)) {
-            throw ApiException.badRequest("非法案件状态 " + status + "; 允许: " + ALLOWED_STATUSES);
+        CaseState target = CaseState.from(status).orElseThrow(() -> ApiException.badRequest(
+                "非法案件状态 " + status + "; 允许: " + String.join("/", CaseState.PATTERN.split("\\|"))));
+        CaseState current = CaseState.from(c.status()).orElse(CaseState.OPEN);
+        if (current != target && !current.canMoveTo(target)) {
+            throw ApiException.conflict("案件状态不能从 " + current + " 变更为 " + target);
         }
-        Case updated = c.withStatus(status, assignee);
+        Case updated = c.withStatus(target.name(), assignee);
         store.saveMetadata(updated);
         return Map.of("case", updated);
     }
@@ -258,7 +258,7 @@ public class CaseService {
         // CONTAINED is contained-but-not-closed work, so it belongs to "open".
         // resolved counts only terminal statuses instead of total-minus-open,
         // which previously swallowed CONTAINED (and any pre-validation junk).
-        long open = store.countByStatusIn(List.of("OPEN", "INVESTIGATING", "CONTAINED"));
+        long open = store.countByStatusIn(CaseState.openNames());
         long resolved = store.countByStatusIn(List.of("RESOLVED", "CLOSED"));
         out.put("total", total);
         out.put("open", open);

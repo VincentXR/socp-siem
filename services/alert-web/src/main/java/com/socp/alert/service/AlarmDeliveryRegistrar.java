@@ -2,6 +2,7 @@ package com.socp.alert.service;
 
 import com.socp.alert.domain.AlarmDelivery;
 import com.socp.alert.domain.AlarmDeliveryDestination;
+import com.socp.alert.domain.Severity;
 import com.socp.alert.persistence.repository.AlarmDeliveryRepository;
 import com.socp.alert.config.AlertDeliveryProperties;
 
@@ -15,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import java.util.Map;
@@ -25,6 +27,8 @@ public class AlarmDeliveryRegistrar {
 
     private final AlarmDeliveryRepository repository;
     private final Set<AlarmDeliveryDestination> destinations;
+    private final Severity caseMinSeverity;
+    private final Severity notifyMinSeverity;
 
     public AlarmDeliveryRegistrar(AlarmDeliveryRepository repository) {
         this(repository, java.util.EnumSet.allOf(AlarmDeliveryDestination.class));
@@ -32,12 +36,20 @@ public class AlarmDeliveryRegistrar {
 
     @org.springframework.beans.factory.annotation.Autowired
     public AlarmDeliveryRegistrar(AlarmDeliveryRepository repository, AlertDeliveryProperties properties) {
-        this(repository, properties.getDestinations());
+        this(repository, properties.getDestinations(),
+                properties.getCaseMinSeverity(), properties.getNotifyMinSeverity());
     }
 
     AlarmDeliveryRegistrar(AlarmDeliveryRepository repository, Set<AlarmDeliveryDestination> destinations) {
+        this(repository, destinations, null, null);
+    }
+
+    AlarmDeliveryRegistrar(AlarmDeliveryRepository repository, Set<AlarmDeliveryDestination> destinations,
+                           Severity caseMinSeverity, Severity notifyMinSeverity) {
         this.repository = repository;
         this.destinations = Set.copyOf(destinations);
+        this.caseMinSeverity = caseMinSeverity;
+        this.notifyMinSeverity = notifyMinSeverity;
     }
 
     @Transactional
@@ -54,7 +66,11 @@ public class AlarmDeliveryRegistrar {
     }
 
     private void registerInScope(String tenantId, String alarmId, String payload) {
+        Severity severity = severity(payload);
+        boolean suppressed = suppressed(payload);
         List<AlarmDelivery> candidates = destinations.stream()
+                .filter(destination -> !suppressed || destination == AlarmDeliveryDestination.CLICKHOUSE)
+                .filter(destination -> delivers(destination, severity))
                 .sorted(java.util.Comparator.comparing(Enum::name))
                 .map(destination -> pending(tenantId, alarmId, destination, payload))
                 .toList();
@@ -66,6 +82,46 @@ public class AlarmDeliveryRegistrar {
                 .filter(delivery -> !existing.contains(delivery.getId()))
                 .toList();
         if (!missing.isEmpty()) repository.saveAll(missing);
+    }
+
+    /**
+     * Severity taken from the durable payload. An undecodable payload yields null so
+     * the alarm still reaches every enabled destination; silently dropping an
+     * incident hand-off because of a parse error is worse than over-notifying.
+     */
+    private static boolean suppressed(String payload) {
+        try {
+            return "SUPPRESSED".equals(AlarmPayloadCodec.read(payload).get("status"));
+        } catch (Exception undecodable) {
+            return false; // Preserve the existing malformed-payload failure path.
+        }
+    }
+
+    private static Severity severity(String payload) {
+        try {
+            Object value = AlarmPayloadCodec.read(payload).get("severity");
+            return value == null ? null
+                    : Severity.valueOf(String.valueOf(value).toUpperCase(Locale.ROOT));
+        } catch (Exception undecodable) {
+            return null;
+        }
+    }
+
+    /**
+     * Not every alarm is analyst work or a page-worthy notification. CLICKHOUSE and
+     * SOAR are deliberately unconditional: reporting needs the whole population, and
+     * a playbook already carries its own trigger, dedup window and approval gate.
+     */
+    private boolean delivers(AlarmDeliveryDestination destination, Severity severity) {
+        if (severity == null) {
+            return true;
+        }
+        Severity minimum = switch (destination) {
+            case INCIDENT -> caseMinSeverity;
+            case NOTIFY -> notifyMinSeverity;
+            default -> null;
+        };
+        return minimum == null || severity.compareTo(minimum) >= 0;
     }
 
     /** Diagnostic view used by operators and release evidence; payload is never returned. */

@@ -25,6 +25,10 @@ public interface AlarmRepository extends TenantScopedRepository<Alarm, String>, 
 
     Optional<Alarm> findByTenantIdAndId(String tenantId, String id);
 
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select a from Alarm a where a.tenantId = :tenant and a.id = :id")
+    Optional<Alarm> findForDispositionUpdate(@Param("tenant") String tenant, @Param("id") String id);
+
     Optional<Alarm> findByTenantIdAndSourceAlertId(String tenantId, String sourceAlertId);
 
     List<Alarm> findByTenantIdAndTriggerEventId(String tenantId, String triggerEventId);

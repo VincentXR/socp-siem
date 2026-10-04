@@ -109,3 +109,31 @@ it('combines owner and assignee filters and uses edited absolute times rather th
   expect(state.investigationFilters.value).toEqual({})
   expect(state.fetchPage.mock.calls.at(-1)?.[0]).toMatchObject({ assignee: 'bob', from: '2026-09-01T00:00:00Z', to: '2026-09-02T00:00:00Z' })
 })
+
+describe('alarm queue default scope', () => {
+  it('opens on pending triage rather than the newest noise', async () => {
+    const state = harness()
+    expect(state.alarmStatus.value).toBe('ACTIVE')
+    state.onAlarmSearch()
+    await nextTick()
+    expect(state.fetchPage.mock.calls.at(-1)?.[0]).toMatchObject({ status: 'ACTIVE' })
+  })
+
+  it('keeps an explicit status from a shared link authoritative', async () => {
+    const state = harness({ status: 'SUPPRESSED' })
+    expect(state.alarmStatus.value).toBe('SUPPRESSED')
+    state.onAlarmSearch()
+    await nextTick()
+    expect(state.fetchPage.mock.calls.at(-1)?.[0]).toMatchObject({ status: 'SUPPRESSED' })
+  })
+
+  it('sends ALL as no status filter while keeping it in the URL', async () => {
+    const state = harness({ status: 'ALL' })
+    state.onAlarmSearch()
+    await nextTick()
+    expect(state.fetchPage.mock.calls.at(-1)?.[0]).toMatchObject({ status: undefined })
+    state.alarmPageNum.value = 2
+    await nextTick()
+    expect(state.replace.mock.calls.at(-1)?.[0].query).toMatchObject({ status: 'ALL' })
+  })
+})

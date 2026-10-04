@@ -85,6 +85,75 @@ class AlarmDeliveryRegistrarTest {
     }
 
     @Test
+    void lowSeveritySkipsCaseAndNotifyButStillReports() {
+        given(repository.findByTenantIdAndIdIn(org.mockito.ArgumentMatchers.eq("tenant-a"), anyList()))
+                .willReturn(List.of());
+        AlarmDeliveryRegistrar registrar = new AlarmDeliveryRegistrar(repository,
+                java.util.EnumSet.allOf(AlarmDeliveryDestination.class),
+                com.socp.alert.domain.Severity.HIGH, com.socp.alert.domain.Severity.MEDIUM);
+
+        registrar.register("tenant-a", "AL-1", "{\"id\":\"AL-1\",\"severity\":\"LOW\"}");
+
+        ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
+        verify(repository).saveAll(captor.capture());
+        List<String> destinations = StreamSupport.stream(captor.getValue().spliterator(), false)
+                .map(AlarmDelivery::getDestination).toList();
+        // CLICKHOUSE keeps the full population for reporting and SOAR carries its own
+        // trigger policy, so only the two analyst-work destinations are gated.
+        assertEquals(List.of("CLICKHOUSE", "SOAR"), destinations);
+    }
+
+    @Test
+    void highSeverityStillReachesCaseAndNotify() {
+        given(repository.findByTenantIdAndIdIn(org.mockito.ArgumentMatchers.eq("tenant-a"), anyList()))
+                .willReturn(List.of());
+        AlarmDeliveryRegistrar registrar = new AlarmDeliveryRegistrar(repository,
+                java.util.EnumSet.allOf(AlarmDeliveryDestination.class),
+                com.socp.alert.domain.Severity.HIGH, com.socp.alert.domain.Severity.MEDIUM);
+
+        registrar.register("tenant-a", "AL-1", "{\"id\":\"AL-1\",\"severity\":\"CRITICAL\"}");
+
+        ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
+        verify(repository).saveAll(captor.capture());
+        assertEquals(4, StreamSupport.stream(captor.getValue().spliterator(), false).count());
+    }
+
+    @Test
+    void undecodablePayloadFailsTowardFullDelivery() {
+        given(repository.findByTenantIdAndIdIn(org.mockito.ArgumentMatchers.eq("tenant-a"), anyList()))
+                .willReturn(List.of());
+        AlarmDeliveryRegistrar registrar = new AlarmDeliveryRegistrar(repository,
+                java.util.EnumSet.allOf(AlarmDeliveryDestination.class),
+                com.socp.alert.domain.Severity.CRITICAL, com.socp.alert.domain.Severity.CRITICAL);
+
+        registrar.register("tenant-a", "AL-1", "{not-json");
+
+        ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
+        verify(repository).saveAll(captor.capture());
+        // Losing an incident hand-off to a parse error is worse than over-notifying.
+        assertEquals(4, StreamSupport.stream(captor.getValue().spliterator(), false).count());
+    }
+
+    @Test
+    void suppressedAlarmOnlyRegistersReportingEvenWhenReplayed() {
+        AlarmDeliveryRegistrar registrar = new AlarmDeliveryRegistrar(repository,
+                new com.socp.alert.config.AlertDeliveryProperties());
+        var alarm = new com.socp.alert.domain.Alarm("rule", "Rule",
+                com.socp.alert.domain.Severity.HIGH, "message", "host");
+        alarm.setId("suppressed"); alarm.setTenantId("tenant-a"); alarm.setStatus("SUPPRESSED");
+        String payload = AlarmPayloadCodec.write(alarm, List.of());
+        registrar.register("tenant-a", "suppressed", payload);
+        ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
+        verify(repository).saveAll(captor.capture());
+        var rows = StreamSupport.stream(captor.getValue().spliterator(), false).toList();
+        assertEquals(List.of("CLICKHOUSE"), rows.stream().map(AlarmDelivery::getDestination).toList());
+        given(repository.findByTenantIdAndIdIn(org.mockito.ArgumentMatchers.eq("tenant-a"), anyList()))
+                .willReturn(rows);
+        registrar.register("tenant-a", "suppressed", payload);
+        verify(repository, org.mockito.Mockito.times(1)).saveAll(org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void rejectsInvalidOrCrossTenantRegistration() {
         AlarmDeliveryRegistrar registrar = new AlarmDeliveryRegistrar(repository);
 

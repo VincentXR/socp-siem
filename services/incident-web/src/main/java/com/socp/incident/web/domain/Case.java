@@ -13,7 +13,7 @@ import java.util.List;
  * {@code caseNo} 是给人看的展示编号（{@code INC-<yyyyMMdd>-<6位随机>}，同一毫秒建案不会撞）。
  * 旧实现把主键直接写成 {@code CASE-<epochMilli>}，并发建案会主键冲突——这是被修掉的根因。
  *
- * @param status OPEN / INVESTIGATING / CONTAINED / RESOLVED / CLOSED
+ * @param status one of {@link CaseState}
  */
 public record Case(
         String id,

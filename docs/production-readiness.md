@@ -142,7 +142,11 @@ independently scalable workloads. Layering `values-production.yaml` and
 workloads, including Incident, Notify, SOAR, reporting, assets, endpoint,
 threat, ATT&CK, SOC, and AI domains. The product profile also enables all four
 Alert delivery destinations; the core profile enables ClickHouse only so it
-does not accumulate retries for workloads it intentionally omits.
+does not accumulate retries for workloads it intentionally omits. Enabling a
+destination is not the same as receiving every alarm: `INCIDENT` and `NOTIFY`
+also apply the severity thresholds in
+[the API contract](api-contract.md#severity-gated-fan-out), whose defaults keep
+low-severity noise out of the Case queue and the on-call mailbox.
 
 Environment values select fixed dev replicas or HPA/PDB capacity policy
 without duplicating Deployment manifests. The deployment

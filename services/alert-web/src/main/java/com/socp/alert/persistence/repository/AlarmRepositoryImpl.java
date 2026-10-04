@@ -97,7 +97,9 @@ public class AlarmRepositoryImpl implements AlarmRepositoryCustom {
             anyDisposition.select(cb.literal(1)).where(cb.equal(any.get("tenantId"), tenant), cb.equal(any.get("alarmId"), root.get("id")));
             if (query.status() != null) {
                 var status = effectiveStatus(cb, owner, root, tenant);
-                predicates.add("ACTIVE".equals(query.status()) ? status.in("OPEN", "INVESTIGATING") : cb.equal(status, query.status()));
+                predicates.add("ACTIVE".equals(query.status())
+                        ? status.in(com.socp.alert.domain.AlarmState.activeNames())
+                        : cb.equal(status, query.status()));
             }
             if (query.owner() != null && !query.owner().isBlank()) {
                 Subquery<Integer> ownerMatch = owner.subquery(Integer.class);

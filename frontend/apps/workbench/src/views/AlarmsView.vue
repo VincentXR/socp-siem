@@ -16,6 +16,7 @@ import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { localDateTime, utcInstant } from '../lib/time-range'
+import { ALARM_DISP_STATUSES, ALARM_FILTER_STATUSES } from '../app/alarm-statuses'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import InvestigationReadiness from '../components/InvestigationReadiness.vue'
@@ -100,8 +101,8 @@ const deepLinkRequests = useLatestRequest()
 const deepLinkLoading = ref(false)
 const deepLinkError = ref('')
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('alarms')
-const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
-const FILTER_STATUSES = ['ACTIVE', ...DISP_STATUSES]
+const DISP_STATUSES = ALARM_DISP_STATUSES
+const FILTER_STATUSES = ALARM_FILTER_STATUSES
 
 async function loadRuleOptions(keyword = ''): Promise<void> {
   const request = ruleOptionRequests.start()
@@ -248,7 +249,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
         <el-select v-model="severity" :placeholder="t('alarms.severityFilter')" clearable style="width:140px" @change="props.onSearch">
           <el-option v-for="item in SEVERITIES" :key="item" :label="tOr(t, 'severities.' + item, item)" :value="item" />
         </el-select>
-        <el-select v-model="status" :placeholder="t('alarms.statusFilter')" clearable style="width:150px" @change="props.onSearch">
+        <el-select v-model="status" :aria-label="t('alarms.statusFilter')" :placeholder="t('alarms.statusFilter')" clearable style="width:150px" @change="props.onSearch">
           <el-option v-for="item in FILTER_STATUSES" :key="item" :label="tOr(t, 'statuses.' + item, item)" :value="item" />
         </el-select>
         <el-select v-model="assignee" clearable filterable :placeholder="t('cases.assignee')" style="width:160px" @change="searchAssignee"><el-option v-for="owner in props.assigneeOptions" :key="owner" :label="owner" :value="owner" /></el-select>

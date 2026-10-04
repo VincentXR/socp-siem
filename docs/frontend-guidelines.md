@@ -97,6 +97,17 @@ shorthand and long-form event bindings; it does not execute handlers or infer
 dynamic sortable expressions. Component/browser tests must verify the actual
 sort order and whether it applies to the current page or the full result set.
 
+The alarm queue opens on `status=ACTIVE` (pending triage) rather than the
+unfiltered newest-first list, because a recency-ordered queue buries unclaimed
+work under fresh noise. `ALL` is the explicit unfiltered choice and is kept in the
+URL: an empty selection is dropped from the query string, so it would otherwise
+snap back to `ACTIVE` on the next read. List and export both normalize `ALL`
+to an omitted HTTP status filter. Disposition selectors use the service's
+`allowedTransitions`; a 409 preserves its reason and refreshes the current
+state without claiming every conflict was caused by another analyst. Both the vocabulary and the two
+query-only values come from `src/app/alarm-statuses.ts`, which mirrors
+`com.socp.alert.domain.AlarmState` — do not re-declare status arrays in a view.
+
 URL-synced lists reject invalid page tokens, preserve unmanaged deep-link
 keys, suppress navigation echo writes, and scope watchers to the owning
 route. `useListQuery.test.ts` and `useAlarmQuery.component.test.ts` exercise

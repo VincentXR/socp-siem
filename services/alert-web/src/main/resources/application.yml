@@ -66,6 +66,11 @@ socp:
       initial-delay-ms: ${SOCP_ALARM_DELIVERY_INITIAL_DELAY_MS:1000}
       concurrency: ${SOCP_ALARM_DELIVERY_CONCURRENCY:8}
       destinations: ${SOCP_ALARM_DELIVERY_DESTINATIONS:CLICKHOUSE,NOTIFY,INCIDENT,SOAR}
+      # Every alarm used to become Case work and a notification, so one noisy
+      # low-severity rule could flood both queues. Set to INFO to restore the
+      # previous always-create behaviour for a tenant that needs it.
+      case-min-severity: ${SOCP_ALARM_CASE_MIN_SEVERITY:HIGH}
+      notify-min-severity: ${SOCP_ALARM_NOTIFY_MIN_SEVERITY:MEDIUM}
       max-attempts: ${SOCP_ALARM_DELIVERY_MAX_ATTEMPTS:12}
       retention-ms: ${SOCP_ALARM_DELIVERY_RETENTION_MS:2592000000}
       max-drain-rounds: ${SOCP_ALARM_DELIVERY_MAX_DRAIN_ROUNDS:64}

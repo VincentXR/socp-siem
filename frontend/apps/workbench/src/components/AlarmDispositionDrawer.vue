@@ -28,6 +28,8 @@ import type { Alarm, AlarmDeliveryStatus, AlarmEvidenceResponse, CaseInfo, Dispo
 import { claimAlarm, listAlarmFeedback, saveAlarmFeedback, listSimilarAlarms, addAlarmNote, assignAlarm, getAlarmDeliveries, getAlarmEvidence, getDisposition, requeueAlarmDelivery, setDispositionStatus } from '../api/alarms'
 import { createCaseFromAlarm, getCaseByAlarm } from '../api/incidents'
 import { ApiError } from '../api/core'
+import AlarmSuppressionPanel from './AlarmSuppressionPanel.vue'
+import { alarmTransitionOptions } from '../app/alarm-statuses'
 import { useI18n } from '../composables/useI18n'
 import { useFocusReturn } from '../composables/useFocusReturn'
 import { useConfirm } from '../composables/useConfirm'
@@ -62,7 +64,7 @@ const restoreDrawerFocus = useFocusReturn(drawerVisible)
 const { t, d } = useI18n()
 const { confirmDanger, promptInput } = useConfirm()
 
-const DISP_STATUSES = ['OPEN', 'INVESTIGATING', 'RESOLVED', 'CLOSED']
+const DISP_STATUSES = computed(() => disposition.value?.allowedTransitions ?? alarmTransitionOptions(disposition.value?.status || props.alarm?.status || 'OPEN'))
 const disposition = ref<Disposition | null>(null)
 const dispositionError = ref('')
 const evidence = ref<AlarmEvidenceResponse | null>(null)
@@ -95,6 +97,7 @@ const feedbackKind = ref<AlarmFeedbackKind>('FALSE_POSITIVE')
 const feedbackReason = ref('')
 const feedbackExpiry = ref('')
 const feedbackBusy = ref(false)
+const suppressionBusy = ref(false)
 let disposed = false
 onUnmounted(() => { disposed = true; loadToken++; actionToken++; feedbackLoadVersion++ })
 async function claim(): Promise<void> {
@@ -112,7 +115,7 @@ function relatedRoute(name: string, query: Record<string, string>): void {
 const feedbackLoading = ref(false)
 let feedbackLoadVersion = 0
 const actionPending = computed(() => statusBusy.value || assignBusy.value || noteBusy.value
-  || creatingCase.value || feedbackBusy.value || Boolean(requeueBusy.value))
+  || creatingCase.value || feedbackBusy.value || suppressionBusy.value || Boolean(requeueBusy.value))
 let loadToken = 0
 let actionToken = 0
 // Retrying the same unsent note must reuse its key so the backend set-once
@@ -267,6 +270,7 @@ async function changeStatus() {
   const alarmId = props.alarm.id
   const token = ++actionToken
   const status = newStatus.value
+  if (!DISP_STATUSES.value.includes(status)) { actionError.value = t('analystJourney.dispositionConflict'); return }
   if (['RESOLVED', 'CLOSED'].includes(status) && !closureReason.value.trim()) { actionError.value = t('analystJourney.closureRequired'); return }
   statusBusy.value = true
   actionError.value = ''
@@ -279,7 +283,20 @@ async function changeStatus() {
     ElMessage.success(t('common.updated'))
     emit('updated')
   } catch (error) {
-    if (actionStillTargets(alarmId, token)) actionError.value = error instanceof Error ? error.message : String(error)
+    if (actionStillTargets(alarmId, token)) {
+      if (error instanceof ApiError && error.status === 409) {
+        // Preserve the actual reason; an illegal transition is not necessarily
+        // a concurrent edit. Never reset another alarm's status draft.
+        actionError.value = error.message
+        const refreshed = await getDisposition(alarmId).catch(() => null)
+        if (actionStillTargets(alarmId, token) && refreshed) {
+          disposition.value = refreshed
+          newStatus.value = refreshed.status
+        }
+      } else {
+        actionError.value = error instanceof Error ? error.message : String(error)
+      }
+    }
   } finally {
     if (actionStillTargets(alarmId, token)) statusBusy.value = false
   }
@@ -526,6 +543,9 @@ function openEvidenceSearch() {
             <label>{{ t('analystJourney.optionalExpiry') }} <input v-model="feedbackExpiry" type="datetime-local" :disabled="actionPending" /></label>
             <el-button type="primary" :loading="feedbackBusy" :disabled="actionPending || feedbackLoading || !feedbackReason.trim()" @click="submitFeedback">{{ t('common.save') }}</el-button>
           </div>
+          <AlarmSuppressionPanel v-if="modelValue && alarm && activeTab === 'feedback'" :key="alarm.id"
+            :alarm-id="alarm.id" :rule-id="alarm.ruleId" :entity="alarm.entity" :can-write="canWrite"
+            :disabled="actionPending && !suppressionBusy" @pending="suppressionBusy = $event" />
           <h3>{{ t('analystJourney.similarAlarms') }}</h3><p>{{ t('analystJourney.similarGuidance') }}</p>
           <el-alert v-if="similarError" :title="similarError" type="error" :closable="false" />
           <el-button v-for="item in similar" :key="item.id" :disabled="actionPending" @click="router.replace({ query: { ...route.query, alarmId: item.id } })">{{ item.title || item.ruleName }} · {{ item.severity }} · {{ item.status }} · {{ d(item.occurredAt) }}</el-button>

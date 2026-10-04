@@ -1,6 +1,7 @@
 package com.socp.alert.config;
 
 import com.socp.alert.domain.AlarmDeliveryDestination;
+import com.socp.alert.domain.Severity;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.util.EnumSet;
@@ -18,6 +19,31 @@ public class AlertDeliveryProperties {
     private int cleanupBatchSize = 1_000;
     private int cleanupMaxBatches = 10;
     private Set<AlarmDeliveryDestination> destinations = EnumSet.allOf(AlarmDeliveryDestination.class);
+
+    /**
+     * Lowest severity that still creates a Case. Every alarm used to become Case
+     * work, so a noisy low-severity rule could exhaust the case queue and mailbox.
+     */
+    private Severity caseMinSeverity = Severity.HIGH;
+
+    /** Lowest severity that still sends a notification. */
+    private Severity notifyMinSeverity = Severity.MEDIUM;
+
+    public Severity getCaseMinSeverity() {
+        return caseMinSeverity;
+    }
+
+    public void setCaseMinSeverity(Severity caseMinSeverity) {
+        this.caseMinSeverity = caseMinSeverity;
+    }
+
+    public Severity getNotifyMinSeverity() {
+        return notifyMinSeverity;
+    }
+
+    public void setNotifyMinSeverity(Severity notifyMinSeverity) {
+        this.notifyMinSeverity = notifyMinSeverity;
+    }
 
     public int getConcurrency() { return concurrency; }
     public void setConcurrency(int concurrency) { this.concurrency = concurrency; }

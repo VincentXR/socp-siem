@@ -19,7 +19,6 @@ public class AlarmFeedbackService {
 
     private static final List<String> KINDS = List.of("FALSE_POSITIVE", "RULE_EXCEPTION");
     private final AlarmFeedbackRepository repository;
-
     public AlarmFeedbackService(AlarmFeedbackRepository repository) {
         this.repository = repository;
     }
@@ -47,6 +46,8 @@ public class AlarmFeedbackService {
         entity.setExpiresAt(expiresAt);
         entity.setActor(normalizeOptional(actor, 128));
         AlarmFeedbackEntity saved = repository.save(entity);
+        // A verdict is evidence, not authorization to silence future detections.
+        // Suppression is an independent, explicitly scoped analyst command.
         return toMap(saved);
     }
 

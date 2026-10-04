@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AlarmsView from '../views/AlarmsView.vue'
 import { WORKBENCH_STATE } from '../app/workbenchState'
 import { exportAlarms } from '../api/alarms'
+import { alarmStatusFilter } from '../app/alarm-statuses'
 
 const injectedState = inject(WORKBENCH_STATE)
 if (!injectedState) throw new Error('Workbench state is not provided')
@@ -46,7 +47,7 @@ function exportWithCurrentFilters(format: 'csv' | 'json') {
   return exportAlarms(format, {
     q: alarmKeyword.value.trim() || undefined,
     severity: alarmSeverity.value || undefined,
-    status: alarmStatus.value || undefined,
+    status: alarmStatusFilter(alarmStatus.value),
     rule: alarmRule.value.trim() || undefined,
     assignee: alarmAssignee.value.trim() || undefined,
     from: alarmFrom.value || undefined,

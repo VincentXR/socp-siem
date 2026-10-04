@@ -13,6 +13,7 @@ async function session(page: Page) {
       '/api/v1/system/health': { status: 'up', services: {} },
       '/alert-web/api/alarms': { items: [], total: 0 },
       '/alert-web/api/alarms/stats': { total: 0 },
+      '/alert-web/api/v1/suppressions': [],
       '/incident-web/api/v1/stats': { total: 0 },
       '/detect-web/api/v1/rules/options': { items: [], total: 0 },
     }
@@ -146,10 +147,25 @@ test('notification history requests real page and status scopes and can edit an 
 })
 
 
-test('alarm verdict records rationale without changing disposition or detection rules', async ({ page }) => {
+test('alarm verdict stays independent while suppression requires scope confirmation and can be released', async ({ page }, testInfo) => {
   const unexpected = await session(page)
   const feedback: Array<Record<string, unknown>> = []
   const writes: string[] = []
+  let windows: Array<Record<string, unknown>> = []
+  const suppressionWrites: Array<Record<string, unknown>> = []
+  await page.route('**/alert-web/api/v1/suppressions**', route => {
+    if (route.request().method() === 'POST') {
+      const body = route.request().postDataJSON()
+      suppressionWrites.push(body)
+      windows = [{ ...body, id: 'window-1', expiresAt: '2026-10-06T00:00:00Z' }]
+      return reply(route, windows[0])
+    }
+    if (route.request().method() === 'DELETE') {
+      expect(new URL(route.request().url()).searchParams.get('entity')).toBe('host-a')
+      windows = []; return reply(route, null)
+    }
+    return reply(route, windows)
+  })
   await page.route('**/alert-web/api/alarms/alarm-a**', route => {
     const path = new URL(route.request().url()).pathname
     if (route.request().method() === 'POST') {
@@ -162,7 +178,7 @@ test('alarm verdict records rationale without changing disposition or detection 
     if (path.endsWith('/disposition')) return reply(route, { status: 'OPEN', assignee: '', notes: [] })
     if (path.endsWith('/evidence')) return reply(route, { items: [], total: 0, complete: true })
     if (path.endsWith('/deliveries')) return reply(route, [])
-    if (path.endsWith('/alarm-a')) return reply(route, { id: 'alarm-a', title: 'Investigate login', severity: 'HIGH', status: 'OPEN', occurredAt: '2026-09-01T00:00:00Z' })
+    if (path.endsWith('/alarm-a')) return reply(route, { id: 'alarm-a', ruleId: 'rule-a', entity: 'host-a', title: 'Investigate login', severity: 'HIGH', status: 'OPEN', occurredAt: '2026-09-01T00:00:00Z' })
     return route.fallback()
   })
   await page.route('**/incident-web/api/v1/incidents/by-alarm?**', route => reply(route, null, 404))
@@ -175,6 +191,26 @@ test('alarm verdict records rationale without changing disposition or detection 
   await expect(drawer).toContainText('Approved maintenance login')
   expect(feedback[0]).toMatchObject({ alarmId: 'alarm-a', kind: 'FALSE_POSITIVE', reason: 'Approved maintenance login' })
   expect(writes).toEqual(['/alert-web/api/alarms/alarm-a/feedback'])
+  expect(suppressionWrites).toEqual([])
+  const panel = drawer.locator('.suppression-panel')
+  await panel.getByLabel('Suppression rationale', { exact: true }).fill('Planned scanner for this host')
+  await panel.getByLabel('Suppression duration', { exact: true }).selectOption('1')
+  await panel.getByRole('button', { name: 'Confirm suppression or extension' }).click()
+  const confirmation = page.locator('.el-message-box')
+  await expect(confirmation).toContainText('host-a')
+  expect(suppressionWrites).toEqual([])
+  await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(panel.getByLabel('Suppression rationale', { exact: true })).toHaveValue('Planned scanner for this host')
+  await panel.getByRole('button', { name: 'Confirm suppression or extension' }).click()
+  await confirmation.getByRole('button', { name: 'Confirm', exact: true }).click()
+  await expect(panel.getByRole('button', { name: 'Release window' })).toBeVisible()
+  expect(suppressionWrites).toEqual([expect.objectContaining({ ruleId: 'rule-a', entity: 'host-a', ruleWide: false, windowSeconds: 3600 })])
+  await expect(confirmation).not.toBeVisible()
+  await panel.getByRole('heading', { name: 'Future alarm suppression windows' }).scrollIntoViewIfNeeded()
+  await page.screenshot({ path: testInfo.outputPath('suppression-window.png'), fullPage: true, animations: 'disabled' })
+  await panel.getByRole('button', { name: 'Release window' }).click()
+  await confirmation.getByRole('button', { name: 'Confirm', exact: true }).click()
+  await expect(panel.getByRole('button', { name: 'Release window' })).toHaveCount(0)
   expect(unexpected).toEqual([])
 })
 
@@ -253,6 +289,13 @@ test('my active queue and absolute time scope are shared by the URL and export',
   expect(exported?.get('to')).toBe(reads.at(-1)?.get('to'))
   expect(exported?.get('assignee')).toBe('alice')
   expect(exported?.get('status')).toBe('ACTIVE')
+  await page.getByRole('combobox', { name: 'Filter by Status', exact: true }).press('Enter')
+  await page.getByRole('option', { name: 'All statuses', exact: true }).click()
+  await expect.poll(() => reads.at(-1)?.get('status')).toBeNull()
+  exported = undefined
+  await page.getByRole('button', { name: 'Export CSV', exact: true }).click()
+  await expect.poll(() => exported?.get('status')).toBeNull()
+  expect(exported?.get('assignee')).toBe('alice')
   await page.setViewportSize({ width: 390, height: 844 })
   await expectMobileNavigationClosed(page)
   await page.screenshot({ path: testInfo.outputPath('alarm-queue-mobile.png'), fullPage: true, animations: 'disabled' })

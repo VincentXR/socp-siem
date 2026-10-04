@@ -18,8 +18,8 @@ public record AlarmBatchDispositionRequest(
         @Size(max = 500, message = "at most 500 alarms may be updated at once")
         List<@Valid @NotBlank(message = "alarm id must not be blank")
                 @Size(max = 255, message = "alarm id is too long") String> alarmIds,
-        @Pattern(regexp = "OPEN|INVESTIGATING|RESOLVED|CLOSED",
-                message = "status must be OPEN, INVESTIGATING, RESOLVED or CLOSED")
+        @Pattern(regexp = com.socp.alert.domain.AlarmState.PATTERN,
+                message = "status must be one of OPEN, INVESTIGATING, RESOLVED, CLOSED, SUPPRESSED")
         String status,
         @Size(max = 128, message = "assignee is too long")
         String assignee,
