@@ -47,6 +47,16 @@ class AlarmFeedbackServiceTest {
     }
 
     @Test
+    void falsePositiveFeedbackNeverSilentlyCreatesASuppressionWindow() {
+        AlarmFeedbackRepository repository = mock(AlarmFeedbackRepository.class);
+        when(repository.save(any(AlarmFeedbackEntity.class))).thenAnswer(call -> call.getArgument(0));
+        var service = new AlarmFeedbackService(repository);
+        Instant expiry = Instant.now().plusSeconds(3600);
+        assertEquals(expiry, service.save("alarm-1", "FALSE_POSITIVE", "one event", expiry, "analyst").get("expiresAt"));
+        org.mockito.Mockito.verify(repository).save(any(AlarmFeedbackEntity.class));
+    }
+
+    @Test
     void rejectsExpiredFeedbackAndKeepsTenantReadScoped() {
         AlarmFeedbackRepository repository = mock(AlarmFeedbackRepository.class);
         AlarmFeedbackService service = new AlarmFeedbackService(repository);

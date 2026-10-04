@@ -4,6 +4,7 @@ import type {
   AlarmDeliveryStatus, AlarmEvidenceResponse, AlarmPage, AlarmSortField, AlarmSortOrder, AlarmStats, Disposition,
 } from './models'
 import { withQuery } from '../lib/query'
+import { alarmStatusFilter } from '../app/alarm-statuses'
 
 export const listAlarms = (q?: string, options?: ApiRequestOptions) => get<Alarm[]>(withQuery('/alert-web/api/alarms', { q }), options)
 export const listAlarmsByEvent = (eventId: string) =>
@@ -13,7 +14,7 @@ export const listAlarmsPaged = (
   page: number, size: number, q?: string, severity?: string, status?: string, rule?: string,
   sort: 'occurredAt' | 'severity' | 'ruleName' | 'entity' | 'status' | 'riskScore' = 'occurredAt',
   order: 'ascending' | 'descending' = 'descending', options?: ApiRequestOptions, filters: AlarmInvestigationFilters = {},
-) => get<AlarmPage>(withQuery('/alert-web/api/alarms', { page, size, q, severity, status, rule, sort, order, ...filters }), options)
+) => get<AlarmPage>(withQuery('/alert-web/api/alarms', { page, size, q, severity, status: alarmStatusFilter(status), rule, sort, order, ...filters }), options)
 export const createAlarm = (a: Partial<Alarm>) => post<Alarm>('/alert-web/api/alarms', a)
 export const getAlarm = (id: string, options?: ApiRequestOptions) =>
   get<Alarm>(`/alert-web/api/alarms/${encodeURIComponent(id)}`, options)
@@ -45,6 +46,15 @@ export const saveAlarmFeedback = (id: string, feedback: { kind: AlarmFeedbackKin
   post<AlarmFeedback>(`/alert-web/api/alarms/${encodeURIComponent(id)}/feedback`, feedback)
 export const listSimilarAlarms = (id: string, limit = 20) =>
   get<Alarm[]>(withQuery(`/alert-web/api/alarms/${encodeURIComponent(id)}/similar`, { limit }))
+export interface AlarmSuppression {
+  id: string; ruleId: string; entity: string | null; origin: string; reason: string
+  alarmId?: string | null; actor?: string | null; expiresAt: string
+}
+export const listAlarmSuppressions = () => get<AlarmSuppression[]>('/alert-web/api/v1/suppressions')
+export const recordAlarmSuppression = (value: { ruleId: string; entity?: string; ruleWide: boolean; reason: string; alarmId: string; windowSeconds: number }) =>
+  post<AlarmSuppression>('/alert-web/api/v1/suppressions', { ...value, origin: 'MANUAL' })
+export const releaseAlarmSuppression = (ruleId: string, entity: string | null) =>
+  del<void>(withQuery('/alert-web/api/v1/suppressions', { ruleId, entity: entity || undefined }))
 export const alarmStats = (options?: ApiRequestOptions, window = '7d') => get<AlarmStats>(withQuery('/alert-web/api/alarms/stats', { window }), options)
 
 export interface AlarmExportFilters extends AlarmInvestigationFilters {
@@ -59,7 +69,7 @@ export interface AlarmExportFilters extends AlarmInvestigationFilters {
 /** Export the same result set represented by the alarm explorer filters. */
 export const exportAlarms = (format = 'csv', filters: AlarmExportFilters = {}) =>
   downloadFile(
-    withQuery('/alert-web/api/alarms/export', { format, ...filters }),
+    withQuery('/alert-web/api/alarms/export', { format, ...filters, status: alarmStatusFilter(filters.status) }),
     `alarms.${format}`,
   )
 

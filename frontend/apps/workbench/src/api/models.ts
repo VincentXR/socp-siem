@@ -135,6 +135,7 @@ export interface AlarmPage {
 export type AlarmSortField = 'occurredAt' | 'severity' | 'ruleName' | 'entity' | 'status' | 'riskScore'
 export type AlarmSortOrder = 'ascending' | 'descending'
 export interface Disposition {
+  allowedTransitions?: string[]
   status: string; assignee: string | null
   notes: Array<{ author: string; content: string; at: string }>
 }

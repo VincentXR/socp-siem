@@ -66,6 +66,9 @@ class AlarmServiceTest {
     @Mock
     private AlarmBatchIdempotencyRepository batchIdempotencyRepository;
 
+    @Mock
+    private AlarmSuppressionService suppressionService;
+
     @InjectMocks
     private AlarmService service;
 
@@ -224,6 +227,21 @@ class AlarmServiceTest {
         assertEquals(existing, service.create(duplicate));
         org.mockito.Mockito.verify(outboxRepository, org.mockito.Mockito.never())
                 .save(org.mockito.ArgumentMatchers.any(OutboxEvent.class));
+    }
+
+    @Test
+    void activeSuppressionWindowMarksTheNewAlarmSuppressedAtMaterialization() {
+        TenantContext.set("tenant-a");
+        given(suppressionService.suppresses("tenant-a", "AUTH-BRUTE", "host-1")).willReturn(true);
+        given(repository.save(org.mockito.ArgumentMatchers.any(Alarm.class)))
+                .willAnswer(invocation -> invocation.getArgument(0));
+
+        Alarm alarm = service.create(new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
+                "5 failures", "host-1"));
+
+        // SUPPRESSED is decided before the first insert: t_alarm has no disposition row
+        // yet, so effectiveStatus falls through to this column and one write suffices.
+        assertEquals(com.socp.alert.domain.AlarmState.SUPPRESSED.name(), alarm.getStatus());
     }
 
     @Test

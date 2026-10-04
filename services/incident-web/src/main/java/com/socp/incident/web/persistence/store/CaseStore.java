@@ -45,7 +45,7 @@ public class CaseStore {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-    private static final List<String> OPEN_STATUSES = List.of("OPEN", "INVESTIGATING", "CONTAINED");
+    private static final List<String> OPEN_STATUSES = com.socp.incident.web.domain.CaseState.openNames();
 
     /** Compatibility constructor for focused unit tests without JPA timeline wiring. */
     public CaseStore(CaseRepository repo) {

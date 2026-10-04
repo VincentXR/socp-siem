@@ -160,7 +160,7 @@ onMounted(async () => {
   justify-content: center;
   flex-direction: column;
   gap: 9px;
-  color: var(--ns-text-muted);
+  color: var(--ns-text-2);
   background: var(--ns-bg-subtle);
 }
 .auth-bootstrap strong { color: var(--ns-text); font-size: 14px; letter-spacing: .12em; }

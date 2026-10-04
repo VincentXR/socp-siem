@@ -75,6 +75,92 @@ SOAR's unversioned compatibility routes retain their historical 0-based
 - Daily report `byRule` entries add nullable `ruleId` for exact alarm pivots.
   Historical archived entries without it remain displayable, not guessed from labels.
 
+### Alarm and Case lifecycle transitions
+
+Both lifecycles are explicit graphs owned by the service, not free-form strings.
+An unknown status is a `400`; a status that is valid vocabulary but not reachable
+from the stored state is a `409` (alarm responses list the currently legal targets).
+Re-applying the current status stays an idempotent no-op and is not a transition.
+
+Alarm states (`com.socp.alert.domain.AlarmState`, `t_alarm_disposition.status`):
+
+| From | Legal targets |
+|---|---|
+| `OPEN` | `INVESTIGATING`, `RESOLVED`, `CLOSED`, `SUPPRESSED` |
+| `INVESTIGATING` | `OPEN`, `RESOLVED`, `CLOSED`, `SUPPRESSED` |
+| `RESOLVED` | `INVESTIGATING`, `CLOSED` |
+| `CLOSED` | `INVESTIGATING` |
+| `SUPPRESSED` | `INVESTIGATING`, `CLOSED` |
+
+Un-suppressing returns the alarm to `INVESTIGATING` under its current owner; an
+analyst who accepts the silence closes it directly. A terminal alarm is never
+re-labelled `SUPPRESSED` — silencing its scope goes through a new window, which
+only affects alarms created afterwards.
+
+#### Suppression windows
+
+`/alert-web/api/v1/suppressions` (`GET`, `POST`, `DELETE`) owns durable
+suppression of a detection scope, backed by `t_alarm_suppression` with one row per
+`(tenant, rule_id, entity_key)`:
+
+- A nonblank `entity` selects only that entity. The whole rule requires explicit
+  `ruleWide: true` with no entity; a missing entity alone is rejected with 400.
+  The rule-wide scope stores an empty `entity_key` so the unique key stays total.
+- `origin` is `FALSE_POSITIVE` or `MANUAL`; `windowSeconds` defaults to 24h and is
+  capped at 30d. Re-recording a scope extends the existing window rather than
+  adding a row.
+- Writes need `alarm:triage`. One lock row per tenant serializes quota checks,
+  upserts and release in the same local transaction across replicas. The 1000
+  active-window cap applies to new scopes, not renewals. Expired windows are
+  pruned only within the caller's tenant. Renewal never shortens an active window.
+- Feedback (`POST /alarms/{id}/feedback`) remains evidence only, including its
+  independent `expiresAt`; it never creates or extends suppression implicitly.
+  The workbench provides a separate confirmation showing the scope and duration,
+  lists effective windows, and allows an explicit release.
+
+An incoming alarm whose `(rule_id, entity)` matches an active window is created
+already `SUPPRESSED`. Its admission-time status is retained in the durable
+delivery/event payload: only CLICKHOUSE is registered, including Kafka repair
+and replay; INCIDENT, NOTIFY and SOAR are excluded. Reopening that alarm or
+releasing the window does not retroactively dispatch it. A release affects
+future alarms; it does not recall already admitted deliveries. Manual disposition
+changes affect the existing analyst queue, not the admission-time fan-out.
+Disposition reads and first writes inherit the alarm's initial status; locking
+the parent alarm serializes concurrent first disposition writes. The disposition
+response includes `allowedTransitions` (including the current idempotent value).
+This is deliberately decided in Alert Web rather than in the
+Detection `Suppressor`, which is per-process in-memory state that resets on
+restart and is not shared across replicas; suppression decided by an analyst must
+hold on every replica and survive a redeploy.
+
+#### Severity-gated fan-out
+
+Enabled destinations are no longer registered for every alarm. `INCIDENT` requires
+`socp.alert.delivery.case-min-severity` (default `HIGH`) and `NOTIFY` requires
+`notify-min-severity` (default `MEDIUM`) against the alarm's own severity;
+For non-suppressed alarms, `CLICKHOUSE` and `SOAR` remain enabled without a
+severity threshold. Suppressed admission excludes SOAR even when its rule would
+otherwise match. An alarm whose payload severity is absent or undecodable reaches
+every enabled destination, so a decode failure cannot silently drop an incident.
+
+This is a behavior change for existing deployments: previously every alarm created
+or updated a Case and notified every enabled channel. Set both thresholds to
+`INFO` to restore that. Replay fills only the destinations an alarm qualifies
+for, so intents recorded before the change are kept.
+
+Case states (`com.socp.incident.web.domain.CaseState`, `t_incident_case.status`)
+add `CONTAINED`: `OPEN`/`INVESTIGATING` may move to `CONTAINED`, `CONTAINED` may
+return to `INVESTIGATING` or advance to `RESOLVED`/`CLOSED`, and both terminal
+states reopen only into `INVESTIGATING`. Reopen deliberately excludes `OPEN` so a
+reopened item stays distinguishable in the timeline from one never triaged.
+
+Bulk alarm triage is one transaction: if any selected alarm cannot make the
+requested move, the whole batch is rejected with `409` and nothing is written.
+
+The two vocabularies are not merged: alarms have no `CONTAINED`, and closure
+classification differs by design (`UNDETERMINED` for alarms, `INCONCLUSIVE` for
+cases). Clients must not send one service's vocabulary to the other.
+
 ### Alarm list and export migration
 
 `GET /api/v1/alarms` is the canonical paged alarm read when `page` is supplied;
@@ -529,6 +615,10 @@ expose a conditional version or ETag.
   current owner; an empty string releases ownership. Moving into `RESOLVED` or
   `CLOSED` requires `classification` (`TRUE_POSITIVE`, `FALSE_POSITIVE`, `BENIGN`,
   or `INCONCLUSIVE`), `result`, `reason`, `evidence`, and `remainingActions`.
+  `status` must also be reachable under
+  [the Case lifecycle](#alarm-and-case-lifecycle-transitions); an illegal move
+  returns `409` after the idempotency replay check and the version check, so a
+  replayed command still answers `duplicate` rather than conflicting.
 - `POST /incidents/{id}/claim` accepts `expectedVersion` and `idempotencyKey`;
   the authenticated actor becomes the owner only if the case is unassigned or
   already theirs. It never silently takes another analyst's case.

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.incident.web.api.request.CaseChangeRequest;
 import com.socp.incident.web.api.request.CaseNoteRequest;
 import com.socp.incident.web.domain.Case;
+import com.socp.incident.web.domain.CaseState;
 import com.socp.incident.web.domain.TimelineEvent;
 import com.socp.incident.web.persistence.entity.CaseMutationEntity;
 import com.socp.incident.web.persistence.repository.CaseMutationRepository;
@@ -26,7 +27,6 @@ import java.util.Set;
 /** Row-locked durable commands; receipts, metadata and visible history commit together. */
 @Service
 public class CaseWorkspaceService {
-    private static final Set<String> STATUSES = Set.of("OPEN", "INVESTIGATING", "CONTAINED", "RESOLVED", "CLOSED");
     private static final Set<String> CLASSIFICATIONS = Set.of("TRUE_POSITIVE", "FALSE_POSITIVE", "BENIGN", "INCONCLUSIVE");
     private final CaseStore store;
     private final CaseRepository cases;
@@ -45,18 +45,24 @@ public class CaseWorkspaceService {
         Case current = lock(id);
         String fingerprint = fingerprint(actor, "change", request);
         if (replayed(id, request.idempotencyKey(), fingerprint)) return response(current, true, false);
-        if (!STATUSES.contains(request.status())) throw ApiException.badRequest("Invalid case status");
+        CaseState target = CaseState.from(request.status())
+                .orElseThrow(() -> ApiException.badRequest("Invalid case status"));
         requireVersion(current, request.expectedVersion());
+        CaseState from = CaseState.from(current.status()).orElse(CaseState.OPEN);
+        if (from != target && !from.canMoveTo(target)) {
+            throw ApiException.conflict("案件状态不能从 " + from + " 变更为 " + target);
+        }
+        String status = target.name();
         String assignee = request.assignee() == null ? current.assignee() : nullable(request.assignee());
-        boolean changed = !Objects.equals(current.status(), request.status()) || !Objects.equals(current.assignee(), assignee);
-        boolean closing = !current.status().equals(request.status()) && Set.of("RESOLVED", "CLOSED").contains(request.status());
+        boolean changed = !Objects.equals(current.status(), status) || !Objects.equals(current.assignee(), assignee);
+        boolean closing = !current.status().equals(status) && Set.of("RESOLVED", "CLOSED").contains(status);
         if (closing && (!CLASSIFICATIONS.contains(text(request.classification())) || text(request.result()).isEmpty()
                 || text(request.reason()).isEmpty() || text(request.evidence()).isEmpty() || text(request.remainingActions()).isEmpty())) {
             throw ApiException.badRequest("Closure requires classification, result, reason, evidence and remaining actions");
         }
         if (changed) {
-            store.saveMetadata(current.withStatus(request.status(), assignee));
-            String message = actor + ": " + current.status() + " → " + request.status()
+            store.saveMetadata(current.withStatus(status, assignee));
+            String message = actor + ": " + current.status() + " → " + status
                     + "\nAssignee: " + text(current.assignee()) + " → " + text(assignee);
             if (closing) message += "\nClassification: " + request.classification() + "\nResult: " + request.result().trim()
                     + "\nReason: " + request.reason().trim() + "\nEvidence: " + request.evidence().trim()

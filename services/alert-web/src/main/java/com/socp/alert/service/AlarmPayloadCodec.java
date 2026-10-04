@@ -35,6 +35,7 @@ final class AlarmPayloadCodec {
         payload.put("ruleName", alarm.getRuleName());
         payload.put("title", alarm.getTitle());
         payload.put("severity", alarm.getSeverity() == null ? null : alarm.getSeverity().name());
+        payload.put("status", alarm.getStatus());
         payload.put("message", alarm.getMessage());
         payload.put("entity", alarm.getEntity());
         payload.put("mitre", alarm.getMitre());
@@ -65,6 +66,7 @@ final class AlarmPayloadCodec {
         }
         alarm.setTenantId(tenant);
         alarm.setRuleId(text(values.get("ruleId")));
+        if (values.get("status") != null) alarm.setStatus(text(values.get("status")));
         alarm.setRuleName(text(values.get("ruleName")));
         alarm.setTitle(text(values.get("title")));
         try {

@@ -1,8 +1,10 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import AlarmDispositionDrawer from '../src/components/AlarmDispositionDrawer.vue'
+import { ApiError } from '../src/api/core'
 
 const mocks = vi.hoisted(() => ({
+  listAlarmSuppressions: vi.fn().mockResolvedValue([]), recordAlarmSuppression: vi.fn(), releaseAlarmSuppression: vi.fn(),
   listAlarmFeedback: vi.fn().mockResolvedValue([]), saveAlarmFeedback: vi.fn(), listSimilarAlarms: vi.fn().mockResolvedValue([]), claimAlarm: vi.fn(),
   getDisposition: vi.fn().mockResolvedValue({ status: 'OPEN', assignee: null, notes: [] }),
   getAlarmEvidence: vi.fn().mockResolvedValue({
@@ -40,6 +42,20 @@ const alarm = {
 }
 
 describe('AlarmDispositionDrawer', () => {
+  it('preserves a 409 reason and refreshes reachable targets rather than suggesting the same invalid move', async () => {
+    mocks.getDisposition.mockResolvedValueOnce({ status: 'OPEN', assignee: null, notes: [] })
+    mocks.setDispositionStatus.mockRejectedValueOnce(new ApiError(409, 'Cannot move CLOSED to OPEN; choose INVESTIGATING'))
+    const wrapper = mount(AlarmDispositionDrawer, { props: { modelValue: true, alarm, goCase: vi.fn(), goSearch: vi.fn() } })
+    await flushPromises()
+    mocks.getDisposition.mockResolvedValueOnce({ status: 'CLOSED', assignee: null, notes: [], allowedTransitions: ['CLOSED', 'INVESTIGATING'] })
+    const view = wrapper.vm as unknown as { newStatus: string; actionError: string; DISP_STATUSES: string[]; changeStatus: () => Promise<void> }
+    await view.changeStatus(); await flushPromises()
+    expect(view.actionError).toContain('Cannot move CLOSED')
+    expect(view.newStatus).toBe('CLOSED')
+    expect(view.DISP_STATUSES).toEqual(['CLOSED', 'INVESTIGATING'])
+    wrapper.unmount()
+  })
+
 
   it('drops a pending note result and clears its busy state after same-alarm close and reopen', async () => {
     let finish!: () => void

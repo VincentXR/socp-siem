@@ -1,6 +1,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRequest } from './useRequest'
+import { ALARM_STATUS_ACTIVE, alarmStatusFilter } from '../app/alarm-statuses'
 import { listAlarmsPaged, type AlarmPage, type AlarmSortField, type AlarmSortOrder } from '../api'
 
 // Structural stand-ins for the vue-router objects so the composable can be
@@ -59,9 +60,12 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
     { signal: params.signal },
     { assignee: params.assignee, owner: params.owner, entity: params.entity, from: params.from, to: params.to, technique: params.technique, severityGroup: params.severityGroup },
   ))
+  // Pending triage first: an alarm queue ordered by recency buries the work nobody
+  // has claimed yet under the newest noise. ACTIVE is the server-side OPEN +
+  // INVESTIGATING scope; ALL is the explicit way back to the full history.
   const alarmSeverity = ref('')
   const alarmKeyword = ref('')
-  const alarmStatus = ref('')
+  const alarmStatus = ref<string>(ALARM_STATUS_ACTIVE)
   const alarmRule = ref('')
   const alarmOwner = ref('')
   const investigationFilters = ref<{entity?: string; technique?: string; severityGroup?: string}>({})
@@ -84,7 +88,7 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
     const query = route.query
     alarmKeyword.value = typeof query.q === 'string' ? query.q : ''
     alarmSeverity.value = typeof query.severity === 'string' ? query.severity : ''
-    alarmStatus.value = typeof query.status === 'string' ? query.status : ''
+    alarmStatus.value = typeof query.status === 'string' && query.status ? query.status : ALARM_STATUS_ACTIVE
     alarmRule.value = typeof query.rule === 'string' ? query.rule : ''
     alarmOwner.value = typeof query.owner === 'string' ? query.owner : ''
     investigationFilters.value = Object.fromEntries(['entity', 'technique', 'severityGroup'].filter(key => typeof query[key] === 'string').map(key => [key, query[key]]))
@@ -151,7 +155,7 @@ export function useAlarmQuery(options: AlarmQueryOptions = {}) {
       size: alarmPageSize.value,
       q: alarmKeyword.value.trim() || undefined,
       severity: alarmSeverity.value || undefined,
-      status: alarmStatus.value || undefined,
+      status: alarmStatusFilter(alarmStatus.value),
       rule: alarmRule.value.trim() || undefined,
       assignee: alarmAssignee.value.trim() || undefined,
       from: alarmFrom.value || undefined,

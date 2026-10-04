@@ -51,6 +51,11 @@ public class ApiException extends RuntimeException {
         return new ApiException(404, msg);
     }
 
+    /** 状态冲突：请求合法但与资源当前状态矛盾（如非法生命周期跳转、并发写冲突） */
+    public static ApiException conflict(String msg) {
+        return new ApiException(409, msg);
+    }
+
     /** 限流触发（socp-ratelimit 使用） */
     public static ApiException tooManyRequests(String msg) {
         return new ApiException(429, msg);

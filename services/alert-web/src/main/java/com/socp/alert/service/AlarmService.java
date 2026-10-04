@@ -54,6 +54,7 @@ public class AlarmService {
     private final OutboxPublisher outboxPublisher;
     private final AlarmDeliveryPublisher deliveryPublisher;
     private final AlarmBatchIdempotencyRepository batchIdempotencyRepository;
+    private final AlarmSuppressionService suppressionService;
 
     @Autowired
     public AlarmService(AlarmRepository repository, OutboxRepository outboxRepository,
@@ -64,7 +65,8 @@ public class AlarmService {
                         AlarmStatisticsService statisticsService,
                         OutboxPublisher outboxPublisher,
                         AlarmDeliveryPublisher deliveryPublisher,
-                        AlarmBatchIdempotencyRepository batchIdempotencyRepository) {
+                        AlarmBatchIdempotencyRepository batchIdempotencyRepository,
+                        AlarmSuppressionService suppressionService) {
         this.repository = repository;
         this.outboxRepository = outboxRepository;
         this.evidenceRepository = evidenceRepository;
@@ -75,6 +77,7 @@ public class AlarmService {
         this.outboxPublisher = outboxPublisher;
         this.deliveryPublisher = deliveryPublisher;
         this.batchIdempotencyRepository = batchIdempotencyRepository;
+        this.suppressionService = suppressionService;
     }
 
     public AlarmService(AlarmRepository repository, OutboxRepository outboxRepository,
@@ -84,7 +87,7 @@ public class AlarmService {
                         AlarmQueryService queryService,
                         AlarmStatisticsService statisticsService) {
         this(repository, outboxRepository, evidenceRepository, deliveryRegistrar,
-                enrichmentService, queryService, statisticsService, null, null, null);
+                enrichmentService, queryService, statisticsService, null, null, null, null);
     }
 
     public Alarm create(Alarm alarm) {
@@ -182,6 +185,13 @@ public class AlarmService {
         }
         if (alarm.getRiskScore() == null) alarm.setRiskScore(initialRisk(alarm));
         alarm.setRiskLevel(com.socp.rule.score.RiskScorer.level(alarm.getRiskScore()));
+        // Decided once at materialization, from durable analyst state rather than a
+        // per-process window: the alarm remains countable but never joins the
+        // pending-triage vocabulary, so a suppressed scope cannot resurface as work.
+        if (suppressionService != null
+                && suppressionService.suppresses(tenant, alarm.getRuleId(), alarm.getEntity())) {
+            alarm.setStatus(com.socp.alert.domain.AlarmState.SUPPRESSED.name());
+        }
         Alarm saved = repository.save(alarm);
 
         List<AlarmEvidenceInput> captured = evidence == null ? List.of() : evidence.stream()
