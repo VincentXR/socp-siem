@@ -20,6 +20,19 @@ import static org.mockito.Mockito.when;
 class AuditConsumerTest {
 
     @Test
+    void persistsObjectAndRedactedChangeMetadataFromTheAuditEnvelope() throws Exception {
+        AuditConsumer consumer = new AuditConsumer(mock(AuditRepository.class));
+        String raw = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(java.util.Map.of(
+                "eventId", "details-1", "tenantId", "tenant-a", "action", "ASSIGN_INCIDENT",
+                "operator", "alice", "target", "case", "entityId", "case-42", "traceId", "trace-1",
+                "changeSummary", "{\"assignee\":\"bob\"}"));
+        AuditEntity entity = consumer.parse("k", raw);
+        assertEquals("case-42", entity.getEntityId());
+        assertEquals("trace-1", entity.getTraceId());
+        org.assertj.core.api.Assertions.assertThat(entity.getChangeSummary()).contains("bob");
+    }
+
+    @Test
     void parsesStableIdentityAndTenant() throws Exception {
         AuditConsumer consumer = new AuditConsumer(mock(AuditRepository.class));
 

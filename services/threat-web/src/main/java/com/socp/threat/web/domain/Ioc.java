@@ -44,9 +44,9 @@ public record Ioc(
 
     public static Ioc of(String type, String value, String severity, String source,
                          String description, List<String> tags) {
-        String id = (type + ":" + value.toLowerCase(Locale.ROOT)).replaceAll("[^A-Za-z0-9:._-]", "_");
+        String id = java.util.UUID.randomUUID().toString();
         Instant now = Instant.now();
-        return new Ioc(id, type.toUpperCase(Locale.ROOT), value.toLowerCase(Locale.ROOT),
+        return new Ioc(id, type.toUpperCase(Locale.ROOT), value.trim().toLowerCase(Locale.ROOT),
                 normSev(severity), source, description, tags, now, now,
                 source, null, null, null, now, null, null, false, "manual");
     }
@@ -59,7 +59,7 @@ public record Ioc(
                                String provenance) {
         Instant now = Instant.now();
         String normalizedValue = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-        String id = (type + ":" + normalizedValue).replaceAll("[^A-Za-z0-9:._-]", "_");
+        String id = java.util.UUID.randomUUID().toString();
         return new Ioc(id, type.toUpperCase(Locale.ROOT), normalizedValue, normSev(severity),
                 feed, description, tags == null ? List.of() : List.copyOf(tags), now, now,
                 feed, externalId, confidence, tlp, validFrom == null ? now : validFrom,

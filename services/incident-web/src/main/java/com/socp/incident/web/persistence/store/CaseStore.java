@@ -401,6 +401,12 @@ public class CaseStore {
         alarmLinkRepo.save(link);
     }
 
+    /** Rule associations retain investigation provenance even after an alarm is moved away. */
+    @Transactional
+    public void recordRuleAssociation(String caseId, String ruleId) {
+        if (ruleId != null && !ruleId.isBlank()) insertRuleLink(tenant(), caseId, ruleId, Instant.now());
+    }
+
     private void insertRuleLink(String tenant, String caseId, String ruleId, Instant now) {
         if (postgres) {
             ruleLinkRepo.insertIfAbsent(stableLinkId(tenant, caseId, ruleId), tenant, caseId, ruleId, now);

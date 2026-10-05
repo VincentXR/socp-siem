@@ -26,7 +26,7 @@ describe('LoginView', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('submits credentials and emits the authenticated user', async () => {
-    login.mockResolvedValue({ username: 'alice', role: 'analyst' })
+    login.mockResolvedValue({ username: 'alice', role: 'analyst', tenant: 'tenant-a', permissions: ['soar:publish'] })
     const wrapper = mount(LoginView)
 
     const inputs = wrapper.findAll('input')
@@ -36,7 +36,7 @@ describe('LoginView', () => {
     await flushPromises()
 
     expect(login).toHaveBeenCalledWith('alice', 'secret')
-    expect(wrapper.emitted('done')).toEqual([['alice', 'analyst']])
+    expect(wrapper.emitted('done')).toEqual([['alice', 'analyst', 'tenant-a', ['soar:publish']]])
     expect(localStorage.getItem('socp_user')).toBe('alice')
     expect(localStorage.getItem('socp_role')).toBe('analyst')
   })

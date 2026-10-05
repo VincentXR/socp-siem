@@ -11,24 +11,22 @@ export interface MenuGroup {
   secondary?: boolean
 }
 
-import { normalizeRole } from './roles.ts'
+import { canOpenSoarWorkbench, normalizeRole } from './roles.ts'
 
 /** Navigation is kept outside the shell so views do not own layout concerns. */
 // Configuration pages are available to operators who can manage detections
 // and ingestion. Viewer remains intentionally read-only.
 const MENU_VIEWER_HIDDEN = new Set(['ingest', 'meta', 'detect', 'soar', 'notify', 'refset', 'ai'])
-const MENU_APPROVER_HIDDEN = new Set([...MENU_VIEWER_HIDDEN].filter(key => key !== 'soar'))
 const defaultTranslate = (key: string): string => key
 
-export function getVisibleMenuGroups(role = 'viewer', t: (key: string) => string = defaultTranslate): MenuGroup[] {
+export function getVisibleMenuGroups(role = 'viewer', t: (key: string) => string = defaultTranslate, permissions: readonly string[] = []): MenuGroup[] {
   const normalizedRole = normalizeRole(role)
-  // Unknown roles fail closed. Approvers can inspect SOAR approvals but do not
-  // need the configuration/notification surfaces exposed to analysts.
-  const hidden = normalizedRole === 'approver'
-    ? MENU_APPROVER_HIDDEN
-    : normalizedRole === 'admin' || normalizedRole === 'analyst'
-      ? new Set<string>()
-      : MENU_VIEWER_HIDDEN
+  // Unknown roles fail closed. Delegated capabilities are evaluated separately.
+  const hidden = normalizedRole === 'admin' || normalizedRole === 'analyst'
+    ? new Set<string>()
+    : MENU_VIEWER_HIDDEN
+  const permittedHidden = new Set(hidden)
+  if (canOpenSoarWorkbench(role, permissions)) permittedHidden.delete('soar')
   const groups: MenuGroup[] = [
     {
       group: t('menuGroup.operations'),
@@ -81,7 +79,7 @@ export function getVisibleMenuGroups(role = 'viewer', t: (key: string) => string
   return groups
     .map(group => ({
       ...group,
-      items: group.items.filter(item => !hidden.has(item.key)),
+      items: group.items.filter(item => !permittedHidden.has(item.key)),
     }))
     .filter(group => group.items.length > 0)
 }

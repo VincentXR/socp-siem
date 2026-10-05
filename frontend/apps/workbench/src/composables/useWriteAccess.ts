@@ -1,6 +1,10 @@
-import { useSoarAccess } from './useSoarAccess'
+import { computed, inject } from 'vue'
+import { WORKBENCH_STATE } from '../app/workbenchState'
+import { normalizeRole } from '../app/roles'
 
-/** Reflect the admin/analyst write boundary used by domain controllers. */
+/** Domain controllers retain their admin/analyst role boundary.
+ * A delegated SOAR permission does not grant writes in unrelated domains. */
 export function useWriteAccess() {
-  return useSoarAccess().canEdit
+  const state = inject(WORKBENCH_STATE, null)
+  return computed(() => ['admin', 'analyst'].includes(normalizeRole(state?.currentRole.value)))
 }

@@ -13,8 +13,8 @@ import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * 租户存储——进程内；生产替换为 PG soc.t_tenant，接口不变。
- * 审计事件消费（Kafka socp-audit）在 SOC 这层统一落库，当前暂记为内存日志。
+ * Tenant directory persisted through JPA in soc.t_tenant. The no-argument
+ * constructor is an isolated-test fallback; Spring always injects the repository.
  */
 @Component
 public class TenantStore {

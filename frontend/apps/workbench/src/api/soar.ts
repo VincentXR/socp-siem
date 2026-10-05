@@ -70,6 +70,9 @@ export const queueRun = (p: { requestId: string; playbookVersionId: string; subj
 export const cancelWorkflowRun = (id: string, reason?: string) =>
   post<SoarRun>(`/soar-web/api/runs/${encodeURIComponent(id)}/cancel`, { reason })
 export const listApprovals = (options?: ApiRequestOptions) => get<SoarApproval[]>('/soar-web/api/approvals', options)
+export const listApprovalsPage = (page = 0, size = 25, status?: string, options?: ApiRequestOptions) =>
+  get<SoarPage<SoarApproval>>(withQuery('/soar-web/api/approvals', { page, size, status }), options)
+export const getApproval = (id: string, options?: ApiRequestOptions) => get<SoarApproval>(`/soar-web/api/approvals/${encodeURIComponent(id)}`, options)
 export const approve = (id: string, reason?: string) => post<SoarApproval>(`/soar-web/api/approvals/${encodeURIComponent(id)}/approve`, { reason })
 export const reject = (id: string, reason?: string) => post<SoarApproval>(`/soar-web/api/approvals/${encodeURIComponent(id)}/reject`, { reason })
 export const listTemplates = (options?: ApiRequestOptions) => get<SoarTemplate[]>('/soar-web/api/templates', options)

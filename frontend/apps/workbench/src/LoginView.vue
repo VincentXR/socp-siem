@@ -4,7 +4,7 @@ import { authCapabilities, login as apiLogin } from './api'
 import { useI18n } from './composables/useI18n'
 import { normalizeLocale, setLocale } from './i18n/locale-manager'
 
-const emit = defineEmits<{ (e: 'done', user: string, role: string): void }>()
+const emit = defineEmits<{ (e: 'done', user: string, role: string, tenant: string, permissions: string[]): void }>()
 const { t, toggleLocale } = useI18n()
 
 const demoMode = import.meta.env.DEV || import.meta.env.VITE_DEMO_MODE === 'true'
@@ -43,7 +43,7 @@ async function doLogin() {
       localStorage.setItem('socp_user', d.username)
       localStorage.setItem('socp_role', d.role)
     } catch { /* optional preference */ }
-    emit('done', d.username, d.role)
+    emit('done', d.username, d.role, d.tenant, d.permissions ?? [])
   } catch (error) {
     loginError.value = (error as Error).message || t('login.errorInvalid')
   } finally {

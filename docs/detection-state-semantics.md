@@ -115,8 +115,12 @@ rollout. Drain or stop old publishers before relying on the new guarantee.
 Each publisher scan recovers at most 100 expired two-minute claims using
 row locks with `SKIP LOCKED`, and retires at most 100 already-exhausted pending
 rows. With a positive `outbox-max-attempts`, a crashed final attempt becomes
-`DEAD`; the default `0` keeps retrying. A publish scan reads at most 100 rows
-and stops starting new sends after ten seconds. A send already in progress
+`DEAD`; the default `0` keeps retrying. Each query reads at most 100 ordered
+key heads; a drain queries the next heads after publication, up to 64 rounds,
+and stops starting new sends after ten seconds. This also drains a backlog
+with only one active key without waiting for the next scheduled poll. An
+already attempted delivery is not retried again within that drain; predecessor
+fencing still prevents overtaking a failed or claimed head. A send already in progress
 can exceed that drain budget: metadata/buffer admission and acknowledgement
 each wait at most ten seconds. Claims use the actual per-delivery start time.
 The canonical source consumer resets its restart backoff only after a durable
@@ -574,6 +578,21 @@ JSON and row versions untouched until conversion. Rollback to pre-V31 binaries
 requires an explicit data conversion plan, not just switching images.
 
 ## Secondary analysis scope
+
+`AlertForwarder` includes `occurredAt`, trigger source/host and a `triggerEvent`
+envelope containing the trigger's original message and typed fields in the
+durable alert payload. The secondary consumer analyzes that trigger using
+the primary alarm's event time. Previously queued payloads remain readable
+through their matching `triggerEventId`/`evidence` entry; legacy direct inputs
+without evidence use their explicit `source`, `host`, `message` and optional
+`timestamp`. The primary `entity` is never assumed to be a source IP. IP and
+action conditions depend on actual trigger fields.
+
+The five built-in secondary rules run on primary-alert trigger samples, not
+on every original log or on all evidence rows. Thresholds and sequences thus
+count those samples only; this optional path does not replace the main
+Detection rule stream. Rule working state is replica-local, while the
+source-alarm receipt still deduplicates processing and durable result rows.
 
 The alarm follow-up (`AnalyzeService`, `socp-alarm-original`) splits durable and
 replica-local state. `t_analyzed`, its source-alarm receipt and the entity-risk

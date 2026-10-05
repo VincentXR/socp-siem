@@ -51,6 +51,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import({CaseStore.class, CaseTimelinePostgresTest.ProxyConfiguration.class})
 class CaseTimelinePostgresTest {
+    @org.springframework.boot.test.mock.mockito.MockBean com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
+    @org.springframework.boot.test.mock.mockito.MockBean com.socp.incident.web.service.CaseAlarmAssociationService associationCommands;
+
 
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(MiddlewareImages.postgres())

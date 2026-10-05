@@ -46,6 +46,17 @@ class CaseServiceTest {
     private IncidentAggregationLock aggregationLock;
 
     @Test
+    void createRejectsOwnersOutsideTheTenantDirectory() {
+        CaseService service = new CaseService(store, alarmLinks);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "operatorDirectory",
+                new com.socp.platform.auth.security.OperatorDirectory("{}", "{}", "{}"));
+        assertThatThrownBy(() -> service.create("Case", "host", "HIGH", "foreign-user"))
+                .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
+                .hasFieldOrPropertyWithValue("code", 400);
+        verify(store, never()).save(any());
+    }
+
+    @Test
     void createsCaseForFirstAlarmOfAnEntity() {
         given(store.openCaseId("203.0.113.10")).willReturn(null);
         CaseService service = new CaseService(store, alarmLinks, aggregationLock);
@@ -175,7 +186,6 @@ class CaseServiceTest {
 
     @Test
     void statusWritesRejectValuesOutsideTheDocumentedLifecycle() {
-        given(store.getMetadata("case-1")).willReturn(Case.create("case-1", "10.0.0.8", "HIGH"));
         CaseService service = new CaseService(store, alarmLinks);
 
         assertThatThrownBy(() -> service.setStatus("case-1", "FIXED_LATER", null))
@@ -183,8 +193,10 @@ class CaseServiceTest {
                 .hasFieldOrPropertyWithValue("code", 400);
         verify(store, never()).save(any(Case.class));
 
-        service.setStatus("case-1", "CONTAINED", "analyst");
-        verify(store).saveMetadata(any(Case.class));
+        assertThatThrownBy(() -> service.setStatus("case-1", "CONTAINED", "analyst"))
+                .hasMessageContaining("versioned");
+        assertThatThrownBy(() -> service.assign("case-1", "analyst")).hasMessageContaining("versioned");
+        verify(store, never()).saveMetadata(any(Case.class));
     }
 
     @Test
@@ -193,7 +205,6 @@ class CaseServiceTest {
         CaseService service = new CaseService(store, alarmLinks);
 
         for (java.util.function.Supplier<Map<String, Object>> call : List.<java.util.function.Supplier<Map<String, Object>>>of(
-                () -> service.setStatus("missing", "RESOLVED", null),
                 () -> service.addNote("missing", "analyst", "note", null),
                 () -> service.timeline("missing", 0, 50))) {
             assertThatThrownBy(call::get)

@@ -79,8 +79,10 @@ framing.method = "newline_delimited"
 healthcheck.enabled = false
 batch.max_events = 100
 batch.timeout_secs = 2
-request.retry_attempts = 5
-request.retry_backoff_secs = 2
+# Keep Vector's effectively unlimited retry budget; a finite count drops events
+# before SEARCH has durably acknowledged them during an extended outage.
+request.retry_initial_backoff_secs = 2
+request.retry_max_duration_secs = 30
 request.timeout_secs = 30
 # 机机采集凭据：与 search-config socp.security.ingest-token 一致（dev-bypass=false 时必须）。
 # 运行期由 run-vector.sh 用 sed 替换 __VECTOR_TOKEN__ 为实际值（Vector 配置模板的 ${VAR} 展开不可靠）。

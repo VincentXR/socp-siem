@@ -41,6 +41,15 @@ import java.util.Set;
  */
 @Service
 public class AlarmDispositionService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
+
+    private void requireAssignee(String assignee) {
+        if (operatorDirectory != null && assignee != null && !assignee.isBlank()) {
+            operatorDirectory.requireAssignable(assignee.trim());
+        }
+    }
+
 
     public record Disposition(
             String status,
@@ -132,6 +141,7 @@ public class AlarmDispositionService {
 
     @Transactional
     public Disposition assign(String alarmId, String assignee) {
+        requireAssignee(assignee);
         Disposition cur = currentForUpdate(alarmId);
         String target = assignee == null ? null : assignee.trim();
         Disposition next = new Disposition(cur.status(), target, appendHistory(cur, "Owner: " + Objects.toString(cur.assignee(), "unassigned") + " → " + Objects.toString(target, "unassigned")), cur.tags());
@@ -207,6 +217,7 @@ public class AlarmDispositionService {
         String normalizedStatus = normalizeOptionalStatus(status);
         AlarmState targetState = normalizedStatus == null ? null : requireState(normalizedStatus);
         String normalizedAssignee = normalizeOptional(assignee);
+        requireAssignee(normalizedAssignee);
         String normalizedReason = normalizeOptional(reason);
         if (normalizedStatus == null && normalizedAssignee == null && normalizedReason == null) {
             throw ApiException.badRequest("at least one of status, assignee or reason is required");

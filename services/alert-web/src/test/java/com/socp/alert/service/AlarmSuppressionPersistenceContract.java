@@ -33,6 +33,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         AlarmService.class, AlarmQueryService.class, AlarmStatisticsService.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 abstract class AlarmSuppressionPersistenceContract {
+    @org.springframework.boot.test.mock.mockito.MockBean com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
+
     @Autowired AlarmSuppressionService suppression;
     @Autowired AlarmDispositionService disposition;
     @Autowired AlarmFeedbackService feedback;
@@ -73,7 +75,7 @@ abstract class AlarmSuppressionPersistenceContract {
             assertThat(suppression.suppresses(tenant, "rule", "host")).isFalse();
             Alarm resumed = alarmService.create(new Alarm("rule", "Rule", Severity.HIGH, "resumed", "host"), List.of());
             assertThat(resumed.getStatus()).isEqualTo("OPEN");
-            assertThat(registrar.status(tenant, resumed.getId())).hasSize(4);
+            assertThat(registrar.status(tenant, resumed.getId())).hasSize(5);
         });
     }
 

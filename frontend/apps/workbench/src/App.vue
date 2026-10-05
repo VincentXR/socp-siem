@@ -20,11 +20,11 @@ import { WORKBENCH_STATE } from './app/workbenchState'
 
 const { t, elLocale } = useI18n()
 const auth = useAuth()
-const { currentUser, currentRole, operatorOptions, isAuthed, authReady, userInitials } = auth
+const { currentUser, currentRole, currentTenant, currentPermissions, operatorOptions, operatorLabels, isAuthed, authReady, userInitials } = auth
 const router = useRouter()
 const route = useRoute()
 const { activeMenu, navigate } = useWorkbenchRoute()
-const menuGroups = computed(() => getVisibleMenuGroups(currentRole.value, t))
+const menuGroups = computed(() => getVisibleMenuGroups(currentRole.value, t, currentPermissions.value))
 const routeMenuAllowed = computed(() => menuGroups.value.some(group => group.items.some(item => item.key === activeMenu.value)))
 const activeLabel = computed(() => {
   for (const group of menuGroups.value) {
@@ -42,8 +42,8 @@ const alarmQuery = useAlarmQuery()
 
 const isOffline = ref(typeof navigator !== 'undefined' ? !navigator.onLine : false)
 
-function onLoginDone(user: string, role: string) {
-  auth.onLoginDone(user, role)
+function onLoginDone(user: string, role: string, tenant?: string, permissions?: string[]) {
+  auth.onLoginDone(user, role, tenant, permissions)
 }
 
 /**
@@ -71,7 +71,10 @@ provide(WORKBENCH_STATE, {
   theme,
   currentUser,
   currentRole,
+  currentTenant,
+  currentPermissions,
   operatorOptions,
+  operatorLabels,
   overview,
   alarmQuery,
   alarms,

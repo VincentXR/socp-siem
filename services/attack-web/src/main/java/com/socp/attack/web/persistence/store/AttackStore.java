@@ -9,7 +9,6 @@ import com.socp.attack.web.domain.Tactic;
 import com.socp.attack.web.domain.Technique;
 import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -113,23 +112,6 @@ public class AttackStore {
         return techniqueRepository.findById(id).map(AttackStore::toTechnique).orElse(null);
     }
 
-    /** Update editable ATT&CK fields in the authoritative database row. */
-    @Transactional
-    public Technique update(String id, String name, String tactic, String url, String description) {
-        TechniqueEntity entity = techniqueRepository.findById(id).orElse(null);
-        if (entity == null) return null;
-        Technique existing = toTechnique(entity);
-        Technique updated = new Technique(id,
-                valueOr(name, existing.name()), valueOr(tactic, existing.tactic()),
-                valueOr(url, existing.url()), valueOr(description, existing.description()));
-        entity.setName(updated.name());
-        entity.setTactic(updated.tactic());
-        entity.setUrl(updated.url());
-        entity.setDescription(updated.description());
-        techniqueRepository.save(entity);
-        return updated;
-    }
-
     /** 给定当前已启用规则覆盖的技术 ID 集合，计算各战术覆盖率与未覆盖技术。 */
     public Map<String, Object> coverage(java.util.Set<String> covered) {
         List<Tactic> tactics = tactics();
@@ -160,10 +142,6 @@ public class AttackStore {
         out.put("coverage", totalTech == 0 ? 0 : (int) Math.round(100.0 * coveredTech / totalTech));
         out.put("uncovered", uncovered);
         return out;
-    }
-
-    private static String valueOr(String value, String fallback) {
-        return value == null || value.isBlank() ? fallback : value.trim();
     }
 
     private static Tactic toTactic(TacticEntity entity) {

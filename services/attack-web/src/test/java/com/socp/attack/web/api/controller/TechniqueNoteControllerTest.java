@@ -21,6 +21,7 @@ class TechniqueNoteControllerTest {
         verify(notes).findByTenantIdAndTechniqueId("tenant-a", "T1110");
         TenantContext.runWith("tenant-b", () -> assertThat(controller.get("T1110").data()).containsEntry("note", ""));
         verify(notes).findByTenantIdAndTechniqueId("tenant-b", "T1110");
-        verify(catalog, never()).update(anyString(), any(), any(), any(), any());
+        verify(catalog, org.mockito.Mockito.times(2)).technique("T1110");
+        org.mockito.Mockito.verifyNoMoreInteractions(catalog);
     }
 }

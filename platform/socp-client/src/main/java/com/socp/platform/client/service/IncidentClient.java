@@ -71,12 +71,32 @@ public class IncidentClient {
                 "/api/v1/incidents/" + encode(caseId) + "/notes" + query, body);
     }
 
+    public ServiceCall change(String caseId, Map<String, Object> command) {
+        try {
+            return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/" + encode(caseId) + "/changes",
+                    JSON.writeValueAsString(command));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            throw new IllegalArgumentException("Invalid case command", invalid);
+        }
+    }
+
+    public ServiceCall assign(String caseId, String assignee, long expectedVersion, String key) {
+        String query = "?expectedVersion=" + expectedVersion + "&idempotencyKey=" + encode(key)
+                + "&assignee=" + encode(assignee);
+        return http.postJson(SocpService.INCIDENT,
+                "/api/v1/incidents/" + encode(caseId) + "/assignee" + query, "{}");
+    }
+
+    /** Legacy unversioned callers receive a validation error; use change instead. */
+    @Deprecated
     public ServiceCall setStatus(String caseId, String status, String assignee) {
         String query = "?status=" + encode(status);
         if (assignee != null && !assignee.isBlank()) query += "&assignee=" + encode(assignee);
         return http.postJson(SocpService.INCIDENT, "/api/v1/incidents/" + encode(caseId) + "/status" + query, "{}");
     }
 
+    /** Legacy unversioned callers receive a validation error; use the versioned overload. */
+    @Deprecated
     public ServiceCall assign(String caseId, String assignee) {
         String query = assignee == null || assignee.isBlank() ? ""
                 : "?assignee=" + encode(assignee);

@@ -9,7 +9,7 @@ async function session(page: Page) {
     const path = new URL(route.request().url()).pathname
     const defaults: Record<string, unknown> = {
       '/auth/session': { username: 'alice', role: 'admin', tenant: 'default' },
-      '/auth/operators': { items: ['alice'] },
+      '/auth/operators': { items: [{ id: 'alice', label: 'Alice', role: 'analyst', current: true }, { id: 'bob-subject', label: 'Bob', role: 'analyst', current: false }] },
       '/api/v1/system/health': { status: 'up', services: {} },
       '/alert-web/api/alarms': { items: [], total: 0 },
       '/alert-web/api/alarms/stats': { total: 0 },
@@ -377,5 +377,47 @@ test('ATT&CK opens tenant rule associations and pivots to rule-scoped alarms', a
   await page.screenshot({ path: testInfo.outputPath('attack-rule-pivot.png'), fullPage: true })
   await detail.getByRole('button', { name: 'Related alarms', exact: true }).click()
   await expect(page).toHaveURL(/\/alarms\?rule=rule-a&technique=T1110/)
+  expect(unexpected).toEqual([])
+})
+
+test('case evidence association keeps investigation controls visible and reviews an alarm before linking', async ({ page }, testInfo) => {
+  const unexpected = await session(page)
+  let linked = false
+  const writes: Array<Record<string, unknown>> = []
+  const incident = () => ({ id: 'case-a', title: 'Investigation A', entity: 'host-a', status: 'OPEN', severity: 'HIGH', rowVersion: linked ? 1 : 0, alarmIds: [], ruleIds: [], timeline: [] })
+  await page.route('**/incident-web/api/v1/incidents**', route => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/alarm-associations')) {
+      writes.push(route.request().postDataJSON()); linked = true
+      return reply(route, { case: incident(), changed: true, duplicate: false })
+    }
+    if (path.endsWith('/case-a')) return reply(route, incident())
+    if (path.endsWith('/alarms')) return reply(route, { items: linked ? ['alarm-a'] : [], total: linked ? 1 : 0 })
+    return reply(route, { items: [], total: 0 })
+  })
+  await page.route('**/alert-web/api/alarms/alarm-a', route => reply(route, { id: 'alarm-a', title: 'Suspicious SSH login', entity: 'host-a', severity: 'HIGH', status: 'OPEN' }))
+  await page.goto('/cases?caseId=case-a')
+  const drawer = page.locator('.el-drawer.open')
+  await expect(drawer.getByLabel('Investigation note', { exact: true })).toBeVisible()
+  await drawer.getByRole('combobox', { name: 'Assignee', exact: true }).click()
+  await expect(page.getByRole('option', { name: 'Bob (bob-subject)', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await page.screenshot({ path: testInfo.outputPath('case-investigation-tab.png'), fullPage: true, animations: 'disabled' })
+  await drawer.getByRole('tab', { name: 'Linked evidence', exact: true }).click()
+  await drawer.getByRole('button', { name: 'Link alarm', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Review alarm association', exact: true })
+  await dialog.getByLabel('Alarm ID', { exact: true }).fill('alarm-a')
+  await dialog.getByRole('button', { name: 'Load alarm for review', exact: true }).click()
+  await expect(dialog).toContainText('Suspicious SSH login')
+  await dialog.getByLabel('Association change reason', { exact: true }).fill('Matches this investigation timeline')
+  await page.screenshot({ path: testInfo.outputPath('case-association-review.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(dialog.getByRole('button', { name: 'Confirm', exact: true })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('case-association-mobile.png'), fullPage: true, animations: 'disabled' })
+  await dialog.getByRole('button', { name: 'Confirm', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
+  await expect(drawer.getByRole('button', { name: 'Suspicious SSH login', exact: true })).toBeVisible()
+  expect(writes).toEqual([expect.objectContaining({ operation: 'ATTACH', alarmId: 'alarm-a', expectedVersion: 0, reason: 'Matches this investigation timeline', idempotencyKey: expect.any(String) })])
   expect(unexpected).toEqual([])
 })

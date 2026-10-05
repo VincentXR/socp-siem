@@ -88,9 +88,9 @@ class SoarConnectorRegistryBranchCoverageTest {
                 .willReturn(ok("{\"operationId\":\"op-t\"}"));
         given(incident.create(anyString()))
                 .willReturn(ok("{\"code\":0,\"data\":{\"case\":{\"id\":\"op-c\"}}}"));
-        given(incident.assign(eq("c1"), eq("alice")))
+        given(incident.assign(eq("c1"), eq("alice"), eq(3L), eq("idem-1")))
                 .willReturn(ok("{\"operationId\":\"op-a\"}"));
-        given(incident.setStatus(eq("c1"), eq("CLOSED"), eq("")))
+        given(incident.change(eq("c1"), org.mockito.ArgumentMatchers.anyMap()))
                 .willReturn(ok("{\"operationId\":\"op-s\"}"));
 
         assertThat(registry.execute(request("socp.incident/append-timeline",
@@ -103,11 +103,22 @@ class SoarConnectorRegistryBranchCoverageTest {
                 .contains("\"severity\":\"HIGH\"")
                 .doesNotContain("alertId");
         assertThat(registry.execute(request("socp.incident/assign",
-                "incidentId", "c1", "assignee", "alice")).operationId()).isEqualTo("op-a");
+                "incidentId", "c1", "assignee", "alice", "expectedVersion", 3)).operationId()).isEqualTo("op-a");
         assertThat(registry.execute(request("socp.incident/set-status",
-                "incidentId", "c1", "status", "CLOSED")).operationId()).isEqualTo("op-s");
+                "incidentId", "c1", "status", "CLOSED", "expectedVersion", 4,
+                "classification", "TRUE_POSITIVE", "result", "Contained", "reason", "Verified",
+                "evidence", "alert:a1", "remainingActions", "None")).operationId()).isEqualTo("op-s");
         assertThat(registry.actionDescriptor("socp.incident/add-task")).isEmpty();
         assertThat(registry.actionDescriptor("socp.incident/complete-task")).isEmpty();
+    }
+
+    @Test
+    void incidentCommandsRequireVersionAndStableActionIdentity() {
+        assertThat(registry.execute(request("socp.incident/set-status",
+                "incidentId", "c1", "status", "CLOSED")).status()).isEqualTo("FAILED");
+        assertThat(registry.execute(request("socp.incident/assign",
+                "incidentId", "c1", "assignee", "alice", "expectedVersion", 1.5)).status()).isEqualTo("FAILED");
+        org.mockito.Mockito.verifyNoInteractions(incident);
     }
 
     @Test

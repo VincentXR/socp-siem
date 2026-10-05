@@ -30,6 +30,17 @@ public enum Permission {
 
     public String wireName() { return wireName; }
 
+    /** Whitelisted effective grants; unknown claims cannot become gateway capabilities. */
+    public static Set<String> effective(String role, Object claims) {
+        Set<String> result = new java.util.LinkedHashSet<>(roleDefaults(role));
+        java.util.stream.Stream<String> values = claims instanceof java.util.Collection<?> collection
+                ? collection.stream().map(String::valueOf)
+                : claims instanceof String text ? Arrays.stream(text.split("[,\\s]+")) : java.util.stream.Stream.empty();
+        Set<String> known = Arrays.stream(values()).map(Permission::wireName).collect(Collectors.toSet());
+        values.map(value -> value.trim().toLowerCase(Locale.ROOT)).filter(known::contains).forEach(result::add);
+        return Set.copyOf(result);
+    }
+
     /**
      * Roles the platform can actually issue a session for. The gateway admits
      * exactly this set ({@code GatewayFilter.ROLES}) and the local/OIDC login

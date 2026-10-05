@@ -16,7 +16,7 @@ import java.util.stream.Collectors;
  *
  * <p>「迁移 com.siem 能力」的关键落点：直接复用 com.siem 已端到端验证过的 Vector 契约——
  * json codec + newline_delimited（NDJSON）、healthcheck 关闭（否则对只收 POST 的端点探活 405 致启动失败）、
- * disk buffer、retry 5 次（队列满时 SEARCH 回 503 + Retry-After，Vector 退避重投不丢数据）。
+ * disk buffer、持续重试（SEARCH 回 503 时持续退避，磁盘满后向采集源施加背压）。
  *
  * <p>每个日志源生成独立的 transform（inputs=[sources.src_X]），在 VRL 里按源标注
  * parse_format（解析格式）与 parse_rule_ids（自定义解析规则），SEARCH ingest 侧据此选择解析方式；
@@ -304,8 +304,10 @@ public class VectorConfigRenderer {
 
                 # SEARCH 队列满或响应丢失时重投；eventId 已在 buffer 前生成，
                 # 所以重投不会变成新的逻辑事件。
-                request.retry_attempts = 5
-                request.retry_backoff_secs = 2
+                # Keep Vector's effectively unlimited retry budget. A finite retry
+                # count discards events before SEARCH can durably acknowledge them.
+                request.retry_initial_backoff_secs = 2
+                request.retry_max_duration_secs = 30
                 request.timeout_secs = 30
                 %s%s
 

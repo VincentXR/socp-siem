@@ -44,8 +44,8 @@ class AlarmDeliveryRegistrarTest {
         ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
         verify(repository).saveAll(captor.capture());
         List<AlarmDelivery> deliveries = StreamSupport.stream(captor.getValue().spliterator(), false).toList();
-        assertEquals(4, deliveries.size());
-        assertEquals(4, deliveries.stream().map(AlarmDelivery::getId).distinct().count());
+        assertEquals(5, deliveries.size());
+        assertEquals(5, deliveries.stream().map(AlarmDelivery::getId).distinct().count());
         assertTrue(deliveries.stream().allMatch(delivery -> "tenant-a".equals(delivery.getTenantId())));
         assertTrue(deliveries.stream().allMatch(delivery -> "PENDING".equals(delivery.getStatus())));
     }
@@ -65,7 +65,7 @@ class AlarmDeliveryRegistrarTest {
 
         ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
         verify(repository).saveAll(captor.capture());
-        assertEquals(3, StreamSupport.stream(captor.getValue().spliterator(), false).count());
+        assertEquals(4, StreamSupport.stream(captor.getValue().spliterator(), false).count());
     }
 
     @Test
@@ -80,7 +80,7 @@ class AlarmDeliveryRegistrarTest {
         ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
         verify(repository).saveAll(captor.capture());
         List<AlarmDelivery> deliveries = StreamSupport.stream(captor.getValue().spliterator(), false).toList();
-        assertEquals(1, deliveries.size());
+        assertEquals(2, deliveries.size());
         assertEquals("CLICKHOUSE", deliveries.getFirst().getDestination());
     }
 
@@ -100,7 +100,7 @@ class AlarmDeliveryRegistrarTest {
                 .map(AlarmDelivery::getDestination).toList();
         // CLICKHOUSE keeps the full population for reporting and SOAR carries its own
         // trigger policy, so only the two analyst-work destinations are gated.
-        assertEquals(List.of("CLICKHOUSE", "SOAR"), destinations);
+        assertEquals(List.of("CLICKHOUSE", "ENRICHMENT", "SOAR"), destinations);
     }
 
     @Test
@@ -115,7 +115,7 @@ class AlarmDeliveryRegistrarTest {
 
         ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
         verify(repository).saveAll(captor.capture());
-        assertEquals(4, StreamSupport.stream(captor.getValue().spliterator(), false).count());
+        assertEquals(5, StreamSupport.stream(captor.getValue().spliterator(), false).count());
     }
 
     @Test
@@ -131,7 +131,7 @@ class AlarmDeliveryRegistrarTest {
         ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
         verify(repository).saveAll(captor.capture());
         // Losing an incident hand-off to a parse error is worse than over-notifying.
-        assertEquals(4, StreamSupport.stream(captor.getValue().spliterator(), false).count());
+        assertEquals(5, StreamSupport.stream(captor.getValue().spliterator(), false).count());
     }
 
     @Test

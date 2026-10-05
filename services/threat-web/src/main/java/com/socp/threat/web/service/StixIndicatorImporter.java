@@ -22,6 +22,15 @@ public final class StixIndicatorImporter {
             Pattern.CASE_INSENSITIVE);
 
     public ImportResult parse(String bundle, String feed) {
+        return parse(bundle, feed, false);
+    }
+
+    /** TAXII 2.1 permits an envelope without objects when the collection/page is empty. */
+    public ImportResult parseTaxiiEnvelope(String envelope, String feed) {
+        return parse(envelope, feed, true);
+    }
+
+    private ImportResult parse(String bundle, String feed, boolean allowEmptyEnvelope) {
         if (bundle == null || bundle.isBlank()) throw invalid("STIX bundle is empty");
         Map<String, Object> root;
         try {
@@ -29,6 +38,8 @@ public final class StixIndicatorImporter {
         } catch (Exception ex) {
             throw invalid("invalid STIX JSON: " + ex.getMessage());
         }
+        if (root == null) throw invalid("STIX JSON must be an object");
+        if (allowEmptyEnvelope && !root.containsKey("objects")) return new ImportResult(List.of(), 0);
         Object rawObjects = root.get("objects");
         if (!(rawObjects instanceof List<?> objects)) throw invalid("STIX bundle.objects must be an array");
         List<Ioc> indicators = new ArrayList<>();

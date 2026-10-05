@@ -39,6 +39,7 @@ runtime:
     SOCP_ATTACK_URL: http://attack-web:8080
     SOCP_NOTIFY_URL: http://notify-web:8080
     SOCP_CASE_URL: http://incident-web:8080
+    SOCP_INCIDENT_URL: http://incident-web:8080
 
 x-product-platform-secrets: &product-platform-secrets
   SOCP_SECURITY_SERVICE_SECRET: SOCP_SECURITY_SERVICE_SECRET
@@ -71,6 +72,7 @@ workloads:
   alert-web:
     env:
       SOCP_ALARM_DELIVERY_DESTINATIONS: CLICKHOUSE,NOTIFY,INCIDENT,SOAR
+      SOCP_ALERT_ENRICHMENT_ENABLED: "true"
       SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,clickhouse=clickhouse.socp-data.svc.cluster.local:8123,notify=notify-web:8080,incident=incident-web:8080,soar=soar-web:8080
   soar-web:
     <<: *product-workload

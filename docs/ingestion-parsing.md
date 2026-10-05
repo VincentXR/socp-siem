@@ -73,6 +73,20 @@ Unmapped context remains available in stored event details; individual keys
 inside the JSON string do not gain an independent query contract, and values
 beyond the existing keyword indexing limit are retained but not indexed.
 
+AUTO vendor extraction (Falco, Sysmon, auditd) retains explicit producer event
+IDs and collector position fields before normalization. The extracted vendor
+source still wins over a vendor-native `source` label. Retrying the same vendor
+event therefore reaches the same event/outbox identity even without an HTTP
+`Idempotency-Key`.
+
+For Vector AUTO envelopes, a JSON object in `message` is parsed through the
+same vendor/AUTO chain as a directly submitted line. Inner canonical fields
+override envelope fields, and unrelated collector metadata is retained. JSON
+envelope expansion is limited to four nested messages; deeper envelopes and
+malformed inner JSON enter parse-failure quarantine. Ordinary unstructured
+text remains a valid AUTO fallback. Explicit source JSON format continues to
+use JSON parsing rather than silently selecting a vendor parser.
+
 Explicit JSON source formats continue to follow the configured JSON parser;
 this does not silently change a source's selected parser. Parser changes apply
 to new ingestion, not to already persisted canonical events. Drain existing
@@ -222,7 +236,33 @@ transaction. The tenant-local `(tenant_id, event_id)` constraints make a retry
 an idempotent acknowledgement. The response reports `created`, `duplicates`,
 and `acknowledged`; reusing an identity with different canonical content is a
 HTTP 409 conflict. A persistence error is HTTP 503 and means only the current
-uncommitted 200-event transaction should be retried.
+uncommitted HTTP request should be retried. Internal groups of 200 are flush
+batches inside that request's transaction, not separate acknowledged commits.
+
+Rendered and reference Vector HTTP sinks use the pinned Vector version's
+effectively unlimited retry-attempt default, with exponential backoff starting
+at two seconds and capped at 30 seconds. No finite attempt limit discards an
+event during retryable 429/5xx responses or connection failures. Events keep
+their identity in the disk buffer; when its 256 MiB capacity fills, the sink
+applies backpressure. This does not make non-retryable HTTP responses or
+non-durable upstream sources lossless. Re-render/redeploy existing collector
+configurations to remove the old five-attempt limit; changing Search alone
+does not change deployed Vector configuration.
+
+The generated-config runtime regression can use the pinned container image
+(`SOCP_TESTCONTAINERS=true`) or an explicit native binary of the same version
+(`SOCP_VECTOR_BIN=/path/to/vector`). Run
+`bash build/mvnw.sh -pl services/search-config -am -Dtest=VectorConfigRendererContainerTest -Dsurefire.failIfNoSpecifiedTests=false test`.
+It validates the generated configuration, returns eight HTTP 503 responses
+before a 200, checks unchanged replay bodies, and parses the received AUTO
+envelope with the production registry. The separate historical-file container
+case still requires Docker.
+
+The ingestion publisher queries the next ordered head after acknowledgements,
+including when only one routing key is active. A scheduled drain remains
+bounded by its configured round and time budgets; a failed/contended head is
+not repeatedly attempted within the same drain. Durable predecessor fencing,
+claim tokens and retry backoff remain in force across worker replicas.
 
 The rendered Vector envelope contains a stable `source_id`. The request
 credential still determines the tenant and trusted collector identity; body
@@ -231,6 +271,13 @@ the persisted `LogSource.parseRuleIds`, so changing a body field cannot select
 another tenant's rules.
 
 Malformed or over-budget event data is counted as a per-line parse rejection.
+Built-in `parse.error`, fixed-format mismatches, and an explicit source rule
+set with no successful match enter durable quarantine instead of becoming
+accepted canonical events. A successful configured rule may repair a built-in
+parse failure. The response increments `parseFailed` and `quarantined`, and
+includes the line in `acknowledged` only after quarantine commits. Replay uses
+the current parser and keeps still-invalid evidence pending. AUTO free text
+and an unbound optional fallback rule that simply does not match stay valid.
 Failure while reading the tenant-scoped source, parsing-rule, or reference-set
 configuration is a dependency failure instead: the API returns HTTP 503 and
 does not acknowledge the affected uncommitted batch. This distinction prevents

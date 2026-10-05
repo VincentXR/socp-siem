@@ -40,3 +40,10 @@ export const claimCase = (id: string, expectedVersion: number, idempotencyKey: s
 export const addCaseNote = (id: string, content: string, idempotencyKey: string) =>
   post<{ case: CaseInfo }>(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/notes`, { content, idempotencyKey })
 export const exportCaseSummary = (id: string) => downloadFile(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/export`, 'case-summary.json')
+
+export interface CaseAssociationChange {
+  alarmId: string; operation: 'ATTACH' | 'DETACH' | 'MOVE'; targetCaseId?: string
+  expectedVersion: number; targetExpectedVersion?: number; idempotencyKey: string; reason: string
+}
+export const changeCaseAssociation = (id: string, request: CaseAssociationChange) =>
+  post<{ case: CaseInfo; targetCase?: CaseInfo; duplicate: boolean; changed: boolean }>(`/incident-web/api/v1/incidents/${encodeURIComponent(id)}/alarm-associations`, request)

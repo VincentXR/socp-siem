@@ -56,8 +56,8 @@ socp:
     url: ${SOCP_THREAT_URL:http://localhost:18094}
   notify:
     url: ${SOCP_NOTIFY_URL:http://localhost:18096}
-  case:
-    url: ${SOCP_CASE_URL:http://localhost:18097}
+  incident:
+    url: ${SOCP_INCIDENT_URL:${SOCP_CASE_URL:http://localhost:18097}}
   soar:
     url: ${SOCP_SOAR_URL:http://localhost:18083}
   alert:
@@ -92,8 +92,8 @@ socp:
       cleanup-interval-ms: ${SOCP_ALERT_OUTBOX_CLEANUP_INTERVAL_MS:3600000}
       cleanup-initial-delay-ms: ${SOCP_ALERT_OUTBOX_CLEANUP_INITIAL_DELAY_MS:60000}
     enrichment:
-      concurrency: ${SOCP_ALERT_ENRICHMENT_CONCURRENCY:4}
-      queue-capacity: ${SOCP_ALERT_ENRICHMENT_QUEUE_CAPACITY:1000}
+      # Durable enrichment uses the delivery worker limits and replay controls.
+      enabled: ${SOCP_ALERT_ENRICHMENT_ENABLED:true}
 
 management:
   endpoints:

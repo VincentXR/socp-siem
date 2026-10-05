@@ -278,7 +278,7 @@ class AlarmServiceTest {
         });
         service.create(alarm);
 
-        verify(enrichmentService).scheduleAfterCommit(alarm);
+        org.assertj.core.api.Assertions.assertThat(alarm.getInitialRiskScore()).isEqualTo(alarm.getRiskScore());
     }
 
     @Test

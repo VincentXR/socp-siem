@@ -44,7 +44,6 @@ class DetectionRouteOutboxPublisherUnitTest {
         row = new DetectionRouteOutboxEntity("delivery-1", "tenant-a", "event-1", "v2", "plan-1",
                 "STATELESS", "event", "event-1", "route-key", "canonical", 0, 12,
                 "routed", "{}", Instant.now());
-        when(repository.findDueKeyHeads(any(Instant.class))).thenReturn(List.of(row));
     }
 
     @AfterEach
@@ -53,6 +52,7 @@ class DetectionRouteOutboxPublisherUnitTest {
     @Test
     @SuppressWarnings("unchecked")
     void onlyBrokerAcknowledgementPublishesTheClaimAndPreservesDeliveryIdentity() {
+        when(repository.findDueKeyHeads(any(Instant.class))).thenReturn(List.of(row));
         when(repository.claim(eq("delivery-1"), any(Instant.class), eq(0), eq(2))).thenReturn(1);
         CompletableFuture<RecordMetadata> acknowledgement = new CompletableFuture<>();
         when(producer.send(any(ProducerRecord.class))).thenAnswer(invocation -> {
@@ -75,6 +75,7 @@ class DetectionRouteOutboxPublisherUnitTest {
 
     @Test
     void failedAcknowledgementReleasesOnlyItsAttemptWithBackoff() {
+        when(repository.findDueKeyHeads(any(Instant.class))).thenReturn(List.of(row));
         when(repository.claim(eq("delivery-1"), any(Instant.class), eq(0), eq(2))).thenReturn(1);
         when(producer.send(any())).thenReturn(CompletableFuture.failedFuture(new IllegalStateException("broker unavailable")));
 
@@ -89,6 +90,7 @@ class DetectionRouteOutboxPublisherUnitTest {
 
     @Test
     void failedFinalAttemptBecomesDead() {
+        when(repository.findDueKeyHeads(any(Instant.class))).thenReturn(List.of(row));
         row.setAttempts(1);
         when(repository.claim(eq("delivery-1"), any(Instant.class), eq(1), eq(2))).thenReturn(1);
         when(producer.send(any())).thenReturn(CompletableFuture.failedFuture(new IllegalStateException("broker unavailable")));
@@ -100,9 +102,40 @@ class DetectionRouteOutboxPublisherUnitTest {
 
     @Test
     void lostClaimNeverSends() {
+        when(repository.findDueKeyHeads(any(Instant.class))).thenReturn(List.of(row));
         publisher.publishDue();
 
         verify(producer, never()).send(any());
         assertFalse(Thread.currentThread().isInterrupted());
+    }
+
+    @Test
+    void drainsOrderedHeadsOfOneHotKeyInOneScheduledCall() {
+        var remaining = new java.util.ArrayDeque<DetectionRouteOutboxEntity>();
+        for (int i = 0; i < 10; i++) {
+            remaining.add(new DetectionRouteOutboxEntity("delivery-" + i, "tenant-a", "event-" + i,
+                    "v2", "plan-1", "STATELESS", "event", "event-" + i, "one-key",
+                    "canonical", 0, i, "routed", "payload-" + i, Instant.now()));
+        }
+        when(repository.findDueKeyHeads(any())).thenAnswer(invocation ->
+                remaining.isEmpty() ? List.of() : List.of(remaining.element()));
+        when(repository.claim(any(), any(), eq(0), eq(2))).thenReturn(1);
+        when(producer.send(any())).thenReturn(CompletableFuture.completedFuture(
+                new RecordMetadata(new TopicPartition("routed", 0), 0, 0, 0, 0, 0)));
+        when(repository.markPublished(any(), eq(1), eq(0), eq(0L), any())).thenAnswer(invocation -> {
+            assertEquals(remaining.remove().getDeliveryId(), invocation.getArgument(0));
+            return 1;
+        });
+
+        publisher.publishDue();
+
+        assertTrue(remaining.isEmpty());
+        var order = org.mockito.Mockito.inOrder(producer);
+        for (int i = 0; i < 10; i++) {
+            String expected = "payload-" + i;
+            order.verify(producer).send(org.mockito.ArgumentMatchers.argThat(record ->
+                    "one-key".equals(record.key()) && expected.equals(record.value())));
+        }
+        verify(repository, org.mockito.Mockito.times(11)).findDueKeyHeads(any());
     }
 }

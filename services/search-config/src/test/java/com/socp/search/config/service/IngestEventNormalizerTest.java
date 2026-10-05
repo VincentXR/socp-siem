@@ -22,6 +22,7 @@ import java.util.List;
 import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -482,7 +483,7 @@ class IngestEventNormalizerTest {
     }
 
     @Test
-    void preservesPipelineErrorsAndCountsFlatAndEcsFieldsForSparseDetection() {
+    void pipelineErrorsBecomeTypedParseFailures() {
         TenantContext.set("tenant-a");
         ParserRegistry parsers = mock(ParserRegistry.class);
         ReferenceSetStore references = mock(ReferenceSetStore.class);
@@ -503,10 +504,30 @@ class IngestEventNormalizerTest {
         IngestEventNormalizer normalizer = new IngestEventNormalizer(
                 references, parsers, sourceResolver, pipeline);
 
-        var result = normalizer.normalize("raw", "collector-1");
+        IngestParseException failure = assertThrows(IngestParseException.class,
+                () -> normalizer.normalize("raw", "collector-1"));
 
-        assertEquals("invalid parse rule", result.event().ecs().get("parse.error"));
-        assertEquals("login", result.event().fields().get("action"));
-        assertEquals("value", result.event().fields().get("custom_field"));
+        assertEquals("invalid parse rule", failure.getMessage());
+    }
+
+    @Test
+    void sourceBoundRuleCanRepairBuiltInFailureBeforeQuarantine() {
+        TenantContext.set("tenant-a");
+        var registry = new ParserRegistry();
+        var rules = mock(com.socp.search.config.persistence.store.ParseRuleStore.class);
+        var rule = com.socp.search.config.domain.ParseRule.createWithId("custom", "custom", null,
+                "REGEX", "user=(?<user>[a-z]+)", List.of(), List.of(), true, 1);
+        when(rules.get("custom")).thenReturn(rule);
+        var source = mock(IngestSourceResolver.class);
+        when(source.resolve(anyString(), anyString())).thenReturn(new IngestSourceContext(
+                "collector", "source", ParseFormat.AUTO, List.of("custom"), null, null, true));
+        var normalizer = new IngestEventNormalizer(null, registry, source,
+                new ParsePipelineResolver(rules, new ParseRuleExecutor(registry)));
+
+        var event = normalizer.normalize("{user=alice}", "collector").event();
+
+        assertEquals("alice", event.fields().get("user"));
+        assertEquals("custom", event.fields().get("parse_rule_id"));
+        assertFalse(event.ecs().containsKey("parse.error"));
     }
 }

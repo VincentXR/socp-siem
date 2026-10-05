@@ -60,7 +60,7 @@ public class Alarm extends BaseEntity {
     private String mitre;
 
     /** 威胁情报命中（JSON 数组，来自 threat-web 富化） */
-    @Column(name = "ti_hits", length = 1024)
+    @Column(name = "ti_hits", columnDefinition = "TEXT")
     private String tiHits;
 
     /** 威胁评分 0~100（严重级别 + ATT&CK 战术权重 + 情报命中 + 实体频次 + 资产重要性） */
@@ -70,6 +70,20 @@ public class Alarm extends BaseEntity {
     /** 风险档位（CRITICAL/HIGH/MEDIUM/LOW/INFO），由 riskScore 分档，便于列表着色与筛选 */
     @Column(name = "risk_level", length = 16)
     private String riskLevel;
+
+    @Column(name = "initial_risk_score")
+    private Integer initialRiskScore;
+    @Column(name = "initial_risk_level", length = 16)
+    private String initialRiskLevel;
+    @Column(name = "enriched_at")
+    private Instant enrichedAt;
+
+    public Integer getInitialRiskScore() { return initialRiskScore; }
+    public void setInitialRiskScore(Integer value) { initialRiskScore = value; }
+    public String getInitialRiskLevel() { return initialRiskLevel; }
+    public void setInitialRiskLevel(String value) { initialRiskLevel = value; }
+    public Instant getEnrichedAt() { return enrichedAt; }
+    public void setEnrichedAt(Instant value) { enrichedAt = value; }
 
     /** Stable id emitted by Detection; used for alert transaction idempotency. */
     @Column(name = "source_alert_id", length = 255, nullable = false)

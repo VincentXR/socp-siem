@@ -22,7 +22,7 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import { computed, ref, watch, onUnmounted } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 import SevBadge from './SevBadge.vue'
 import type { Alarm, AlarmDeliveryStatus, AlarmEvidenceResponse, CaseInfo, Disposition, Ioc, AlarmFeedback, AlarmFeedbackKind } from '../api'
 import { claimAlarm, listAlarmFeedback, saveAlarmFeedback, listSimilarAlarms, addAlarmNote, assignAlarm, getAlarmDeliveries, getAlarmEvidence, getDisposition, requeueAlarmDelivery, setDispositionStatus } from '../api/alarms'
@@ -32,8 +32,11 @@ import AlarmSuppressionPanel from './AlarmSuppressionPanel.vue'
 import { alarmTransitionOptions } from '../app/alarm-statuses'
 import { useI18n } from '../composables/useI18n'
 import { useFocusReturn } from '../composables/useFocusReturn'
+import { useUnsavedChanges } from '../composables/useUnsavedChanges'
 import { useConfirm } from '../composables/useConfirm'
 import { tOr } from '../utils/i18nLabel'
+
+function assigneeLabel(id: string): string { return props.assigneeLabels && Object.hasOwn(props.assigneeLabels, id) ? props.assigneeLabels[id] : id }
 
 const props = withDefaults(defineProps<{
   modelValue: boolean
@@ -43,6 +46,7 @@ const props = withDefaults(defineProps<{
   goAi?: (alarmId: string, caseId?: string) => void
   goSoar?: (alarmId: string, caseId?: string) => void
   assigneeOptions?: string[]
+  assigneeLabels?: Record<string, string>
   canWrite?: boolean
   canAdmin?: boolean
 }>(), {
@@ -122,6 +126,12 @@ let actionToken = 0
 // Idempotency-Key window can absorb the duplicate instead of appending twice.
 let noteKey = ''
 let noteKeyContent = ''
+const drafts = useUnsavedChanges(() => Boolean(newNote.value.trim() || newAssignee.value.trim()
+  || closureReason.value.trim() || feedbackReason.value.trim() || feedbackExpiry.value
+  || disposition.value && newStatus.value !== disposition.value.status),
+() => props.modelValue && Boolean(props.canWrite), () => actionPending.value)
+onBeforeRouteUpdate((to, from) => to.query.alarmId === from.query.alarmId || drafts.canLeave())
+
 
 function newNoteKey(content: string): string {
   if (!noteKey || noteKeyContent !== content) {
@@ -207,11 +217,25 @@ async function loadFeedback() {
   }
 }
 
-function retryDetails(): void {
-  if (props.modelValue && props.alarm && !actionPending.value) {
-    void loadDetails(props.alarm)
-    void loadFeedback()
+async function retryDetails(): Promise<void> {
+  if (!props.modelValue || !props.alarm || actionPending.value || detailsLoading.value) return
+  const id = props.alarm.id
+  const token = ++loadToken
+  detailsLoading.value = true
+  // Retry only failed resources. Evidence/delivery outages must not reset a triage draft.
+  const retry = async <T,>(needed: boolean, read: () => Promise<T>, apply: (value: T) => void, fail: (error: unknown) => void) => {
+    if (!needed) return
+    try { const value = await read(); if (token === loadToken) apply(value) }
+    catch (error) { if (token === loadToken) fail(error) }
   }
+  await Promise.all([
+    retry(Boolean(dispositionError.value), () => getDisposition(id), value => { disposition.value = value; newStatus.value = value.status; dispositionError.value = '' }, error => { dispositionError.value = String(error) }),
+    retry(Boolean(evidenceError.value), () => getAlarmEvidence(id), value => { evidence.value = value; evidenceError.value = '' }, error => { evidenceError.value = String(error) }),
+    retry(Boolean(relatedCaseError.value), () => getCaseByAlarm(id), value => { relatedCase.value = value; relatedCaseError.value = '' }, error => { relatedCaseError.value = String(error) }),
+    retry(Boolean(deliveriesError.value), () => getAlarmDeliveries(id), value => { deliveries.value = value; deliveriesError.value = '' }, error => { deliveriesError.value = String(error) }),
+    retry(Boolean(similarError.value), () => listSimilarAlarms(id), value => { similar.value = value; similarError.value = '' }, error => { similarError.value = String(error) }),
+  ])
+  if (token === loadToken) detailsLoading.value = false
 }
 
 watch(() => [props.modelValue, props.alarm?.id] as const, ([visible]) => {
@@ -261,8 +285,8 @@ async function submitFeedback() {
   }
 }
 
-function beforeClose(done: () => void): void {
-  if (!actionPending.value) done()
+async function beforeClose(done: () => void): Promise<void> {
+  if (await drafts.canLeave()) done()
 }
 
 async function changeStatus() {
@@ -280,6 +304,8 @@ async function changeStatus() {
     const refreshed = await getDisposition(alarmId)
     if (!actionStillTargets(alarmId, token)) return
     disposition.value = refreshed
+    newStatus.value = refreshed.status
+    closureReason.value = ''
     ElMessage.success(t('common.updated'))
     emit('updated')
   } catch (error) {
@@ -513,7 +539,7 @@ function openEvidenceSearch() {
               </div>
               <el-button v-if="props.canWrite" :disabled="actionPending" @click="claim">{{ t('analystJourney.claim') }}</el-button>
               <div v-if="props.canWrite" class="alarm-form-row"><el-select v-model="newStatus" :disabled="actionPending"><el-option v-for="s in DISP_STATUSES" :key="s" :label="tOr(t, 'statuses.' + s, s)" :value="s" /></el-select><el-button type="primary" :loading="statusBusy" :disabled="actionPending" @click="changeStatus">{{ t('common.update') }}</el-button></div>
-              <div v-if="props.canWrite" class="alarm-form-row"><el-select v-model="newAssignee" :disabled="actionPending" filterable default-first-option clearable :placeholder="t('drawer.assigneePlaceholder')"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" /></el-select><el-button :loading="assignBusy" :disabled="actionPending" @click="doAssign">{{ t('common.assign') }}</el-button></div>
+              <div v-if="props.canWrite" class="alarm-form-row"><el-select v-model="newAssignee" :disabled="actionPending" filterable default-first-option clearable :placeholder="t('drawer.assigneePlaceholder')"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assigneeLabel(assignee)" :value="assignee" /></el-select><el-button :loading="assignBusy" :disabled="actionPending" @click="doAssign">{{ t('common.assign') }}</el-button></div>
               <div v-else class="drawer-readonly-hint">{{ t('drawer.readOnly') }}</div>
             </template>
           </section>

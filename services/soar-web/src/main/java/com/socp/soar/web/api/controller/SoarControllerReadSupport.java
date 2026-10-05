@@ -113,4 +113,12 @@ final class SoarControllerReadSupport {
     Page<Map<String, Object>> approvals(Pageable pageable) {
         return runQueries == null ? service.listApprovals(pageable) : runQueries.listApprovals(pageable);
     }
+    Page<Map<String, Object>> approvals(Pageable pageable, String status) {
+        return runQueries == null ? service.listApprovals(pageable, status) : runQueries.listApprovals(pageable, status);
+    }
+
+    Map<String, Object> approval(String id) {
+        return runQueries == null ? service.getApproval(id) : runQueries.getApproval(id);
+    }
+
 }

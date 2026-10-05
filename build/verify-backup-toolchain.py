@@ -30,6 +30,7 @@ OPS = ROOT / "docs" / "operations"
 REQUIRED_TOOLS = (
     "backup-postgres.sh",
     "backup-postgres-all.sh",
+    "backup-postgres-consistent.py",
     "restore-postgres.sh",
     "apply-tenant-rls.sh",
     "apply-postgres-roles.sh",
@@ -93,7 +94,7 @@ def errors_for_doc_registration() -> list[str]:
         errors.append("docs/operations/backup-restore.md is missing")
     else:
         text = backup_doc.read_text(encoding="utf-8")
-        for needle in ("restore-postgres.sh", "backup-postgres-all.sh", "apply-tenant-rls",
+        for needle in ("restore-postgres.sh", "backup-postgres-all.sh", "backup-postgres-consistent.py", "apply-tenant-rls",
                        "postgres-databases.txt"):
             if needle not in text:
                 errors.append(f"backup-restore.md does not register {needle}")

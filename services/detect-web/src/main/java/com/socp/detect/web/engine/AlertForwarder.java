@@ -157,6 +157,12 @@ public class AlertForwarder {
             var trigger = triggerEvidence(alert);
             if (trigger != null) {
                 payload.put("triggerEventId", trigger.id());
+                payload.put("source", trigger.source());
+                payload.put("host", trigger.host());
+                // Secondary analysis consumes the trigger of this primary
+                // alert, including its typed fields. Keep it explicit even if
+                // the bounded evidence list omits the final event.
+                payload.put("triggerEvent", evidencePayload(trigger));
                 Instant ingestedAt = triggerIngestedAt(trigger);
                 if (ingestedAt != null) {
                     payload.put("triggerIngestedAt", DateTimeFormatter.ISO_INSTANT.format(ingestedAt));

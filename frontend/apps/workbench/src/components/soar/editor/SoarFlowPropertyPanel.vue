@@ -20,6 +20,7 @@ import type { EditorNode, ValidationIssue } from './types'
 import { useI18n } from '../../../composables/useI18n'
 import { tOr } from '../../../utils/i18nLabel'
 import { WORKBENCH_STATE } from '../../../app/workbenchState'
+import { KNOWN_ROLES } from '../../../app/roles'
 
 const props = withDefaults(defineProps<{
   flow: SoarFlowApi
@@ -615,7 +616,7 @@ function updateTargetPath(value: string): void {
   props.flow.touchAfterNodeEdit()
 }
 
-const approvalRoleOptions = ['admin', 'analyst', 'operator', 'approver']
+const approvalRoleOptions = Array.from(KNOWN_ROLES)
 
 const operatorOptions = computed(() => {
   const current = nestedTextValue('config', 'assignee')

@@ -1,18 +1,15 @@
 package com.socp.attack.web.api.controller;
 
 import com.socp.attack.web.api.request.CoverageRequest;
-import com.socp.attack.web.api.request.TechniqueUpdateRequest;
 import com.socp.attack.web.domain.Tactic;
 import com.socp.attack.web.domain.Technique;
 import com.socp.attack.web.persistence.store.AttackStore;
-import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.api.PageResponse;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -77,15 +74,6 @@ public class AttackController {
         out.put("found", t != null);
         if (t != null) out.put("technique", t);
         return ApiResult.ok(out);
-    }
-
-    @RequireRole({"admin", "analyst"})
-    @AuditOperation(action = "UPDATE_ATTACK_TECHNIQUE", target = "attack")
-    @PutMapping("/techniques/{id}")
-    public ApiResult<Technique> update(@PathVariable String id, @Valid @RequestBody TechniqueUpdateRequest body) {
-        Technique updated = store.update(id, body.name(), body.tactic(), body.url(), body.description());
-        if (updated == null) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "ATT&CK 技术不存在");
-        return ApiResult.ok(updated);
     }
 
     /**

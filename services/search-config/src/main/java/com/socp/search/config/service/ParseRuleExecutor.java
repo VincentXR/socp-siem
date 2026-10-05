@@ -114,6 +114,12 @@ public class ParseRuleExecutor {
 
     private Map<String, String> parseBuiltIn(String format, String input) {
         Map<String, String> parsed = parsers.parse(input, ParseFormat.valueOf(format), null);
+        // A candidate parser may simply not apply. The owning source's fixed
+        // format still rejects this at ingress, but optional fallback candidates
+        // must be allowed to miss and yield to later rules.
+        if (parsed != null && ParserRegistry.FORMAT_MISMATCH.equals(parsed.get("parse.error.kind"))) {
+            return null;
+        }
         if (parsed != null && parsed.containsKey("parse.error")) {
             throw new IllegalArgumentException(parsed.get("parse.error"));
         }

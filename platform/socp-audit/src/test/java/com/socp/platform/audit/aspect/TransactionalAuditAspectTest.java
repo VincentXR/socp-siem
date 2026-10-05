@@ -90,7 +90,9 @@ class TransactionalAuditAspectTest {
         assertThatThrownBy(() -> aspect.around(point)).isSameAs(operationFailure);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM t_business", Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT result_text FROM t_audit_outbox", String.class))
-                .isEqualTo("FAIL:business rejected");
+                .isEqualTo("FAIL:IllegalStateException");
+        assertThat(jdbc.queryForObject("SELECT payload FROM t_audit_outbox", String.class))
+                .doesNotContain("business rejected");
     }
 
     @Test
@@ -104,7 +106,7 @@ class TransactionalAuditAspectTest {
         assertThatThrownBy(() -> aspect.around(point)).isSameAs(operationFailure);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM t_business", Integer.class)).isOne();
         assertThat(jdbc.queryForObject("SELECT result_text FROM t_audit_outbox", String.class))
-                .isEqualTo("FAIL:expected rejection");
+                .isEqualTo("FAIL:IllegalArgumentException");
     }
 
     @Test

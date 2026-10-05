@@ -5,5 +5,7 @@ public enum AlarmDeliveryDestination {
     CLICKHOUSE,
     NOTIFY,
     INCIDENT,
-    SOAR
+    SOAR,
+    ENRICHMENT,
+    SOAR_ENRICHED
 }

@@ -158,6 +158,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         long started = System.nanoTime();
         int rounds = 0;
         int lastBatchSize = 0;
+        java.util.Set<String> attempted = new java.util.HashSet<>();
         try {
             Instant now = Instant.now();
             int recovered = recoverStaleIfDue(now);
@@ -169,14 +170,18 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
             }
             while (rounds < maxDrainRounds && System.nanoTime() - started < maxDrainDurationNanos) {
                 now = Instant.now();
-                List<IngestionOutboxEvent> pending = repository.findDueKeyHeads(now);
+                List<IngestionOutboxEvent> pending = repository.findDueKeyHeads(now).stream()
+                        .filter(event -> attempted.add(event.getId())).toList();
                 lastBatchSize = pending.size();
                 if (pending.isEmpty()) break;
                 rounds++;
                 executor.deliverKeyed(pending, started + maxDrainDurationNanos,
                         event -> event.getTenantId() + "\u0000" + event.getRoutingKey(),
                         event -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)));
-                if (pending.size() < 200) break;
+                // A short batch counts eligible keys, not their queued events.
+                // Requery after completion to admit the next head of a hot key.
+                // Never attempt the same row twice in one drain (lost claims or
+                // retries must yield instead of becoming a database busy loop).
             }
         } catch (Exception failure) {
             log.warn("Ingestion outbox scan failed; next scan will retry: {}", failure.toString());

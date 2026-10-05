@@ -53,6 +53,9 @@ public class AuthController {
     @Value("${socp.security.service-secret:}") private String serviceSecret;
     @Value("${socp.oidc.issuer-uri:}") private String oidcIssuerUri;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
+
     private Map<String, String> users = Map.of();
     private Map<String, String> roles = Map.of();
     private Map<String, String> locales = Map.of();
@@ -133,6 +136,7 @@ public class AuthController {
                     "role", role,
                     "tenant", "default",
                     "locale", locale,
+                    "permissions", com.socp.platform.auth.security.Permission.roleDefaults(role),
                     "expiresIn", EXPIRES_SECONDS);
             return attemptLimiter.reset("login", address, username).thenReturn(ResponseEntity.ok()
                     .header(HttpHeaders.SET_COOKIE, sessionCookie(token).toString())
@@ -179,41 +183,36 @@ public class AuthController {
             @RequestHeader("X-Socp-User") String username,
             @RequestHeader("X-Socp-Role") String role,
             @RequestHeader("X-Tenant-Id") String tenant,
-            @RequestHeader("X-Socp-Locale") String locale) {
+            @RequestHeader("X-Socp-Locale") String locale,
+            @RequestHeader(value = "X-Socp-Permissions", required = false) String permissions) {
         return Map.of("username", username, "role", supportedRole(role), "tenant", tenant,
-                "locale", resolveLocale(username, locale));
+                "locale", resolveLocale(username, locale),
+                "permissions", com.socp.platform.auth.security.Permission.effective(role, permissions));
+    }
+
+    Map<String, Object> session(String username, String role, String tenant, String locale) {
+        return session(username, role, tenant, locale, null);
     }
 
     /**
-     * Return the small operator directory visible to the current session.
-     *
-     * <p>The gateway is the only component that knows both the verified
-     * session subject and the optional local-auth configuration. Returning
-     * display-safe identities here lets analyst workflows use selectors
-     * without exposing passwords or asking users to type opaque IDs. OIDC
-     * deployments normally have no local user map, so the current verified
-     * subject is still returned as the minimum useful directory. The demo
-     * local-user map is intentionally exposed only in its default tenant;
-     * other tenants must supply a real IdP directory instead of inheriting a
-     * global list.</p>
+     * Return enabled assignees from the shared tenant directory without credentials.
+     * The verified human subject is usable for self-assignment unless provisioning
+     * explicitly disables it. Local accounts are fallback members of default only.
      */
     @GetMapping("/operators")
     public Map<String, Object> operators(@RequestHeader("X-Socp-User") String username,
-                                         @RequestHeader("X-Tenant-Id") String tenant) {
-        List<String> names = "default".equalsIgnoreCase(tenant)
-                ? new ArrayList<>(users.keySet()) : new ArrayList<>();
-        if (username != null && !username.isBlank() && !names.contains(username)) names.add(username);
-        names.sort(String.CASE_INSENSITIVE_ORDER);
-        List<Map<String, Object>> items = names.stream()
-                .map(name -> Map.<String, Object>of(
-                        "id", name,
-                        "label", name,
-                        "role", supportedRole(roles.getOrDefault(name, "analyst")),
-                        "current", name.equals(username)))
-                .toList();
-        String source = "default".equalsIgnoreCase(tenant) && !users.isEmpty()
-                ? "configured" : "session";
-        return Map.of("items", items, "source", source);
+                                         @RequestHeader("X-Tenant-Id") String tenant,
+                                         @RequestHeader("X-Socp-Role") String role) {
+        var directory = operatorDirectory == null
+                ? new com.socp.platform.auth.security.OperatorDirectory("", usersJson, rolesJson) : operatorDirectory;
+        var items = directory.list(tenant, username, role).stream()
+                .map(operator -> Map.<String, Object>of("id", operator.id(), "label", operator.label(),
+                        "role", operator.role(), "current", operator.id().equals(username))).toList();
+        return Map.of("items", items, "source", directory.configured(tenant) ? "configured" : "session");
+    }
+
+    Map<String, Object> operators(String username, String tenant) {
+        return operators(username, tenant, roles.getOrDefault(username, "analyst"));
     }
 
     /** Compatibility overload for direct callers that do not have trusted identity headers. */

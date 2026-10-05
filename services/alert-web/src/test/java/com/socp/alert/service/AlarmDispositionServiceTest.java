@@ -44,6 +44,19 @@ class AlarmDispositionServiceTest {
     }
 
     @Test
+    void singleAndBatchAssignmentsRejectAnUnprovisionedOwnerBeforeWriting() {
+        DispositionRepository repository = mock(DispositionRepository.class);
+        AlarmDispositionService service = new AlarmDispositionService(repository);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "operatorDirectory",
+                new com.socp.platform.auth.security.OperatorDirectory("{}", "{}", "{}"));
+        assertThrows(com.socp.platform.error.exception.ApiException.class,
+                () -> service.assign("alarm-1", "foreign-user"));
+        assertThrows(com.socp.platform.error.exception.ApiException.class,
+                () -> service.batchUpdate(List.of("alarm-1"), null, "foreign-user", null));
+        org.mockito.Mockito.verifyNoInteractions(repository);
+    }
+
+    @Test
     void readsTheRepositoryOnEveryRequest() {
         DispositionRepository repository = mock(DispositionRepository.class);
         DispositionEntity first = entity("alarm-1", "OPEN", "alice");

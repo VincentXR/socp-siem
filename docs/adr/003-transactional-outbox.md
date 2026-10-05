@@ -51,8 +51,32 @@ database-backed claim, retry schedule, stale-claim recovery, and deterministic
 identity; Kafka replay reconciles missing delivery intents. The design still
 does not claim a distributed exactly-once transaction.
 
-Threat-intelligence enrichment is outside the Alert transaction and starts
-only after commit. Its executor and queue are bounded so an unavailable threat
-service cannot exhaust Alert Web during an alert storm; saturation may skip
-this explicitly best-effort enrichment without affecting the durable Alert or
-Outbox facts.
+Threat-intelligence lookup runs outside the Alert creation transaction. When
+`socp.alert.enrichment.enabled=true`, creation atomically records an `ENRICHMENT`
+delivery alongside the admission snapshot. The existing delivery worker provides
+bounded concurrency, retries, stale-claim recovery, DEAD visibility and operator
+replay. Suppressed alarms do not schedule enrichment. Minimal deployments without
+threat-web explicitly disable the feature; the full product profile enables it.
+
+The successful enrichment transaction locks the alarm, preserves analyst-owned
+fields and immutable `initialRiskScore`/`initialRiskLevel`, records `tiHits`, current
+`riskScore`/`riskLevel` and `enrichedAt`, and adds one `SOAR_ENRICHED` delivery when
+SOAR is enabled. A crash before commit retries both writes; a crash after commit
+reuses the snapshot and event identity. Current risk is never lowered below the
+admission score. The event type is `alert.enriched`, its identity is
+`alert:<alarmId>:enriched:1`, and `data` uses the same alarm shape as `alert.created`.
+
+ClickHouse reports, first notifications and automatic case admission retain the
+immutable creation snapshot. They are not silently rewritten or sent a second
+time when intelligence arrives. Rules that need intelligence or current risk must
+subscribe to `alert.enriched`; the two event types can arrive out of order and have
+independent automation receipts. Alarm queries expose both risk snapshots and
+completion time. Existing rows migrated by V25 have the last known score as their
+initial baseline because no earlier snapshot can be reconstructed reliably.
+
+Risk enrichment does not change rule severity. Current ClickHouse reports group
+by creation-time severity/rule/entity and do not project a risk-score column;
+standard notification text and automatic case severity also use rule severity.
+The initial risk fields travel in the immutable admission payload for consumers
+that need them, while the Alert detail/current-risk query and `alert.enriched`
+carry the later intelligence result.

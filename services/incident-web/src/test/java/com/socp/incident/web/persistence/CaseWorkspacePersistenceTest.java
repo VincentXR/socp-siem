@@ -28,6 +28,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @TestPropertySource(properties = {"spring.flyway.enabled=false", "spring.jpa.hibernate.ddl-auto=create-drop"})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class CaseWorkspacePersistenceTest {
+    @org.springframework.boot.test.mock.mockito.MockBean com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
+
     @Autowired CaseStore store;
     @Autowired CaseWorkspaceService workspace;
     @Autowired CaseMutationRepository receipts;
@@ -42,6 +44,18 @@ class CaseWorkspacePersistenceTest {
         return new CaseChangeRequest(status, null, c.rowVersion(), key, null, null, null, null, null);
     }
     Case result(java.util.Map<String, Object> response) { return (Case) response.get("case"); }
+
+    @Test void assignmentViaEitherWorkspaceCommandUsesTheTenantDirectory() {
+        Case initial = create();
+        org.mockito.Mockito.doThrow(ApiException.badRequest("Owner is not in tenant directory"))
+                .when(operatorDirectory).requireAssignable("foreign-user");
+        assertThatThrownBy(() -> workspace.assign(initial.id(), "alice", "foreign-user", initial.rowVersion(), "bad-owner"))
+                .hasMessageContaining("directory");
+        assertThatThrownBy(() -> workspace.change(initial.id(), "alice", new CaseChangeRequest("OPEN", "foreign-user",
+                initial.rowVersion(), "bad-change", null, null, null, null, null))).hasMessageContaining("directory");
+        assertThat(store.getMetadata(initial.id()).assignee()).isNull();
+        assertThat(store.timeline(initial.id(), 0, 20).getTotalElements()).isZero();
+    }
 
     @Test void persistsActorStatusAndFreshVersionThenRejectsStaleWrites() {
         Case initial = create();

@@ -123,16 +123,11 @@ public class AnalyzeService {
             return duplicateResult(ruleId, entity, tenant, sourceAlarmId, version);
         }
 
-        Map<String, String> fields = new LinkedHashMap<>();
-        fields.put("msg", message);
-        fields.put("src_ip", entity);
-        fields.put("tenant_id", tenant);
-        String source = String.valueOf(alarm.getOrDefault("source", "unknown"));
         String eventId = sourceAlarmId == null
                 ? UUID.randomUUID().toString()
                 : UUID.nameUUIDFromBytes((tenant + "|" + sourceAlarmId + "|" + version)
                 .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
-        SecurityEvent event = new SecurityEvent(eventId, eventTimestamp(alarm), source, entity, message, fields, severity);
+        SecurityEvent event = analysisEvent(alarm, tenant, eventId, message, severity);
 
         // 告警风暴智能抑制：同实体同规则在本副本一分钟内超出可配阈值时启动收敛
         long minute = System.currentTimeMillis() / 60_000;
@@ -374,8 +369,52 @@ public class AnalyzeService {
         return value;
     }
 
+    private static SecurityEvent analysisEvent(Map<String, Object> alarm, String tenant,
+                                               String eventId, String message, Severity severity) {
+        Map<?, ?> trigger = triggerEvent(alarm);
+        Map<String, String> fields = new LinkedHashMap<>();
+        if (trigger.get("fields") instanceof Map<?, ?> evidenceFields) {
+            evidenceFields.forEach((key, value) -> {
+                if (key instanceof String name && value != null
+                        && !(value instanceof Map<?, ?>) && !(value instanceof List<?>)) {
+                    fields.put(name, String.valueOf(value));
+                }
+            });
+        }
+        // Entity may be a host, user, or correlation key. Only genuine typed
+        // evidence may supply src_ip/action/user dimensions to secondary rules.
+        fields.remove("tenantId");
+        fields.put("tenant_id", tenant);
+        String raw = text(trigger.get("raw"));
+        if (raw == null) raw = message;
+        fields.putIfAbsent("msg", raw);
+        String source = text(trigger.get("source"));
+        if (source == null) source = text(alarm.get("source"));
+        String host = text(trigger.get("host"));
+        if (host == null) host = text(alarm.get("host"));
+        return new SecurityEvent(eventId, eventTimestamp(alarm), source == null ? "unknown" : source,
+                host == null ? "unknown" : host, raw, fields, severity);
+    }
+
+    private static Map<?, ?> triggerEvent(Map<String, Object> alarm) {
+        if (alarm.get("triggerEvent") instanceof Map<?, ?> trigger) return trigger;
+        // Backward compatibility for durable outbox rows created before the
+        // explicit trigger envelope was introduced.
+        if (alarm.get("evidence") instanceof List<?> evidence) {
+            String triggerId = text(alarm.get("triggerEventId"));
+            for (int i = evidence.size() - 1; i >= 0; i--) {
+                if (evidence.get(i) instanceof Map<?, ?> event
+                        && (triggerId == null || triggerId.equals(text(event.get("eventId"))))) {
+                    return event;
+                }
+            }
+        }
+        return Map.of();
+    }
+
     private static Instant eventTimestamp(Map<String, Object> alarm) {
-        String raw = text(alarm.get("timestamp"));
+        String raw = text(alarm.get("occurredAt"));
+        if (raw == null) raw = text(alarm.get("timestamp"));
         if (raw != null) {
             try {
                 return Instant.parse(raw);

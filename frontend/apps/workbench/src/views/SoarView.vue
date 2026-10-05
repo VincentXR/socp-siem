@@ -32,7 +32,7 @@ import {
   type SoarRun, type SoarNodeRun,
   approve,
   installTemplate as installTemplateApi,
-  listApprovals,
+  listApprovalsPage, getApproval,
   listPlaybooks,
   listTemplates,
   reject,
@@ -90,6 +90,11 @@ function openRun(runId: string): void { void router.push({ name: 'soar', query: 
 const contextAlarmId = computed(() => typeof route.query.alarmId === 'string' ? route.query.alarmId : '')
 // Approval decision state
 const approvalFilter = ref<'PENDING' | 'ALL'>('PENDING')
+const approvalPage = ref(0)
+const approvalTotal = ref(0)
+const approvalTotalPages = ref(0)
+watch(approvalFilter, () => { approvalPage.value = 0; void loadApprovals() })
+function changeApprovalPage(page: number) { approvalPage.value = page; void loadApprovals() }
 /** Approvals own their error banner; a stale list must not grey out the page. */
 const approvalsError = ref('')
 const displayedApprovals = computed(() => {
@@ -224,12 +229,21 @@ async function loadApprovals(): Promise<void> {
   approvalController = controller
   approvalsLoading.value = true
   approvalsError.value = ''
+  approvals.value = []
   try {
-    const result = await listApprovals({ signal: controller.signal })
+    const result = await listApprovalsPage(approvalPage.value, 25, approvalFilter.value === 'PENDING' ? 'PENDING' : undefined, { signal: controller.signal })
     if (disposed || controller.signal.aborted || approvalController !== controller) return
-    approvals.value = result
-    const selected = result.find(item => item.id === route.query.approvalId)
-    if (selected && selected.status === 'PENDING' && !approvalVisible.value) void openApprovalModal(selected, true)
+    approvals.value = result.items
+    approvalTotal.value = result.total
+    approvalTotalPages.value = result.totalPages ?? Math.ceil(result.total / 25)
+    if (approvalPage.value > 0 && approvalPage.value >= approvalTotalPages.value) {
+      approvalPage.value = Math.max(0, approvalTotalPages.value - 1); void loadApprovals(); return
+    }
+    const selectedId = typeof route.query.approvalId === 'string' ? route.query.approvalId : ''
+    if (selectedId && !approvalVisible.value) {
+      const selected = result.items.find(item => item.id === selectedId) ?? await getApproval(selectedId, { signal: controller.signal })
+      if (!disposed && !controller.signal.aborted && selected.status === 'PENDING') void openApprovalModal(selected, true)
+    }
   } catch (failure) {
     if (!disposed && !controller.signal.aborted && approvalController === controller) {
       approvalsError.value = failure instanceof Error ? failure.message : 'Unable to load SOAR approvals'
@@ -480,8 +494,8 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
                   <small class="soar-header-hint">{{ t('soar.approvalHint') }}</small>
                 </div>
                 <div class="soar-header-filter">
-                  <el-button size="small" :type="approvalFilter === 'PENDING' ? 'primary' : 'default'" @click="approvalFilter = 'PENDING'">{{ t('soar.pendingApprovals') }} ({{ approvals.filter(item => item.status === 'PENDING').length }})</el-button>
-                  <el-button size="small" :type="approvalFilter === 'ALL' ? 'primary' : 'default'" @click="approvalFilter = 'ALL'">{{ t('soar.allApprovals') }} ({{ approvals.length }})</el-button>
+                  <el-button size="small" :type="approvalFilter === 'PENDING' ? 'primary' : 'default'" @click="approvalFilter = 'PENDING'">{{ t('soar.pendingApprovals') }}</el-button>
+                  <el-button size="small" :type="approvalFilter === 'ALL' ? 'primary' : 'default'" @click="approvalFilter = 'ALL'">{{ t('soar.allApprovals') }}</el-button>
                 </div>
               </div>
             </template>
@@ -506,6 +520,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
                 </template>
               </el-table-column>
             </el-table>
+            <SoarCatalogPager :page="approvalPage" :total="approvalTotal" :total-pages="approvalTotalPages" :loading="approvalsLoading" :label="t('soar.tabApprovals')" @change="changeApprovalPage" />
           </el-card>
 
           <!-- Manual Tasks -->

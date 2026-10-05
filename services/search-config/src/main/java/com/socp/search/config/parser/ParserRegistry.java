@@ -25,6 +25,17 @@ import java.util.Map;
 @SearchRuntimeRole(SearchRuntimeRole.Role.API)
 public class ParserRegistry {
 
+    private static final com.fasterxml.jackson.databind.ObjectMapper MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+    private static final int MAX_ENVELOPE_DEPTH = 4;
+    public static final String FORMAT_MISMATCH = "format_mismatch";
+    private static final List<String> IDENTITY_FIELDS = List.of(
+            "eventId", "event.id", "event_id", "id", "topic", "partition", "offset",
+            "source.topic", "source.partition", "source.offset", "kafka_topic",
+            "kafka_partition", "kafka_offset", "file", "file_path", "source.file",
+            "log.file.path", "batch_id", "batchId", "ingest_batch_id", "line_number",
+            "lineNumber", "batch_line");
+
     private final List<EventParser> parsers;
     private final Map<String, EventParser> byVendor = new LinkedHashMap<>();
 
@@ -56,6 +67,10 @@ public class ParserRegistry {
      * @param vendorHint 采集器/任务声明的 vendor 提示（可为 null）；命中则只试该解析器
      */
     public Map<String, String> parse(String raw, String vendorHint) {
+        return parseAuto(raw, vendorHint, 0);
+    }
+
+    private Map<String, String> parseAuto(String raw, String vendorHint, int depth) {
         if (raw == null || raw.isBlank()) {
             return Map.of();
         }
@@ -64,7 +79,7 @@ public class ParserRegistry {
             if (p != null) {
                 Map<String, String> out = safeParse(p, raw);
                 if (out != null) {
-                    return out;
+                    return finishAutoParse(p, raw, out, depth);
                 }
             }
         }
@@ -72,29 +87,30 @@ public class ParserRegistry {
         for (EventParser p : parsers) {
             Map<String, String> out = safeParse(p, raw);
             if (out != null) {
-                // Vector sends a JSON envelope whose message field still contains
-                // the raw line. Keep collector metadata while resolving the same
-                // authentication/syslog dimensions as direct raw ingestion.
-                if ("json".equals(p.name())) {
-                    Map<String, String> nested = parseEmbeddedText(out);
-                    if (nested != null) {
-                        Map<String, String> merged = new LinkedHashMap<>(out);
-                        merged.putAll(nested);
-                        return merged;
-                    }
-                }
-                return out;
+                return finishAutoParse(p, raw, out, depth);
             }
         }
         // 兜底：原文进 event.message
         return Map.of(CanonicalEvent.EVENT_MESSAGE, raw.trim());
     }
 
+    private Map<String, String> finishAutoParse(EventParser parser, String raw,
+                                               Map<String, String> parsed, int depth) {
+        if (!"json".equals(parser.name())) return preserveIdentity(raw, parsed);
+        // Generic JSON already preserves envelope identities. Only selective
+        // vendor parsers need a separate metadata extraction pass.
+        Map<String, String> nested = parseEmbeddedText(parsed, depth);
+        if (nested == null) return parsed;
+        Map<String, String> merged = new LinkedHashMap<>(parsed);
+        merged.putAll(nested);
+        return merged;
+    }
+
     /**
      * Parses with a persisted source format. Unlike the legacy AUTO method, a
-     * fixed format must not silently fall back to event.message; a
-     * source-bound rule uses an empty result to distinguish "did not match"
-     * from a successful parse.
+     * fixed format must not silently fall back to event.message. A mismatch
+     * carries parse.error so ingestion can durably quarantine the original
+     * line, while preview callers can still display the failure.
      *
      * <p>Vector transports source metadata in a JSON envelope. For a fixed
      * format the envelope is unwrapped first and the embedded message is sent
@@ -116,7 +132,8 @@ public class ParserRegistry {
 
         if (selected == ParseFormat.JSON) {
             Map<String, String> parsed = safeParse(parser, raw);
-            return parsed == null ? Map.of() : mergeEmbeddedJson(parsed);
+            return parsed == null ? formatMismatch(raw, "input does not match JSON format")
+                    : mergeEmbeddedJson(parsed);
         }
 
         if (raw.stripLeading().startsWith("{")) {
@@ -132,12 +149,12 @@ public class ParserRegistry {
                     merged.putAll(nested);
                     return merged;
                 }
-                return envelope;
+                return formatMismatch(raw, "message does not match " + selected + " format");
             }
         }
 
         Map<String, String> direct = safeParse(parser, raw);
-        return direct == null ? Map.of() : direct;
+        return direct == null ? formatMismatch(raw, "input does not match " + selected + " format") : direct;
     }
 
     private Map<String, String> mergeEmbeddedJson(Map<String, String> envelope) {
@@ -150,11 +167,52 @@ public class ParserRegistry {
         return merged;
     }
 
-    private Map<String, String> parseEmbeddedText(Map<String, String> envelope) {
+    private Map<String, String> parseEmbeddedText(Map<String, String> envelope, int depth) {
         String message = envelope.get(CanonicalEvent.EVENT_MESSAGE);
         if (message == null || message.isBlank()) return null;
+        if (message.stripLeading().startsWith("{")) {
+            if (depth >= MAX_ENVELOPE_DEPTH) {
+                return parseFailure(message, "JSON envelope nesting exceeds " + MAX_ENVELOPE_DEPTH);
+            }
+            return parseAuto(message, null, depth + 1);
+        }
         Map<String, String> authentication = safeParse(new SshdParser(), message);
         return authentication != null ? authentication : safeParse(new SyslogParser(), message);
+    }
+
+    /** Vendor field extraction must not discard the producer's replay identity. */
+    private Map<String, String> preserveIdentity(String raw, Map<String, String> parsed) {
+        if (!raw.stripLeading().startsWith("{")) return parsed;
+        try {
+            var original = MAPPER.readTree(raw);
+            Map<String, String> result = new LinkedHashMap<>(parsed);
+            for (String field : IDENTITY_FIELDS) {
+                var value = original.get(field);
+                if (value == null && field.contains(".")) {
+                    value = original;
+                    for (String segment : field.split("\\.")) {
+                        value = value.get(segment);
+                        if (value == null) break;
+                    }
+                }
+                if (value != null && value.isValueNode() && !value.isNull() && !value.asText().isBlank()) {
+                    result.putIfAbsent(field, value.asText());
+                }
+            }
+            return result;
+        } catch (com.fasterxml.jackson.core.JsonProcessingException invalid) {
+            // safeParse already reports deterministic parsing errors to its caller.
+            return parsed;
+        }
+    }
+
+    private static Map<String, String> parseFailure(String raw, String reason) {
+        return Map.of(CanonicalEvent.EVENT_MESSAGE, raw.trim(), "parse.error", reason);
+    }
+
+    private static Map<String, String> formatMismatch(String raw, String reason) {
+        return Map.of(CanonicalEvent.EVENT_MESSAGE, raw.trim(), "parse.error", reason,
+                "parse.error.kind", FORMAT_MISMATCH);
     }
 
     private Map<String, String> safeParse(EventParser p, String raw) {

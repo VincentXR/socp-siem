@@ -28,6 +28,15 @@ import java.util.UUID;
  */
 @Service
 public class CaseService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
+
+    private void requireAssignee(String assignee) {
+        if (operatorDirectory != null && assignee != null && !assignee.isBlank()) {
+            operatorDirectory.requireAssignable(assignee.trim());
+        }
+    }
+
 
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .registerModule(new JavaTimeModule())
@@ -35,6 +44,8 @@ public class CaseService {
     private final CaseStore store;
     private final AlarmCaseLinkRepository alarmLinks;
     private final IncidentAggregationLock aggregationLock;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private org.springframework.jdbc.core.JdbcTemplate associationJdbc;
 
     /** 归档导出：全部案件（含时间线）序列化为 JSON。 */
     /**
@@ -103,6 +114,13 @@ public class CaseService {
             }
         }
 
+        if (associationJdbc != null && !alarmId.isBlank()
+                && Boolean.TRUE.equals(associationJdbc.queryForObject(
+                "select count(*) > 0 from t_incident_alarm_exclusion where tenant_id = ? and alarm_id = ?",
+                Boolean.class, tenant(), alarmId))) {
+            return Map.of("alarmId", alarmId, "detached", true, "duplicate", true);
+        }
+
         String existingId = store.openCaseId(entity);
         Case c;
         if (existingId != null) {
@@ -160,6 +178,7 @@ public class CaseService {
 
     /** 手动创建案件：不关联告警，后续可在调查过程中补充时间线和关联信息。 */
     public Case create(String title, String entity, String severity, String assignee) {
+        requireAssignee(assignee);
         Case created = Case.create(title.trim(), entity == null ? "" : entity.trim(),
                 severity == null || severity.isBlank() ? "HIGH" : severity.trim().toUpperCase(),
                 assignee == null || assignee.isBlank() ? null : assignee.trim());
@@ -188,27 +207,14 @@ public class CaseService {
         return incident;
     }
 
+    @Deprecated
     public Map<String, Object> setStatus(String id, String status, String assignee) {
-        Case c = store.getMetadata(id);
-        if (c == null) throw ApiException.notFound("未找到案件 " + id);
-        CaseState target = CaseState.from(status).orElseThrow(() -> ApiException.badRequest(
-                "非法案件状态 " + status + "; 允许: " + String.join("/", CaseState.PATTERN.split("\\|"))));
-        CaseState current = CaseState.from(c.status()).orElse(CaseState.OPEN);
-        if (current != target && !current.canMoveTo(target)) {
-            throw ApiException.conflict("案件状态不能从 " + current + " 变更为 " + target);
-        }
-        Case updated = c.withStatus(target.name(), assignee);
-        store.saveMetadata(updated);
-        return Map.of("case", updated);
+        throw ApiException.badRequest("Use a versioned case change command with an idempotency key");
     }
 
+    @Deprecated
     public Map<String, Object> assign(String id, String assignee) {
-        Case current = store.getMetadata(id);
-        if (current == null) throw ApiException.notFound("未找到案件 " + id);
-        Case updated = current.withStatus(current.status(),
-                assignee == null || assignee.isBlank() ? null : assignee.trim());
-        store.saveMetadata(updated);
-        return Map.of("case", updated);
+        throw ApiException.badRequest("Use a versioned case assignment command with an idempotency key");
     }
 
     public Map<String, Object> addNote(String id, String author, String content) {

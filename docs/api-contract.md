@@ -635,9 +635,13 @@ expose a conditional version or ETag.
   owner-queue index. Receipts are retained with the case; pruning them separately
   would end the corresponding idempotency guarantee.
 
-The paths above use the `/incident-web/api/v1` prefix. Existing status/assignee
- service integrations remain compatible; new interactive clients should use the
- versioned workspace commands. On conflict the workbench keeps unsaved input and
+The paths above use the `/incident-web/api/v1` prefix. The existing `/status` and
+ `/assignee` query-parameter paths now require `expectedVersion` and
+ `idempotencyKey` and execute these same row-locked commands. `/status` accepts
+ the closure fields above; unversioned writes return 400. SOAR incident assignment
+ and status actions must pass a version read from the case and use their stable
+ action key. Closure evidence is required for automation as for an analyst.
+ On conflict the workbench keeps unsaved input and
  offers a confirmed reload so the analyst can review newer state before retrying.
 
 `GET /incidents/{id}/export` downloads a bounded JSON summary with metadata,
@@ -645,3 +649,138 @@ The paths above use the `/incident-web/api/v1` prefix. Existing status/assignee
  totals and `truncated` describe omissions; raw evidence is not embedded. The
  all-case export remains a bounded metadata archive. Exports use a consistent
  read snapshot and private/no-store caching, and require an analyst/admin role.
+
+
+### Manual Case alarm associations
+
+`POST /incident-web/api/v1/incidents/{id}/alarm-associations` accepts JSON
+`alarmId`, `operation=ATTACH|DETACH|MOVE`, `expectedVersion`, `idempotencyKey`,
+and a nonblank `reason` (maximum 2000 characters). MOVE additionally requires
+`targetCaseId` and `targetExpectedVersion`. The response contains `case`,
+`changed`, `duplicate`, and, for MOVE, `targetCase`. Both cases must belong to
+the authenticated tenant. The service verifies the alarm against Alert Web,
+including its returned tenant; unverified ownership fails closed (503) and a
+missing/foreign alarm returns 404. Only an open destination may receive alarms.
+
+ATTACH requires an unassociated alarm; use MOVE for an existing association.
+The command serializes with automatic delivery using the same alarm lock, locks
+case rows in stable order, and commits links, source/target history and its
+idempotency receipt together. DETACH retains a tenant/alarm exclusion marker,
+so replay of an old automatic delivery cannot undo the analyst's decision.
+Explicit ATTACH removes that marker. Rule references are historical investigation
+provenance and remain visible after an alarm moves away. The alarm list contains
+current associations only. Mutation/exclusion receipts must be retained together
+with alarm identity; independent pruning ends replay protection.
+
+`/incidents/from-alarm` is a service-identity-only admission endpoint used by the
+Alert delivery worker. Interactive clients use the association command. Service
+JWT and signed delegated-tenant headers are both required in authenticated
+profiles. Assignments on Case and Alert require a current active analyst/admin
+from the shared tenant operator directory (or the authenticated user assigning
+themself); free-form user names and service identities are not valid owners.
+
+### Alarm admission and intelligence risk
+
+Alarm detail includes immutable `initialRiskScore`, `initialRiskLevel`, current
+`riskScore`, `riskLevel`, `tiHits` and nullable `enrichedAt`. Creation captures the
+initial risk in the alarm, Kafka outbox and downstream delivery payload together.
+Reports/first notifications/automatic case admission describe that snapshot.
+When enabled, intelligence lookup has a durable `ENRICHMENT` delivery; failures
+remain retryable and exhausted attempts are visible in DEAD and can be replayed.
+Completion and the independent `SOAR_ENRICHED` intent commit atomically. SOAR
+receives `alert.enriched` with the same `data` alarm shape, a distinct stable
+`eventId=alert:<id>:enriched:1`, and `subject.id=<id>`. Policies needing intelligence
+must select that event type; consumers must not assume arrival order relative to
+`alert.created`. No second notification or automatic case is generated merely by
+a risk change. `SOCP_ALERT_ENRICHMENT_ENABLED=false` disables new enrichment tasks
+in minimal profiles; old pending work remains available for recovery. Delivery
+worker bounds replace the retired in-memory enrichment concurrency/queue options.
+
+Risk enrichment does not change rule severity. Current ClickHouse reports group
+by creation-time severity/rule/entity and do not project a risk-score column;
+standard notification text and automatic case severity also use rule severity.
+The initial risk fields travel in the immutable admission payload for consumers
+that need them, while the Alert detail/current-risk query and `alert.enriched`
+carry the later intelligence result.
+
+### Audit object and change metadata
+
+Audit records add nullable `entityId`, `changeSummary`, and `traceId` across the
+transactional audit outbox, Kafka consumer and `/audit/records` query. Entity IDs
+come from path variables or the created response object. `changeSummary` is a
+bounded JSON command summary: `fields` names submitted fields and
+`requestedChanges` contains only approved state/assignment/association values.
+It does not serialize request bodies, credentials, free-text notes or evidence.
+Failure results contain the exception type instead of the original exception
+message. The summary describes the submitted command; domain timelines remain
+the authority for actual before/after state and no-op/replay results. Existing
+audit records remain readable with null metadata (soc-base migration V5).
+
+### IOC source identity and TAXII pagination
+
+IOC public IDs are opaque. New rows use UUIDs; V7 preserves existing IDs so saved
+links and evidence remain valid. The database business key is tenant plus a
+length-prefixed SHA-256 encoding of `(source, externalId)` for imported indicators,
+or `(source, type, normalizedValue)` for manual indicators. Type is uppercased and
+values retain the existing trim/lowercase matching convention. Separate feeds and
+tenants may independently store the same indicator. Retrying a source identity
+updates its row; optimistic versioning and a database unique constraint prevent
+silent concurrent overwrites/duplicate identities. Conflicting concurrent writes
+must be retried after re-reading; a successful write is not inferred from a retry.
+
+Matching uses one tenant-scoped indexed database query for at most 1,000 supplied
+values, returning the highest-severity active source per value with a stable ID
+tie-breaker. Revoked, expired and not-yet-valid indicators do not match. No local
+IOC cache is used, so a committed revocation/deletion is visible on the next read
+across replicas and a rolled-back write cannot leave a cached match. This changes
+read load: monitor the indexed query before increasing traffic or adding caching.
+
+The Java V7 migration backfills identities and versions without rewriting published
+SQL migrations. Before upgrade, check for blank type/value or duplicate normalized
+source identities. Ambiguous historical facts stop migration; operators must
+resolve them explicitly with evidence preserved. The migration never silently
+merges or deletes those rows.
+
+TAXII `next` is an opaque cursor encoded in a query parameter on the same collection
+URL; it cannot redirect credentials to another URL. `more=true` without a cursor
+uses a strictly advancing `X-TAXII-Date-Added-Last` watermark. Missing/nonprogressing
+pagination metadata, repeated cursors and the 100-page bound fail the fetch rather
+than advancing the sync checkpoint. Existing network destination/DNS/TLS checks
+remain in force.
+
+### ATT&CK catalogue ownership
+
+The bundled technique catalogue is shared, read-only reference data updated through
+reviewed releases. The former analyst `PUT /attack-web/api/v1/techniques/{id}` route
+has been removed (405 on a known technique route). Tenant operators use the existing
+`/techniques/{id}/note` endpoint for local annotations; notes remain tenant-scoped.
+Clients of the removed global mutation must migrate to notes. The bundled catalogue
+is a curated subset, not a claim of complete enterprise ATT&CK coverage.
+
+### Session capabilities, operator membership and approval queue
+
+`GET /auth/session` includes `username`, `role`, `tenant`, `locale` and the effective
+`permissions` array. Effective grants combine the issuable role defaults and
+whitelisted explicit JWT permissions; client identity/capability headers are
+stripped before the gateway sets trusted values. Dedicated approval/publishing
+authority is a permission on a real admin/analyst/viewer identity, not a new role.
+Owning-service authorization remains required for each command.
+
+`GET /auth/operators` returns `{items:[{id,label,role,current}],source}` from the
+authenticated tenant's shared `SOCP_OPERATOR_DIRECTORY`. It exposes enabled
+admin/analyst assignees and the verified human self, unless explicitly disabled.
+The same directory is used in alert/incident mutation validation. Unknown,
+disabled, read-only and other-tenant targets are rejected with 400. Provisioning
+and coordinated rollout requirements are documented in SECURITY.md.
+
+`GET /soar-web/api/approvals?page=0&size=25&status=PENDING` filters in storage before
+pagination, returning `ApiResult<{items,total,totalPages,page,size}>`. Page is
+zero-based; size is bounded by the existing SOAR page limit. Accepted statuses are
+PENDING, APPROVED, REJECTED, EXPIRED and CANCELLED; omission includes all statuses.
+Rows use descending creation time and ID for stable ties. Calling without any
+query parameters retains the legacy latest-200 array, while the workbench always
+uses the paged contract. `GET /soar-web/api/approvals/{id}` reads an approval in the
+current tenant independently of list pages and returns 404 for unavailable IDs.
+Both reads require `soar:view`; decision commands retain `soar:approve` and policy
+checks. The OpenAPI snapshot defines both the legacy/paged union and the typed
+single-approval response for generated clients.

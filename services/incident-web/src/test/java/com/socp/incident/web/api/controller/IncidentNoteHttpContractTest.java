@@ -69,6 +69,8 @@ class IncidentNoteHttpContractTest {
     @Autowired CaseMutationRepository receipts;
     @Autowired ObjectMapper json;
     @Autowired AuditSink audit;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean com.socp.platform.client.service.AlertClient alerts;
     private String tenant;
     private IncidentClient client;
 
@@ -191,6 +193,32 @@ class IncidentNoteHttpContractTest {
                 assertThat(note.getMessage()).isEqualTo("analyst-9: Reviewed evidence"));
         assertThat(audit.recent(tenant, 10, "ADD_INCIDENT_NOTE"))
                 .singleElement().satisfies(record -> assertThat(record.operator()).isEqualTo("analyst-9"));
+    }
+
+    @Test
+    void automaticAdmissionRequiresSignedServiceAndLegacyWritesCannotBypassClosure() throws Exception {
+        jdbc.execute("create table if not exists t_incident_merge_lock (tenant_id varchar(64), shard_id integer, created_at timestamp, primary key(tenant_id,shard_id))");
+        jdbc.execute("create table if not exists t_incident_alarm_exclusion (tenant_id varchar(64), alarm_id varchar(255), created_at timestamp, primary key(tenant_id,alarm_id))");
+        String payload = json.writeValueAsString(Map.of("id", "alarm-" + UUID.randomUUID(),
+                "ruleId", "r", "severity", "HIGH", "entity", "host", "message", "detected"));
+        IncidentClient human = client("analyst-9", tenant, "", "");
+        assertThat(human.createFromAlarm(payload).status()).isEqualTo(403);
+        IncidentClient alert = client("service:alert-web", "default", "alert-web", SERVICE_SECRET);
+        String caseId = accepted(alert.createFromAlarm(payload)).path("caseId").asText();
+        assertThat(caseId).isNotBlank();
+        assertThat(accepted(alert.createFromAlarm(payload)).path("duplicate").asBoolean()).isTrue();
+        IncidentClient soar = client("service:soar-web", "default", "soar-web", SERVICE_SECRET);
+        assertThat(soar.setStatus(caseId, "RESOLVED", null).status()).isEqualTo(400);
+        long version = store.getMetadata(caseId).rowVersion();
+        assertThat(soar.change(caseId, Map.of("status", "RESOLVED", "expectedVersion", version,
+                "idempotencyKey", "missing-closure")).status()).isEqualTo(400);
+        Map<String, Object> closure = Map.of("status", "RESOLVED", "expectedVersion", version,
+                "idempotencyKey", "closure", "classification", "TRUE_POSITIVE", "result", "Contained",
+                "reason", "Verified", "evidence", "alarm evidence", "remainingActions", "None");
+        accepted(soar.change(caseId, closure));
+        assertThat(accepted(soar.change(caseId, closure)).path("duplicate").asBoolean()).isTrue();
+        assertThat(store.getMetadata(caseId).status()).isEqualTo("RESOLVED");
+        assertThat(store.timeline(caseId, 0, 20).getContent().stream().filter(row -> "CLOSURE".equals(row.getType())).count()).isOne();
     }
 
     private JsonNode accepted(ServiceCall response) throws Exception {

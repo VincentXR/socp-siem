@@ -6,6 +6,7 @@ import com.socp.threat.web.persistence.entity.IocEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.threat.web.domain.Ioc;
+import com.socp.threat.web.domain.IocIdentity;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -26,8 +27,8 @@ import java.time.Instant;
 import java.util.Locale;
 
 /**
- * 威胁情报 IOC 存储——本地切片用 H2 文件库（重启不丢）；生产由 MISP/OTX 同步至 OpenSearch/PG。
- * 对外公共 API 保持不变。
+ * Tenant-scoped source facts in PostgreSQL (H2 for local development).
+ * Matching reads committed lifecycle state; no replica-local IOC cache may outlive revocation.
  */
 @Component
 public class IocStore {
@@ -35,11 +36,7 @@ public class IocStore {
     private final IocRepository repo;
     private final boolean demoDataEnabled;
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final int DEFAULT_MAX_CACHE_ENTRIES = 100_000;
-    private final Map<String, Ioc> cache = new java.util.concurrent.ConcurrentHashMap<>();
-
-    @Value("${socp.threat.ioc.cache-max-entries:100000}")
-    private int maxCacheEntries = DEFAULT_MAX_CACHE_ENTRIES;
+    private static final int MAX_MATCH_VALUES = 1000;
 
     public IocStore(IocRepository repo) {
         this(repo, true);
@@ -68,28 +65,29 @@ public class IocStore {
         });
     }
 
-    public synchronized Ioc add(Ioc ioc) {
+    @Transactional
+    public Ioc add(Ioc ioc) {
         String tenant = tenant();
-        IocEntity entity = ioc.externalId() == null || ioc.externalId().isBlank()
-                ? repo.findByIdAndTenantId(ioc.id(), tenant).orElseGet(IocEntity::new)
-                : repo.findByTenantIdAndSourceAndExternalId(tenant, ioc.source(), ioc.externalId())
-                        .orElseGet(IocEntity::new);
-        String previousValue = entity.getValue();
+        String identity = IocIdentity.key(ioc.type(), ioc.value(), ioc.source(), ioc.externalId());
+        IocEntity entity = ioc.id() == null ? null : repo.findByIdAndTenantId(ioc.id(), tenant).orElse(null);
+        if (entity == null) entity = repo.findByTenantIdAndIdentityKey(tenant, identity).orElseGet(IocEntity::new);
+        // Never derive a primary key from an untrusted value, feed name or another tenant's ID.
+        if (entity.getId() == null) entity.setId(java.util.UUID.randomUUID().toString());
         Instant existingFirstSeen = entity.getFirstSeen();
         Instant existingLastSeen = entity.getLastSeen();
         Instant incomingFirstSeen = ioc.firstSeen();
         Instant incomingLastSeen = ioc.lastSeen();
         copy(toEntity(ioc), entity);
+        entity.setIdentityKey(identity);
+        entity.setType(ioc.type().trim().toUpperCase(Locale.ROOT));
+        entity.setValue(ioc.value().trim().toLowerCase(Locale.ROOT));
+        entity.setSource(ioc.source() == null || ioc.source().isBlank() ? "manual" : ioc.source().trim());
+        entity.setExternalId(ioc.externalId() == null || ioc.externalId().isBlank() ? null : ioc.externalId().trim());
         entity.setFirstSeen(earliest(existingFirstSeen, incomingFirstSeen));
         entity.setLastSeen(latest(existingLastSeen, incomingLastSeen));
         entity.setTenantId(tenant);
         IocEntity saved = repo.save(entity);
-        Ioc persisted = fromEntity(saved == null ? entity : saved);
-        if (previousValue != null && !previousValue.equalsIgnoreCase(persisted.value())) {
-            cache.remove(cacheKey(tenant, previousValue));
-        }
-        cachePut(cacheKey(tenant, persisted.value()), persisted);
-        return persisted;
+        return fromEntity(saved == null ? entity : saved);
     }
 
     public List<Ioc> list(String type) {
@@ -122,72 +120,35 @@ public class IocStore {
         if (entity.isEmpty()) return false;
         IocEntity e = entity.get();
         repo.delete(e);
-        cache.remove(cacheKey(tenant(), e.getValue()));
         return true;
     }
 
-    /** 精确匹配单个值（大小写不敏感），优先读缓存，未命中则查库并回填缓存。 */
+    /** Exact matching observes the database lifecycle on every request. */
     public Ioc match(String value) {
         if (value == null || value.isBlank()) return null;
-        String normalized = value.trim().toLowerCase(Locale.ROOT);
-        String key = cacheKey(tenant(), normalized);
-        Ioc cached = cache.get(key);
-        if (cached != null) {
-            if (cached.isActiveAt(Instant.now())) return cached;
-            cache.remove(key, cached);
-            return null;
-        }
-
-        Ioc found = repo.findByTenantIdAndValue(tenant(), normalized)
-                .map(IocStore::fromEntity).orElse(null);
-        if (found != null && found.isActiveAt(Instant.now())) {
-            cachePut(key, found);
-            return found;
-        }
-        return null;
+        return matchAll(List.of(value)).get(value);
     }
 
-    /** 批量匹配：通过缓存 + 批量 In-List 单次查询优化，避免循环单条 DB 往返。 */
+    /** One indexed query for the batch; each value selects the highest-risk active source. */
     public Map<String, Ioc> matchAll(List<String> values) {
         if (values == null || values.isEmpty()) return Map.of();
-        String tenant = tenant();
+        if (values.size() > MAX_MATCH_VALUES) throw new IllegalArgumentException("at most 1000 IOC values may be matched");
         Map<String, Ioc> out = new LinkedHashMap<>();
-        List<String> missing = new ArrayList<>();
-
-        for (String val : values) {
-            if (val == null || val.isBlank()) continue;
-            String normalized = val.trim().toLowerCase(Locale.ROOT);
-            Ioc cached = cache.get(cacheKey(tenant, normalized));
-            if (cached != null && cached.isActiveAt(Instant.now())) {
-                out.put(val, cached);
-            } else if (cached == null || cached.isActiveAt(Instant.now())) {
-                missing.add(normalized);
-            } else {
-                cache.remove(cacheKey(tenant, normalized), cached);
-            }
+        List<String> normalized = values.stream().filter(value -> value != null && !value.isBlank())
+                .map(value -> value.trim().toLowerCase(Locale.ROOT)).distinct().toList();
+        if (normalized.isEmpty()) return Map.of();
+        Instant at = Instant.now();
+        Map<String, Ioc> active = new LinkedHashMap<>();
+        for (IocEntity entity : repo.findActiveMatches(tenant(), normalized, at)) {
+            Ioc ioc = fromEntity(entity);
+            if (ioc.isActiveAt(at)) active.put(ioc.value(), ioc);
         }
-
-        if (!missing.isEmpty()) {
-            List<String> distinctMissing = missing.stream().distinct().toList();
-            List<IocEntity> foundEntities = repo.findByTenantIdAndValueIn(tenant, distinctMissing);
-            for (IocEntity entity : foundEntities) {
-                Ioc ioc = fromEntity(entity);
-                if (!ioc.isActiveAt(Instant.now())) continue;
-                String normalizedVal = entity.getValue().toLowerCase(Locale.ROOT);
-                cachePut(cacheKey(tenant, normalizedVal), ioc);
-                for (String originalVal : values) {
-                    if (originalVal != null && originalVal.trim().equalsIgnoreCase(normalizedVal)) {
-                        out.put(originalVal, ioc);
-                    }
-                }
-            }
+        for (String value : values) {
+            if (value == null) continue;
+            Ioc ioc = active.get(value.trim().toLowerCase(Locale.ROOT));
+            if (ioc != null) out.put(value, ioc);
         }
-
         return out;
-    }
-
-    private static String cacheKey(String tenant, String value) {
-        return tenant + ":" + (value == null ? "" : value.trim().toLowerCase());
     }
 
     public long count() {
@@ -209,34 +170,10 @@ public class IocStore {
     @Scheduled(fixedDelayString = "${socp.threat.ioc.expiry-cleanup-ms:3600000}")
     @TenantSystemJob
     @Transactional
-    public synchronized void cleanupExpired() {
+    public void cleanupExpired() {
         Instant now = Instant.now();
         repo.deleteByExpirationBeforeAndRevokedFalse(now);
         repo.deleteByValidUntilBeforeAndRevokedFalse(now);
-        cache.entrySet().removeIf(entry -> !entry.getValue().isActiveAt(now));
-        trimCacheToLimit();
-    }
-
-    int cachedEntries() {
-        return cache.size();
-    }
-
-    private void cachePut(String key, Ioc value) {
-        if (key == null || value == null) return;
-        cache.put(key, value);
-        trimCacheToLimit();
-    }
-
-    private void trimCacheToLimit() {
-        int limit = Math.max(1, maxCacheEntries);
-        int excess = cache.size() - limit;
-        if (excess <= 0) return;
-        var iterator = cache.keySet().iterator();
-        while (excess > 0 && iterator.hasNext()) {
-            String key = iterator.next();
-            iterator.remove();
-            excess--;
-        }
     }
 
     private static String tenant() {

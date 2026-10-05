@@ -99,6 +99,9 @@ public class AuditQueryService {
         output.put("action", entity.getAction());
         output.put("operator", entity.getOperator());
         output.put("target", entity.getTarget());
+        output.put("entityId", entity.getEntityId());
+        output.put("changeSummary", entity.getChangeSummary());
+        output.put("traceId", entity.getTraceId());
         output.put("result", entity.getResult());
         output.put("timestamp", entity.getTs().toString());
         return output;

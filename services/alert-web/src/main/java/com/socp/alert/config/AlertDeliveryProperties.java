@@ -18,7 +18,7 @@ public class AlertDeliveryProperties {
     private long maxDrainDurationMs = 2_000L;
     private int cleanupBatchSize = 1_000;
     private int cleanupMaxBatches = 10;
-    private Set<AlarmDeliveryDestination> destinations = EnumSet.allOf(AlarmDeliveryDestination.class);
+    private Set<AlarmDeliveryDestination> destinations = EnumSet.of(AlarmDeliveryDestination.CLICKHOUSE, AlarmDeliveryDestination.NOTIFY, AlarmDeliveryDestination.INCIDENT, AlarmDeliveryDestination.SOAR);
 
     /**
      * Lowest severity that still creates a Case. Every alarm used to become Case

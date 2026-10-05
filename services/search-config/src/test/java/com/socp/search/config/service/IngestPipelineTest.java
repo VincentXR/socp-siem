@@ -30,7 +30,7 @@ import static org.mockito.ArgumentMatchers.any;
 class IngestPipelineTest {
 
     @Test
-    void hipsTransportKeyKeepsFalcoIdentityStableWhenVendorParserDropsEnvelopeId() throws Exception {
+    void falcoProducerIdentitySurvivesVendorParsingRegardlessOfTransportKey() throws Exception {
         var normalizer = new IngestEventNormalizer(null, null, null,
                 new com.socp.search.config.parser.ParserRegistry());
         IngestionCommitService commit = mock(IngestionCommitService.class);
@@ -61,7 +61,8 @@ class IngestPipelineTest {
         assertEquals(committed.get(0).eventId(), committed.get(1).eventId());
         assertEquals(IngestionEventIdentity.fingerprint(committed.get(0)),
                 IngestionEventIdentity.fingerprint(committed.get(1)));
-        assertNotEquals(committed.get(0).eventId(), committed.get(2).eventId());
+        assertEquals("stored-event-1", committed.get(0).eventId());
+        assertEquals(committed.get(0).eventId(), committed.get(2).eventId());
         for (SearchEvent event : committed) {
             assertEquals("tenant-a", event.fields().get("tenant_id"));
             assertEquals("service:hips-web", event.fields().get("collector"));

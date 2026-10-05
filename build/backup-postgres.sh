@@ -21,7 +21,12 @@ mkdir -p -- "${BACKUP_DIR}"
 : "${PGDUMP_FILE:=${BACKUP_DIR}/socp-${PGDATABASE}-$(date -u +%Y%m%dT%H%M%SZ).dump}"
 
 umask 077
-pg_dump --format=custom --no-owner --no-privileges \
+dump_args=(--format=custom --no-owner --no-privileges)
+if [[ -n "${PGSNAPSHOT:-}" ]]; then
+  dump_args+=("--snapshot=${PGSNAPSHOT}")
+fi
+pg_dump "${dump_args[@]}" \
+  --host="${PGHOST}" --port="${PGPORT}" --username="${PGUSER}" --no-password \
   --file="${PGDUMP_FILE}" \
   "${PGDATABASE}"
 sha256sum "${PGDUMP_FILE}" > "${PGDUMP_FILE}.sha256"

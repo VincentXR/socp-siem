@@ -50,10 +50,13 @@ const props = defineProps<{
   goAi?: (alarmId: string, caseId?: string) => void
   goSoar?: (alarmId: string, caseId?: string) => void
   assigneeOptions?: string[]
+  assigneeLabels?: Record<string, string>
   canWrite?: boolean
   canAdmin?: boolean
   currentUser?: string
 }>()
+
+function assigneeLabel(id: string): string { return props.assigneeLabels && Object.hasOwn(props.assigneeLabels, id) ? props.assigneeLabels[id] : id }
 
 const { t } = useI18n()
 const { confirmDanger } = useConfirm()
@@ -252,7 +255,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
         <el-select v-model="status" :aria-label="t('alarms.statusFilter')" :placeholder="t('alarms.statusFilter')" clearable style="width:150px" @change="props.onSearch">
           <el-option v-for="item in FILTER_STATUSES" :key="item" :label="tOr(t, 'statuses.' + item, item)" :value="item" />
         </el-select>
-        <el-select v-model="assignee" clearable filterable :placeholder="t('cases.assignee')" style="width:160px" @change="searchAssignee"><el-option v-for="owner in props.assigneeOptions" :key="owner" :label="owner" :value="owner" /></el-select>
+        <el-select v-model="assignee" clearable filterable :placeholder="t('cases.assignee')" style="width:160px" @change="searchAssignee"><el-option v-for="owner in props.assigneeOptions" :key="owner" :label="assigneeLabel(owner)" :value="owner" /></el-select>
         <el-button v-if="props.currentUser" size="small" @click="myQueue">{{ t('workflow.myQueue') }}</el-button>
         <el-button size="small" @click="props.onSearch">{{ t('common.search') }}</el-button>
         <small v-if="ruleCatalogError" class="alarm-catalog-hint" :title="ruleCatalogError">{{ t('alarms.ruleCatalogUnavailable') }}</small>
@@ -284,7 +287,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
         <el-option v-for="item in DISP_STATUSES" :key="item" :label="tOr(t, 'statuses.' + item, item)" :value="item" />
       </el-select>
       <el-select v-else v-model="batchAssignee" :disabled="batchConfirming || batchBusy" filterable default-first-option clearable size="small" :placeholder="t('drawer.assigneePlaceholder')" style="width:180px">
-        <el-option v-for="assignee in props.assigneeOptions ?? []" :key="assignee" :label="assignee" :value="assignee" />
+        <el-option v-for="assignee in props.assigneeOptions ?? []" :key="assignee" :label="assigneeLabel(assignee)" :value="assignee" />
       </el-select>
       <select v-if="batchOperation === 'status' && ['RESOLVED', 'CLOSED'].includes(batchStatus)" v-model="batchClassification" :aria-label="t('analystJourney.batchClassification')"><option value="TRUE_POSITIVE">{{ t('analystJourney.truePositive') }}</option><option value="FALSE_POSITIVE">{{ t('analystJourney.falsePositive') }}</option><option value="BENIGN">{{ t('analystJourney.benign') }}</option><option value="UNDETERMINED">{{ t('analystJourney.undetermined') }}</option></select>
       <el-input v-model="batchReason" :aria-label="t('analystJourney.batchReason')" :placeholder="t('analystJourney.batchReasonPlaceholder')" :disabled="batchConfirming || batchBusy" />
@@ -326,6 +329,6 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
 
     <PagerBar class="alarm-pagination" v-model:current-page="pageNum" v-model:page-size="pageSize" :total="props.alarmPageData.total" :page-sizes="[10, 20, 50, 100]" />
 
-    <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :go-ai="props.goAi" :go-soar="props.goSoar" :assignee-options="props.assigneeOptions" :can-write="props.canWrite" :can-admin="props.canAdmin" @updated="props.loadPage" />
+    <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :go-ai="props.goAi" :go-soar="props.goSoar" :assignee-options="props.assigneeOptions" :assignee-labels="props.assigneeLabels" :can-write="props.canWrite" :can-admin="props.canAdmin" @updated="props.loadPage" />
   </div>
 </template>

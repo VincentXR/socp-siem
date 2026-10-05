@@ -18,8 +18,9 @@ const mocks = vi.hoisted(() => ({
   addAlarmNote: vi.fn().mockResolvedValue(undefined),
 }))
 const routeState = vi.hoisted(() => ({ query: {} as Record<string, string>, fullPath: '/alarms?alarmId=alarm-1' }))
-vi.mock('vue-router', () => ({ useRoute: () => routeState, useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
+vi.mock('vue-router', () => ({ onBeforeRouteUpdate: vi.fn(), onBeforeRouteLeave: vi.fn(), useRoute: () => routeState, useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
 const confirmation = vi.hoisted(() => ({
+  discard: vi.fn().mockRejectedValue(new Error('keep editing')),
   confirmDanger: vi.fn().mockResolvedValue(true),
   promptInput: vi.fn().mockResolvedValue('channel credentials corrected; destination checked'),
 }))
@@ -35,6 +36,7 @@ vi.mock('../src/api/incidents', () => ({
   createCaseFromAlarm: vi.fn(),
 }))
 vi.mock('../src/composables/useConfirm', () => ({ useConfirm: () => confirmation }))
+vi.mock('element-plus/es/components/message-box/index.mjs', () => ({ default: { confirm: confirmation.discard } }))
 
 const alarm = {
   id: 'alarm-1', ruleId: 'rule-1', ruleName: 'Suspicious login', severity: 'HIGH',
@@ -42,6 +44,29 @@ const alarm = {
 }
 
 describe('AlarmDispositionDrawer', () => {
+  it('retries only failed evidence while preserving investigation drafts and successful disposition data', async () => {
+    mocks.getAlarmEvidence.mockRejectedValueOnce(new Error('evidence temporarily unavailable'))
+    const wrapper = mount(AlarmDispositionDrawer, { props: { modelValue: true, alarm, canWrite: true, goCase: vi.fn(), goSearch: vi.fn() } })
+    await flushPromises()
+    const view = wrapper.vm as unknown as { newNote: string; closureReason: string; feedbackReason: string; retryDetails: () => Promise<void>; beforeClose: (done: () => void) => Promise<void> }
+    view.newNote = 'unsaved investigation'; view.closureReason = 'pending evidence'; view.feedbackReason = 'analyst feedback'
+    const reads = mocks.getDisposition.mock.calls.length
+    await view.retryDetails(); await flushPromises()
+    expect(mocks.getDisposition).toHaveBeenCalledTimes(reads)
+    expect(view.newNote).toBe('unsaved investigation')
+    expect(view.closureReason).toBe('pending evidence')
+    expect(view.feedbackReason).toBe('analyst feedback')
+    const beforeUnload = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(beforeUnload)
+    expect(beforeUnload.defaultPrevented).toBe(true)
+    const closed = vi.fn()
+    await view.beforeClose(closed)
+    expect(confirmation.discard).toHaveBeenCalled()
+    expect(closed).not.toHaveBeenCalled()
+    expect(view.newNote).toBe('unsaved investigation')
+    wrapper.unmount()
+  })
+
   it('preserves a 409 reason and refreshes reachable targets rather than suggesting the same invalid move', async () => {
     mocks.getDisposition.mockResolvedValueOnce({ status: 'OPEN', assignee: null, notes: [] })
     mocks.setDispositionStatus.mockRejectedValueOnce(new ApiError(409, 'Cannot move CLOSED to OPEN; choose INVESTIGATING'))

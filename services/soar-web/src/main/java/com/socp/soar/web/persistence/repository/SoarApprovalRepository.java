@@ -31,7 +31,10 @@ public interface SoarApprovalRepository extends TenantScopedRepository<SoarAppro
             @Param("tenantId") String tenantId, @Param("approvalKey") String approvalKey);
     List<SoarApprovalEntity> findAllByTenantIdAndRunIdOrderByCreatedAtAsc(String tenantId, String runId);
     List<SoarApprovalEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId);
-    Page<SoarApprovalEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId, Pageable pageable);
+    @Query("select a from SoarApprovalEntity a where a.tenantId = :tenantId order by a.createdAt desc, a.id desc")
+    Page<SoarApprovalEntity> findByTenantIdOrderByCreatedAtDesc(@Param("tenantId") String tenantId, Pageable pageable);
+    @Query("select a from SoarApprovalEntity a where a.tenantId = :tenantId and a.status = :status order by a.createdAt desc, a.id desc")
+    Page<SoarApprovalEntity> findByTenantIdAndStatusOrderByCreatedAtDesc(@Param("tenantId") String tenantId, @Param("status") String status, Pageable pageable);
     /** System-scope expiry scan used only by the SOAR approval janitor. */
     List<SoarApprovalEntity> findTop100ByStatusAndExpiresAtBeforeOrderByExpiresAtAsc(String status,
                                                                                        Instant expiresAt);

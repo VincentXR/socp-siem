@@ -36,6 +36,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -214,6 +215,30 @@ class SoarRunQueryServiceTest {
         assertEquals(1, query.listApprovals().size());
         assertEquals(1, query.listApprovals(page).getTotalElements());
         assertEquals(1L, query.listApprovals().get(0).get("approvedVotes"));
+    }
+
+    @Test
+    void filtersBeforePagingAndResolvesOldApprovalIdsWithinAuthenticatedTenant() {
+        var approvals = mock(SoarApprovalRepository.class);
+        var page = PageRequest.of(8, 25);
+        var approval = new SoarApprovalEntity();
+        approval.setId("old-pending"); approval.setStatus("PENDING"); approval.setRunId("run-old");
+        approval.setRequiredApprovals(1); approval.setCreatedAt(Instant.EPOCH);
+        when(approvals.findByTenantIdAndStatusOrderByCreatedAtDesc("tenant-a", "PENDING", page))
+                .thenReturn(new PageImpl<>(List.of(approval), page, 201));
+        when(approvals.findByTenantIdAndId("tenant-a", "old-pending")).thenReturn(Optional.of(approval));
+        var query = new SoarRunQueryService(mock(SoarRunRepository.class), mock(SoarDispatchOutboxRepository.class),
+                mock(SoarNodeRunRepository.class), mock(SoarRunEventRepository.class), mock(SoarActionAttemptRepository.class),
+                mock(SoarManualTaskRepository.class), approvals, mock(SoarSignalOutboxRepository.class), new ObjectMapper());
+        TenantContext.set("tenant-a");
+        var result = query.listApprovals(page, "pending");
+        assertEquals(201, result.getTotalElements());
+        assertEquals("old-pending", result.getContent().getFirst().get("id"));
+        assertEquals("old-pending", query.getApproval("old-pending").get("id"));
+        assertThrows(org.springframework.web.server.ResponseStatusException.class, () -> query.listApprovals(page, "unknown"));
+        TenantContext.set("tenant-b");
+        assertThrows(org.springframework.web.server.ResponseStatusException.class, () -> query.getApproval("old-pending"));
+        verify(approvals).findByTenantIdAndId("tenant-b", "old-pending");
     }
 
     private static String sha256(String value) throws Exception {

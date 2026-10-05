@@ -10,11 +10,13 @@ const mocks = vi.hoisted(() => ({
   listPlaybooks: vi.fn(),
   listRuns: vi.fn(), getRun: vi.fn(), listNodes: vi.fn(), listEvents: vi.fn(), listArtifacts: vi.fn(),
   listTemplates: vi.fn(),
-  listApprovals: vi.fn(),
-  approve: vi.fn(),
+  listApprovalsPage: vi.fn(),
+  approve: vi.fn(), getApproval: vi.fn(),
   listManualTasksPage: vi.fn(),
 }))
 vi.mock('../src/api', async importOriginal => ({ ...await importOriginal<object>(), ...mocks }))
+
+const approvalPage = (items: Array<Record<string, unknown>>, total = items.length) => ({ items, total, totalPages: Math.ceil(total / 25), page: 0, size: 25 })
 
 const emptyPage = { page: 0, size: 100, total: 0, totalPages: 0, items: [] as Array<Record<string, unknown>> }
 
@@ -49,19 +51,33 @@ describe('soar approvals lifecycle', () => {
     mocks.listTemplates.mockResolvedValue([])
     mocks.listManualTasksPage.mockResolvedValue(emptyPage)
     mocks.approve.mockResolvedValue({ id: 'approval-1', status: 'APPROVED' })
-    mocks.listApprovals.mockResolvedValue([
+    mocks.listApprovalsPage.mockResolvedValue(approvalPage([
       { id: 'approval-1', runId: 'run-1', actionRef: 'slack.post', reason: 'high-risk send', status: 'PENDING', requestedBy: 'analyst' },
-    ])
+    ]))
   })
 
   afterEach(() => {
     document.body.textContent = ''
   })
 
+  it('pages more than 200 pending approvals and fetches a deep-linked older request independently', async () => {
+    mocks.listApprovalsPage.mockResolvedValue(approvalPage([{ id: 'first', status: 'PENDING' }], 251))
+    mocks.getApproval.mockResolvedValue({ id: 'old-pending', runId: 'run-1', actionRef: 'firewall.block', status: 'PENDING' })
+    const { wrapper } = await mountSoar('/soar?tab=approvals&approvalId=old-pending')
+    expect(mocks.listApprovalsPage).toHaveBeenCalledWith(0, 25, 'PENDING', expect.any(Object))
+    expect(mocks.getApproval).toHaveBeenCalledWith('old-pending', expect.any(Object))
+    const view = wrapper.vm as unknown as { approvalTotal: number; approvalModal: { approvalId: string }; changeApprovalPage: (page: number) => void }
+    expect(view.approvalTotal).toBe(251)
+    expect(view.approvalModal.approvalId).toBe('old-pending')
+    view.changeApprovalPage(8); await flushPromises()
+    expect(mocks.listApprovalsPage).toHaveBeenLastCalledWith(8, 25, 'PENDING', expect.any(Object))
+    wrapper.unmount()
+  })
+
   it('loads immutable target, parameters, policy and origin before allowing approval', async () => {
     let finish!: (value: unknown[]) => void
     mocks.listNodes.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
-    mocks.listApprovals.mockResolvedValue([{ id: 'approval-1', runId: 'run-1', nodeRunId: 'node-1', actionRef: 'firewall.block', status: 'PENDING', requestedBy: 'analyst', targetSnapshot: { ip: '192.0.2.1' }, inputHash: 'exact-hash', approvalPolicy: { mode: 'two-person' } }])
+    mocks.listApprovalsPage.mockResolvedValue(approvalPage([{ id: 'approval-1', runId: 'run-1', nodeRunId: 'node-1', actionRef: 'firewall.block', status: 'PENDING', requestedBy: 'analyst', targetSnapshot: { ip: '192.0.2.1' }, inputHash: 'exact-hash', approvalPolicy: { mode: 'two-person' } }]))
     const { wrapper } = await mountSoar('/soar?tab=approvals&approvalId=approval-1')
     const view = wrapper.vm as unknown as { approvalModal: { reason: string }; submitApprovalDecision: () => Promise<void> }
     view.approvalModal.reason = 'Reviewed'
@@ -79,7 +95,7 @@ describe('soar approvals lifecycle', () => {
 
   it('refetches the approval list itself after a decision is submitted', async () => {
     const { wrapper } = await mountSoar('/soar?tab=approvals')
-    expect(mocks.listApprovals).toHaveBeenCalledTimes(1)
+    expect(mocks.listApprovalsPage).toHaveBeenCalledTimes(1)
     const approveButton = wrapper.findAll('button').find(button => button.text() === '通过')
     expect(approveButton).toBeTruthy()
     await approveButton!.trigger('click')
@@ -89,7 +105,7 @@ describe('soar approvals lifecycle', () => {
     reason!.value = '已核对目标与影响'
     reason!.dispatchEvent(new Event('input', { bubbles: true }))
     await flushPromises()
-    mocks.listApprovals.mockResolvedValueOnce([])
+    mocks.listApprovalsPage.mockResolvedValueOnce(approvalPage([]))
     const submit = [...document.querySelectorAll('.el-dialog__footer button') as NodeListOf<HTMLButtonElement>]
       .find(button => button.textContent?.includes('通过'))
     expect(submit).toBeTruthy()
@@ -98,7 +114,7 @@ describe('soar approvals lifecycle', () => {
     await flushPromises()
     expect(mocks.approve).toHaveBeenCalledWith('approval-1', '已核对目标与影响')
     // The list refresh must hit the approvals endpoint, not the playbook catalog.
-    expect(mocks.listApprovals).toHaveBeenCalledTimes(2)
+    expect(mocks.listApprovalsPage).toHaveBeenCalledTimes(2)
     expect(mocks.listPlaybooks).toHaveBeenCalledTimes(1)
     await flushPromises()
     expect(wrapper.findAll('.soar-approval-table tbody tr')).toHaveLength(0)
@@ -106,10 +122,10 @@ describe('soar approvals lifecycle', () => {
   })
 
   it('keeps tab and approval-filter state in the shareable route query', async () => {
-    mocks.listApprovals.mockResolvedValue([
+    mocks.listApprovalsPage.mockResolvedValue(approvalPage([
       { id: 'approval-1', runId: 'run-1', actionRef: 'slack.post', reason: 'x', status: 'PENDING', requestedBy: 'analyst' },
       { id: 'approval-2', runId: 'run-2', actionRef: 'slack.post', reason: 'x', status: 'APPROVED', requestedBy: 'analyst' },
-    ])
+    ]))
     const { wrapper, router } = await mountSoar('/soar?tab=approvals&filter=ALL')
     expect(wrapper.findAll('.soar-approval-table tbody tr')).toHaveLength(2)
     const filterButtons = wrapper.findAll('.soar-header-filter button')
