@@ -28,6 +28,7 @@ class SoarCatalogPagingPersistenceTest {
     @Autowired SoarAutomationRuleRepository rules;
     @Autowired SoarConnectorRepository connections;
     @Autowired SoarManualTaskRepository tasks;
+    @Autowired SoarApprovalRepository approvals;
     @Autowired JdbcTemplate jdbc;
 
     @BeforeEach void setup() { TenantContext.set("catalog-a"); }
@@ -76,6 +77,24 @@ class SoarCatalogPagingPersistenceTest {
         assertThat(latest.getFirst().getPlaybookVersionNo()).isEqualTo(1);
         assertThat(runs.searchByTenant("catalog-a", null, null, null, null, null, null,
                 PageRequest.of(0, 20))).noneMatch(row -> row.getPlaybookId().equals("pb-old"));
+    }
+
+    @Test void pagesPendingApprovalsPastTwoHundredWithTiedTimestampsAndTenantIsolation() {
+        fixture("catalog-a", "approval-run", NOW);
+        fixture("catalog-b", "private-run", NOW);
+        for (int i = 0; i < 221; i++) approval("catalog-a", String.format("pending-%03d", i), "approval-run", "PENDING", NOW);
+        for (int i = 0; i < 210; i++) approval("catalog-a", "newer-approved-" + i, "approval-run", "APPROVED", NOW.plusSeconds(3600));
+        approval("catalog-b", "private-pending", "private-run", "PENDING", NOW);
+        List<String> expected = IntStream.range(0, 221).mapToObj(i -> String.format("pending-%03d", i)).toList().reversed();
+        assertThat(ids(page -> approvals.findByTenantIdAndStatusOrderByCreatedAtDesc("catalog-a", "PENDING", page),
+                row -> row.getId())).containsExactlyElementsOf(expected);
+        assertThat(approvals.findByTenantIdAndId("catalog-a", "pending-000")).isPresent();
+        assertThat(approvals.findByTenantIdAndId("catalog-b", "pending-000")).isEmpty();
+    }
+
+    private void approval(String tenant, String id, String run, String status, Instant time) {
+        jdbc.update("insert into t_soar_approval (id,tenant_id,run_id,approval_key,required_approvals,status,requested_by,created_at,expires_at) "
+                + "values (?,?,?,?,1,?,'test',?,?)", id, tenant, "run-" + run, id, status, time, time.plusSeconds(7200));
     }
 
     private <T> List<String> ids(Function<PageRequest, Page<T>> query, Function<T, String> id) {

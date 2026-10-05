@@ -137,6 +137,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
         String role;
         String subject;
         String locale;
+        Object permissionClaims = null;
         if (jwtValidator.isDevBypass()) {
             tenant = defaultValue(exchange.getRequest().getHeaders().getFirst("X-Tenant-Id"), "default");
             role = "analyst";
@@ -149,6 +150,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
                 tenant = jwtValidator.extractTenant(claims);
                 role = claims.getStringClaim("role");
                 subject = claims.getSubject();
+                permissionClaims = claims.getClaim("permissions");
                 String tokenLocale = AuthController.normalizeLocale(claims.getStringClaim("locale"));
                 locale = tokenLocale == null
                         ? defaultLocale(exchange.getRequest().getHeaders().getFirst(HttpHeaders.ACCEPT_LANGUAGE))
@@ -181,7 +183,12 @@ public class GatewayFilter implements GlobalFilter, Ordered {
 
         String method = exchange.getRequest().getMethod() == null
                 ? "GET" : exchange.getRequest().getMethod().name();
-        if ("viewer".equals(role) && !com.socp.platform.auth.security.ReadOnlyRequests.allowed(method, path)) {
+        Set<String> effectivePermissions = Permission.effective(role, permissionClaims);
+        // The owning SOAR endpoint checks the exact permission. This coarse viewer
+        // boundary must not erase explicitly delegated SOAR duties.
+        boolean delegatedSoar = path.startsWith("/soar-web/api/") && effectivePermissions.stream()
+                .anyMatch(value -> value.startsWith("soar:") && !Set.of("soar:view", "soar:connections:view").contains(value));
+        if ("viewer".equals(role) && !delegatedSoar && !com.socp.platform.auth.security.ReadOnlyRequests.allowed(method, path)) {
             return traced(span, exchange,
                     reject(exchange, traceId, "viewer role is read-only", HttpStatus.FORBIDDEN));
         }
@@ -210,6 +217,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
             headers.set("X-Socp-Role", resolvedRole);
             headers.set("X-Socp-User", resolvedSubject);
             headers.set("X-Socp-Locale", resolvedLocale);
+            headers.set("X-Socp-Permissions", String.join(",", effectivePermissions.stream().sorted().toList()));
             if (!serviceSecret.isBlank()) {
                 String gatewayPath = exchange.getRequest().getURI().getRawPath();
                 String timestamp = String.valueOf(java.time.Instant.now().getEpochSecond());
@@ -282,6 +290,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
     }
 
     private static void stripGatewayIdentity(org.springframework.http.HttpHeaders headers) {
+        headers.remove("X-Socp-Permissions");
         headers.remove(ServiceRequestSignature.GATEWAY_PATH_HEADER);
         headers.remove(ServiceRequestSignature.GATEWAY_TIMESTAMP_HEADER);
         headers.remove(ServiceRequestSignature.GATEWAY_NONCE_HEADER);

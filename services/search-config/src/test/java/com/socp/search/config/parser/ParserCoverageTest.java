@@ -172,7 +172,7 @@ class ParserCoverageTest {
 
         Map<String, String> unmatchedEnvelope = registry.parse(
                 "{\"message\":\"not syslog\"}", ParseFormat.SYSLOG, null);
-        assertEquals("not syslog", unmatchedEnvelope.get(CanonicalEvent.EVENT_MESSAGE));
+        assertTrue(unmatchedEnvelope.containsKey("parse.error"));
 
         Map<String, String> directSyslog = registry.parse(
                 "<34>Oct 11 22:14:15 host sshd[123]: failed", ParseFormat.SYSLOG, null);
@@ -190,5 +190,34 @@ class ParserCoverageTest {
         Map<String, String> emptyNestedJson = registry.parse(
                 "{\"message\":\"{}\"}", ParseFormat.JSON, null);
         assertEquals("{}", emptyNestedJson.get(CanonicalEvent.EVENT_MESSAGE));
+    }
+
+    @Test
+    void autoJsonEnvelopeDepthAndMalformedInnerJsonAreReportedWithoutRejectingPlainText() throws Exception {
+        var registry = new ParserRegistry();
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        String nested = "{\"message\":\"plain application text\"}";
+        for (int i = 0; i < 4; i++) nested = mapper.writeValueAsString(Map.of("message", nested));
+        assertEquals("plain application text", registry.parse(nested, null).get(CanonicalEvent.EVENT_MESSAGE));
+        nested = mapper.writeValueAsString(Map.of("message", nested));
+        assertTrue(registry.parse(nested, null).get("parse.error").contains("nesting exceeds"));
+        assertTrue(registry.parse(mapper.writeValueAsString(Map.of("message", "{broken")), null)
+                .get("parse.error").contains("JSON"));
+        assertEquals("plain application text", registry.parse("plain application text", null)
+                .get(CanonicalEvent.EVENT_MESSAGE));
+    }
+
+    @Test
+    void vendorIdentityMetadataIsPreservedBeforeCanonicalAliasesCanRenameIt() {
+        var registry = new ParserRegistry();
+        var parsed = registry.parse("""
+                {"rule":"Shell", "priority":"Warning", "event_id":"producer-1",
+                 "event":{"id":"producer-2"}, "file":"/collector/input.log", "offset":42}
+                """, null);
+        assertEquals("producer-1", parsed.get("event_id"));
+        assertEquals("producer-2", parsed.get("event.id"));
+        assertEquals("/collector/input.log", parsed.get("file"));
+        assertEquals("42", parsed.get("offset"));
+        assertEquals("Shell", parsed.get(CanonicalEvent.EVENT_CODE));
     }
 }

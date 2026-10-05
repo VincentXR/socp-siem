@@ -185,6 +185,8 @@ public class AlarmService {
         }
         if (alarm.getRiskScore() == null) alarm.setRiskScore(initialRisk(alarm));
         alarm.setRiskLevel(com.socp.rule.score.RiskScorer.level(alarm.getRiskScore()));
+        alarm.setInitialRiskScore(alarm.getRiskScore());
+        alarm.setInitialRiskLevel(alarm.getRiskLevel());
         // Decided once at materialization, from durable analyst state rather than a
         // per-process window: the alarm remains countable but never joins the
         // pending-triage vocabulary, so a suppressed scope cannot resurface as work.
@@ -203,7 +205,6 @@ public class AlarmService {
         String deliveryPayload = AlarmPayloadCodec.write(saved, captured);
         deliveryRegistrar.register(tenant, saved.getId(), deliveryPayload);
         outboxRepository.save(pendingEvent(tenant, saved.getId(), deliveryPayload));
-        enrichmentService.scheduleAfterCommit(saved);
         scheduleOutboxTrigger();
         return saved;
     }
@@ -426,6 +427,6 @@ public class AlarmService {
 
     /** Test/source compatibility; lifecycle ownership now lives in AlarmEnrichmentService. */
     void stopEnrichment() {
-        enrichmentService.stop();
+
     }
 }

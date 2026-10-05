@@ -201,6 +201,30 @@ class DetectionRouteOutboxPublisherPersistenceTest {
                 "socp-detection-routed-v2", "{}", now));
     }
 
+    @Test
+    void onePollDrainsActualDatabaseHeadsWithoutOvertaking() {
+        var rows = new java.util.ArrayList<DetectionRouteOutboxEntity>();
+        for (int i = 0; i < 6; i++) rows.add(pending("hot-key"));
+        @SuppressWarnings("unchecked")
+        var producer = (org.apache.kafka.clients.producer.KafkaProducer<String, String>)
+                org.mockito.Mockito.mock(org.apache.kafka.clients.producer.KafkaProducer.class);
+        var delivered = new java.util.ArrayList<String>();
+        org.mockito.Mockito.when(producer.send(org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> {
+            org.apache.kafka.clients.producer.ProducerRecord<String, String> record = invocation.getArgument(0);
+            delivered.add(new String(record.headers().lastHeader("socp-delivery-id").value(),
+                    java.nio.charset.StandardCharsets.UTF_8));
+            return java.util.concurrent.CompletableFuture.completedFuture(
+                    new org.apache.kafka.clients.producer.RecordMetadata(
+                            new org.apache.kafka.common.TopicPartition(record.topic(), 0), 0, 0, 0, 0, 0));
+        });
+        org.springframework.test.util.ReflectionTestUtils.setField(publisher, "producer", producer);
+
+        publisher.publishDue();
+
+        assertEquals(rows.stream().map(DetectionRouteOutboxEntity::getDeliveryId).toList(), delivered);
+        for (var row : rows) assertEquals("PUBLISHED", load(row).getStatus());
+    }
+
     protected DetectionRouteOutboxEntity processing(int attempts) {
         Instant old = Instant.now().minusSeconds(180);
         DetectionRouteOutboxEntity row = new DetectionRouteOutboxEntity(

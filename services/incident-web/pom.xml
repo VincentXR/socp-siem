@@ -14,11 +14,10 @@
     <description>案件与调查时间线（事件归并/调查，IR-4）</description>
 
     <dependencies>
-        <!-- Exercise the actual inter-service HTTP wire contract against this server. -->
+        <!-- Verify authoritative tenant ownership before associating an alarm. -->
         <dependency>
             <groupId>com.socp.platform</groupId>
             <artifactId>socp-client</artifactId>
-            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

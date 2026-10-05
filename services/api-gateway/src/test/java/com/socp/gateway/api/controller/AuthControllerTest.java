@@ -107,6 +107,18 @@ class AuthControllerTest {
         assertEquals(Map.of("localPassword", true, "oidc", true), controller.capabilities());
     }
 
+    @Test
+    void sessionExposesEffectiveExplicitPermissionsAndTenantDirectory() {
+        AuthController controller = controller();
+        var session = controller.session("reviewer", "viewer", "tenant-a", "en-US", "soar:approve,unknown:root");
+        assertEquals(java.util.Set.of("alarm:read", "soar:view", "soar:approve"), session.get("permissions"));
+        ReflectionTestUtils.setField(controller, "operatorDirectory", new com.socp.platform.auth.security.OperatorDirectory(
+                "{\"tenant-a\":[{\"id\":\"colleague\",\"role\":\"analyst\"}],\"tenant-b\":[{\"id\":\"other\"}]}", "", ""));
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> items = (List<Map<String, Object>>) controller.operators("reviewer", "tenant-a", "viewer").get("items");
+        assertEquals(List.of("colleague"), items.stream().map(item -> item.get("id")).toList());
+    }
+
     private static AuthController controller() {
         AuthController controller = new AuthController();
         ReflectionTestUtils.setField(controller, "serviceSecret", "service-secret-0123456789");

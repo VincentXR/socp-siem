@@ -379,6 +379,10 @@ visibility with local HTTP fixtures.
 
 ### ATT&CK catalogue and note requests
 
+`AttackControllerTest` rejects global catalogue PUTs from both tenant identities;
+`TechniqueNoteControllerTest` retains tenant annotation behavior. `AttackStoreTest`
+checks the curated catalogue, without claiming complete enterprise coverage.
+
 `AttackView.component.test.ts` covers filter response races, retained coverage,
 positive ACTIVE-technique membership, cancelled coverage chains, closing and
 reopening a loading note, and correcting/retrying failed note saves while
@@ -486,3 +490,24 @@ and is not a same-instant guarantee.
 Run `SOCP_TESTCONTAINERS=true powershell -NoProfile -File build/mvnw.ps1 -pl services/search-config -am test -Dtest=ParseRuleQuotaPostgresTest,ParseRuleControllerTest,ParseRuleStoreTest -Dsurefire.failIfNoSpecifiedTests=false` against disposable PostgreSQL. The database test races two replicas for the final global-rule slot, checks bulk selected-ID reads across tenants and a template tombstone, and confirms repeated tenant-owned deletes leave no tombstone rows. Owner-store tests cover the 512-rule and 32-global-rule limits, the 64 KiB serialized body bound, updates at capacity, stable case-insensitive name pages, and selected-ID order. `ParseRuleExecutorTest` verifies RE2/J matching, the input cap, unsupported Java-only syntax, and exact named-group extraction. Workbench component tests cover direct rule editing and source binding outside the initial page; run `E2E_PORT=4318 pnpm exec playwright test e2e/parse-rule-catalogue.spec.ts` for a 501-rule browser fixture, direct edit, remote source binding and mobile drawer layout. New writes are bounded; historical over-limit catalogues may still be expensive to materialize until cleaned up.
 
 Run `SOCP_TESTCONTAINERS=true powershell -NoProfile -File build/mvnw.ps1 -pl services/search-config -am test -Dtest=SinkTargetQuotaPostgresTest,SinkTargetStoreTest -Dsurefire.failIfNoSpecifiedTests=false` to verify the 128-target tenant limit and two-replica final-slot race on disposable PostgreSQL. The store test also checks deletion makes room and another tenant has an independent quota.
+
+### IOC source identity, revocation and TAXII
+
+`ThreatMigrationTest` covers fresh schemas, preserving historical public IDs on V7
+upgrade and rejecting ambiguous normalized identities without deleting facts.
+`IocStorePersistenceTest` verifies same indicators across tenants/feeds, manual
+upsert, punctuation-safe identities, highest-risk active source selection, deletion
+across two store instances and rollback without phantom matches. Run the same
+contract against the repository's PostgreSQL image with:
+
+```bash
+SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/threat-web -am test \
+  -Dtest=IocStorePostgresTest -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+`TaxiiClientTest` uses local HTTP fixtures for opaque cursors, unchanged collection
+host/filter, timestamp pagination, loop bounds and missing metadata.
+`TaxiiSyncServiceTest` covers a nonempty first page followed by a legal empty `{}`
+page and checkpoint advancement only after imports; malformed responses retain
+the previous successful checkpoint. `StixIndicatorImporterTest` keeps malformed
+`objects` invalid and distinguishes an empty TAXII envelope from a STIX bundle.

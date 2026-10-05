@@ -293,8 +293,25 @@ final class SoarQueryService {
     }
 
     Page<Map<String, Object>> listApprovals(Pageable pageable) {
+        return listApprovals(pageable, null);
+    }
+
+    Map<String, Object> getApproval(String id) {
         String tenant = com.socp.platform.tenant.context.TenantContext.require();
-        var page = approvals.findByTenantIdOrderByCreatedAtDesc(tenant, pageable);
+        var approval = approvals.findByTenantIdAndId(tenant, id).orElseThrow(() ->
+                new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND, "approval not found"));
+        return readModels.approvalView(approval, approvalDecisions == null ? List.of()
+                : approvalDecisions.findByTenantIdAndApprovalIdOrderByCreatedAtAsc(tenant, id));
+    }
+
+    Page<Map<String, Object>> listApprovals(Pageable pageable, String status) {
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
+        String filter = status == null || status.isBlank() ? null : status.trim().toUpperCase(java.util.Locale.ROOT);
+        if (filter != null && !java.util.Set.of("PENDING", "APPROVED", "REJECTED", "EXPIRED", "CANCELLED").contains(filter)) {
+            throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST, "invalid approval status");
+        }
+        var page = filter == null ? approvals.findByTenantIdOrderByCreatedAtDesc(tenant, pageable)
+                : approvals.findByTenantIdAndStatusOrderByCreatedAtDesc(tenant, filter, pageable);
         if (page.isEmpty()) return new org.springframework.data.domain.PageImpl<>(List.of(), page.getPageable(), page.getTotalElements());
         Map<String, List<com.socp.soar.web.persistence.entity.SoarApprovalDecisionEntity>> votes = new LinkedHashMap<>();
         if (approvalDecisions != null) {

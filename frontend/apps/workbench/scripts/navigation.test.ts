@@ -26,13 +26,13 @@ test('analyst navigation exposes ingestion and detection management', () => {
   assert.ok(keys.includes('notify'))
 })
 
-test('role-prefixed viewer fails closed and approver keeps only approval surfaces', () => {
+test('role-prefixed viewer and unissuable approver roles fail closed', () => {
   const viewerKeys = getVisibleMenuGroups('ROLE_VIEWER').flatMap(group => group.items.map(item => item.key))
   const approverKeys = getVisibleMenuGroups('role_approver').flatMap(group => group.items.map(item => item.key))
 
   assert.ok(!viewerKeys.includes('detect'))
   assert.ok(!viewerKeys.includes('ingest'))
-  assert.ok(approverKeys.includes('soar'))
+  assert.ok(!approverKeys.includes('soar'))
   assert.ok(!approverKeys.includes('detect'))
   assert.ok(!approverKeys.includes('notify'))
   assert.ok(!approverKeys.includes('ai'))
@@ -68,4 +68,18 @@ test('navigation removes groups that have no visible items', () => {
   const groups = getVisibleMenuGroups()
   assert.ok(groups.every(group => group.items.length > 0))
   assert.ok(!groups.some(group => group.items.some(item => item.key === 'health')))
+})
+
+test('delegated SOAR capabilities expose response navigation without unrelated domain administration', () => {
+  const keys = getVisibleMenuGroups('viewer', undefined, ['soar:view', 'soar:approve']).flatMap(group => group.items.map(item => item.key))
+  assert.ok(keys.includes('soar'))
+  assert.ok(!keys.includes('detect'))
+  assert.ok(!keys.includes('ingest'))
+})
+
+test('unknown SOAR permissions and unissuable roles do not open response navigation', () => {
+  for (const [role, permissions] of [['viewer', ['soar:unknown']], ['approver', ['soar:approve']]] as const) {
+    const keys = getVisibleMenuGroups(role, undefined, permissions).flatMap(group => group.items.map(item => item.key))
+    assert.ok(!keys.includes('soar'))
+  }
 })

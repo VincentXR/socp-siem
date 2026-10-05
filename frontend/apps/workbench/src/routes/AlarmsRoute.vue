@@ -88,6 +88,7 @@ function exportWithCurrentFilters(format: 'csv' | 'json') {
     :go-ai="goAi"
     :go-soar="goSoar"
     :assignee-options="state.operatorOptions.value"
+    :assignee-labels="state.operatorLabels?.value"
     :can-write="canWrite"
     :can-admin="canAdmin"
   />

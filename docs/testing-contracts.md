@@ -138,7 +138,7 @@ reference cases, not a claim that a given revision passed them.
   PostgreSQL retention catch-up/locking semantics.
 - `alert-web`: create validation, source-alert idempotency, paged query
   contracts, transactional Alert Outbox creation, broker-ack publishing,
-  optimistic claim/stale recovery, post-commit enrichment scheduling, pending
+  optimistic claim/stale recovery, durable enrichment retry and atomic risk/event completion, pending
   retry, disposition, and fan-out isolation.
   `AlarmDeliveryPublisherTest` also checks that connector and acknowledgement
   exceptions update retry/DEAD state within the delivery tenant context.

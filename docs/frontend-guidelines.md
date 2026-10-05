@@ -12,6 +12,10 @@ Until a search is run, paging, exports, and result links retain the applied
 query; a visible notice identifies unapplied edits. Field pivots preserve OR
 grouping, quoted values, and pipeline order, then return focus to the editor.
 
+Saved queries use a local browser key scoped by the authenticated session's tenant
+and subject. Account or tenant changes replace the visible saved-query list. The old
+unscoped key is discarded because its owner cannot be recovered safely.
+
 Search links include the applied `q`, `range`, fixed UTC `to` boundary, and
 non-default `size`. Browser back/forward and reload restore that time window;
 running a new relative-time search advances it. Restoring a numbered page
@@ -36,6 +40,17 @@ requires a classification and reason/evidence; replay must preserve notes and
 tags. False-positive feedback has its own explicit expiry and is separate from
 closing an alarm.
 
+Alarm drawer notes, closure reasons, assignments, status changes and feedback drafts
+block accidental dismissal/navigation. Retrying an unavailable evidence or delivery
+panel reloads failed reads only, preserving successful data and investigation drafts.
+
+Case drawers separate investigation controls/timeline from associated evidence.
+Analysts can attach an unassigned alarm, detach it, or move it to a selected case;
+these commands require a reason, both affected case versions for moves, and a stable
+retry key. A 409 keeps the association draft for review. The server validates the
+alarm and both cases in the authenticated tenant. Manual detach persists across
+automatic replays. AI links use the registered `ai` route and carry case context.
+
 Search supports `range=custom` with UTC `from`/`to`. AI-suggested SPL uses the
 `draft` query key, so navigation alone does not execute generated queries.
 Citations resolve through known same-origin evidence APIs, never arbitrary
@@ -55,7 +70,9 @@ Run links carry `runId`, with alarm/case context retained through navigation.
 The receipt panel offers bounded latest events and separate history pages.
 SSE hints coalesce into bounded REST refreshes; only durable REST receipts
 advance the cursor, and periodic reads repair missed stream events. Approval
-requires loaded immutable run/action context, a reason, current permission,
+uses server-side status filtering and numbered pages, with direct ID reads for
+links to older requests. The workbench must not derive the pending queue from a
+bounded mixed-status list. Approval requires loaded immutable run/action context, a reason, current permission,
 and an unexpired request. Terminal run status is displayed alongside action
 receipts rather than inferred from submission success.
 
@@ -281,9 +298,9 @@ alert, independently of an unsubmitted draft.
 Appending a summary is a durable write. Switching investigations does not
 pretend to cancel it: the prior write remains pending, a status explains the
 wait, and additional appends are disabled until it settles. Its result/error
-can only update the investigation version that initiated it. Viewer/approver
-navigation and alert drawers hide AI actions, matching the backend's
-admin/analyst boundary.
+can only update the investigation version that initiated it. Viewer navigation
+and alert drawers hide AI actions, including for viewers with delegated SOAR
+permissions, matching the backend's admin/analyst boundary.
 
 Suggested question tags wrap within the available card width. On narrow screens,
 the investigation heading and approval label stack, and context/actions wrap;
@@ -518,3 +535,16 @@ Comments and string literals do not count as executable statements.
 and Vue while accepting harmless explanatory text. `pnpm format:check` retains
 LF, indentation and trailing-space checks separately. The added ESLint,
 TypeScript-ESLint and Vue ESLint packages are development-only dependencies.
+
+## Session capabilities and assignees
+
+`/auth/session` returns effective permissions from the verified token alongside
+username, tenant and role. These capabilities drive SOAR navigation and action
+visibility. A delegated SOAR permission does not confer write access to role-gated
+alarm, incident or configuration APIs; the owning service remains authoritative.
+The overview shortcut and sidebar share the same SOAR entry capability. Approval
+policy role choices are `admin`, `analyst` and `viewer`, matching the backend's
+issuable roles. Matching a policy role does not grant `soar:approve`: a viewer
+selected by that policy still needs the explicit permission to decide approvals.
+The workbench obtains assignment choices from `/auth/operators`. Provision the same
+`SOCP_OPERATOR_DIRECTORY` on the gateway and all business services; see SECURITY.md.

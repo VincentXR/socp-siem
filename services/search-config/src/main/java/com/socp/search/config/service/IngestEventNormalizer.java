@@ -124,6 +124,9 @@ public class IngestEventNormalizer {
             ParsePipelineResolver.Result parsedByRule = pipelineResolver.apply(
                     sourceContext, line, rawLog, isSparseBase(canonical));
             if (parsedByRule.matched()) {
+                // An explicitly configured parser can repair a failed built-in parse.
+                canonical.remove("parse.error");
+                canonical.remove("parse.error.kind");
                 canonical.putAll(parsedByRule.fields());
                 if (parsedByRule.ruleId() != null && !parsedByRule.ruleId().isBlank()) {
                     canonical.put("parse_rule_id", parsedByRule.ruleId());
@@ -133,6 +136,11 @@ public class IngestEventNormalizer {
             if (parsedByRule.error() != null && !parsedByRule.error().isBlank()) {
                 canonical.put("parse.error", parsedByRule.error());
             }
+        }
+
+        String parseError = canonical.get("parse.error");
+        if (parseError != null && !parseError.isBlank()) {
+            throw new IngestParseException(parseError);
         }
 
         if (sourceContext != null && sourceContext.resolved()

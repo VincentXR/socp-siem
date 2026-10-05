@@ -228,8 +228,15 @@ public class AlarmDeliveryPublisher {
         }
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private AlarmEnrichmentService enrichmentService;
+
     private DeliveryResult dispatch(AlarmDelivery delivery) {
         AlarmDeliveryDestination destination = AlarmDeliveryDestination.valueOf(delivery.getDestination());
+        if (destination == AlarmDeliveryDestination.ENRICHMENT) {
+            enrichmentService.enrichDurably(delivery.getTenantId(), delivery.getAlarmId());
+            return DeliveryResult.success();
+        }
         if (destination == AlarmDeliveryDestination.CLICKHOUSE) {
             Map<String, Object> payload;
             try {
@@ -243,8 +250,8 @@ public class AlarmDeliveryPublisher {
         ServiceCall call = switch (destination) {
             case NOTIFY -> notifyClient.notifyAlert(delivery.getPayload());
             case INCIDENT -> incidentClient.createFromAlarm(delivery.getPayload());
-            case SOAR -> soarClient.evaluate(delivery.getPayload());
-            case CLICKHOUSE -> throw new IllegalStateException("unreachable destination");
+            case SOAR, SOAR_ENRICHED -> soarClient.evaluate(delivery.getPayload());
+            case CLICKHOUSE, ENRICHMENT -> throw new IllegalStateException("unreachable destination");
         };
         if (call == null) return DeliveryResult.retryableFailure(destination + " returned no result");
         return call.ok()

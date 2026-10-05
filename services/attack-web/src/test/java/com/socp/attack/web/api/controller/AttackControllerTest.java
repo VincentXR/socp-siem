@@ -1,7 +1,6 @@
 package com.socp.attack.web.api.controller;
 
 import com.socp.attack.web.api.request.CoverageRequest;
-import com.socp.attack.web.api.request.TechniqueUpdateRequest;
 import com.socp.attack.web.domain.Tactic;
 import com.socp.attack.web.domain.Technique;
 import com.socp.attack.web.persistence.store.AttackStore;
@@ -53,17 +52,18 @@ class AttackControllerTest {
     }
 
     @Test
-    void updatesExistingTechniqueAndRejectsUnknownId() {
+    void sharedCatalogHasNoTenantWriteEndpoint() throws Exception {
         AttackStore store = mock(AttackStore.class);
-        Technique updated = new Technique("T1110", "Password Spray", "TA0001", "url", "desc");
-        when(store.update(eq("T1110"), any(), any(), any(), any())).thenReturn(updated);
-        AttackController controller = new AttackController(store, 500);
-
-        assertThat(controller.update("T1110", new TechniqueUpdateRequest(
-                "Password Spray", "TA0001", "url", "desc")).data()).isEqualTo(updated);
-        when(store.update(eq("missing"), any(), any(), any(), any())).thenReturn(null);
-        assertThatThrownBy(() -> controller.update("missing", new TechniqueUpdateRequest(
-                null, null, null, null))).isInstanceOf(org.springframework.web.server.ResponseStatusException.class);
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders
+                .standaloneSetup(new AttackController(store, 500)).build();
+        for (String tenant : List.of("tenant-a", "tenant-b")) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                    .put("/api/v1/techniques/T1110").header("X-Tenant-Id", tenant)
+                    .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                    .content("{\"name\":\"tampered\"}"))
+                    .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isMethodNotAllowed());
+        }
+        org.mockito.Mockito.verifyNoInteractions(store);
     }
 
     @Test

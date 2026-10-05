@@ -134,7 +134,7 @@ const ruleEventText = ref('{\n  "eventId": "sample-alert-1",\n  "type": "alert.c
 const ruleTestResult = ref<Record<string, unknown>[] | null>(null)
 const ruleConditionRows = ref<RuleCondition[]>([])
 const automationFields: FieldDef[] = [
-  { id: 'automation-event-type', fieldName: 'type', fieldLabel: 'Event type', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'alert.created, case.updated, or another event type' },
+  { id: 'automation-event-type', fieldName: 'type', fieldLabel: 'Event type', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'alert.created, alert.enriched, case.updated, or another event type' },
   { id: 'automation-severity', fieldName: 'severity', fieldLabel: 'Severity', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'INFO through CRITICAL' },
   { id: 'automation-source', fieldName: 'source', fieldLabel: 'Source', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'Event source or collector' },
   { id: 'automation-host', fieldName: 'host', fieldLabel: 'Host', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'Host associated with the event' },
@@ -726,6 +726,7 @@ function controlSubtitle(): string {
             <FormField :label="t('soar.triggerType')" :hint="t('soar.triggerTypeHint')">
               <el-select v-model="ruleForm.triggerType" filterable default-first-option placeholder="alert.created">
                 <el-option label="alert.created" value="alert.created" />
+                <el-option label="alert.enriched" value="alert.enriched" />
                 <el-option label="case.updated" value="case.updated" />
                 <el-option label="ANY" value="ANY" />
               </el-select>

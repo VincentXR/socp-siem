@@ -52,6 +52,21 @@ class AlarmDeliveryPublisherTest {
     }
 
     @Test
+    void enrichmentFailureRetainsTheDurableJobForRetry() {
+        AlarmDelivery delivery = delivery(AlarmDeliveryDestination.ENRICHMENT);
+        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
+        given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
+        AlarmEnrichmentService enrichment = org.mockito.Mockito.mock(AlarmEnrichmentService.class);
+        doThrow(new IllegalStateException("Threat unavailable")).when(enrichment).enrichDurably(delivery.getTenantId(), delivery.getAlarmId());
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient);
+        org.springframework.test.util.ReflectionTestUtils.setField(publisher, "enrichmentService", enrichment);
+        publisher.publish();
+        verify(repository, never()).markDelivered(eq(delivery.getId()), any(), anyString());
+        verify(repository).scheduleRetry(eq(delivery.getId()), any(), any(), any(), anyString());
+    }
+
+    @Test
     void acknowledgedDeliveryIsMarkedDeliveredUnderItsTenant() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(

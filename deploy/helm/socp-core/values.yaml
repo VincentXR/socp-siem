@@ -378,6 +378,7 @@ workloads:
       MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db
       SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,clickhouse=clickhouse.socp-data.svc.cluster.local:8123
       SOCP_ALARM_DELIVERY_DESTINATIONS: CLICKHOUSE
+      SOCP_ALERT_ENRICHMENT_ENABLED: "false"
     resources:
       requests:
         cpu: 150m

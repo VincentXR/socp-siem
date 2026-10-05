@@ -1,6 +1,8 @@
 import { post, requestJson } from './core'
 
-export async function login(username: string, password: string): Promise<{ username: string; role: string; tenant: string; locale?: string; expiresIn: number }> {
+export interface SessionIdentity { username: string; role: string; tenant: string; locale?: string; permissions?: string[] }
+
+export async function login(username: string, password: string): Promise<SessionIdentity & { expiresIn: number }> {
   return requestJson('/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -11,7 +13,7 @@ export const authCapabilities = () => requestJson<{ localPassword: boolean; oidc
   '/auth/capabilities', {}, { unwrap: false, notifyUnauthorized: false },
 )
 
-export const currentSession = () => requestJson<{ username: string; role: string; tenant: string; locale?: string }>(
+export const currentSession = () => requestJson<SessionIdentity>(
   '/auth/session', {}, { unwrap: false, notifyUnauthorized: false },
 )
 export interface OperatorDirectoryItem { id: string; label: string; role: string; current: boolean }

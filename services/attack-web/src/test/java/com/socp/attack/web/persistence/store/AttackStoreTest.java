@@ -31,24 +31,16 @@ class AttackStoreTest {
     private TechniqueRepository techniqueRepository;
 
     @Test
-    void updatesTechniqueInRepositoryAndReadsItBack() {
-        TechniqueEntity entity = new TechniqueEntity("T1110", "Brute Force", "TA0006", "old-url", "old description");
-        given(tacticRepository.count()).willReturn(1L);
+    void readsStandardTechniqueWithoutMutatingTheCatalog() {
+        TechniqueEntity entity = new TechniqueEntity("T1110", "Brute Force", "TA0006", "url", "description");
         given(techniqueRepository.findById("T1110")).willReturn(Optional.of(entity));
         AttackStore store = new AttackStore(tacticRepository, techniqueRepository);
-        store.seed();
-
-        var updated = store.update("T1110", "Password Spray", "TA0006", "new-url", "new description");
-
-        assertNotNull(updated);
-        assertEquals("Password Spray", updated.name());
-        assertEquals("new-url", store.technique("T1110").url());
-        assertEquals("new description", entity.getDescription());
-        verify(techniqueRepository).save(any(TechniqueEntity.class));
+        assertEquals("Brute Force", store.technique("T1110").name());
+        org.mockito.Mockito.verify(techniqueRepository, org.mockito.Mockito.never()).save(any());
     }
 
     @Test
-    void seedsTheFullEnterpriseCatalogWhenTheDatabaseIsEmpty() {
+    void seedsTheCuratedEnterpriseCatalogWhenTheDatabaseIsEmpty() {
         given(tacticRepository.count()).willReturn(0L);
         AttackStore store = new AttackStore(tacticRepository, techniqueRepository);
 

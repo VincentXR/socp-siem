@@ -53,6 +53,8 @@ public class CaseController {
     private final ObjectMapper objectMapper;
     @org.springframework.beans.factory.annotation.Autowired
     private CaseWorkspaceService workspace;
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.socp.incident.web.service.CaseAlarmAssociationService associations;
 
     public CaseController(CaseService service,
                           @Value("${socp.web.list-max-size:500}") int maxListSize,
@@ -66,6 +68,7 @@ public class CaseController {
     @RequireRole({"admin", "analyst"})
     @RequirePermission("case:write")
     @AuditOperation(action = "CREATE_INCIDENT", target = "case")
+    @com.socp.platform.auth.security.RequireService
     @PostMapping("/incidents/from-alarm")
     public ApiResult<Map<String, Object>> fromAlarm(@Valid @RequestBody AlarmRequest alarm) {
         return ApiResult.ok(service.fromAlarm(alarm.asMap()));
@@ -193,25 +196,6 @@ public class CaseController {
 
     @RequireRole({"admin", "analyst"})
     @RequirePermission("case:write")
-    @AuditOperation(action = "UPDATE_INCIDENT_STATUS", target = "case")
-    @PostMapping("/incidents/{id}/status")
-    public ApiResult<Map<String, Object>> status(@PathVariable String id,
-                                                 @RequestParam String status,
-                                                 @RequestParam(required = false) String assignee) {
-        return ApiResult.ok(service.setStatus(id, status, assignee));
-    }
-
-    @RequireRole({"admin", "analyst"})
-    @RequirePermission("case:write")
-    @AuditOperation(action = "ASSIGN_INCIDENT", target = "case")
-    @PostMapping("/incidents/{id}/assignee")
-    public ApiResult<Map<String, Object>> assign(@PathVariable String id,
-                                                 @RequestParam(required = false) String assignee) {
-        return ApiResult.ok(service.assign(id, assignee));
-    }
-
-    @RequireRole({"admin", "analyst"})
-    @RequirePermission("case:write")
     @AuditOperation(action = "ADD_INCIDENT_NOTE", target = "case")
     @PostMapping("/incidents/{id}/notes")
     public ApiResult<Map<String, Object>> note(@PathVariable String id,
@@ -219,6 +203,31 @@ public class CaseController {
                                                @RequestParam String content,
                                                @RequestParam(required = false) String idempotencyKey) {
         return ApiResult.ok(service.addNote(id, CaseActor.resolve(author), content, idempotencyKey));
+    }
+
+    /** Compatibility URLs share exactly the workspace command invariants. */
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
+    @AuditOperation(action = "CHANGE_INCIDENT", target = "case")
+    @PostMapping("/incidents/{id}/status")
+    public ApiResult<Map<String, Object>> statusCommand(@PathVariable String id,
+            @RequestParam String status, @RequestParam(required = false) String assignee,
+            @RequestParam Long expectedVersion, @RequestParam String idempotencyKey,
+            @RequestParam(required = false) String classification, @RequestParam(required = false) String result,
+            @RequestParam(required = false) String reason, @RequestParam(required = false) String evidence,
+            @RequestParam(required = false) String remainingActions) {
+        return ApiResult.ok(workspace.change(id, CaseActor.resolve(null), new CaseChangeRequest(status,
+                assignee, expectedVersion, idempotencyKey, classification, result, reason, evidence, remainingActions)));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
+    @AuditOperation(action = "ASSIGN_INCIDENT", target = "case")
+    @PostMapping("/incidents/{id}/assignee")
+    public ApiResult<Map<String, Object>> assignmentCommand(@PathVariable String id,
+            @RequestParam(required = false) String assignee, @RequestParam Long expectedVersion,
+            @RequestParam String idempotencyKey) {
+        return ApiResult.ok(workspace.assign(id, CaseActor.resolve(null), assignee, expectedVersion, idempotencyKey));
     }
 
     @RequireRole({"admin", "analyst"})
@@ -245,6 +254,15 @@ public class CaseController {
                                                   @RequestParam(required = false) String author,
                                                   @Valid @RequestBody CaseNoteRequest request) {
         return ApiResult.ok(workspace.note(id, CaseActor.resolve(author), request));
+    }
+
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
+    @AuditOperation(action = "CHANGE_INCIDENT_ALARM_ASSOCIATION", target = "case")
+    @PostMapping("/incidents/{id}/alarm-associations")
+    public ApiResult<Map<String, Object>> associate(@PathVariable String id,
+            @Valid @RequestBody com.socp.incident.web.api.request.CaseAlarmAssociationRequest request) {
+        return ApiResult.ok(associations.change(id, CaseActor.resolve(null), request));
     }
 
     /** Bounded single-case summary. Explicit truncation keeps export omissions visible. */

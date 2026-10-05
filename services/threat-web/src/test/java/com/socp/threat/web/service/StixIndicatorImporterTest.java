@@ -10,6 +10,14 @@ class StixIndicatorImporterTest {
     private final StixIndicatorImporter importer = new StixIndicatorImporter();
 
     @Test
+    void emptyTaxiiEnvelopeIsLegalButMalformedObjectsAndEmptyStixBundleRemainInvalid() {
+        assertEquals(0, importer.parseTaxiiEnvelope("{}", "feed").indicators().size());
+        assertThrows(IllegalArgumentException.class, () -> importer.parseTaxiiEnvelope("{\"objects\":null}", "feed"));
+        assertThrows(IllegalArgumentException.class, () -> importer.parseTaxiiEnvelope("{\"objects\":{}}", "feed"));
+        assertThrows(IllegalArgumentException.class, () -> importer.parse("{}", "feed"));
+    }
+
+    @Test
     void parsesStixIndicatorAndRetainsOperationalMetadata() {
         String bundle = """
                 {"type":"bundle","id":"bundle--1","objects":[

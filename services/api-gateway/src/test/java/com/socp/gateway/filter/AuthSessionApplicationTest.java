@@ -18,7 +18,10 @@ import java.util.Map;
         "socp.auth.login-secret=test-session-jwt-secret-0123456789abcdef0123456789abcdef",
         "socp.security.service-secret=test-session-service-secret-0123456789",
         "socp.security.dev-bypass=false",
-        "socp.oidc.state.backend=memory"
+        "socp.oidc.state.backend=memory",
+        "socp.auth.operator-directory={\"tenant-a\":[{\"id\":\"colleague-a\",\"label\":\"Analyst A\",\"role\":\"analyst\"},"
+                + "{\"id\":\"disabled-a\",\"role\":\"admin\",\"enabled\":false}],"
+                + "\"tenant-b\":[{\"id\":\"colleague-b\",\"role\":\"analyst\"}]}"
 })
 @AutoConfigureWebTestClient
 @ActiveProfiles("dev")
@@ -27,6 +30,25 @@ class AuthSessionApplicationTest {
     @Autowired
     private WebTestClient client;
     @Autowired private AuthController auth;
+
+    @Test
+    void realGatewayBootstrapsSharedDirectoryAndPublishesVerifiedCapabilities() {
+        String token = auth.sign("reviewer", "viewer", "tenant-a", "en-US",
+                java.util.Set.of(), java.util.Set.of("soar:approve"));
+        client.get().uri("/auth/session").cookie(AuthController.SESSION_COOKIE, token)
+                .header("X-Socp-Permissions", "soar:publish")
+                .exchange().expectStatus().isOk().expectBody()
+                .jsonPath("$.permissions.length()").isEqualTo(3)
+                .jsonPath("$.permissions").value(value -> org.assertj.core.api.Assertions.assertThat(new java.util.HashSet<>((java.util.List<?>) value))
+                        .isEqualTo(java.util.Set.of("alarm:read", "soar:view", "soar:approve")));
+        client.get().uri("/auth/operators").cookie(AuthController.SESSION_COOKIE, token)
+                .header("X-Tenant-Id", "tenant-b")
+                .exchange().expectStatus().isOk().expectBody()
+                .jsonPath("$.source").isEqualTo("configured")
+                .jsonPath("$.items.length()").isEqualTo(1)
+                .jsonPath("$.items[0].id").isEqualTo("colleague-a")
+                .jsonPath("$.items[0].label").isEqualTo("Analyst A");
+    }
 
     @Test
     void viewerCanLogoutOwnSessionOnlyWithApprovedCookieOrigin() {

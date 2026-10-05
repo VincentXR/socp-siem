@@ -59,7 +59,7 @@ function runFixture() {
   }
 }
 
-async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst'): Promise<MockState> {
+async function installSoarMocks(page: Page, role: 'analyst' | 'admin' | 'viewer' = 'analyst', permissions: string[] = []): Promise<MockState> {
   const state: MockState = {
     playbooks: [EXISTING_PLAYBOOK],
     versions: { 'pb-existing': [EXISTING_VERSION] },
@@ -79,7 +79,7 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst
       return
     }
     if (url.pathname === '/auth/session') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ username: role, role, tenant: 'default' }) })
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ username: role, role, tenant: 'default', permissions }) })
       return
     }
     if (url.pathname === '/auth/operators') {
@@ -173,7 +173,9 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' = 'analyst
     } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'node-runs' && parts.length === 5 && parts[4] === 'attempts') {
       data = pageData([])
     } else if (method === 'GET' && api === 'soar-web/api/approvals' && parts.length === 3) {
-      data = state.approvals
+      data = pageData(state.approvals.filter(item => !url.searchParams.get('status') || item.status === url.searchParams.get('status')), url)
+    } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'approvals' && parts.length === 4) {
+      data = state.approvals.find(item => item.id === parts[3])
     } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'approvals' && parts.length === 5) {
       const approval = state.approvals.find(item => item.id === parts[3])
       if (approval) Object.assign(approval, { status: parts[4] === 'approve' ? 'APPROVED' : 'REJECTED', decisionReason: 'Reviewed by browser test' })
@@ -479,4 +481,26 @@ test('SOAR editor route switches invalidate delayed version loads before any sav
     await expect(page.getByRole('button', { name: 'Save draft' })).toBeDisabled()
     expect(state.requests.filter(request => request.method === 'PUT')).toEqual([])
   } finally { release() }
+})
+
+
+test('delegated viewer approves an older pending request through the real shell and paged queue', async ({ page }, testInfo) => {
+  const state = await installSoarMocks(page, 'viewer', ['soar:view', 'soar:approve'])
+  const seed = { ...state.approvals[0], targetSnapshot: { ip: '192.0.2.7', action: 'block' }, inputHash: 'reviewed-input-fingerprint', approvalPolicy: { requiredApprovals: 1 } }
+  state.approvals = [
+    ...Array.from({ length: 210 }, (_, i) => ({ ...seed, id: `approved-${i}`, status: 'APPROVED' })),
+    ...Array.from({ length: 221 }, (_, i) => ({ ...seed, id: `pending-${i}`, status: 'PENDING', reason: `Pending review ${i}` })),
+  ]
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  await page.goto('/soar?tab=approvals&approvalId=pending-220')
+  const dialog = page.getByRole('dialog', { name: 'Approve', exact: true })
+  await expect(dialog).toBeVisible()
+  await expect(page.locator('.soar-approval-table tbody tr')).toHaveCount(25)
+  expect(state.requests.some(item => item.path.endsWith('/approvals/pending-220'))).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('delegated-approval-deep-link.png'), fullPage: true, animations: 'disabled' })
+  await dialog.getByRole('textbox').fill('Reviewed immutable target and impact')
+  await dialog.getByRole('button', { name: 'Approve', exact: true }).click()
+  await expect(dialog).not.toBeVisible()
+  expect(state.approvals.find(item => item.id === 'pending-220')?.status).toBe('APPROVED')
+  expect(state.unknown).toEqual([])
 })

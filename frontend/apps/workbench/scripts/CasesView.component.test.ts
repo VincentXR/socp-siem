@@ -9,7 +9,7 @@ import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import type { CaseInfo, Paged, TimelineEvent } from '../src/api/models'
 
 const mocks = vi.hoisted(() => ({
-  list: vi.fn(), get: vi.fn(), stats: vi.fn(), timeline: vi.fn(), create: vi.fn(), updateStatus: vi.fn(), saveChanges: vi.fn(), claim: vi.fn(), addNote: vi.fn(), alarms: vi.fn(), rules: vi.fn(), exportSummary: vi.fn(), export: vi.fn(),
+  changeAssociation: vi.fn(), list: vi.fn(), get: vi.fn(), stats: vi.fn(), timeline: vi.fn(), create: vi.fn(), updateStatus: vi.fn(), saveChanges: vi.fn(), claim: vi.fn(), addNote: vi.fn(), alarms: vi.fn(), rules: vi.fn(), exportSummary: vi.fn(), export: vi.fn(),
   alarm: vi.fn(), ruleOptions: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn(), confirm: vi.fn(),
 }))
 vi.mock('../src/api/domains', async original => ({ ...await original<object>(), caseApi: mocks }))
@@ -35,7 +35,7 @@ async function open(path = '/cases?caseId=outside', role = 'analyst') {
     { name: 'case', path: '/cases', component: CasesView },
     { name: 'alarms', path: '/alarms', component: { template: '<p>Alarms</p>' } },
     { name: 'soar', path: '/soar', component: { template: '<p>SOAR</p>' } },
-    { name: 'assistant', path: '/assistant', component: { template: '<p>AI</p>' } },
+    { name: 'ai', path: '/assistant', component: { template: '<p>AI</p>' } },
     { name: 'rule-edit', path: '/rules/:ruleId', component: { template: '<p>Rule</p>' } },
   ] })
   await router.push(path)
@@ -75,6 +75,35 @@ describe('case selection, drafts and timeline', () => {
     mocks.confirm.mockResolvedValue('confirm')
   })
   afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
+
+  it('keeps association drafts and reuses the operation key after a conflict', async () => {
+    await open()
+    const view = wrapper.findComponent(CasesView).vm as unknown as {
+      association: { alarmId: string; reason: string }; associationVisible: boolean;
+      openAssociation: (operation: 'ATTACH') => Promise<void>; inspectAssociationAlarm: () => Promise<void>; saveAssociation: () => Promise<void>
+    }
+    await view.openAssociation('ATTACH'); await flushPromises()
+    view.association.alarmId = 'alarm-one'; view.association.reason = 'same investigation'
+    await view.inspectAssociationAlarm()
+    mocks.changeAssociation.mockRejectedValueOnce(new Error('409 conflicting case version'))
+    await view.saveAssociation()
+    expect(view.associationVisible).toBe(true)
+    expect(view.association.reason).toBe('same investigation')
+    mocks.changeAssociation.mockResolvedValueOnce({ case: { ...incident('outside'), rowVersion: 1 }, changed: true, duplicate: false })
+    await view.saveAssociation()
+    expect(mocks.changeAssociation).toHaveBeenCalledTimes(2)
+    expect(mocks.changeAssociation.mock.calls[1][1].idempotencyKey).toBe(mocks.changeAssociation.mock.calls[0][1].idempotencyKey)
+    expect(mocks.changeAssociation.mock.calls[0]).toEqual(['outside', expect.objectContaining({ operation: 'ATTACH', alarmId: 'alarm-one', expectedVersion: 0, reason: 'same investigation' })])
+    expect(view.associationVisible).toBe(false)
+  })
+
+  it('uses the registered AI destination with case context', async () => {
+    const router = await open()
+    const view = wrapper.findComponent(CasesView).vm as unknown as { openContext: (name: 'ai') => void }
+    view.openContext('ai'); await flushPromises()
+    expect(router.currentRoute.value.name).toBe('ai')
+    expect(router.currentRoute.value.query.caseId).toBe('outside')
+  })
 
   it('enriches alarm references in batches of four and keeps failed references usable', async () => {
     const ids = Array.from({ length: 6 }, (_, index) => `alarm-${index}`)

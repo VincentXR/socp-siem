@@ -63,14 +63,14 @@ public class AuditAspect {
             result = pjp.proceed();
         } catch (Throwable operationFailure) {
             try {
-                sink.publish(AuditRecord.of(action, target,
-                        "FAIL:" + safeMessage(operationFailure)));
+                sink.publish(details(pjp, AuditRecord.of(action, target,
+                        "FAIL:" + safeMessage(operationFailure)), null));
             } catch (RuntimeException auditFailure) {
                 operationFailure.addSuppressed(auditFailure);
             }
             throw operationFailure;
         }
-        sink.publish(AuditRecord.of(action, target, "SUCCESS"));
+        sink.publish(details(pjp, AuditRecord.of(action, target, "SUCCESS"), result));
         return result;
     }
 
@@ -104,13 +104,13 @@ public class AuditAspect {
             Outcome outcome = required.execute(status -> {
                 try {
                     Object result = pjp.proceed();
-                    sink.publish(AuditRecord.of(action, target, "SUCCESS"));
+                    sink.publish(details(pjp, AuditRecord.of(action, target, "SUCCESS"), result));
                     return new Outcome(result, null);
                 } catch (Throwable operationFailure) {
                     boolean rollback = declared == null || declared.rollbackOn(operationFailure);
                     if (rollback) throw new RollbackInvocation(operationFailure);
-                    sink.publish(AuditRecord.of(action, target,
-                            "FAIL:" + safeMessage(operationFailure)));
+                    sink.publish(details(pjp, AuditRecord.of(action, target,
+                            "FAIL:" + safeMessage(operationFailure)), null));
                     return new Outcome(null, operationFailure);
                 }
             });
@@ -118,29 +118,34 @@ public class AuditAspect {
             if (outcome.failure() != null) throw outcome.failure();
             return outcome.result();
         } catch (RollbackInvocation rollback) {
-            publishFailureAfterRollback(action, target, rollback.failure());
+            publishFailureAfterRollback(pjp, action, target, rollback.failure());
             throw rollback.failure();
         } catch (org.springframework.transaction.UnexpectedRollbackException rollback) {
-            publishFailureAfterRollback(action, target, rollback);
+            publishFailureAfterRollback(pjp, action, target, rollback);
             throw rollback;
         }
     }
 
-    private void publishFailureAfterRollback(String action, String target, Throwable operationFailure) {
+    private void publishFailureAfterRollback(ProceedingJoinPoint pjp, String action, String target, Throwable operationFailure) {
         TransactionTemplate separate = new TransactionTemplate(transactionManager);
         separate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         try {
-            separate.executeWithoutResult(status -> sink.publish(AuditRecord.of(action, target,
-                    "FAIL:" + safeMessage(operationFailure))));
+            separate.executeWithoutResult(status -> sink.publish(details(pjp, AuditRecord.of(action, target,
+                    "FAIL:" + safeMessage(operationFailure)), null)));
         } catch (RuntimeException auditFailure) {
             operationFailure.addSuppressed(auditFailure);
         }
     }
 
     private static String safeMessage(Throwable failure) {
-        String message = failure.getMessage();
-        if (message == null || message.isBlank()) return failure.getClass().getSimpleName();
-        return message.length() <= 59 ? message : message.substring(0, 59);
+        // Exception messages can contain submitted credentials or free-text evidence.
+        return failure.getClass().getSimpleName().substring(0,
+                Math.min(59, failure.getClass().getSimpleName().length()));
+    }
+
+    private static AuditRecord details(ProceedingJoinPoint pjp, AuditRecord record, Object result) {
+        return AuditDetails.capture(((MethodSignature) pjp.getSignature()).getMethod(),
+                pjp.getArgs(), result, record);
     }
 
     private record Outcome(Object result, Throwable failure) {

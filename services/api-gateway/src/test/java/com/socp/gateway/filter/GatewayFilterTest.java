@@ -69,6 +69,26 @@ class GatewayFilterTest {
     }
 
     @Test
+    void explicitApprovalPermissionPassesSoarBoundaryButDoesNotGrantOtherDomainWrites() {
+        GatewayFilter filter = new GatewayFilter(jwtValidator);
+        var claims = new JWTClaimsSet.Builder().subject("reviewer").claim("role", "viewer")
+                .claim("tenant", "tenant-a").claim("permissions", java.util.List.of("soar:approve")).build();
+        given(jwtValidator.validate("reviewer-token")).willReturn(claims);
+        given(jwtValidator.extractTenant(claims)).willReturn("tenant-a");
+        given(chain.filter(org.mockito.ArgumentMatchers.any())).willReturn(Mono.empty());
+        var allowed = MockServerWebExchange.from(MockServerHttpRequest.post("/soar-web/api/v1/approvals/a/approve")
+                .header("Authorization", "Bearer reviewer-token").header("X-Socp-Permissions", "soar:publish").build());
+        filter.filter(allowed, chain).block(Duration.ofSeconds(1));
+        var forwarded = ArgumentCaptor.forClass(ServerWebExchange.class);
+        verify(chain).filter(forwarded.capture());
+        assertEquals("alarm:read,soar:approve,soar:view", forwarded.getValue().getRequest().getHeaders().getFirst("X-Socp-Permissions"));
+        var forbidden = MockServerWebExchange.from(MockServerHttpRequest.post("/incident-web/api/v1/incidents")
+                .header("Authorization", "Bearer reviewer-token").build());
+        filter.filter(forbidden, chain).block(Duration.ofSeconds(1));
+        assertEquals(HttpStatus.FORBIDDEN, forbidden.getResponse().getStatusCode());
+    }
+
+    @Test
     void viewerCanUseExactReadOnlyPostRoute() {
         GatewayFilter filter = new GatewayFilter(jwtValidator);
         JWTClaimsSet claims = new JWTClaimsSet.Builder().subject("viewer-user")

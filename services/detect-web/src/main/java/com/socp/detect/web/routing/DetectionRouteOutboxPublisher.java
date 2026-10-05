@@ -29,6 +29,7 @@ public class DetectionRouteOutboxPublisher {
     private static final Logger log = LoggerFactory.getLogger(DetectionRouteOutboxPublisher.class);
     private static final int RECOVERY_BATCH_SIZE = 100;
     private static final long DRAIN_BUDGET_NANOS = Duration.ofSeconds(10).toNanos();
+    private static final int MAX_DRAIN_ROUNDS = 64;
     private final DetectionRouteOutboxRepository repository;
     private final String bootstrap;
     private final boolean enabled;
@@ -64,22 +65,30 @@ public class DetectionRouteOutboxPublisher {
         if (!enabled) return;
         recoverStale();
         long started = System.nanoTime();
-        for (DetectionRouteOutboxEntity row :
-                repository.findDueKeyHeads(Instant.now())) {
-            if (Thread.currentThread().isInterrupted() || System.nanoTime() - started >= DRAIN_BUDGET_NANOS) break;
-            int attemptLimit = maxAttempts == 0 ? Integer.MAX_VALUE : maxAttempts;
-            Instant now = Instant.now();
-            try {
-                if (repository.claim(row.getDeliveryId(), now, row.getAttempts(), attemptLimit) != 1) continue;
-            } catch (DataIntegrityViolationException competingKeyOwner) {
-                // A concurrent replica won the unique processing-key lease after this
-                // scan's snapshot. Leave this row pending for the next polling cycle.
-                continue;
+        java.util.Set<String> attempted = new java.util.HashSet<>();
+        for (int round = 0; round < MAX_DRAIN_ROUNDS
+                && !Thread.currentThread().isInterrupted()
+                && System.nanoTime() - started < DRAIN_BUDGET_NANOS; round++) {
+            var heads = repository.findDueKeyHeads(Instant.now()).stream()
+                    .filter(row -> attempted.add(row.getDeliveryId())).toList();
+            if (heads.isEmpty()) break;
+            // Continue to the next head even with only one active routing key.
+            for (DetectionRouteOutboxEntity row : heads) {
+                if (Thread.currentThread().isInterrupted() || System.nanoTime() - started >= DRAIN_BUDGET_NANOS) break;
+                int attemptLimit = maxAttempts == 0 ? Integer.MAX_VALUE : maxAttempts;
+                Instant now = Instant.now();
+                try {
+                    if (repository.claim(row.getDeliveryId(), now, row.getAttempts(), attemptLimit) != 1) continue;
+                } catch (DataIntegrityViolationException competingKeyOwner) {
+                    // A concurrent replica won the unique processing-key lease after this
+                    // scan's snapshot. Leave this row pending for the next polling cycle.
+                    continue;
+                }
+                row.setAttempts(row.getAttempts() + 1);
+                row.setStatus("PROCESSING");
+                row.setUpdatedAt(now);
+                publish(row);
             }
-            row.setAttempts(row.getAttempts() + 1);
-            row.setStatus("PROCESSING");
-            row.setUpdatedAt(now);
-            publish(row);
         }
     }
 

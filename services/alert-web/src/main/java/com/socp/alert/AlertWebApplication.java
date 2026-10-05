@@ -1,7 +1,6 @@
 package com.socp.alert;
 
 import com.socp.alert.config.AlertDeliveryProperties;
-import com.socp.alert.config.AlertEnrichmentProperties;
 import com.socp.alert.config.AlertKafkaProperties;
 import com.socp.alert.config.AlertOutboxProperties;
 import com.socp.alert.config.ClickHouseProperties;
@@ -19,7 +18,7 @@ import org.springframework.context.annotation.Import;
 @SpringBootApplication(scanBasePackages = "com.socp.alert")
 @EnableSocpPlatformJpa
 @EnableConfigurationProperties({ClickHouseProperties.class, AlertDeliveryProperties.class,
-        AlertOutboxProperties.class, AlertEnrichmentProperties.class, AlertKafkaProperties.class})
+        AlertOutboxProperties.class, AlertKafkaProperties.class})
 @org.springframework.scheduling.annotation.EnableScheduling
 @Import(SocpPlatformAutoConfiguration.class)
 public class AlertWebApplication {

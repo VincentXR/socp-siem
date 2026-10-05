@@ -159,6 +159,9 @@ public class AuditConsumer {
         requireLength("operator", operator, 128);
         requireLength("target", target, 512);
         requireLength("result", result, 64);
+        requireLength("entityId", text(values.get("entityId")), 512);
+        requireLength("changeSummary", text(values.get("changeSummary")), 4096);
+        requireLength("traceId", text(values.get("traceId")), 128);
         return new AuditEntity(
                 eventId,
                 tenantId,
@@ -166,7 +169,8 @@ public class AuditConsumer {
                 operator == null ? "system" : operator,
                 target,
                 result == null ? "OK" : result,
-                parseTimestamp(values.get("timestamp")));
+                parseTimestamp(values.get("timestamp"))).withDetails(text(values.get("entityId")),
+                text(values.get("changeSummary")), text(values.get("traceId")));
     }
 
     private boolean toDlqAndAwait(String key, String raw) {

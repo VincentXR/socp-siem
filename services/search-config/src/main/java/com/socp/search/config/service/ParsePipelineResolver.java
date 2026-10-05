@@ -66,6 +66,9 @@ public class ParsePipelineResolver {
             }
             if (result.error() != null && !result.error().isBlank()) lastError = result.error();
         }
+        if (lastError == null && context.hasExplicitRules()) {
+            lastError = "No enabled source-bound parse rule matched the input";
+        }
         return new Result(false, null, Map.of(), lastError);
     }
 

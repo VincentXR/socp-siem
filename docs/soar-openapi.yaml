@@ -253,8 +253,22 @@ paths:
   /api/approvals:
     get:
       tags: [Operations]
-      parameters: [{$ref: '#/components/parameters/Page'}, {$ref: '#/components/parameters/Size'}]
-      responses: {'200': {$ref: '#/components/responses/ApiResult'}}
+      description: Filters status before paging; returns items, total, totalPages, page and size when any query parameter is supplied. With no parameters, retains the legacy latest-200 array response.
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Size'}
+        - {name: status, in: query, schema: {type: string, enum: [PENDING, APPROVED, REJECTED, EXPIRED, CANCELLED]}}
+      responses:
+        '200': {description: Paged approvals or legacy bounded array, content: {application/json: {schema: {$ref: '#/components/schemas/ApprovalPageResult'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+  /api/approvals/{approvalId}:
+    get:
+      tags: [Operations]
+      description: Reads a tenant-scoped approval directly, independently of queue pages. Requires soar:view.
+      parameters: [{name: approvalId, in: path, required: true, schema: {type: string}}]
+      responses:
+        '200': {description: Tenant-scoped approval details, content: {application/json: {schema: {$ref: '#/components/schemas/ApprovalResult'}}}}
+        '404': {$ref: '#/components/responses/Error'}
   /api/approvals/{approvalId}/decisions:
     post:
       tags: [Operations]
@@ -638,6 +652,27 @@ components:
         data: {nullable: true, description: Endpoint-specific response data}
         traceId: {type: string, nullable: true, maxLength: 128}
         timestamp: {type: string, format: date-time}
+    ApprovalResult:
+      allOf:
+        - {$ref: '#/components/schemas/ApiResult'}
+        - type: object
+          properties:
+            data: {$ref: '#/components/schemas/Approval'}
+    ApprovalPage:
+      allOf:
+        - {$ref: '#/components/schemas/PagedData'}
+        - type: object
+          properties:
+            items: {type: array, items: {$ref: '#/components/schemas/Approval'}}
+    ApprovalPageResult:
+      allOf:
+        - {$ref: '#/components/schemas/ApiResult'}
+        - type: object
+          properties:
+            data:
+              oneOf:
+                - {$ref: '#/components/schemas/ApprovalPage'}
+                - {type: array, maxItems: 200, items: {$ref: '#/components/schemas/Approval'}}
     PagedData:
       type: object
       description: Paged SOAR compatibility response. The request page parameter is 0-based for backwards compatibility.

@@ -23,7 +23,7 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import ElTooltip from 'element-plus/es/components/tooltip/index.mjs'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -36,11 +36,13 @@ import { exportSearch, listAlarmsByEvent, listFields, splSearch, type Alarm, typ
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
 import { stageDetectionSample } from '../lib/detection-sample'
+import { WORKBENCH_STATE } from '../app/workbenchState'
 import { useWriteAccess } from '../composables/useWriteAccess'
 import { appendSearchFilter, splitPipeline } from '../lib/search-query'
 
 const { t } = useI18n()
 const canWrite = useWriteAccess()
+const identity = inject(WORKBENCH_STATE, null)
 const route = useRoute()
 const router = useRouter()
 type TimeRangeKey = '15m' | '30m' | '1h' | '6h' | '24h' | 'all' | 'custom'
@@ -106,7 +108,8 @@ const savedQueries = ref<Array<{ id: string; name: string; query: string; range:
 const selectedSavedQueryId = ref('')
 const saveDialogVisible = ref(false)
 const savedQueryName = ref('')
-const SAVED_QUERY_KEY = 'socp.search.saved-queries'
+const savedQueryKey = computed(() => identity?.currentTenant?.value && identity.currentUser.value
+  ? `socp.search.saved-queries.v2:${encodeURIComponent(identity.currentTenant.value)}:${encodeURIComponent(identity.currentUser.value)}` : '')
 let requestSequence = 0
 let cancelled = false
 let requestController: AbortController | undefined
@@ -246,7 +249,10 @@ function onEventSortChange(change: { prop: string | null; order: string | null }
 
 function readSavedQueries(): void {
   try {
-    const raw = localStorage.getItem(SAVED_QUERY_KEY)
+    localStorage.removeItem('socp.search.saved-queries')
+    savedQueries.value = []
+    selectedSavedQueryId.value = ''; savedQueryName.value = ''; saveDialogVisible.value = false
+    const raw = savedQueryKey.value ? localStorage.getItem(savedQueryKey.value) : null
     if (raw) {
       const parsed: unknown = JSON.parse(raw)
       savedQueries.value = Array.isArray(parsed) ? parsed.filter(item => item && typeof item.id === 'string' && typeof item.name === 'string' && typeof item.query === 'string' && validTimeRanges.includes(item.range)).slice(0, 20) : []
@@ -255,7 +261,7 @@ function readSavedQueries(): void {
 }
 
 function persistSavedQueries(): void {
-  try { localStorage.setItem(SAVED_QUERY_KEY, JSON.stringify(savedQueries.value)) } catch { /* optional preference */ }
+  try { if (savedQueryKey.value) localStorage.setItem(savedQueryKey.value, JSON.stringify(savedQueries.value)) } catch { /* optional preference */ }
 }
 
 async function loadFields(): Promise<void> {
@@ -500,6 +506,7 @@ const pageCount = computed(() => Math.max(1, Math.min(
 const showPagination = computed(() => Boolean(result.value && (result.value.nextCursor || currentPage.value > 1)))
 const browseLimitVisible = computed(() => Boolean(result.value && result.value.total > MAX_BROWSE_ROWS))
 
+watch(savedQueryKey, readSavedQueries)
 onMounted(() => {
   readSavedQueries()
   void loadFields()

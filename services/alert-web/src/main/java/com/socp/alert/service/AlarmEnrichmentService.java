@@ -1,8 +1,6 @@
 package com.socp.alert.service;
 
-import com.socp.alert.config.AlertEnrichmentProperties;
 import com.socp.alert.domain.Alarm;
-import com.socp.alert.domain.Severity;
 import com.socp.alert.persistence.repository.AlarmRepository;
 
 
@@ -11,27 +9,18 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.service.ThreatClient;
-import com.socp.platform.tenant.context.TenantContext;
 import io.micrometer.core.instrument.MeterRegistry;
-import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.support.TransactionSynchronization;
-import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Owns optional threat-intelligence enrichment and risk recalculation. */
+/** Durable threat-intelligence lookup; delivery retries survive process restarts. */
 @Component
 public class AlarmEnrichmentService {
 
@@ -42,43 +31,35 @@ public class AlarmEnrichmentService {
 
     private final AlarmRepository repository;
     private final ThreatClient threatClient;
-    private final int concurrency;
-    private final int queueCapacity;
     private final MeterRegistry meterRegistry;
-    private volatile ExecutorService executor;
 
-    @Autowired
-    public AlarmEnrichmentService(AlarmRepository repository, ThreatClient threatClient,
-                                  AlertEnrichmentProperties properties, MeterRegistry meterRegistry) {
-        this(repository, threatClient, properties.getConcurrency(), properties.getQueueCapacity(), meterRegistry);
-    }
+    private final AlarmEnrichmentCommitter committer;
 
     public AlarmEnrichmentService(AlarmRepository repository, ThreatClient threatClient,
-                                  int concurrency, int queueCapacity) {
-        this(repository, threatClient, concurrency, queueCapacity, null);
-    }
-
-    AlarmEnrichmentService(AlarmRepository repository, ThreatClient threatClient,
-                           int concurrency, int queueCapacity, MeterRegistry meterRegistry) {
+                                  AlarmEnrichmentCommitter committer, MeterRegistry meterRegistry) {
         this.repository = repository;
         this.threatClient = threatClient;
-        this.concurrency = Math.max(1, Math.min(32, concurrency));
-        this.queueCapacity = Math.max(100, Math.min(100_000, queueCapacity));
+        this.committer = committer;
         this.meterRegistry = meterRegistry;
     }
 
-    void scheduleAfterCommit(Alarm alarm) {
-        Runnable submit = () -> submit(alarm);
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    submit.run();
-                }
-            });
-        } else {
-            submit.run();
+    /** Remote lookup is outside the patch transaction; failures retain the durable delivery. */
+    public void enrichDurably(String tenantId, String alarmId) {
+        Alarm alarm = repository.findByTenantIdAndId(tenantId, alarmId)
+                .orElseThrow(() -> new IllegalStateException("Missing enrichment alarm"));
+        if (alarm.getEnrichedAt() != null) return;
+        List<String> candidates = candidates(alarm);
+        ThreatHits hits = new ThreatHits("[]", 0);
+        if (!candidates.isEmpty()) {
+            ServiceCall call = threatClient.matchIocs(json(candidates));
+            if (call == null || !call.ok()) throw new IllegalStateException("Threat enrichment unavailable");
+            hits = threatHits(call.body());
+            if (hits == null) throw new IllegalStateException("Invalid threat enrichment response");
         }
+        int risk = Math.max(alarm.getInitialRiskScore() == null ? 0 : alarm.getInitialRiskScore(),
+                score(alarm, hits.count()).score());
+        committer.complete(tenantId, alarmId, hits.json(), risk);
+        enrichment("success");
     }
 
     com.socp.rule.score.RiskScorer.Score score(Alarm alarm, int threatHits) {
@@ -104,82 +85,9 @@ public class AlarmEnrichmentService {
                 severity, alarm.getMitre(), threatHits, recent, 0);
     }
 
-    void enrich(Alarm alarm) {
-        List<String> candidates = candidates(alarm);
-        if (candidates.isEmpty()) {
-            enrichment("skipped");
-            return;
-        }
-        ServiceCall call = threatClient.matchIocs(json(candidates));
-        if (call == null || !call.ok()) {
-            log.warn("Threat enrichment unavailable alarmId={} reason={}", alarm.getId(),
-                    call == null ? "no service result" : call.failureReason());
-            enrichment("failure");
-            return;
-        }
-        ThreatHits hits = threatHits(call.body());
-        if (hits == null) {
-            enrichment("failure");
-            return;
-        }
-
-        // Do not merge the detached Alarm captured by the creating transaction.
-        // A concurrent workflow may have changed status or other analyst-owned
-        // fields after commit. Re-read for scoring, then patch only the three
-        // enrichment columns in one database statement.
-        Alarm latest = repository.findByTenantIdAndId(alarm.getTenantId(), alarm.getId()).orElse(null);
-        if (latest == null) {
-            log.warn("Threat enrichment target no longer exists alarmId={} tenant={}",
-                    alarm.getId(), alarm.getTenantId());
-            enrichment("failure");
-            return;
-        }
-        var risk = score(latest, hits.count());
-        int updated = repository.updateEnrichment(latest.getTenantId(), latest.getId(),
-                hits.json(), risk.score(), risk.level());
-        if (updated != 1) {
-            log.warn("Threat enrichment target changed before update alarmId={} tenant={}",
-                    latest.getId(), latest.getTenantId());
-            enrichment("failure");
-            return;
-        }
-        enrichment("success");
-    }
-
-    private void submit(Alarm alarm) {
-        try {
-            executor().execute(TenantContext.wrap(alarm.getTenantId(), () -> {
-                try {
-                    enrich(alarm);
-                } catch (RuntimeException failure) {
-                    log.warn("Threat enrichment failed alarmId={} entity={} reason={}",
-                            alarm.getId(), alarm.getEntity(), failure.toString());
-                    enrichment("failure");
-                }
-            }));
-        } catch (java.util.concurrent.RejectedExecutionException saturated) {
-            log.warn("Threat enrichment queue is full; skipping optional enrichment alarmId={}", alarm.getId());
-            enrichment("queue_rejected");
-        }
-    }
-
     private void enrichment(String outcome) {
         if (meterRegistry != null) {
             meterRegistry.counter("socp.alert.enrichment", "outcome", outcome).increment();
-        }
-    }
-
-    private ExecutorService executor() {
-        ExecutorService current = executor;
-        if (current != null) return current;
-        synchronized (this) {
-            if (executor == null) {
-                executor = new ThreadPoolExecutor(concurrency, concurrency, 0L, TimeUnit.MILLISECONDS,
-                        new ArrayBlockingQueue<>(queueCapacity),
-                        Thread.ofVirtual().name("alert-enrichment-", 0).factory(),
-                        new ThreadPoolExecutor.AbortPolicy());
-            }
-            return executor;
         }
     }
 
@@ -191,17 +99,19 @@ public class AlarmEnrichmentService {
         while (ip.find()) values.add(ip.group());
         Matcher domain = DOMAIN.matcher(alarm.getMessage().toLowerCase(java.util.Locale.ROOT));
         while (domain.find()) values.add(domain.group());
-        return values.stream().distinct().toList();
+        return values.stream().distinct().limit(100).toList();
     }
 
     private static ThreatHits threatHits(String body) {
-        if (body == null || body.isBlank()) return null;
+        if (body == null || body.isBlank() || body.length() > 512_000) return null;
         try {
             JsonNode root = MAPPER.readTree(body);
+            if (root.has("code") && root.path("code").asInt(-1) != 0) return null;
             // threat-web 响应已包 ApiResult 信封：{code,message,data:{hits}}
             if (root.isObject() && root.has("code") && root.has("data") && root.get("data").isObject()) {
                 root = root.get("data");
             }
+            if (root.has("code") && root.path("code").asInt(-1) != 0) return null;
             JsonNode hits = root.get("hits");
             if (hits == null || hits.isNull()) return null;
             JsonNode normalized = hits;
@@ -210,8 +120,15 @@ public class AlarmEnrichmentService {
                 hits.elements().forEachRemaining(array::add);
                 normalized = array;
             }
-            int count = normalized.isArray() ? normalized.size() : 1;
-            return new ThreatHits(MAPPER.writeValueAsString(normalized), count);
+            if (!normalized.isArray() || normalized.size() > 100) return null;
+            int count = normalized.size();
+            var bounded = MAPPER.createArrayNode();
+            if (normalized.isArray()) {
+                for (JsonNode hit : normalized) {
+                    bounded.add(hit);
+                }
+            }
+            return new ThreatHits(MAPPER.writeValueAsString(bounded), count);
         } catch (JsonProcessingException invalidResponse) {
             log.warn("Threat service returned invalid JSON: {}", invalidResponse.getOriginalMessage());
             return null;
@@ -224,12 +141,6 @@ public class AlarmEnrichmentService {
         } catch (JsonProcessingException impossible) {
             throw new IllegalStateException("cannot serialize threat candidates", impossible);
         }
-    }
-
-    @PreDestroy
-    void stop() {
-        ExecutorService current = executor;
-        if (current != null) current.shutdownNow();
     }
 
     private record ThreatHits(String json, int count) {

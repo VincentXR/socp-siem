@@ -227,21 +227,29 @@ class IngestionOutboxPublisherTest {
     }
 
     @Test
-    void drainsMoreThanThreeClaimBatchesWithinOneWindow() {
+    void drainsSequentialHeadsOfOneHotKeyWithoutWaitingForAnotherPoll() {
         IngestionOutboxRepository repository = mock(IngestionOutboxRepository.class);
         KafkaEventProducer producer = mock(KafkaEventProducer.class);
         when(producer.isEnabled()).thenReturn(true);
-        IngestionOutboxEvent event = pending("backlog", "route", "{}", null);
-        List<IngestionOutboxEvent> fullBatch = java.util.Collections.nCopies(200, event);
-        when(repository.findDueKeyHeads(any(Instant.class)))
-                .thenReturn(fullBatch, fullBatch, fullBatch, fullBatch, List.of());
+        var remaining = new java.util.concurrent.ConcurrentLinkedQueue<IngestionOutboxEvent>();
+        for (int i = 0; i < 10; i++) remaining.add(pending("event-" + i, "one-key", "payload-" + i, null));
+        when(repository.findDueKeyHeads(any(Instant.class))).thenAnswer(invocation ->
+                remaining.isEmpty() ? List.of() : List.of(remaining.element()));
+        when(repository.claim(any(), any(), anyInt(), anyInt(), anyString())).thenReturn(1);
+        when(producer.sendAndAwait(any(), any(), any())).thenReturn(true);
+        when(repository.markPublished(any(), any(), anyString())).thenAnswer(invocation -> {
+            assertEquals(remaining.remove().getId(), invocation.getArgument(0));
+            return 1;
+        });
         publisher = new IngestionOutboxPublisher(repository, producer, null,
-                1, 12, 60_000L, 100, 2, 8, 10_000L);
+                1, 12, 60_000L, 100, 2, 20, 10_000L);
 
         publisher.publish();
 
-        verify(repository, org.mockito.Mockito.times(5))
-                .findDueKeyHeads(any(Instant.class));
+        assertEquals(0, remaining.size());
+        var order = org.mockito.Mockito.inOrder(producer);
+        for (int i = 0; i < 10; i++) order.verify(producer).sendAndAwait("one-key", "payload-" + i, null);
+        verify(repository, org.mockito.Mockito.times(11)).findDueKeyHeads(any(Instant.class));
     }
 
     @Test

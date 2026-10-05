@@ -60,6 +60,35 @@ class TaxiiSyncServiceTest {
     }
 
     @Test
+    void emptyFinalPageAfterOpaqueCursorStillCommitsTheSuccessfulCheckpoint() throws Exception {
+        TenantContext.set("tenant-a");
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        java.util.concurrent.atomic.AtomicInteger requests = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext("/collection", exchange -> {
+            boolean first = requests.getAndIncrement() == 0;
+            String body = first ? """
+                    {"more":true,"next":"opaque+cursor","objects":[{"type":"indicator",
+                    "id":"indicator--1","pattern":"[ipv4-addr:value = '192.0.2.1']"}]}
+                    """ : "{}";
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (var output = exchange.getResponseBody()) { output.write(bytes); }
+        });
+        server.start();
+        given(checkpoints.findByTenantIdAndFeed("tenant-a", "feed-a")).willReturn(Optional.empty());
+        given(checkpoints.save(any(TaxiiCheckpointEntity.class))).willAnswer(invocation -> invocation.getArgument(0));
+
+        assertThat(service().sync("feed-a", endpoint(), null, true))
+                .containsEntry("pages", 2).containsEntry("imported", 1);
+        assertThat(requests.get()).isEqualTo(2);
+        verify(store).add(any(Ioc.class));
+        ArgumentCaptor<TaxiiCheckpointEntity> saved = ArgumentCaptor.forClass(TaxiiCheckpointEntity.class);
+        verify(checkpoints).save(saved.capture());
+        assertThat(saved.getValue().getLastError()).isNull();
+        assertThat(saved.getValue().getLastSyncedAt()).isAfter(java.time.Instant.EPOCH);
+    }
+
+    @Test
     void recordsSyncFailureWithoutAdvancingSuccessfulTimestamp() throws Exception {
         TenantContext.set("tenant-a");
         server = server("not-json");

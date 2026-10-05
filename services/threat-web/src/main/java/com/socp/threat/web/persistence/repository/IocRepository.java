@@ -16,9 +16,26 @@ import java.time.Instant;
 /** 威胁情报 IOC 仓储。 */
 public interface IocRepository extends TenantScopedRepository<IocEntity, String> {
 
-    Optional<IocEntity> findByTenantIdAndValue(String tenantId, String value);
+    Optional<IocEntity> findByTenantIdAndIdentityKey(String tenantId, String identityKey);
 
-    List<IocEntity> findByTenantIdAndValueIn(String tenantId, java.util.Collection<String> values);
+    /** One authoritative, active source per value, ordered by risk then stable identity.
+     * The window bounds results by the input size even when many feeds match a value. */
+    @Query(value = """
+            select i.* from t_ioc i join (
+                select id, row_number() over (partition by ioc_value order by
+                    case severity when 'CRITICAL' then 5 when 'HIGH' then 4
+                        when 'MEDIUM' then 3 when 'LOW' then 2 else 1 end desc, id) as match_rank
+                from t_ioc where tenant_id = :tenantId and ioc_value in (:values)
+                    and revoked = false
+                    and (valid_from is null or valid_from <= :at)
+                    and (valid_until is null or valid_until > :at)
+                    and (expiration is null or expiration > :at)
+            ) ranked on ranked.id = i.id
+            where ranked.match_rank = 1 and i.tenant_id = :tenantId
+            """, nativeQuery = true)
+    List<IocEntity> findActiveMatches(@Param("tenantId") String tenantId,
+                                    @Param("values") java.util.Collection<String> values,
+                                    @Param("at") Instant at);
 
     Optional<IocEntity> findByIdAndTenantId(String id, String tenantId);
 

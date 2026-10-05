@@ -131,6 +131,25 @@ class IngestionOutboxOrderingPersistenceTest {
                         .containsExactly("failed", "accepted"));
     }
 
+    @Test
+    void onePollDrainsActualDatabaseHeadsInIngestionOrder() {
+        var ids = new java.util.ArrayList<String>();
+        for (int i = 0; i < 6; i++) ids.add(insert("hot-" + i, "tenant-a|host|hot", "payload-" + i));
+        var delivered = new CopyOnWriteArrayList<String>();
+        KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        when(producer.isEnabled()).thenReturn(true);
+        when(producer.sendAndAwait(any(), any(), any())).thenAnswer(invocation -> {
+            delivered.add(invocation.getArgument(1));
+            return true;
+        });
+        firstPublisher = publisher(producer);
+
+        firstPublisher.publish();
+
+        assertThat(delivered).containsExactly("payload-0", "payload-1", "payload-2", "payload-3", "payload-4", "payload-5");
+        for (String id : ids) assertThat(status(id)).isEqualTo("PUBLISHED");
+    }
+
     private IngestionOutboxPublisher publisher(KafkaEventProducer producer) {
         return new IngestionOutboxPublisher(repository, producer, null,
                 4, 12, Duration.ofDays(30).toMillis(), 100, 2, 8, 5_000);

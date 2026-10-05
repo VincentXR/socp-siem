@@ -412,6 +412,15 @@ public class SoarService {
         return queries.listApprovals(pageable);
     }
 
+    @Transactional(readOnly = true)
+    public Page<Map<String, Object>> listApprovals(Pageable pageable, String status) {
+        return queries.listApprovals(pageable, status);
+    }
+
+    @Transactional(readOnly = true)
+    public Map<String, Object> getApproval(String id) { return queries.getApproval(id); }
+
+
     @Transactional(noRollbackFor = ResponseStatusException.class)
     @AuditOperation(action = "SOAR_DECIDE_APPROVAL", target = "t_soar_approval")
     public Map<String, Object> decideApproval(String id, boolean approve, String decisionReason) {

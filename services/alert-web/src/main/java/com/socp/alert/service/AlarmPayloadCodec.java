@@ -39,6 +39,10 @@ final class AlarmPayloadCodec {
         payload.put("message", alarm.getMessage());
         payload.put("entity", alarm.getEntity());
         payload.put("mitre", alarm.getMitre());
+        payload.put("initialRiskScore", alarm.getInitialRiskScore());
+        payload.put("initialRiskLevel", alarm.getInitialRiskLevel());
+        payload.put("enrichedAt", alarm.getEnrichedAt());
+        payload.put("tiHits", readObject(alarm.getTiHits()));
         payload.put("riskScore", alarm.getRiskScore());
         payload.put("riskLevel", alarm.getRiskLevel());
         payload.put("occurredAt", alarm.getOccurredAt());

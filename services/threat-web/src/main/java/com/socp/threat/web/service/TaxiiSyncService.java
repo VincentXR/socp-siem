@@ -54,7 +54,7 @@ public class TaxiiSyncService {
             int skipped = 0;
             int revoked = 0;
             for (String page : pages) {
-                StixIndicatorImporter.ImportResult result = new StixIndicatorImporter().parse(page, normalizedFeed);
+                StixIndicatorImporter.ImportResult result = new StixIndicatorImporter().parseTaxiiEnvelope(page, normalizedFeed);
                 skipped += result.skipped();
                 for (Ioc indicator : result.indicators()) {
                     store.add(indicator);

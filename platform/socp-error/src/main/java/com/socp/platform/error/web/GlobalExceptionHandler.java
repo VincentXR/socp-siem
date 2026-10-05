@@ -75,6 +75,21 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(ApiResult.fail(400, message));
     }
 
+    @ExceptionHandler(org.springframework.web.bind.MissingServletRequestParameterException.class)
+    public ResponseEntity<ApiResult<Void>> handleMissingParameter(
+            org.springframework.web.bind.MissingServletRequestParameterException e) {
+        return ResponseEntity.badRequest().body(ApiResult.fail(400,
+                "缺少必填参数: " + e.getParameterName()));
+    }
+
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiResult<Void>> handleParameterType(
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException e) {
+        // Parameter names come from the controller contract; submitted values stay private.
+        return ResponseEntity.badRequest().body(ApiResult.fail(400,
+                "参数类型不合法: " + e.getName()));
+    }
+
     /** 只有落在标准 HTTP 错误区间的 code 才映射为真实状态码，业务码一律 200。 */
     private static HttpStatus toHttpStatus(int code) {
         HttpStatus resolved = HttpStatus.resolve(code);

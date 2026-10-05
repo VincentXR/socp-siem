@@ -22,6 +22,10 @@ import java.time.Instant;
 public class IocEntity extends BaseEntity {
     @Id
     private String id;
+    @Column(name = "identity_key", nullable = false, length = 64)
+    private String identityKey;
+    @jakarta.persistence.Version
+    private Long version;
     private String type;
     /** 列名不能直接叫 value：H2 2.x / SQL:2016 里 VALUE 是保留字，建表会语法报错 */
     @Column(name = "ioc_value")
@@ -58,6 +62,9 @@ public class IocEntity extends BaseEntity {
     public void setId(String id) {
         this.id = id;
     }
+
+    public String getIdentityKey() { return identityKey; }
+    public void setIdentityKey(String identityKey) { this.identityKey = identityKey; }
 
     public String getType() {
         return type;

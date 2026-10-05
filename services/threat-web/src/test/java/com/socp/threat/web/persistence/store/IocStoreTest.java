@@ -10,7 +10,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Instant;
 import java.util.List;
@@ -39,21 +38,21 @@ class IocStoreTest {
     }
 
     @Test
-    void normalizesMatchAndCachesThePersistedTenantScopedResult() {
+    void normalizesMatchAndReadsAuthoritativeStateOnEveryRequest() {
         TenantContext.set("tenant-a");
         IocEntity entity = entity("ioc-1", "DOMAIN", "example.com");
-        when(repository.findByTenantIdAndValue("tenant-a", "example.com")).thenReturn(Optional.of(entity));
+        when(repository.findActiveMatches(eq("tenant-a"), eq(List.of("example.com")), any(Instant.class))).thenReturn(List.of(entity));
         IocStore store = new IocStore(repository, false);
 
         assertThat(store.match(" Example.COM ").value()).isEqualTo("example.com");
         assertThat(store.match("example.com").value()).isEqualTo("example.com");
-        verify(repository, times(1)).findByTenantIdAndValue("tenant-a", "example.com");
+        verify(repository, times(2)).findActiveMatches(eq("tenant-a"), eq(List.of("example.com")), any(Instant.class));
     }
 
     @Test
     void batchMatchUsesInQueryAndKeepsOriginalInputKeys() {
         TenantContext.set("tenant-b");
-        when(repository.findByTenantIdAndValueIn(eq("tenant-b"), anyList()))
+        when(repository.findActiveMatches(eq("tenant-b"), anyList(), any(Instant.class)))
                 .thenReturn(List.of(entity("ioc-2", "IP", "203.0.113.7")));
         IocStore store = new IocStore(repository, false);
 
@@ -61,11 +60,11 @@ class IocStoreTest {
 
         assertThat(matched).containsKey("203.0.113.7");
         assertThat(matched).doesNotContainKey("missing");
-        verify(repository).findByTenantIdAndValueIn(eq("tenant-b"), eq(List.of("203.0.113.7", "missing")));
+        verify(repository).findActiveMatches(eq("tenant-b"), eq(List.of("203.0.113.7", "missing")), any(Instant.class));
     }
 
     @Test
-    void deleteIsTenantScopedAndRemovesCache() {
+    void deleteIsTenantScoped() {
         TenantContext.set("tenant-c");
         IocEntity entity = entity("ioc-3", "IP", "203.0.113.8");
         when(repository.findByIdAndTenantId("ioc-3", "tenant-c")).thenReturn(Optional.of(entity));
@@ -83,7 +82,7 @@ class IocStoreTest {
         IocEntity existing = entity("ioc-4", "DOMAIN", "example.com");
         existing.setFirstSeen(Instant.parse("2026-01-01T00:00:00Z"));
         existing.setLastSeen(Instant.parse("2026-01-10T00:00:00Z"));
-        when(repository.findByTenantIdAndSourceAndExternalId("tenant-d", "feed", "stix--1"))
+        when(repository.findByTenantIdAndIdentityKey(eq("tenant-d"), any(String.class)))
                 .thenReturn(Optional.of(existing));
         when(repository.save(any(IocEntity.class))).thenAnswer(invocation -> invocation.getArgument(0));
         IocStore store = new IocStore(repository, false);
@@ -106,8 +105,8 @@ class IocStoreTest {
         revoked.setRevoked(true);
         IocEntity expired = entity("ioc-6", "IP", "203.0.113.10");
         expired.setExpiration(Instant.now().minusSeconds(60));
-        when(repository.findByTenantIdAndValue("tenant-e", "203.0.113.9")).thenReturn(Optional.of(revoked));
-        when(repository.findByTenantIdAndValue("tenant-e", "203.0.113.10")).thenReturn(Optional.of(expired));
+        when(repository.findActiveMatches(eq("tenant-e"), eq(List.of("203.0.113.9")), any(Instant.class))).thenReturn(List.of(revoked));
+        when(repository.findActiveMatches(eq("tenant-e"), eq(List.of("203.0.113.10")), any(Instant.class))).thenReturn(List.of(expired));
         IocStore store = new IocStore(repository, false);
 
         assertThat(store.match("203.0.113.9")).isNull();
@@ -115,19 +114,26 @@ class IocStoreTest {
     }
 
     @Test
-    void boundsInMemoryCacheCardinality() {
+    void replicaReadsSeeRevocationAndRolledBackWritesCannotPopulateACache() {
         TenantContext.set("tenant-cache");
-        when(repository.findByTenantIdAndValueIn(eq("tenant-cache"), anyList()))
-                .thenReturn(List.of(
-                        entity("ioc-a", "DOMAIN", "a.example"),
-                        entity("ioc-b", "DOMAIN", "b.example"),
-                        entity("ioc-c", "DOMAIN", "c.example")));
+        IocStore first = new IocStore(repository, false);
+        IocStore second = new IocStore(repository, false);
+        IocEntity stored = entity("ioc-a", "DOMAIN", "a.example");
+        when(repository.findActiveMatches(eq("tenant-cache"), eq(List.of("a.example")), any(Instant.class)))
+                .thenReturn(List.of(stored), List.of());
+        assertThat(second.match("a.example")).isNotNull();
+        when(repository.save(any(IocEntity.class))).thenThrow(new IllegalStateException("rollback"));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> first.add(Ioc.of("DOMAIN", "a.example", "HIGH", "feed", "", List.of())));
+        assertThat(second.match("a.example")).isNull();
+    }
+
+    @Test
+    void boundsBatchInputBeforeDatabaseAccess() {
         IocStore store = new IocStore(repository, false);
-        ReflectionTestUtils.setField(store, "maxCacheEntries", 2);
-
-        store.matchAll(List.of("a.example", "b.example", "c.example"));
-
-        assertThat(store.cachedEntries()).isLessThanOrEqualTo(2);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> store.matchAll(java.util.Collections.nCopies(1001, "a.example")));
+        org.mockito.Mockito.verifyNoInteractions(repository);
     }
 
     @Test

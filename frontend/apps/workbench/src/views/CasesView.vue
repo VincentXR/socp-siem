@@ -24,6 +24,8 @@ import 'element-plus/es/components/message/style/css.mjs'
 import 'element-plus/es/components/select/style/css.mjs'
 import 'element-plus/es/components/table/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
+import 'element-plus/es/components/tabs/style/css.mjs'
+import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import 'element-plus/es/components/timeline/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import { ElDescriptions, ElDescriptionsItem } from 'element-plus/es/components/descriptions/index.mjs'
@@ -91,6 +93,7 @@ const associatedRulePageSize = ref(20)
 const associatedRuleTotal = ref(0)
 const associatedRuleError = ref('')
 const drawerVisible = ref(false)
+const detailTab = ref('investigation')
 const restoreDrawerFocus = useFocusReturn(drawerVisible)
 const createDialogVisible = ref(false)
 const caseForm = ref({ title: '', entity: '', severity: 'HIGH', assignee: '' })
@@ -124,6 +127,10 @@ const queueFilter = listQuery.filters.queue
 const loading = ref(false)
 const latestRequest = useLatestRequest()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('cases')
+function assigneeLabel(id: string): string {
+  const labels = workbenchState?.operatorLabels?.value
+  return labels && Object.hasOwn(labels, id) ? labels[id] : id
+}
 const assigneeOptions = computed(() => Array.from(new Set([
   ...(workbenchState?.operatorOptions.value ?? []),
   workbenchState?.currentUser.value ?? '',
@@ -295,10 +302,77 @@ function age(createdAt?: string): string {
   return t('cases.ageDays', { days: Math.floor(minutes / 1440) })
 }
 
-function openContext(name: 'assistant' | 'soar', alarmId?: string): void {
+function openContext(name: 'ai' | 'soar', alarmId?: string): void {
   if (!detail.value || !canWrite.value || actionBusy.value) return
   void router.push({ name, query: { caseId: detail.value.id, alarmId, tab: name === 'soar' ? 'runs' : undefined, returnTo: route.fullPath } })
 }
+
+const associationVisible = ref(false)
+const association = ref({ operation: 'ATTACH' as 'ATTACH' | 'DETACH' | 'MOVE', alarmId: '', targetCaseId: '', reason: '' })
+const associationAlarm = ref<Alarm | null>(null)
+const associationTargets = ref<CaseInfo[]>([])
+const associationTargetTotal = ref(0)
+const associationLookupError = ref('')
+const associationAlarmLoading = ref(false)
+const associationTargetsLoading = ref(false)
+const associationLookupLoading = computed(() => associationAlarmLoading.value || associationTargetsLoading.value)
+const associationAlarmRequests = useLatestRequest()
+const associationTargetRequests = useLatestRequest()
+let associationAttempt = { signature: '', key: '' }
+const associationGuard = useFormDialog(associationVisible, () => association.value, () => actionBusy.value)
+async function openAssociation(operation: 'ATTACH' | 'DETACH' | 'MOVE', alarmId = '') {
+  if (!canWrite.value || actionBusy.value || !detail.value || !await detailGuard.canLeave()) return
+  applyDetail(detail.value)
+  noteContent.value = ''; noteEvidence.value = ''; detailGuard.markSaved()
+  association.value = { operation, alarmId, targetCaseId: '', reason: '' }
+  associationAlarm.value = alarmDetails.value[alarmId] ?? null
+  associationTargets.value = []; associationTargetTotal.value = 0; associationLookupError.value = ''
+  associationVisible.value = true
+  if (operation === 'MOVE') void searchAssociationTargets('')
+}
+async function inspectAssociationAlarm() {
+  const request = associationAlarmRequests.start()
+  const id = association.value.alarmId.trim()
+  associationAlarm.value = null; associationLookupError.value = ''; associationAlarmLoading.value = true
+  try {
+    const value = await getAlarm(id, { signal: request.signal })
+    if (request.isCurrent() && association.value.alarmId.trim() === id) associationAlarm.value = value
+  } catch (error) { if (request.isCurrent()) associationLookupError.value = String(error) }
+  finally { if (request.isCurrent()) associationAlarmLoading.value = false }
+}
+async function searchAssociationTargets(q: string) {
+  const request = associationTargetRequests.start()
+  associationLookupError.value = ''; associationTargetsLoading.value = true
+  try {
+    const result = await caseApi.list(1, 20, q, undefined, { signal: request.signal })
+    if (request.isCurrent()) { associationTargets.value = result.items.filter(item => item.id !== detail.value?.id); associationTargetTotal.value = result.total }
+  } catch (error) { if (request.isCurrent()) associationLookupError.value = String(error) }
+  finally { if (request.isCurrent()) associationTargetsLoading.value = false }
+}
+async function saveAssociation() {
+  if (!canWrite.value || actionBusy.value || !detail.value || !associationVisible.value) return
+  const value = association.value
+  if (!value.reason.trim() || !associationAlarm.value || associationAlarm.value.id !== value.alarmId.trim()) return
+  const target = associationTargets.value.find(item => item.id === value.targetCaseId)
+  if (value.operation === 'MOVE' && !target) return
+  const id = detail.value.id
+  const request = { operation: value.operation, alarmId: value.alarmId.trim(), reason: value.reason.trim(),
+    expectedVersion: detail.value.rowVersion ?? 0,
+    ...(target ? { targetCaseId: target.id, targetExpectedVersion: target.rowVersion ?? 0 } : {}) }
+  const signature = JSON.stringify([id, request])
+  if (associationAttempt.signature !== signature) associationAttempt = { signature, key: crypto.randomUUID() }
+  await mutation.run(async () => {
+    const result = await caseApi.changeAssociation(id, { ...request, idempotencyKey: associationAttempt.key })
+    applyDetail(result.case)
+    associationAttempt = { signature: '', key: '' }; associationVisible.value = false
+    ElMessage.success(t('common.updated'))
+    void Promise.all([loadAlarms(), loadRules(), loadTimeline(), loadCases()])
+  })
+}
+watch(() => association.value.alarmId, id => {
+  if (associationAlarm.value?.id !== id.trim()) associationAlarm.value = null
+})
+watch(associationVisible, visible => { if (!visible) { associationAlarmRequests.cancel(); associationTargetRequests.cancel(); associationAlarmLoading.value = false; associationTargetsLoading.value = false } })
 
 async function claim(value: unknown) {
   const row = value as CaseInfo
@@ -486,7 +560,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
               <el-select v-model="caseForm.severity"><el-option v-for="level in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']" :key="level" :label="tOr(t, 'severities.' + level, level)" :value="level" /></el-select>
             </FormField>
             <FormField :label="t('cases.assignee')" :hint="t('cases.assigneeHint')">
-              <el-select v-model="caseForm.assignee" filterable default-first-option allow-create clearable :placeholder="t('cases.assigneePlaceholder')"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" /></el-select>
+              <el-select v-model="caseForm.assignee" filterable default-first-option clearable :placeholder="t('cases.assigneePlaceholder')"><el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assigneeLabel(assignee)" :value="assignee" /></el-select>
             </FormField>
           </FormGrid>
         </FormSection>
@@ -518,41 +592,14 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
           <el-descriptions-item :label="t('common.severity')"><SevBadge :value="detail.severity" /></el-descriptions-item>
           <el-descriptions-item :label="t('cases.status')">{{ tOr(t, 'statuses.' + detail.status, detail.status) }}</el-descriptions-item>
           <el-descriptions-item :label="t('cases.assignee')">
-            <el-select v-if="canWrite" v-model="detailAssignee" :disabled="actionBusy" filterable default-first-option allow-create clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%">
-              <el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assignee" :value="assignee" />
+            <el-select v-if="canWrite" v-model="detailAssignee" :aria-label="t('cases.assignee')" :disabled="actionBusy" filterable default-first-option clearable :placeholder="t('cases.assigneePlaceholder')" style="width:100%">
+              <el-option v-for="assignee in assigneeOptions" :key="assignee" :label="assigneeLabel(assignee)" :value="assignee" />
             </el-select>
             <span v-else>{{ detail.assignee || '—' }}</span>
           </el-descriptions-item>
-          <el-descriptions-item :label="t('cases.linkedRules')" :span="2">
-            <ActionFeedback :error="associatedRuleError" />
-            <el-button v-if="associatedRuleError" @click="loadRules">{{ t('common.retry') }}</el-button>
-            <div v-if="associatedRules.length" class="case-object-list">
-              <div v-for="ruleId in associatedRules" :key="ruleId">
-                <button v-if="canWrite" type="button" class="case-object-link" @click="openRule(ruleId)">{{ ruleDetails[ruleId]?.name || ruleId }}</button>
-                <span v-else>{{ ruleDetails[ruleId]?.name || Object.values(alarmDetails).find(alarm => alarm.ruleId === ruleId)?.ruleName || ruleId }}</span>
-                <small class="case-event-meta"> {{ ruleId }} · {{ ruleDetails[ruleId]?.status || '—' }}</small>
-              </div>
-            </div>
-            <span v-else-if="!associatedRuleError">{{ t('cases.noRules') }}</span>
-            <p v-if="!canWrite" class="dialog-hint">{{ t('cases.ruleRestricted') }}</p>
-            <PagerBar v-if="associatedRuleTotal > associatedRulePageSize" v-model:current-page="associatedRulePage" v-model:page-size="associatedRulePageSize" :total="associatedRuleTotal" />
-          </el-descriptions-item>
-          <el-descriptions-item :label="t('cases.associatedAlarms')" :span="2">
-            <ActionFeedback :error="associatedAlarmError" />
-            <p v-if="referenceLoading" role="status">{{ t('common.loading') }}</p>
-            <el-button v-if="associatedAlarmError || alarmDetailErrors.length" @click="loadAlarms">{{ t('cases.retryReferences') }}</el-button>
-            <div v-if="associatedAlarms.length" class="case-alarm-list">
-              <article v-for="alarmId in associatedAlarms" :key="alarmId" class="case-alarm-card">
-                <button type="button" class="case-object-link" @click="openAlarm(alarmId)">{{ alarmDetails[alarmId]?.title || alarmDetails[alarmId]?.ruleName || alarmId }}</button>
-                <div class="case-event-meta">{{ alarmId }} <template v-if="alarmDetails[alarmId]"> · {{ alarmDetails[alarmId].entity }} · <SevBadge :value="alarmDetails[alarmId].severity" /> · {{ alarmDetails[alarmId].occurredAt ? d(alarmDetails[alarmId].occurredAt) : '—' }} · {{ tOr(t, 'statuses.' + alarmDetails[alarmId].status, alarmDetails[alarmId].status || '—') }}</template></div>
-                <p v-if="alarmDetailErrors.includes(alarmId)" class="dialog-hint">{{ t('cases.contextUnavailable') }}</p>
-                <el-button v-if="canWrite" link :disabled="actionBusy" @click="openContext('assistant', alarmId)">{{ t('cases.ai') }}</el-button>
-              </article>
-            </div>
-            <span v-else-if="!associatedAlarmError">{{ t('cases.noAlarms') }}</span>
-            <PagerBar v-if="associatedAlarmTotal > associatedAlarmPageSize" v-model:current-page="associatedAlarmPage" v-model:page-size="associatedAlarmPageSize" :total="associatedAlarmTotal" />
-          </el-descriptions-item>
         </el-descriptions>
+        <el-tabs v-model="detailTab">
+          <el-tab-pane :label="t('cases.investigationTab')" name="investigation">
         <template v-if="canWrite">
           <p class="dialog-hint">{{ t('forms.changeStatus') }}</p>
           <div class="case-status-row">
@@ -589,8 +636,66 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
           <el-timeline v-else><el-timeline-item v-for="(event, index) in timeline" :key="index" :timestamp="d(event.ts)" placement="top"><div class="case-event-message">{{ event.message }}</div><div v-for="link in evidenceLinks(event.message)" :key="link"><a :href="link" target="_blank" rel="noopener noreferrer">{{ t('cases.evidenceLink') }}: {{ link }}</a></div><div class="case-event-meta">{{ event.type }} · {{ event.source }}</div></el-timeline-item></el-timeline>
           <PagerBar v-if="timelineTotal" v-model:current-page="timelinePage" v-model:page-size="timelineSize" :total="timelineTotal" />
         </section>
+          </el-tab-pane>
+          <el-tab-pane :label="t('cases.evidenceTab')" name="evidence">
+            <el-button v-if="canWrite" :disabled="actionBusy" @click="openAssociation('ATTACH')">{{ t('cases.attachAlarm') }}</el-button>
+            <el-descriptions :column="1" border>
+          <el-descriptions-item :label="t('cases.linkedRules')" :span="2">
+            <ActionFeedback :error="associatedRuleError" />
+            <el-button v-if="associatedRuleError" @click="loadRules">{{ t('common.retry') }}</el-button>
+            <div v-if="associatedRules.length" class="case-object-list">
+              <div v-for="ruleId in associatedRules" :key="ruleId">
+                <button v-if="canWrite" type="button" class="case-object-link" @click="openRule(ruleId)">{{ ruleDetails[ruleId]?.name || ruleId }}</button>
+                <span v-else>{{ ruleDetails[ruleId]?.name || Object.values(alarmDetails).find(alarm => alarm.ruleId === ruleId)?.ruleName || ruleId }}</span>
+                <small class="case-event-meta"> {{ ruleId }} · {{ ruleDetails[ruleId]?.status || '—' }}</small>
+              </div>
+            </div>
+            <span v-else-if="!associatedRuleError">{{ t('cases.noRules') }}</span>
+            <p v-if="!canWrite" class="dialog-hint">{{ t('cases.ruleRestricted') }}</p>
+            <PagerBar v-if="associatedRuleTotal > associatedRulePageSize" v-model:current-page="associatedRulePage" v-model:page-size="associatedRulePageSize" :total="associatedRuleTotal" />
+          </el-descriptions-item>
+          <el-descriptions-item :label="t('cases.associatedAlarms')" :span="2">
+            <ActionFeedback :error="associatedAlarmError" />
+            <p v-if="referenceLoading" role="status">{{ t('common.loading') }}</p>
+            <el-button v-if="associatedAlarmError || alarmDetailErrors.length" @click="loadAlarms">{{ t('cases.retryReferences') }}</el-button>
+            <div v-if="associatedAlarms.length" class="case-alarm-list">
+              <article v-for="alarmId in associatedAlarms" :key="alarmId" class="case-alarm-card">
+                <button type="button" class="case-object-link" @click="openAlarm(alarmId)">{{ alarmDetails[alarmId]?.title || alarmDetails[alarmId]?.ruleName || alarmId }}</button>
+                <div class="case-event-meta">{{ alarmId }} <template v-if="alarmDetails[alarmId]"> · {{ alarmDetails[alarmId].entity }} · <SevBadge :value="alarmDetails[alarmId].severity" /> · {{ alarmDetails[alarmId].occurredAt ? d(alarmDetails[alarmId].occurredAt) : '—' }} · {{ tOr(t, 'statuses.' + alarmDetails[alarmId].status, alarmDetails[alarmId].status || '—') }}</template></div>
+                <p v-if="alarmDetailErrors.includes(alarmId)" class="dialog-hint">{{ t('cases.contextUnavailable') }}</p>
+                <el-button v-if="canWrite" link :disabled="actionBusy" @click="openContext('ai', alarmId)">{{ t('cases.ai') }}</el-button>
+                <el-button v-if="canWrite" link :disabled="actionBusy" @click="openAssociation('MOVE', alarmId)">{{ t('cases.moveAlarm') }}</el-button>
+                <el-button v-if="canWrite" link type="danger" :disabled="actionBusy" @click="openAssociation('DETACH', alarmId)">{{ t('cases.detachAlarm') }}</el-button>
+              </article>
+            </div>
+            <span v-else-if="!associatedAlarmError">{{ t('cases.noAlarms') }}</span>
+            <PagerBar v-if="associatedAlarmTotal > associatedAlarmPageSize" v-model:current-page="associatedAlarmPage" v-model:page-size="associatedAlarmPageSize" :total="associatedAlarmTotal" />
+          </el-descriptions-item>
+            </el-descriptions>
+          </el-tab-pane>
+        </el-tabs>
       </template>
     </el-drawer>
+    <el-dialog v-model="associationVisible" :before-close="associationGuard.beforeClose" :title="t('cases.associationTitle')" width="640px" :close-on-click-modal="false">
+      <ActionFeedback :error="actionError || associationLookupError" />
+      <p><strong>{{ t(association.operation === 'ATTACH' ? 'cases.attachAlarm' : association.operation === 'MOVE' ? 'cases.moveAlarm' : 'cases.detachAlarm') }}</strong> · {{ detail?.title }} · {{ detail?.id }}</p>
+      <p>{{ t('cases.associationHint') }}</p>
+      <el-form :disabled="actionBusy" label-position="top">
+        <FormField :label="t('cases.alarmId')" required>
+          <el-input v-model="association.alarmId" :disabled="association.operation !== 'ATTACH'" />
+          <el-button v-if="association.operation === 'ATTACH' || !associationAlarm" :loading="associationLookupLoading" :disabled="!association.alarmId.trim()" @click="inspectAssociationAlarm">{{ t('cases.inspectAlarm') }}</el-button>
+        </FormField>
+        <p v-if="associationAlarm">{{ associationAlarm.title || associationAlarm.ruleName }} · {{ associationAlarm.entity }} · {{ associationAlarm.severity }}</p>
+        <FormField v-if="association.operation === 'MOVE'" :label="t('cases.targetCase')" required>
+          <el-select v-model="association.targetCaseId" filterable remote :remote-method="searchAssociationTargets" :loading="associationLookupLoading">
+            <el-option v-for="target in associationTargets" :key="target.id" :value="target.id" :label="`${target.title} · ${target.id}`" :disabled="['RESOLVED', 'CLOSED'].includes(target.status)" />
+          </el-select>
+          <p v-if="associationTargetTotal > 20">{{ t('cases.narrowTargets') }}</p>
+        </FormField>
+        <FormField :label="t('cases.associationReason')" required><el-input v-model="association.reason" type="textarea" maxlength="2000" /></FormField>
+      </el-form>
+      <template #footer><el-button :disabled="actionBusy" @click="associationGuard.cancel">{{ t('common.cancel') }}</el-button><el-button type="primary" :loading="actionBusy" :disabled="!associationAlarm || !association.reason.trim() || association.operation === 'MOVE' && !association.targetCaseId" @click="saveAssociation">{{ t('common.confirm') }}</el-button></template>
+    </el-dialog>
   </div>
 </template>
 

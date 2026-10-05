@@ -43,6 +43,7 @@ class CaseControllerTest {
 
     @MockitoBean
     private CaseService service;
+    @MockitoBean private com.socp.incident.web.service.CaseAlarmAssociationService associations;
     @MockitoBean
     private com.socp.incident.web.service.CaseWorkspaceService workspace;
 
@@ -206,13 +207,13 @@ class CaseControllerTest {
 
     @Test
     void statusForMissingCaseReturnsNotFoundEnvelopeInsteadOfDataError() throws Exception {
-        given(service.setStatus("missing", "RESOLVED", null))
+        given(workspace.change(org.mockito.ArgumentMatchers.eq("missing"), org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any()))
                 .willThrow(new com.socp.platform.error.exception.ApiException(404, "未找到案件 missing"));
 
         mvc.perform(post("/api/v1/incidents/{id}/status", "missing")
                         .header("Authorization", BEARER)
                         .header("X-Role", "analyst")
-                        .param("status", "RESOLVED"))
+                        .param("status", "RESOLVED").param("expectedVersion", "0").param("idempotencyKey", "close-key"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(404))
                 .andExpect(jsonPath("$.message").value("未找到案件 missing"))

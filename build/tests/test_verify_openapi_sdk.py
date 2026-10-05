@@ -38,7 +38,7 @@ class VerifyOpenApiSdkTest(unittest.TestCase):
 
     def test_generated_client_contains_models_and_all_operations(self):
         source, operations = MODULE.generate_client(self.document)
-        self.assertEqual(len(operations), 73)
+        self.assertEqual(len(operations), 74)
         self.assertIn("async getHealth(", source)
         self.assertIn("async postApiPlaybooksPlaybookIdVersionsVersionRollback(", source)
         self.assertIn("export interface SoarApiResult", source)
@@ -46,6 +46,20 @@ class VerifyOpenApiSdkTest(unittest.TestCase):
         self.assertIn("credentials: 'include'", source)
         self.assertIn("Cookie", source)
         self.assertIn("If-Match", source)
+
+    def test_approval_queue_filters_before_paging_and_direct_id_has_typed_results(self):
+        path = "/api/approvals"
+        query = self.document["paths"][path]["get"]
+        parameters = {item.name: item for item in MODULE.operation_parameters(self.document, path, query)}
+        self.assertEqual(set(parameters), {"page", "size", "status"})
+        self.assertEqual(parameters["status"].schema["enum"], ["PENDING", "APPROVED", "REJECTED", "EXPIRED", "CANCELLED"])
+        self.assertIn("ApprovalPageResult", query["responses"]["200"]["content"]["application/json"]["schema"]["$ref"])
+        detail = self.document["paths"]["/api/approvals/{approvalId}"]["get"]
+        self.assertIn("404", detail["responses"])
+        source, _ = MODULE.generate_client(self.document)
+        self.assertIn("async getApiApprovalsApprovalId(", source)
+        self.assertIn("SoarApprovalPageResult", source)
+        self.assertIn("SoarApprovalResult", source)
 
     def test_runtime_comparison_normalizes_path_variable_names(self):
         runtime = {

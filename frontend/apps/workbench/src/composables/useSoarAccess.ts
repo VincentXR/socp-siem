@@ -1,6 +1,6 @@
 import { computed, inject } from 'vue'
 import { WORKBENCH_STATE } from '../app/workbenchState'
-import { normalizeRole } from '../app/roles.ts'
+import { canOpenSoarWorkbench, normalizeRole } from '../app/roles.ts'
 
 /** Permissions enforced by the SOAR controller. Keep this list aligned with
  * platform/socp-auth Permission.roleDefaults so the workbench does not render
@@ -30,7 +30,6 @@ const ALL_PERMISSIONS: ReadonlySet<SoarPermission> = new Set([
 
 const ROLE_PERMISSIONS: Readonly<Record<string, ReadonlySet<SoarPermission>>> = {
   admin: ALL_PERMISSIONS,
-  approver: new Set(['soar:view', 'soar:approve', 'soar:task:complete']),
   analyst: new Set([
     'soar:view',
     'soar:edit',
@@ -53,10 +52,11 @@ export function hasSoarPermission(role: string | undefined | null, permission: S
 export function useSoarAccess() {
   const state = inject(WORKBENCH_STATE, null)
   const role = computed(() => normalizeSoarRole(state?.currentRole.value))
-  const allowed = (permission: SoarPermission) => computed(() => hasSoarPermission(role.value, permission) || (state as (typeof state & { currentPermissions?: import('vue').Ref<string[]> }))?.currentPermissions?.value.includes(permission) === true)
+  const allowed = (permission: SoarPermission) => computed(() => hasSoarPermission(role.value, permission) || state?.currentPermissions?.value.includes(permission) === true)
 
   return {
     role,
+    canOpenWorkbench: computed(() => canOpenSoarWorkbench(role.value, state?.currentPermissions?.value)),
     canView: allowed('soar:view'),
     canEdit: allowed('soar:edit'),
     canPublish: allowed('soar:publish'),

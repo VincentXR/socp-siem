@@ -55,6 +55,20 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void missingAndMalformedQueryParametersAreClientErrorsWithoutSubmittedValues() {
+        var missing = handler.handleMissingParameter(
+                new org.springframework.web.bind.MissingServletRequestParameterException("expectedVersion", "Long"));
+        assertEquals(HttpStatus.BAD_REQUEST, missing.getStatusCode());
+        assertEquals(400, missing.getBody().code());
+        assertTrue(missing.getBody().message().contains("expectedVersion"));
+        var malformed = handler.handleParameterType(new org.springframework.web.method.annotation.MethodArgumentTypeMismatchException(
+                "secret-submitted-value", Long.class, "expectedVersion", null, new NumberFormatException("secret-submitted-value")));
+        assertEquals(HttpStatus.BAD_REQUEST, malformed.getStatusCode());
+        assertEquals(400, malformed.getBody().code());
+        assertFalse(malformed.getBody().message().contains("secret-submitted-value"));
+    }
+
+    @Test
     void preservesResponseStatusExceptionHttpCodeAndReason() {
         var response = handler.handleResponseStatus(
                 new ResponseStatusException(HttpStatus.BAD_REQUEST, "案件标题不能为空"));

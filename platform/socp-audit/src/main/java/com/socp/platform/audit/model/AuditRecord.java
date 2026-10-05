@@ -10,8 +10,21 @@ public record AuditRecord(
         String operator,
         String target,
         String result,
-        Instant timestamp
+        Instant timestamp,
+        String entityId,
+        String changeSummary,
+        String traceId
 ) {
+    public AuditRecord(String eventId, String tenantId, String action, String operator, String target,
+                       String result, Instant timestamp) {
+        this(eventId, tenantId, action, operator, target, result, timestamp, null, null, null);
+    }
+
+    public AuditRecord withDetails(String entityId, String changeSummary, String traceId) {
+        return new AuditRecord(eventId, tenantId, action, operator, target, result, timestamp,
+                entityId, changeSummary, traceId);
+    }
+
     public AuditRecord(String tenantId, String action, String operator, String target,
                        String result, Instant timestamp) {
         this(java.util.UUID.randomUUID().toString(), tenantId, action, operator, target, result, timestamp);

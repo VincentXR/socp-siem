@@ -39,6 +39,23 @@ public class AuditEntity {
     @Column(name = "ts", nullable = false)
     private Instant ts;
 
+    @Column(name = "entity_id", length = 512)
+    private String entityId;
+    @Column(name = "change_summary", length = 4096)
+    private String changeSummary;
+    @Column(name = "trace_id", length = 128)
+    private String traceId;
+
+    public AuditEntity withDetails(String entityId, String changeSummary, String traceId) {
+        this.entityId = entityId;
+        this.changeSummary = changeSummary;
+        this.traceId = traceId;
+        return this;
+    }
+    public String getEntityId() { return entityId; }
+    public String getChangeSummary() { return changeSummary; }
+    public String getTraceId() { return traceId; }
+
     public AuditEntity() {
     }
 

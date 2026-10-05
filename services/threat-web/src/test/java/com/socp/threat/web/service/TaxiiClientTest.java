@@ -33,7 +33,7 @@ class TaxiiClientTest {
         server.createContext("/collection", exchange -> {
             hits.incrementAndGet();
             respond(exchange, exchange.getRequestURI().getQuery() == null
-                    ? "{\"objects\":[],\"next\":\"/collection?page=2\"}" : "{\"objects\":[]}");
+                    ? "{\"objects\":[],\"more\":true,\"next\":\"opaque /?&+ token\"}" : "{\"objects\":[]}");
         }); server.start();
         String host = "taxii-pinned-fixture.invalid";
         com.socp.platform.client.http.PinnedDnsResolverProvider.pin(host,
@@ -52,7 +52,7 @@ class TaxiiClientTest {
         server.createContext("/collection", exchange -> {
             authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
             String body = exchange.getRequestURI().getQuery() == null
-                    ? "{\"objects\":[{\"id\":\"indicator--1\"}],\"next\":\"/collection?page=2\"}"
+                    ? "{\"objects\":[{\"id\":\"indicator--1\"}],\"more\":true,\"next\":\"opaque /?&+ token\"}"
                     : "{\"objects\":[{\"id\":\"indicator--2\"}]}";
             respond(exchange, body);
         });
@@ -89,22 +89,59 @@ class TaxiiClientTest {
     }
 
     @Test
-    void rejectsCrossHostPaginationBeforeFollowingIt() throws Exception {
+    void urlShapedOpaqueTokenCannotChangeHostPathOrOriginalFilters() throws Exception {
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/collection", exchange -> respond(exchange,
-                "{\"next\":\"http://localhost:" + server.getAddress().getPort() + "/collection?page=2\"}"));
+        var query = new AtomicReference<String>();
+        var hits = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext("/collection", exchange -> {
+            query.set(exchange.getRequestURI().getRawQuery());
+            respond(exchange, hits.incrementAndGet() == 1
+                    ? "{\"more\":true,\"next\":\"https://attacker.invalid/p?q=secret\",\"objects\":[]}"
+                    : "{\"more\":false,\"objects\":[]}");
+        });
+        server.start();
+        URI collection = URI.create("http://127.0.0.1:" + server.getAddress().getPort()
+                + "/collection?match%5Btype%5D=indicator&limit=1");
+        assertThat(new TaxiiClient(Duration.ofSeconds(3), true, localPolicy("127.0.0.1"))
+                .fetchCollection(collection, null)).hasSize(2);
+        assertThat(query.get()).startsWith("match%5Btype%5D=indicator&limit=1&next=");
+        assertThat(java.net.URLDecoder.decode(query.get(), StandardCharsets.UTF_8))
+                .contains("next=https://attacker.invalid/p?q=secret");
+    }
+
+    @Test
+    void fallsBackToDateAddedWatermarkAndNeverReportsMissingPaginationAsComplete() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var query = new AtomicReference<String>();
+        server.createContext("/collection", exchange -> {
+            query.set(exchange.getRequestURI().getQuery());
+            boolean next = query.get().contains("added_after");
+            exchange.getResponseHeaders().set("X-TAXII-Date-Added-Last", "2026-01-01T00:00:00Z");
+            respond(exchange, next ? "{\"objects\":[],\"more\":false}" : "{\"objects\":[],\"more\":true}");
+        });
+        server.createContext("/broken", exchange -> respond(exchange, "{\"more\":true,\"objects\":[]}"));
+        server.start();
+        URI origin = URI.create("http://127.0.0.1:" + server.getAddress().getPort());
+        var client = new TaxiiClient(Duration.ofSeconds(3), true, localPolicy("127.0.0.1"));
+        assertThat(client.fetchCollection(origin.resolve("/collection?limit=1"), null)).hasSize(2);
+        assertThat(query.get()).isEqualTo("limit=1&added_after=2026-01-01T00:00:00Z");
+        assertThatThrownBy(() -> client.fetchCollection(origin.resolve("/broken"), null))
+                .hasMessageContaining("more requires next");
+    }
+
+    @Test
+    void rejectsRepeatedCursorWithoutAnUnboundedLoop() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        var hits = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext("/collection", exchange -> {
+            hits.incrementAndGet();
+            respond(exchange, "{\"more\":true,\"next\":\"same-token\",\"objects\":[]}");
+        });
         server.start();
         URI collection = URI.create("http://127.0.0.1:" + server.getAddress().getPort() + "/collection");
-
-        SocpClientProperties properties = new SocpClientProperties();
-        properties.setExternalAllowedHosts(List.of("127.0.0.1", "localhost"));
-        properties.setExternalHttpsOnly(false);
-        properties.setExternalAllowPrivateNetworks(true);
-        assertThatThrownBy(() -> new TaxiiClient(Duration.ofSeconds(3), true,
-                new ExternalEndpointPolicy(properties))
-                .fetchCollection(collection, null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("configured host");
+        assertThatThrownBy(() -> new TaxiiClient(Duration.ofSeconds(3), true, localPolicy("127.0.0.1"))
+                .fetchCollection(collection, null)).hasMessageContaining("did not advance");
+        assertThat(hits).hasValue(2);
     }
 
     @Test

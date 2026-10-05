@@ -1,0 +1,3 @@
+ALTER TABLE t_audit ADD COLUMN entity_id VARCHAR(512);
+ALTER TABLE t_audit ADD COLUMN change_summary VARCHAR(4096);
+ALTER TABLE t_audit ADD COLUMN trace_id VARCHAR(128);

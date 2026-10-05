@@ -53,8 +53,8 @@ public class SoarConnectorRegistry {
                 List.of(action("get", "Get incident", "READ_ONLY", "NONE", "NONE", false),
                         action("create", "Create incident", "MEDIUM", "IRREVERSIBLE", "NONE", false),
                         action("append-timeline", "Append timeline", "LOW", "IRREVERSIBLE", "NATIVE", false),
-                        action("assign", "Assign incident", "MEDIUM", "REVERSIBLE", "NATIVE", false),
-                        action("set-status", "Set incident status", "MEDIUM", "REVERSIBLE", "NATIVE", false)),
+                        incidentAction("assign", "Assign incident"),
+                        incidentAction("set-status", "Set incident status")),
                 (ref, request) -> executeIncident(incident, ref, request)));
         values.put("socp.search", service("socp.search", "SOCP Search", true,
                 List.of(action("search-events", "Search events", "READ_ONLY", "NONE", "NONE", false)),
@@ -245,6 +245,15 @@ public class SoarConnectorRegistry {
                 permissions);
     }
 
+    private static ActionDescriptor incidentAction(String id, String display) {
+        ActionDescriptor base = action(id, display, "MEDIUM", "REVERSIBLE", "NATIVE", false);
+        Map<String, Object> schema = new LinkedHashMap<>(base.inputSchema());
+        schema.put("required", List.of("expectedVersion", "assign".equals(id) ? "assignee" : "status"));
+        return new ActionDescriptor(base.id(), base.majorVersion(), base.displayName(), base.description(),
+                base.riskLevel(), base.sideEffect(), base.idempotency(), base.requiresConnection(),
+                base.allowedTargetTypes(), schema, base.outputSchema(), base.requiredPermissions());
+    }
+
     /** Action-specific fields are advertised to the editor and contract
      * tooling. Additional context fields remain allowed because Workflow
      * variables are intentionally namespaced and resolved at execution time. */
@@ -266,12 +275,16 @@ public class SoarConnectorRegistry {
                 properties.put("alertId", Map.of("type", "string"));
                 properties.put("incidentId", Map.of("type", "string"));
                 properties.put("assignee", Map.of("type", "string", "maxLength", 255));
+                properties.put("expectedVersion", Map.of("type", "integer", "minimum", 0));
             }
             case "set-status" -> {
+                for (String field : List.of("classification", "result", "reason", "evidence", "remainingActions"))
+                    properties.put(field, Map.of("type", "string", "maxLength", 8000));
                 properties.put("alertId", Map.of("type", "string"));
                 properties.put("incidentId", Map.of("type", "string"));
                 properties.put("status", Map.of("type", "string", "maxLength", 64));
                 properties.put("assignee", Map.of("type", "string", "maxLength", 255));
+                properties.put("expectedVersion", Map.of("type", "integer", "minimum", 0));
             }
             case "add-tag" -> {
                 properties.put("alertId", Map.of("type", "string"));
@@ -345,12 +358,26 @@ public class SoarConnectorRegistry {
             if (!assignee.isBlank()) create.put("assignee", assignee);
             return fromCall(client.create(json(create)), action, true);
         }
+        if (List.of("assign", "set-status").contains(action)) {
+            Object version = request.parameters().get("expectedVersion");
+            if (!(version instanceof Number number) || number.longValue() < 0
+                    || !Double.isFinite(number.doubleValue()) || number.doubleValue() != number.longValue()
+                    || request.idempotencyKey() == null || request.idempotencyKey().isBlank()) {
+                return ActionResult.failed("SOAR_INPUT_INVALID", "expectedVersion and a stable action key are required", false);
+            }
+            if ("assign".equals(action)) return fromCall(client.assign(id,
+                    text(request.parameters(), "assignee", ""), number.longValue(), request.idempotencyKey()), action, true);
+            Map<String, Object> command = new LinkedHashMap<>();
+            for (String field : List.of("status", "assignee", "classification", "result", "reason", "evidence", "remainingActions")) {
+                if (request.parameters().containsKey(field)) command.put(field, request.parameters().get(field));
+            }
+            command.put("expectedVersion", number.longValue());
+            command.put("idempotencyKey", request.idempotencyKey());
+            return fromCall(client.change(id, command), action, true);
+        }
         ServiceCall call = switch (action) {
             case "get" -> client.get(id);
             case "append-timeline" -> client.addNote(id, "soar", text(request.parameters(), "content", "SOAR timeline update"), request.idempotencyKey());
-            case "assign" -> client.assign(id, text(request.parameters(), "assignee", "soar"));
-            case "set-status" -> client.setStatus(id, text(request.parameters(), "status", "INVESTIGATING"),
-                    text(request.parameters(), "assignee", ""));
             default -> null;
         };
         if (call == null) return ActionResult.failed("SOAR_ACTION_NOT_FOUND", "unsupported incident action", false);

@@ -385,13 +385,23 @@ class SoarControllerCoverageTest {
 
     @Test
     void approvalsListSupportsPagingAndDecisionsValidateTheVerb() {
-        given(service.listApprovals(PageRequest.of(0, 200)))
+        given(service.listApprovals(PageRequest.of(0, 200), null))
                 .willReturn(new PageImpl<>(List.of(Map.of("id", "appr-1")), PageRequest.of(0, 200), 1));
+        given(service.listApprovals(PageRequest.of(8, 25), "PENDING"))
+                .willReturn(new PageImpl<>(List.of(Map.of("id", "old-pending", "status", "PENDING")),
+                        PageRequest.of(8, 25), 201));
         given(service.listApprovals()).willReturn(List.of(Map.of("id", "appr-1")));
         given(service.decideApproval("appr-1", true, "authorized")).willReturn(Map.of("status", "APPROVED"));
 
         assertThat(runController.approvals(null, 300).data()).isInstanceOf(Map.class);
-        assertThat(runController.approvals(null, null).data()).isInstanceOf(List.class);
+        assertThat(runController.approvals(null, null).data()).isEqualTo(List.of(Map.of("id", "appr-1")));
+        var filtered = (Map<?, ?>) runController.approvals(8, 25, "PENDING").data();
+        assertThat(filtered.get("total")).isEqualTo(201L);
+        assertThat(filtered.get("page")).isEqualTo(8);
+        assertThat(filtered.get("items")).isEqualTo(List.of(Map.of("id", "old-pending", "status", "PENDING")));
+        verify(service).listApprovals(PageRequest.of(0, 200), null);
+        verify(service).listApprovals(PageRequest.of(8, 25), "PENDING");
+        verify(service).listApprovals();
 
         assertThatThrownBy(() -> runController.decideApproval("appr-1", Map.of("decision", "MAYBE")))
                 .isInstanceOf(ResponseStatusException.class)

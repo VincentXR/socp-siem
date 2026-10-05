@@ -29,9 +29,11 @@ public class AlarmDeliveryRegistrar {
     private final Set<AlarmDeliveryDestination> destinations;
     private final Severity caseMinSeverity;
     private final Severity notifyMinSeverity;
+    @org.springframework.beans.factory.annotation.Value("${socp.alert.enrichment.enabled:true}")
+    private boolean enrichmentEnabled = true;
 
     public AlarmDeliveryRegistrar(AlarmDeliveryRepository repository) {
-        this(repository, java.util.EnumSet.allOf(AlarmDeliveryDestination.class));
+        this(repository, java.util.EnumSet.of(AlarmDeliveryDestination.CLICKHOUSE, AlarmDeliveryDestination.NOTIFY, AlarmDeliveryDestination.INCIDENT, AlarmDeliveryDestination.SOAR));
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -68,7 +70,11 @@ public class AlarmDeliveryRegistrar {
     private void registerInScope(String tenantId, String alarmId, String payload) {
         Severity severity = severity(payload);
         boolean suppressed = suppressed(payload);
-        List<AlarmDelivery> candidates = destinations.stream()
+        Set<AlarmDeliveryDestination> admission = new HashSet<>(destinations);
+        admission.remove(AlarmDeliveryDestination.SOAR_ENRICHED);
+        admission.remove(AlarmDeliveryDestination.ENRICHMENT);
+        if (enrichmentEnabled) admission.add(AlarmDeliveryDestination.ENRICHMENT);
+        List<AlarmDelivery> candidates = admission.stream()
                 .filter(destination -> !suppressed || destination == AlarmDeliveryDestination.CLICKHOUSE)
                 .filter(destination -> delivers(destination, severity))
                 .sorted(java.util.Comparator.comparing(Enum::name))
@@ -82,6 +88,15 @@ public class AlarmDeliveryRegistrar {
                 .filter(delivery -> !existing.contains(delivery.getId()))
                 .toList();
         if (!missing.isEmpty()) repository.saveAll(missing);
+    }
+
+    /** Called in the same transaction as the enrichment patch. One immutable version per alarm. */
+    @Transactional
+    public void registerEnriched(String tenantId, String alarmId, String payload) {
+        if (!tenantId.equals(TenantContext.require())) throw new IllegalArgumentException("tenant mismatch");
+        if (!destinations.contains(AlarmDeliveryDestination.SOAR)) return;
+        AlarmDelivery row = pending(tenantId, alarmId, AlarmDeliveryDestination.SOAR_ENRICHED, payload);
+        if (repository.findByTenantIdAndIdIn(tenantId, List.of(row.getId())).isEmpty()) repository.save(row);
     }
 
     /**

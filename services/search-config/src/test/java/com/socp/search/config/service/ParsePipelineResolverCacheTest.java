@@ -109,4 +109,40 @@ class ParsePipelineResolverCacheTest {
         resolver.apply(context, "line", "line", true);
         assertEquals(1, resolver.cachedPipelines());
     }
+
+    @Test
+    void explicitSourceRuleMissIsAParseFailureButOptionalGlobalMissIsNot() {
+        ParseRuleStore rules = mock(ParseRuleStore.class);
+        var rule = com.socp.search.config.domain.ParseRule.createWithId("bound", "bound", null,
+                "REGEX", "user=(?<user>[a-z]+)", List.of(), List.of(), true, 1);
+        when(rules.get("bound")).thenReturn(rule);
+        when(rules.enabled()).thenReturn(List.of(rule));
+        var resolver = new ParsePipelineResolver(rules, new ParseRuleExecutor(new ParserRegistry()));
+        TenantContext.set("tenant-a");
+        var explicit = new IngestSourceContext("collector", "source", ParseFormat.AUTO,
+                List.of("bound"), null, null, true);
+        var optional = new IngestSourceContext("collector", "source", ParseFormat.AUTO,
+                List.of(), null, null, true);
+
+        assertTrue(resolver.apply(explicit, "does not match", "does not match", true).error()
+                .contains("No enabled source-bound"));
+        org.junit.jupiter.api.Assertions.assertNull(
+                resolver.apply(optional, "does not match", "does not match", true).error());
+        assertTrue(resolver.apply(explicit, "user=alice", "user=alice", true).matched());
+    }
+
+    @Test
+    void optionalBuiltInCandidateCanMissWithoutQuarantiningUnstructuredAutoText() {
+        ParseRuleStore rules = mock(ParseRuleStore.class);
+        var rule = com.socp.search.config.domain.ParseRule.createWithId("syslog", "syslog", null,
+                "SYSLOG", null, List.of(), List.of(), true, 1);
+        when(rules.enabled()).thenReturn(List.of(rule));
+        var resolver = new ParsePipelineResolver(rules, new ParseRuleExecutor(new ParserRegistry()));
+        TenantContext.set("tenant-a");
+        var optional = new IngestSourceContext("collector", "source", ParseFormat.AUTO,
+                List.of(), null, null, true);
+        var result = resolver.apply(optional, "plain application text", "plain application text", true);
+        org.junit.jupiter.api.Assertions.assertFalse(result.matched());
+        org.junit.jupiter.api.Assertions.assertNull(result.error());
+    }
 }

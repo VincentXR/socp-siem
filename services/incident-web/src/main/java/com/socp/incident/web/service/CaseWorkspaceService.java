@@ -27,6 +27,15 @@ import java.util.Set;
 /** Row-locked durable commands; receipts, metadata and visible history commit together. */
 @Service
 public class CaseWorkspaceService {
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
+
+    private void requireAssignee(String assignee) {
+        if (operatorDirectory != null && assignee != null && !assignee.isBlank()) {
+            operatorDirectory.requireAssignable(assignee.trim());
+        }
+    }
+
     private static final Set<String> CLASSIFICATIONS = Set.of("TRUE_POSITIVE", "FALSE_POSITIVE", "BENIGN", "INCONCLUSIVE");
     private final CaseStore store;
     private final CaseRepository cases;
@@ -42,9 +51,13 @@ public class CaseWorkspaceService {
 
     @Transactional
     public Map<String, Object> change(String id, String actor, CaseChangeRequest request) {
+        bounded(request.assignee(), 255); bounded(request.classification(), 32);
+        bounded(request.result(), 2000); bounded(request.reason(), 4000);
+        bounded(request.evidence(), 8000); bounded(request.remainingActions(), 4000);
         Case current = lock(id);
         String fingerprint = fingerprint(actor, "change", request);
         if (replayed(id, request.idempotencyKey(), fingerprint)) return response(current, true, false);
+        requireAssignee(request.assignee());
         CaseState target = CaseState.from(request.status())
                 .orElseThrow(() -> ApiException.badRequest("Invalid case status"));
         requireVersion(current, request.expectedVersion());
@@ -75,11 +88,31 @@ public class CaseWorkspaceService {
     }
 
     @Transactional
+    public Map<String, Object> assign(String id, String actor, String assignee, Long version, String key) {
+        bounded(assignee, 255);
+        Case current = lock(id);
+        String fingerprint = fingerprint(actor, "assign", java.util.Arrays.asList(assignee, version));
+        if (replayed(id, key, fingerprint)) return response(current, true, false);
+        requireVersion(current, version);
+        requireAssignee(assignee);
+        String next = nullable(assignee);
+        boolean changed = !Objects.equals(current.assignee(), next);
+        if (changed) {
+            store.saveMetadata(current.withStatus(current.status(), next));
+            store.appendTimeline(id, new TimelineEvent(Instant.now(), "ASSIGN", actor + ": "
+                    + text(current.assignee()) + " → " + text(next), "analyst", null, "assign:" + key));
+        }
+        remember(id, key, fingerprint);
+        return response(refresh(id), false, changed);
+    }
+
+    @Transactional
     public Map<String, Object> claim(String id, String actor, long expectedVersion, String key) {
         Case current = lock(id);
         String fingerprint = fingerprint(actor, "claim", expectedVersion);
         if (replayed(id, key, fingerprint)) return response(current, true, false);
         requireVersion(current, expectedVersion);
+        requireAssignee(actor);
         if (current.assignee() != null && !current.assignee().isBlank() && !current.assignee().equals(actor)) {
             throw ApiException.of(409, "Case is already assigned; refresh before changing ownership");
         }
@@ -163,6 +196,9 @@ public class CaseWorkspaceService {
     private static void requireVersion(Case current, Long version) {
         if (version == null || version < 0) throw ApiException.badRequest("expectedVersion is required");
         if (current.rowVersion() != version) throw ApiException.of(409, "Case changed; refresh and review before saving");
+    }
+    private static void bounded(String value, int maximum) {
+        if (value != null && value.length() > maximum) throw ApiException.badRequest("Case command field exceeds its maximum length");
     }
     private static String nullable(String value) { return text(value).isEmpty() ? null : value.trim(); }
     private static String text(String value) { return value == null ? "" : value.trim(); }

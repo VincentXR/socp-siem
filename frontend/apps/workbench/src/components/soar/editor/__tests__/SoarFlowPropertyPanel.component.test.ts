@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
+import { ElSelect } from 'element-plus/es/components/select/index.mjs'
 import SoarFlowPropertyPanel from '../SoarFlowPropertyPanel.vue'
 import type { EditorNode } from '../types'
 import type { SoarFlowApi } from '../useDefinitionFlow'
@@ -44,13 +45,28 @@ function mountPanel(node: EditorNode) {
   const wrapper = mount(SoarFlowPropertyPanel, {
     // Element Plus selects recurse in jsdom without layout; the panel logic
     // under test (writes into the raw node) does not depend on them.
-    global: { stubs: { teleport: true, ElSelect: true, ElOption: true, VariableSelector: true } },
+    global: { stubs: { teleport: true, ElSelect: true, ElOption: true, VariableSelector: true }, renderStubDefaultSlot: true },
     props: { flow: api, node },
   })
   return { wrapper, node, touched }
 }
 
 describe('SOAR property panel edits', () => {
+  it('offers only issuable approval roles and preserves viewer policy selections', async () => {
+    const { wrapper, node, touched } = mountPanel({ id: 'review', type: 'APPROVAL', name: 'Review', config: { allowedRoles: ['viewer'] } })
+    await flushPromises()
+    const roleSelects = wrapper.findAllComponents(ElSelect).filter(select => select.findAll('el-option-stub').some(option => option.attributes('value') === 'admin'))
+    expect(roleSelects).toHaveLength(2)
+    for (const select of roleSelects) {
+      expect(select.findAll('el-option-stub').map(option => option.attributes('value'))).toEqual(['admin', 'analyst', 'viewer'])
+    }
+    expect(roleSelects[0].props('modelValue')).toEqual(['viewer'])
+    expect(touched).not.toHaveBeenCalled()
+    roleSelects[1].vm.$emit('change', ['viewer'])
+    expect(node.config).toMatchObject({ allowedRoles: ['viewer'], approverRoles: ['viewer'] })
+    wrapper.unmount()
+  })
+
   it('never binds an action just because an ACTION node was selected', async () => {
     const { wrapper, node, touched } = mountPanel({ id: 'act', type: 'ACTION', name: 'Block host', actionRef: '' })
     await flushPromises()

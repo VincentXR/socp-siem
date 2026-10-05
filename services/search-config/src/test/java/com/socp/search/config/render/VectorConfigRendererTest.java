@@ -96,6 +96,10 @@ class VectorConfigRendererTest {
         assertTrue(toml.contains("uri = \"https://siem.example/ingest\""), "sink 指向绑定目标");
         assertTrue(toml.contains("framing.method = \"newline_delimited\""), "必须为 NDJSON");
         assertTrue(toml.contains("healthcheck.enabled = false"), "必须关健康检查");
+        assertFalse(toml.contains("request.retry_attempts"), "保留 Vector 的持续重试默认值");
+        assertFalse(toml.contains("request.retry_backoff_secs"), "不得输出过期配置字段");
+        assertTrue(toml.contains("request.retry_initial_backoff_secs = 2"));
+        assertTrue(toml.contains("request.retry_max_duration_secs = 30"));
         assertTrue(toml.contains("encoding.codec = \"json\""), "必须 json codec");
         assertTrue(toml.contains(".eventId = uuid_v4()"),
                 "事件 ID 必须在 HTTP disk buffer 之前生成，响应丢失重投才能去重");

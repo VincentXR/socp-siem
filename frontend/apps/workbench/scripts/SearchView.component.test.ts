@@ -1,6 +1,8 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ref } from 'vue'
+import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import SearchView from '../src/views/SearchView.vue'
 import { setLocale } from '../src/i18n/locale-manager'
 import type { SearchResult } from '../src/api/models'
@@ -19,10 +21,10 @@ const result = (msg: string, nextCursor: string | null = null): SearchResult => 
 })
 
 let wrapper: VueWrapper | undefined
-async function mountSearch(query: Record<string, string> = {}) {
+async function mountSearch(query: Record<string, string> = {}, identity = { currentUser: ref('alice'), currentTenant: ref('tenant-a') }) {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/search', name: 'search', component: SearchView }] })
   await router.push({ name: 'search', query })
-  wrapper = mount(RouterView, { global: { plugins: [router] } })
+  wrapper = mount(RouterView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: identity } } })
   await flushPromises()
   return router
 }
@@ -41,6 +43,23 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.resetAllMocks() })
 
 describe('search investigation state', () => {
+  it('isolates saved queries across tenant and subject changes and discards the unscoped legacy store', async () => {
+    const item = (name: string) => JSON.stringify([{ id: name, name, query: 'source=auth', range: 'all' }])
+    localStorage.setItem('socp.search.saved-queries', item('legacy-secret'))
+    localStorage.setItem('socp.search.saved-queries.v2:tenant-a:alice', item('A Alice'))
+    localStorage.setItem('socp.search.saved-queries.v2:tenant-b:alice', item('B Alice'))
+    const identity = { currentUser: ref('alice'), currentTenant: ref('tenant-a') }
+    await mountSearch({}, identity)
+    expect(wrapper!.text()).toContain('A Alice')
+    expect(wrapper!.text()).not.toContain('legacy-secret')
+    expect(localStorage.getItem('socp.search.saved-queries')).toBeNull()
+    identity.currentTenant.value = 'tenant-b'; await flushPromises()
+    expect(wrapper!.text()).toContain('B Alice')
+    expect(wrapper!.text()).not.toContain('A Alice')
+    identity.currentUser.value = 'bob'; await flushPromises()
+    expect(wrapper!.text()).not.toContain('B Alice')
+  })
+
   it('does not execute generated SPL until the analyst reviews and explicitly runs it', async () => {
     const router = await mountSearch({ draft: 'source=auth | stats count by user', range: 'all', alarmId: 'alarm-1', returnTo: '/ai?alarmId=alarm-1' })
     expect(api.splSearch).not.toHaveBeenCalled()

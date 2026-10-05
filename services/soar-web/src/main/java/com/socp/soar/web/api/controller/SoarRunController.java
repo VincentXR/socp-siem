@@ -431,16 +431,23 @@ public class SoarRunController {
     }
 
     @GetMapping("/approvals")
-    // Reading the approval queue is part of the SOAR view contract. The
-    // approve permission is reserved for decision commands below.
     @RequirePermission("soar:view")
     public ApiResult<Object> approvals(@RequestParam(required = false) Integer page,
-                                       @RequestParam(required = false) Integer size) {
-        if (page != null || size != null) {
+                                       @RequestParam(required = false) Integer size,
+                                       @RequestParam(required = false) String status) {
+        if (page != null || size != null || status != null) {
             return ApiResult.ok(page(reads.approvals(
-                    PageRequest.of(Math.max(0, page == null ? 0 : page), clampSize(size == null ? 100 : size)))));
+                    PageRequest.of(Math.max(0, page == null ? 0 : page), clampSize(size == null ? 100 : size)), status)));
         }
         return ApiResult.ok(reads.approvals());
+    }
+
+    public ApiResult<Object> approvals(Integer page, Integer size) { return approvals(page, size, null); }
+
+    @GetMapping("/approvals/{id}")
+    @RequirePermission("soar:view")
+    public ApiResult<Map<String, Object>> approval(@PathVariable String id) {
+        return ApiResult.ok(reads.approval(id));
     }
 
     @PostMapping("/approvals/{id}/decisions")

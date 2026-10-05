@@ -163,6 +163,8 @@ def verify_product_profile(helm: str, errors: list[str]) -> None:
     require(errors, 'name: SOAR_SECRET_TENANT_GRANTS' in soar and 'value: "{}"' in soar,
             "product: SOAR tenant secret grants must default to the empty fail-closed map")
     runtime = documents.get(("ConfigMap", "socp-runtime"), "")
+    require(errors, 'SOCP_INCIDENT_URL: "http://incident-web:8080"' in runtime,
+            "product: typed IncidentClient requires SOCP_INCIDENT_URL (CASE_URL is only a legacy alias)")
     for route in ("SOCP_SOAR_URI", "SOCP_SFM_URI", "SOCP_SAM_WEB_URI", "SOCP_SOC_URI",
                   "SOCP_HIPS_WEB_URI", "SOCP_AI_URI", "SOCP_TI_URI", "SOCP_ATTACK_URI",
                   "SOCP_NOTIFY_URI", "SOCP_CASE_URI"):
