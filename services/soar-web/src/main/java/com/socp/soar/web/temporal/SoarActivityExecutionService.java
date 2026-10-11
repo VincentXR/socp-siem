@@ -20,7 +20,7 @@ import com.socp.soar.web.persistence.repository.SoarConnectorRepository;
 import com.socp.soar.web.persistence.repository.SoarNodeRunRepository;
 import com.socp.soar.web.persistence.repository.SoarRunEventRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
-import com.socp.soar.web.service.PlaybookExecutor;
+import com.socp.soar.web.service.LegacyPlaybookActions;
 import com.socp.soar.web.service.SoarActionCatalog;
 import com.socp.soar.web.temporal.request.ActionRequest;
 import com.socp.soar.web.temporal.request.SoarNodeRequest;
@@ -52,7 +52,7 @@ final class SoarActivityExecutionService {
     private static final int MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
     private static final long ARTIFACT_RETENTION_DAYS = 30;
 
-    private final PlaybookExecutor executor;
+    private final LegacyPlaybookActions legacyActions;
     private final SoarRunRepository runs;
     private final SoarNodeRunRepository nodeRuns;
     private final SoarRunEventRepository events;
@@ -65,13 +65,13 @@ final class SoarActivityExecutionService {
     private SoarArtifactStore artifactStore;
     private TransactionTemplate transactionTemplate;
 
-    SoarActivityExecutionService(PlaybookExecutor executor, SoarRunRepository runs,
+    SoarActivityExecutionService(LegacyPlaybookActions legacyActions, SoarRunRepository runs,
                                  SoarNodeRunRepository nodeRuns, SoarRunEventRepository events,
                                  SoarActionAttemptRepository attempts,
                                  SoarConnectorRepository connectors,
                                  com.socp.soar.web.connector.SoarConnectorRegistry connectorRegistry,
                                  SecretResolver secretResolver, ObjectMapper mapper) {
-        this.executor = executor;
+        this.legacyActions = legacyActions;
         this.runs = runs;
         this.nodeRuns = nodeRuns;
         this.events = events;
@@ -470,7 +470,7 @@ final class SoarActivityExecutionService {
         }
         if ("SOAR_ACTION_NOT_FOUND".equals(result.errorCode())
                 && !SoarActionCatalog.isNamespaced(request.actionRef())) {
-            Map<String, Object> legacy = executor.executeAction(SoarActionCatalog.toLegacyAction(request.actionRef()),
+            Map<String, Object> legacy = legacyActions.executeAction(SoarActionCatalog.toLegacyAction(request.actionRef()),
                     input, false, request.nodeId().hashCode() & Integer.MAX_VALUE);
             String wire = String.valueOf(legacy.getOrDefault("status", "failed"));
             return new ActionResult(PlaybookActionStatus.isSuccessful(wire) ? "SUCCEEDED" : "FAILED",

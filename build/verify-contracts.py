@@ -571,13 +571,13 @@ def main() -> int:
         errors.append("observability documentation still advertises the removed queue_age metric")
 
     detection_service = (
-        ROOT / "services/detect-web/src/main/java/com/socp/detect/web/service/DetectEngineService.java"
+        ROOT / "services/detect-web/src/main/java/com/socp/detect/web/service/DetectionStateRecovery.java"
     ).read_text(encoding="utf-8")
     detection_consumer = (
         ROOT / "services/detect-web/src/main/java/com/socp/detect/web/engine/KafkaEventConsumer.java"
     ).read_text(encoding="utf-8")
     if "socp.detect.state.retention" not in detection_service:
-        errors.append("DetectEngineService must use the configured state replay retention")
+        errors.append("DetectionStateRecovery must use the configured state replay retention")
     if "socp.detect.state.retention" not in detection_consumer:
         errors.append("KafkaEventConsumer must use the configured state replay retention")
     if "Duration.ofHours(24)" in detection_service or "Duration.ofHours(24)" in detection_consumer:

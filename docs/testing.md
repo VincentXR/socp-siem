@@ -115,6 +115,14 @@ chart layout. Browser fixtures reject unexpected backend requests and serve
 the downloaded report locally; no real report generation or object-store write
 occurs in this check.
 
+Detect editor and Ingest workspace lifecycle coverage uses
+`DetectLifecycle.component.test.ts` and `IngestView.refresh.component.test.ts`.
+These cases cover close/reopen and A→B→A ownership, stale success/failure,
+serialized pending writes, publication/reload locking, forced unmounts,
+workspace-local errors, bound-rule/preview replies and hidden replay completion.
+Run them through the normal workbench `pnpm test` command; relevant browser flows
+remain in `e2e/rule-catalog.spec.ts` and `e2e/ingest-summary-refresh.spec.ts`.
+
 ## Test environments
 
 Workbench keyboard and modal regressions use actual Element Plus components
@@ -185,6 +193,19 @@ snapshots, late events, restore, whole-event rollback, and replay. Cache entries
 are invalidated under the state monitor and released on eviction/restore.
 Full rollback snapshots, state-change digests, and checkpoint ordering remain
 unchanged; cached bytes do not establish production throughput.
+
+### SOAR HTTP request contracts
+
+`python build/verify-soar.py` parses controller request signatures with the JDK
+compiler tree API. It needs JDK 21 on `PATH`, but does not resolve application
+dependencies or run annotation processors. Whitespace, comments, annotation order
+and fully qualified names do not affect the check. Dynamic map bodies are allowed
+only on named JSON extension routes, rather than required to meet a fixed count.
+`python -m unittest build.tests.test_verify_soar_contracts` exercises formatting,
+missing validation, moved map bodies, duplicate routes and malformed source.
+`SoarRequestBodyContractTest` independently verifies the compiled Spring mappings
+and request annotations in the regular SOAR module test suite. HTTP validation
+behavior remains covered by `SoarControllerTest`.
 
 ### Repository check commands
 

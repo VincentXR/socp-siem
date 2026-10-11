@@ -819,6 +819,34 @@ SOAR HTTP 边界仍必须满足以下架构约束：
 - 导入默认不发布、不创建 Automation Rule，管理员逐项校验并保留迁移报告。
 - 历史 enabled playbook 完成导入、校验、发布和规则绑定后，统一由 SOAR durable path 执行。
 
+### 17.1.1 仍在运行的历史兼容边界
+
+`PlaybookExecutor` 尚不能删除：`ScheduledPlaybookRunner` 仍通过 `runById`
+执行存量定时剧本，`ApprovalService` 仍通过 `runApprovedById` 处理已批准的
+旧任务。它们保留原有 Temporal/进程内分派语义；这不是新图剧本 admission
+在 Temporal 故障时的回退路径。`TemporalWorkerConfig` 同时注册旧
+`PlaybookWorkflow` 和图解释器 `SoarWorkflow`，队列、类型和 Activity 参数不变。
+
+- `LegacyPlaybookActions` 单独拥有旧字符串动作的租户上下文、幂等键、有限重试、
+  handler 生命周期和生产禁用模拟检查，不依赖旧编排、审批或调度器。
+- 两个旧线性执行器只共用无时钟、无副作用的 `LegacyPlaybookResult` 状态归约；
+  UUID、时间来源、Activity 调用顺序仍由各自执行器控制。旧语义中 skipped
+  计入 retryCount，补偿返回后重置前序失败标记（包括补偿失败）；本次整理保留
+  这些结果和命令行为，不将其套用到图解释器。
+- 图 Activity 仅在 connector 返回 `SOAR_ACTION_NOT_FOUND` 且动作不带命名空间时
+  调用旧动作适配器；已知 connector 的失败或合法命名空间的缺失动作不会回退。
+  新 definition 校验仍拒绝非命名空间动作。
+- `PlaybookWorkflowCompatibilityTest` 使用冻结的整理前实现生成合成 history，
+  回放到当前实现并比较 Activity 顺序、参数和结果，同时核对进程内执行。
+  这不代替真实租户数据、长期运行和生产 Temporal History 验收。
+
+删除历史执行器、工作流注册或非命名空间动作桥接前，必须逐租户盘点存量
+`Playbook`、启用的 schedule、待审批/已批准任务和可重试执行；完成经过校验与
+审批的显式迁移，并确认旧队列中不存在运行中、待重试或仍需 reset 的 history。
+还需要在目标 namespace 的 retention/reset 窗口内回放真实 history，验证迁移后的
+动作收据、幂等身份、审批和调度语义。没有这些证据，不能仅因新 HTTP 入口已经
+统一就删除旧 worker 或自动改写存量 dispatch。
+
 ### 17.2 API 边界
 
 - SOAR 只提供一套 /api/... HTTP surface；Playbook、Run、审批、人工任务、连接和事件都通过这套控制面访问。

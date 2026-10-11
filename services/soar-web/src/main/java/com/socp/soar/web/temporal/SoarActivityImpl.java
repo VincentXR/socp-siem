@@ -19,7 +19,7 @@ import com.socp.soar.web.persistence.repository.SoarApprovalRepository;
 import com.socp.soar.web.persistence.repository.SoarApprovalDecisionRepository;
 import com.socp.soar.web.persistence.repository.SoarArtifactRepository;
 import com.socp.soar.web.persistence.repository.PlaybookVersionRepository;
-import com.socp.soar.web.service.PlaybookExecutor;
+import com.socp.soar.web.service.LegacyPlaybookActions;
 import com.socp.soar.web.connector.SecretResolver;
 import com.socp.soar.web.artifact.SoarArtifactStore;
 import com.socp.soar.web.temporal.request.SoarNodeRequest;
@@ -38,25 +38,19 @@ import java.util.UUID;
 @Component
 public class SoarActivityImpl implements SoarActivity {
 
-    private final PlaybookExecutor executor;
     private final SoarRunRepository runs;
     private final SoarNodeRunRepository nodeRuns;
     private final SoarRunEventRepository events;
     private final SoarApprovalRepository approvals;
     private SoarApprovalDecisionRepository approvalDecisions;
     private final SoarActionAttemptRepository attempts;
-    private final SoarConnectorRepository connectors;
-    private final com.socp.soar.web.connector.SoarConnectorRegistry connectorRegistry;
-    private final SecretResolver secretResolver;
     private final SoarManualTaskRepository manualTasks;
     private final PlaybookVersionRepository versions;
     private final ObjectMapper mapper;
-    private SoarArtifactRepository artifacts;
-    private SoarArtifactStore artifactStore;
     private final SoarActivityExecutionService executionService;
 
     @org.springframework.beans.factory.annotation.Autowired
-    public SoarActivityImpl(PlaybookExecutor executor, SoarRunRepository runs,
+    public SoarActivityImpl(LegacyPlaybookActions legacyActions, SoarRunRepository runs,
                               SoarNodeRunRepository nodeRuns, SoarRunEventRepository events,
                               SoarApprovalRepository approvals, SoarActionAttemptRepository attempts,
                               SoarConnectorRepository connectors,
@@ -64,45 +58,39 @@ public class SoarActivityImpl implements SoarActivity {
                               SecretResolver secretResolver, SoarManualTaskRepository manualTasks,
                               PlaybookVersionRepository versions,
                               ObjectMapper mapper) {
-        this.executor = executor;
         this.runs = runs;
         this.nodeRuns = nodeRuns;
         this.events = events;
         this.approvals = approvals;
         this.attempts = attempts;
-        this.connectors = connectors;
-        this.connectorRegistry = connectorRegistry;
-        this.secretResolver = secretResolver;
         this.manualTasks = manualTasks;
         this.versions = versions;
         this.mapper = mapper;
-        this.executionService = new SoarActivityExecutionService(executor, runs, nodeRuns, events,
+        this.executionService = new SoarActivityExecutionService(legacyActions, runs, nodeRuns, events,
                 attempts, connectors, connectorRegistry, secretResolver, mapper);
     }
 
     /** Compatibility constructor for isolated Activity tests. */
-    public SoarActivityImpl(PlaybookExecutor executor, SoarRunRepository runs,
+    public SoarActivityImpl(LegacyPlaybookActions legacyActions, SoarRunRepository runs,
                               SoarNodeRunRepository nodeRuns, SoarRunEventRepository events,
                               SoarApprovalRepository approvals, SoarActionAttemptRepository attempts,
                               SoarConnectorRepository connectors,
                               com.socp.soar.web.connector.SoarConnectorRegistry connectorRegistry,
                               SecretResolver secretResolver, SoarManualTaskRepository manualTasks,
                               ObjectMapper mapper) {
-        this(executor, runs, nodeRuns, events, approvals, attempts, connectors, connectorRegistry,
+        this(legacyActions, runs, nodeRuns, events, approvals, attempts, connectors, connectorRegistry,
                 secretResolver, manualTasks, null, mapper);
     }
 
     /** Optional for isolated activity tests; production wiring supplies the V11 artifact repository. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setArtifacts(SoarArtifactRepository artifacts) {
-        this.artifacts = artifacts;
         this.executionService.setArtifacts(artifacts);
     }
 
     /** Optional in preview; production config supplies the S3-compatible store. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setArtifactStore(SoarArtifactStore artifactStore) {
-        this.artifactStore = artifactStore;
         this.executionService.setArtifactStore(artifactStore);
     }
 

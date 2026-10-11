@@ -3,6 +3,7 @@ package com.socp.detect.web.api.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.detect.web.engine.AlertStreamHub;
+import com.socp.detect.web.service.DetectionRuleService;
 import com.socp.detect.web.service.DetectEngineService;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
@@ -39,7 +40,7 @@ class RuleControllerTest {
     @Test
     void techniquePivotUsesExactPagedRouteAndValidatesItsInput() throws Exception {
         var row = Map.<String, Object>of("id", "rule-501", "name", "Exact technique", "status", "ACTIVE");
-        given(engine.rulesByTechnique("T1110.001", 2, 20)).willReturn(new org.springframework.data.domain.PageImpl<>(
+        given(rules.rulesByTechnique("T1110.001", 2, 20)).willReturn(new org.springframework.data.domain.PageImpl<>(
                 java.util.List.of(row), org.springframework.data.domain.PageRequest.of(1, 20), 21));
         mvc.perform(get("/api/v1/rules/by-technique").param("technique", "T1110.001").param("page", "2")
                         .header("Authorization", BEARER).header("X-Role", "analyst"))
@@ -49,17 +50,17 @@ class RuleControllerTest {
             mvc.perform(get("/api/v1/rules/by-technique" + query).header("Authorization", BEARER).header("X-Role", "analyst"))
                     .andExpect(status().isBadRequest());
         }
-        verify(engine, org.mockito.Mockito.never()).getRule(any());
+        verify(rules, org.mockito.Mockito.never()).getRule(any());
     }
 
     @Test void ruleReadsExposeTheSpecificValidatorAndMissingPreconditionsNeverReachTheEngine() throws Exception {
         var current = Map.<String, Object>of("id", "custom", "revisionToken", "a".repeat(64));
-        given(engine.getRule("custom")).willReturn(current);
+        given(rules.getRule("custom")).willReturn(current);
         mvc.perform(get("/api/v1/rules/custom").header("Authorization", BEARER).header("X-Role", "analyst"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.revisionToken").value("a".repeat(64)))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("ETag", "\"" + "a".repeat(64) + "\""))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Cache-Control", "no-store"));
-        org.mockito.Mockito.clearInvocations(engine);
+        org.mockito.Mockito.clearInvocations(rules);
         for (var request : java.util.List.of(
                 put("/api/v1/rules/custom").contentType(MediaType.APPLICATION_JSON).content("{\"name\":\"rule\",\"type\":\"pattern\",\"severity\":\"HIGH\"}"),
                 org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete("/api/v1/rules/custom"),
@@ -68,11 +69,11 @@ class RuleControllerTest {
                     .andExpect(status().is(428)).andExpect(jsonPath("$.code").value(428))
                     .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header().string("Cache-Control", "no-store"));
         }
-        org.mockito.Mockito.verifyNoInteractions(engine);
+        org.mockito.Mockito.verifyNoInteractions(rules);
     }
 
     @Test void restoreForwardsAnExplicitAbsenceCheckAndStaleUpdatesKeepTheErrorEnvelope() throws Exception {
-        given(engine.restoreRuleRevision(org.mockito.ArgumentMatchers.eq("custom"), org.mockito.ArgumentMatchers.eq(1L), any()))
+        given(rules.restoreRuleRevision(org.mockito.ArgumentMatchers.eq("custom"), org.mockito.ArgumentMatchers.eq(1L), any()))
                 .willAnswer(invocation -> {
                     assertEquals(true, ((com.socp.detect.web.model.RuleWriteCondition) invocation.getArgument(2)).absent());
                     return Map.of("id", "custom", "revisionToken", "b".repeat(64));
@@ -80,7 +81,7 @@ class RuleControllerTest {
         mvc.perform(post("/api/v1/rules/custom/revisions/1/restore").header("Authorization", BEARER)
                         .header("X-Role", "admin").header("If-None-Match", "*"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.revisionToken").value("b".repeat(64)));
-        given(engine.updateRule(any(), any())).willThrow(com.socp.platform.error.exception.ApiException.of(412, "changed"));
+        given(rules.updateRule(any(), any())).willThrow(com.socp.platform.error.exception.ApiException.of(412, "changed"));
         mvc.perform(put("/api/v1/rules/custom").header("Authorization", BEARER).header("X-Role", "analyst")
                         .header("If-Match", "\"old\"").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"name\":\"rule\",\"type\":\"pattern\",\"severity\":\"HIGH\"}"))
@@ -90,10 +91,10 @@ class RuleControllerTest {
     @Test
     void historyRoutesExposePagedMetadataAndSeparateFullDetails() throws Exception {
         var summary = Map.<String, Object>of("ruleId", "custom", "revision", 101L, "source", "EDIT");
-        given(engine.ruleRevisionPage("custom", 2, 20)).willReturn(new org.springframework.data.domain.PageImpl<>(
+        given(rules.ruleRevisionPage("custom", 2, 20)).willReturn(new org.springframework.data.domain.PageImpl<>(
                 java.util.List.of(summary), org.springframework.data.domain.PageRequest.of(1, 20), 121));
-        given(engine.ruleRevision("custom", 101)).willReturn(Map.of("revision", 101L, "spec", Map.of("name", "old")));
-        given(engine.ruleContentConflictPage(1, 20)).willReturn(new org.springframework.data.domain.PageImpl<>(
+        given(rules.ruleRevision("custom", 101)).willReturn(Map.of("revision", 101L, "spec", Map.of("name", "old")));
+        given(rules.ruleContentConflictPage(1, 20)).willReturn(new org.springframework.data.domain.PageImpl<>(
                 java.util.List.of(Map.of("ruleId", "custom"))));
         mvc.perform(get("/api/v1/rules/custom/revisions?page=2&size=20").header("Authorization", BEARER).header("X-Role", "analyst"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(121))
@@ -103,20 +104,20 @@ class RuleControllerTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.spec.name").value("old"));
         mvc.perform(get("/api/v1/rules/content-conflicts?page=1").header("Authorization", BEARER).header("X-Role", "analyst"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].ruleId").value("custom"));
-        given(engine.ruleRevision("custom", 102)).willThrow(com.socp.platform.error.exception.ApiException.notFound("missing revision"));
+        given(rules.ruleRevision("custom", 102)).willThrow(com.socp.platform.error.exception.ApiException.notFound("missing revision"));
         mvc.perform(get("/api/v1/rules/custom/revisions/102").header("Authorization", BEARER).header("X-Role", "analyst"))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value(404));
     }
 
     @Test
     void historyRetainsLegacyArraysAndPropagatesExplicitOverflow() throws Exception {
-        given(engine.listRuleRevisions("custom")).willReturn(java.util.List.of(Map.of("revision", 1, "spec", Map.of("name", "old"))));
-        given(engine.ruleContentConflicts()).willReturn(java.util.List.of(Map.of("ruleId", "custom")));
+        given(rules.listRuleRevisions("custom")).willReturn(java.util.List.of(Map.of("revision", 1, "spec", Map.of("name", "old"))));
+        given(rules.ruleContentConflicts()).willReturn(java.util.List.of(Map.of("ruleId", "custom")));
         mvc.perform(get("/api/v1/rules/custom/revisions").header("Authorization", BEARER).header("X-Role", "analyst"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].spec.name").value("old"));
         mvc.perform(get("/api/v1/rules/content-conflicts").header("Authorization", BEARER).header("X-Role", "analyst"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].ruleId").value("custom"));
-        given(engine.listRuleRevisions("large")).willThrow(com.socp.platform.error.exception.ApiException.badRequest("use page and size"));
+        given(rules.listRuleRevisions("large")).willThrow(com.socp.platform.error.exception.ApiException.badRequest("use page and size"));
         mvc.perform(get("/api/v1/rules/large/revisions").header("Authorization", BEARER).header("X-Role", "analyst"))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
     }
@@ -135,13 +136,13 @@ class RuleControllerTest {
                 .andExpect(status().isBadRequest());
         mvc.perform(get("/api/v1/rules/custom/revisions/1").header("Authorization", BEARER).header("X-Role", "viewer"))
                 .andExpect(status().isForbidden());
-        org.mockito.Mockito.verifyNoInteractions(engine);
+        org.mockito.Mockito.verifyNoInteractions(rules);
     }
 
     @Test
     void catalogFiltersAreAppliedBeforePagination() throws Exception {
         var row = Map.<String, Object>of("id", "rule-501", "name", "Unicode 异常");
-        given(engine.searchRules(2, 20, "异常_%", "DISABLED", "users_%", "alias"))
+        given(rules.searchRules(2, 20, "异常_%", "DISABLED", "users_%", "alias"))
                 .willReturn(new org.springframework.data.domain.PageImpl<>(java.util.List.of(row),
                         org.springframework.data.domain.PageRequest.of(1, 20), 21));
         mvc.perform(get("/api/v1/rules").header("Authorization", BEARER).header("X-Role", "analyst").param("page", "2").param("size", "20")
@@ -156,9 +157,9 @@ class RuleControllerTest {
     @Test
     void compactCatalogRoutesDoNotResolveAsRuleIds() throws Exception {
         var row = Map.<String, Object>of("id", "rule-501", "name", "Late rule", "status", "ACTIVE");
-        given(engine.ruleOptions(1, 50, "late")).willReturn(new org.springframework.data.domain.PageImpl<>(java.util.List.of(row)));
-        given(engine.activeRuleTechniques()).willReturn(java.util.List.of("T1110"));
-        given(engine.lookupRules(java.util.List.of("rule-501"))).willReturn(java.util.List.of(row));
+        given(rules.ruleOptions(1, 50, "late")).willReturn(new org.springframework.data.domain.PageImpl<>(java.util.List.of(row)));
+        given(rules.activeRuleTechniques()).willReturn(java.util.List.of("T1110"));
+        given(rules.lookupRules(java.util.List.of("rule-501"))).willReturn(java.util.List.of(row));
         mvc.perform(get("/api/v1/rules/options").header("Authorization", BEARER).header("X-Role", "analyst").param("q", "late"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value("rule-501"));
         mvc.perform(get("/api/v1/rules/active-techniques").header("Authorization", BEARER).header("X-Role", "analyst"))
@@ -166,7 +167,7 @@ class RuleControllerTest {
         mvc.perform(post("/api/v1/rules/lookup").header("Authorization", BEARER).header("X-Role", "analyst").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"ids\":[\"rule-501\",\"rule-501\"]}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].id").value("rule-501"));
-        verify(engine, org.mockito.Mockito.never()).getRule(any());
+        verify(rules, org.mockito.Mockito.never()).getRule(any());
     }
 
     @Test
@@ -183,12 +184,12 @@ class RuleControllerTest {
                             .content(json.writeValueAsString(Map.of("ids", ids))))
                     .andExpect(status().isBadRequest());
         }
-        org.mockito.Mockito.verifyNoInteractions(engine);
+        org.mockito.Mockito.verifyNoInteractions(rules);
     }
 
     @Test
     void directRuleLookupPreservesNotFoundEnvelope() throws Exception {
-        given(engine.getRule("absent")).willThrow(com.socp.platform.error.exception.ApiException.notFound("rule not found"));
+        given(rules.getRule("absent")).willThrow(com.socp.platform.error.exception.ApiException.notFound("rule not found"));
         mvc.perform(get("/api/v1/rules/absent").header("Authorization", BEARER).header("X-Role", "analyst"))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value(404));
     }
@@ -200,6 +201,9 @@ class RuleControllerTest {
 
     @Autowired
     private ObjectMapper json;
+
+    @MockitoBean
+    private DetectionRuleService rules;
 
     @MockitoBean
     private DetectEngineService engine;
@@ -219,7 +223,7 @@ class RuleControllerTest {
 
     @Test
     void updateInjectsPathIdBeforeDelegating() throws Exception {
-        given(engine.updateRule(any(), any())).willAnswer(invocation -> {
+        given(rules.updateRule(any(), any())).willAnswer(invocation -> {
             var spec = new LinkedHashMap<String, Object>(invocation.getArgument(0));
             spec.put("revisionToken", "a".repeat(64));
             return spec;
@@ -238,13 +242,13 @@ class RuleControllerTest {
                 .andExpect(jsonPath("$.data.id").value("AUTH-BRUTE"))
                 .andExpect(jsonPath("$.data.name").value("SSH brute force"));
 
-        verify(engine).updateRule(org.mockito.ArgumentMatchers.argThat(rule ->
+        verify(rules).updateRule(org.mockito.ArgumentMatchers.argThat(rule ->
                 "AUTH-BRUTE".equals(rule.get("id"))), any());
     }
 
     @Test
     void updatePreservesNestedExtensionMetadataAndConditionWhitespace() throws Exception {
-        given(engine.updateRule(any(), any())).willAnswer(invocation -> {
+        given(rules.updateRule(any(), any())).willAnswer(invocation -> {
             var spec = new LinkedHashMap<String, Object>(invocation.getArgument(0));
             spec.put("revisionToken", "a".repeat(64));
             return spec;
@@ -280,7 +284,7 @@ class RuleControllerTest {
                                  "match":[{"field":"msg","op":"eq","value":"","annotations":{"keep":true}}]}
                                 """))
                 .andExpect(status().isBadRequest());
-        org.mockito.Mockito.verifyNoInteractions(engine);
+        org.mockito.Mockito.verifyNoInteractions(rules);
     }
 
     @Test
@@ -419,7 +423,7 @@ class RuleControllerTest {
 
     @Test
     void reloadIsAReceiptThatTheReloadWasSubmittedNotAppliedEverywhere() throws Exception {
-        given(engine.ruleCount()).willReturn(2L);
+        given(rules.ruleCount()).willReturn(2L);
 
         mvc.perform(post("/api/v1/rules/reload")
                         .header("Authorization", BEARER)
@@ -432,9 +436,9 @@ class RuleControllerTest {
                 .andExpect(jsonPath("$.data.effective").value("async-per-replica"))
                 .andExpect(jsonPath("$.data.rules").value(2));
 
-        verify(engine).reload();
-        verify(engine).ruleCount();
-        org.mockito.Mockito.verifyNoMoreInteractions(engine);
+        verify(rules).reload();
+        verify(rules).ruleCount();
+        org.mockito.Mockito.verifyNoMoreInteractions(rules);
     }
 
     @Test
@@ -455,7 +459,7 @@ class RuleControllerTest {
                 .andExpect(jsonPath("$.data.spec.groupBy").value("user"))
                 .andExpect(jsonPath("$.data.spec.routingField").value("user"));
 
-        org.mockito.Mockito.verifyNoInteractions(engine);
+        org.mockito.Mockito.verifyNoInteractions(rules);
     }
 
     @Test

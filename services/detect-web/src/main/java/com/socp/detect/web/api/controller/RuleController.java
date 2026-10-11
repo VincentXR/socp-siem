@@ -3,7 +3,7 @@ package com.socp.detect.web.api.controller;
 import com.socp.detect.web.api.request.RuleSpecRequest;
 import com.socp.detect.web.api.request.RuleLookupRequest;
 import com.socp.detect.web.config.DetectRuntimeRole;
-import com.socp.detect.web.service.DetectEngineService;
+import com.socp.detect.web.service.DetectionRuleService;
 import com.socp.detect.web.service.SigmaRuleImporter;
 import com.socp.detect.web.persistence.store.DetectionContentCatalog;
 import com.socp.detect.web.model.RuleWriteCondition;
@@ -36,10 +36,10 @@ public class RuleController {
 
     static final int MAX_LIST_SIZE = 500;
 
-    private final DetectEngineService engine;
+    private final DetectionRuleService rules;
 
-    public RuleController(DetectEngineService engine) {
-        this.engine = engine;
+    public RuleController(DetectionRuleService rules) {
+        this.rules = rules;
     }
 
     @GetMapping("/rules")
@@ -67,8 +67,8 @@ public class RuleController {
             // tenant-created rule population can no longer cause an unbounded
             // response allocation.
             List<Map<String, Object>> rows = filtered
-                    ? (exactTechnique.isEmpty() ? engine.searchRules(1, safeSize, keyword, lifecycle, reference, referenceAlias) : engine.searchRulesByTechnique(1, safeSize, keyword, lifecycle, reference, referenceAlias, exactTechnique)).getContent()
-                    : engine.listRules(safeSize);
+                    ? (exactTechnique.isEmpty() ? rules.searchRules(1, safeSize, keyword, lifecycle, reference, referenceAlias) : rules.searchRulesByTechnique(1, safeSize, keyword, lifecycle, reference, referenceAlias, exactTechnique)).getContent()
+                    : rules.listRules(safeSize);
             return ApiResult.ok(rows == null ? List.of() : rows);
         }
         if (page < 1 || size != null && (size < 1 || size > MAX_LIST_SIZE)) {
@@ -76,8 +76,8 @@ public class RuleController {
                     org.springframework.http.HttpStatus.BAD_REQUEST,
                     "page must be >= 1 and size must be between 1 and " + MAX_LIST_SIZE);
         }
-        var result = filtered ? (exactTechnique.isEmpty() ? engine.searchRules(page, safeSize, keyword, lifecycle, reference, referenceAlias) : engine.searchRulesByTechnique(page, safeSize, keyword, lifecycle, reference, referenceAlias, exactTechnique))
-                : engine.listRulesPage(page, safeSize);
+        var result = filtered ? (exactTechnique.isEmpty() ? rules.searchRules(page, safeSize, keyword, lifecycle, reference, referenceAlias) : rules.searchRulesByTechnique(page, safeSize, keyword, lifecycle, reference, referenceAlias, exactTechnique))
+                : rules.listRulesPage(page, safeSize);
         return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
                 result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
@@ -92,7 +92,7 @@ public class RuleController {
 
     @GetMapping("/rules/{id}")
     public ApiResult<Map<String, Object>> getRule(@PathVariable String id, HttpServletResponse response) {
-        return ruleResponse(engine.getRule(bounded(id, 128, "id")), response);
+        return ruleResponse(rules.getRule(bounded(id, 128, "id")), response);
     }
 
     @GetMapping("/rules/options")
@@ -102,7 +102,7 @@ public class RuleController {
         if (page < 1 || size < 1 || size > 100) {
             throw com.socp.platform.error.exception.ApiException.badRequest("page must be >= 1 and size between 1 and 100");
         }
-        var result = engine.ruleOptions(page, size, bounded(q, 256, "q").trim());
+        var result = rules.ruleOptions(page, size, bounded(q, 256, "q").trim());
         return ApiResult.ok(PageResponse.of(result.getContent(), result.getTotalElements(),
                 result.getNumber() + 1, result.getSize(), result.getTotalPages()));
     }
@@ -110,7 +110,7 @@ public class RuleController {
     @RequireRole({"admin", "analyst", "viewer"})
     @PostMapping("/rules/lookup")
     public ApiResult<List<Map<String, Object>>> lookupRules(@Valid @RequestBody RuleLookupRequest request) {
-        return ApiResult.ok(engine.lookupRules(request.ids().stream().distinct().toList()));
+        return ApiResult.ok(rules.lookupRules(request.ids().stream().distinct().toList()));
     }
 
     @GetMapping("/rules/by-technique")
@@ -120,14 +120,14 @@ public class RuleController {
         if (!technique.matches("T[0-9]{4}(?:\\.[0-9]{3})?") || page < 1 || size < 1 || size > 100) {
             throw com.socp.platform.error.exception.ApiException.badRequest("Invalid technique or pagination");
         }
-        var result = engine.rulesByTechnique(technique, page, size);
+        var result = rules.rulesByTechnique(technique, page, size);
         return ApiResult.ok(com.socp.platform.error.api.PageResponse.of(
                 result.getContent(), result.getTotalElements(), page, size, result.getTotalPages()));
     }
 
     @GetMapping("/rules/active-techniques")
     public ApiResult<List<String>> activeTechniques() {
-        return ApiResult.ok(engine.activeRuleTechniques());
+        return ApiResult.ok(rules.activeRuleTechniques());
     }
 
     private static String bounded(String value, int maximum, String field) {
@@ -139,14 +139,14 @@ public class RuleController {
 
     /** Source-compatible Java entry point for existing in-process callers. */
     public ApiResult<List<Map<String, Object>>> listRules() {
-        List<Map<String, Object>> bounded = engine.listRules(MAX_LIST_SIZE);
+        List<Map<String, Object>> bounded = rules.listRules(MAX_LIST_SIZE);
         return ApiResult.ok(bounded == null ? List.of() : bounded);
     }
 
     /** Versioned detection content metadata used by review and release tooling. */
     @GetMapping("/rules/content-manifest")
     public ApiResult<Map<String, Object>> contentManifest() {
-        return ApiResult.ok(engine.contentManifest());
+        return ApiResult.ok(rules.contentManifest());
     }
 
     /**
@@ -160,8 +160,8 @@ public class RuleController {
     public ApiResult<?> contentConflicts(@RequestParam(required = false) Integer page,
                                          @RequestParam(required = false) Integer size) {
         checkHistoryPage(page, size);
-        if (page == null) return ApiResult.ok(engine.ruleContentConflicts());
-        return historyPage(engine.ruleContentConflictPage(page, size == null ? 20 : size));
+        if (page == null) return ApiResult.ok(rules.ruleContentConflicts());
+        return historyPage(rules.ruleContentConflictPage(page, size == null ? 20 : size));
     }
 
     /** Paged metadata, newest first; omitted pagination keeps the bounded legacy array. */
@@ -172,8 +172,8 @@ public class RuleController {
                                       @RequestParam(required = false) Integer size) {
         bounded(id, 128, "id");
         checkHistoryPage(page, size);
-        if (page == null) return ApiResult.ok(engine.listRuleRevisions(id));
-        return historyPage(engine.ruleRevisionPage(id, page, size == null ? 20 : size));
+        if (page == null) return ApiResult.ok(rules.listRuleRevisions(id));
+        return historyPage(rules.ruleRevisionPage(id, page, size == null ? 20 : size));
     }
 
     @RequireRole({"admin", "analyst"})
@@ -181,7 +181,7 @@ public class RuleController {
     public ApiResult<Map<String, Object>> ruleRevision(@PathVariable String id, @PathVariable long revision) {
         bounded(id, 128, "id");
         if (revision < 1) throw com.socp.platform.error.exception.ApiException.badRequest("revision must be positive");
-        return ApiResult.ok(engine.ruleRevision(id, revision));
+        return ApiResult.ok(rules.ruleRevision(id, revision));
     }
 
     private static void checkHistoryPage(Integer page, Integer size) {
@@ -213,7 +213,7 @@ public class RuleController {
         bounded(id, 128, "id");
         if (revision < 1) throw com.socp.platform.error.exception.ApiException.badRequest("revision must be positive");
         response.setHeader("Cache-Control", "no-store");
-        return ruleResponse(engine.restoreRuleRevision(id, revision, RuleWriteCondition.parse(ifMatch, ifNoneMatch, true)), response);
+        return ruleResponse(rules.restoreRuleRevision(id, revision, RuleWriteCondition.parse(ifMatch, ifNoneMatch, true)), response);
     }
 
     /**
@@ -247,7 +247,7 @@ public class RuleController {
             spec.put("status", "TESTING");
             spec.put("enabled", false);
         }
-        return ruleResponse(engine.addRule(spec), response);
+        return ruleResponse(rules.addRule(spec), response);
     }
 
     /** Import a lossless Sigma subset and persist it through the normal rule lifecycle. */
@@ -262,7 +262,7 @@ public class RuleController {
         // live detector. Promotion is a separate permission-protected call.
         imported.put("status", "TESTING");
         imported.put("enabled", false);
-        Map<String, Object> saved = engine.addRule(imported);
+        Map<String, Object> saved = rules.addRule(imported);
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("imported", true);
         response.put("ruleId", converted.ruleId());
@@ -280,7 +280,7 @@ public class RuleController {
         Map<String, Object> spec = request.asMap();
         spec.put("id", bounded(id, 128, "id"));
         response.setHeader("Cache-Control", "no-store");
-        return ruleResponse(engine.updateRule(spec, RuleWriteCondition.parse(ifMatch, null, false)), response);
+        return ruleResponse(rules.updateRule(spec, RuleWriteCondition.parse(ifMatch, null, false)), response);
     }
 
     @RequireRole({"admin", "analyst"})
@@ -288,7 +288,7 @@ public class RuleController {
     public ApiResult<Map<String, Object>> deleteRule(@PathVariable String id,
             @RequestHeader(value = "If-Match", required = false) String ifMatch, HttpServletResponse response) {
         response.setHeader("Cache-Control", "no-store");
-        return ApiResult.ok(Map.of("removed", engine.deleteRule(bounded(id, 128, "id"), RuleWriteCondition.parse(ifMatch, null, false))));
+        return ApiResult.ok(Map.of("removed", rules.deleteRule(bounded(id, 128, "id"), RuleWriteCondition.parse(ifMatch, null, false))));
     }
 
     /**
@@ -308,10 +308,10 @@ public class RuleController {
     @PostMapping("/rules/reload")
     public ApiResult<Map<String, Object>> reload() {
         Map<String, Object> response = new LinkedHashMap<>();
-        engine.reload();
+        rules.reload();
         response.put("reloaded", true);
         response.put("effective", "async-per-replica");
-        response.put("rules", engine.ruleCount());
+        response.put("rules", rules.ruleCount());
         return ApiResult.ok(response);
     }
 
@@ -322,7 +322,7 @@ public class RuleController {
     public ApiResult<Map<String, Object>> activate(@PathVariable String id,
             @RequestHeader(value = "If-Match", required = false) String ifMatch, HttpServletResponse response) {
         response.setHeader("Cache-Control", "no-store");
-        return ruleResponse(engine.activateRule(bounded(id, 128, "id"), RuleWriteCondition.parse(ifMatch, null, false)), response);
+        return ruleResponse(rules.activateRule(bounded(id, 128, "id"), RuleWriteCondition.parse(ifMatch, null, false)), response);
     }
 
     private static ApiResult<Map<String, Object>> ruleResponse(Map<String, Object> spec, HttpServletResponse response) {

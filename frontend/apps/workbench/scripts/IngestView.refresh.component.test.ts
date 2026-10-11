@@ -13,7 +13,7 @@ const api = vi.hoisted(() => ({
   listIngestTasks: vi.fn(), ingestSummary: vi.fn(), listCategories: vi.fn(), previewSource: vi.fn(),
   listIngestParseFailures: vi.fn(), replayIngestParseFailure: vi.fn(), updateSource: vi.fn(), createSource: vi.fn(),
   updateOutput: vi.fn(), createOutput: vi.fn(), validateOutputConfig: vi.fn(),
-  getSource: vi.fn(), getSourceSetup: vi.fn(), startIngestTask: vi.fn(), stopIngestTask: vi.fn(), confirm: vi.fn(),
+  renderConfig: vi.fn(), getSource: vi.fn(), getSourceSetup: vi.fn(), startIngestTask: vi.fn(), stopIngestTask: vi.fn(), confirm: vi.fn(),
 }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...api }))
 vi.mock('element-plus/es/components/message-box/index.mjs', () => ({ default: { confirm: api.confirm } }))
@@ -35,15 +35,23 @@ type View = { refreshAll: () => Promise<void>; sources: Array<{ id: string }>; l
   openEditOutput: (output: import('../src/api').SinkTarget) => void; addOutput: () => Promise<void>; checkOutput: () => Promise<void>
   newOutput: { name: string; type: string; uri: string; authToken: string; enabled: boolean }; credentialAction: 'KEEP' | 'REPLACE' | 'CLEAR'
   outputErrors: Record<string, string>; outputValidation: string
+  actionError: string; sourceError: string; outputError: string; renderError: string; loadError: string
+  showOutputDialog: boolean; testLoading: boolean; renderText: string
+  showSourceDialogGuard: { cancel: () => Promise<void> }; showOutputDialogGuard: { cancel: () => Promise<void> }
+  openCreateOutput: () => void; doRender: () => Promise<void>
   editingSourceId: string | null; onIngestTab: (tab: string) => void }
 async function setup() {
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: IngestView }] })
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: IngestView }, { path: '/other', component: { template: '<div>Other page</div>' } }] })
   await router.push('/')
   const role = ref('admin')
   const root = mount(RouterView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: role } } } })
   return { root, router, role, wrapper: root.findComponent(IngestView) }
 }
-function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
+function deferred<T>() {
+  let resolve!: (value: T) => void, reject!: (reason: unknown) => void
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail })
+  return { promise, resolve, reject }
+}
 beforeEach(() => {
   vi.resetAllMocks()
   api.listSourcesPage.mockResolvedValue({ items: [], total: 0, page: 1, size: 20, totalPages: 0 })
@@ -409,4 +417,174 @@ describe('ingest independent reads', () => {
     expect(view.testResult).toBeNull()
     root.unmount()
   })
+  it('keeps a source write and its draft attached through repeated save, cancellation and navigation attempts', async () => {
+    const { root, wrapper, router } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    view.openCreateSource(); await flushPromises()
+    view.newSource.name = 'Pending source'
+    const pending = deferred<LogSource>()
+    api.createSource.mockReturnValueOnce(pending.promise)
+    const saving = view.saveSource(true)
+    await view.saveSource(true)
+    await view.showSourceDialogGuard.cancel()
+    view.openCreateSource()
+    await router.push('/other')
+    expect(api.createSource).toHaveBeenCalledTimes(1)
+    expect(view.showSourceDialog).toBe(true)
+    expect(view.newSource.name).toBe('Pending source')
+    expect(router.currentRoute.value.path).toBe('/')
+    pending.resolve({ id: 'saved-source', name: 'Pending source', enabled: false } as LogSource)
+    await saving; await flushPromises()
+    expect(view.showSourceDialog).toBe(false)
+    expect(view.setupId).toBe('saved-source')
+    expect(view.actionBusy).toBe(false)
+    root.unmount()
+  })
+
+  it('retains failed output input without leaking its error to other workspaces and retries once', async () => {
+    const { root, wrapper, router } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    view.openCreateOutput()
+    Object.assign(view.newOutput, { name: 'Receiver', uri: 'https://example.test/ingest' })
+    const pending = deferred<void>()
+    api.createOutput.mockReturnValueOnce(pending.promise)
+    const saving = view.addOutput()
+    await view.addOutput()
+    await view.showOutputDialogGuard.cancel()
+    view.openCreateOutput()
+    await router.push('/other')
+    expect(view.newOutput.name).toBe('Receiver')
+    expect(view.showOutputDialog).toBe(true)
+    expect(api.createOutput).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.path).toBe('/')
+    pending.reject(new Error('Receiver rejected configuration'))
+    await saving
+    expect(view.outputError).toBe('Receiver rejected configuration')
+    expect(view.sourceError).toBe('')
+    expect(view.actionError).toBe('')
+    expect(view.newOutput.name).toBe('Receiver')
+    api.createOutput.mockResolvedValueOnce({ id: 'receiver' })
+    await view.addOutput(); await flushPromises()
+    expect(api.createOutput).toHaveBeenCalledTimes(2)
+    expect(view.showOutputDialog).toBe(false)
+    expect(view.outputError).toBe('')
+    root.unmount()
+  })
+
+  it('keeps render failures local while preserving feedback from another workspace', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    view.outputError = 'Previous output failure'
+    view.sourceError = 'Previous source failure'
+    const pending = deferred<string>()
+    api.renderConfig.mockReturnValueOnce(pending.promise)
+    const rendering = view.doRender()
+    await view.doRender()
+    expect(api.renderConfig).toHaveBeenCalledTimes(1)
+    pending.reject(new Error('Configuration unavailable'))
+    await rendering
+    expect(view.renderError).toBe('Configuration unavailable')
+    expect(view.outputError).toBe('Previous output failure')
+    expect(view.sourceError).toBe('Previous source failure')
+    expect(view.actionError).toBe('')
+    root.unmount()
+  })
+
+  it('discards bound-rule responses from a closed editor after reopening another source', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const pending = deferred<Array<{ id: string; name: string }>>()
+    api.resolveParseRules.mockReturnValueOnce(pending.promise).mockResolvedValueOnce([{ id: 'rule-b', name: 'Current rule' }])
+    view.openEditSource({ id: 'source-a', name: 'A', type: 'FILE', parseRuleIds: ['rule-a'] } as LogSource)
+    const signal = api.resolveParseRules.mock.calls.at(-1)![1].signal as AbortSignal
+    view.showSourceDialog = false
+    expect(signal.aborted).toBe(true)
+    view.openEditSource({ id: 'source-b', name: 'B', type: 'FILE', parseRuleIds: ['rule-b'] } as LogSource)
+    await flushPromises()
+    pending.resolve([{ id: 'rule-a', name: 'Old rule' }]); await flushPromises()
+    expect(view.editingSourceId).toBe('source-b')
+    expect(view.sourceRuleOptionLabel('rule-b')).toBe('Current rule')
+    expect(view.sourceRuleOptionLabel('rule-a')).toBe('rule-a')
+    root.unmount()
+  })
+
+  it('does not let a closed preview failure clear a reopened preview loading state', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const old = deferred<{ matched: boolean; fields: Record<string, string> }>()
+    const current = deferred<{ matched: boolean; fields: Record<string, string> }>()
+    api.previewSource.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise)
+    view.openTest({ id: 'task' } as IngestTask); view.testSample = 'first'
+    const oldRun = view.runTest()
+    await view.runTest()
+    expect(api.previewSource).toHaveBeenCalledTimes(1)
+    view.testDialog = false
+    view.openTest({ id: 'task' } as IngestTask); view.testSample = 'second'
+    const currentRun = view.runTest()
+    old.reject(new Error('Obsolete preview failure')); await oldRun
+    expect(view.testLoading).toBe(true)
+    expect(view.testResult).toBeNull()
+    current.resolve({ matched: true, fields: { input: 'second' } }); await currentRun
+    expect(view.testResult?.fields.input).toBe('second')
+    expect(view.testLoading).toBe(false)
+    root.unmount()
+  })
+
+  it('ignores a superseded list failure and retains ownership of the current loading state', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const old = deferred<unknown>(), current = deferred<unknown>()
+    api.listSourcesPage.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise)
+    const oldRead = view.loadSources(), currentRead = view.loadSources()
+    old.reject(new Error('Obsolete list failure')); await oldRead
+    expect(view.sourcesLoading).toBe(true)
+    expect(view.loadError).not.toContain('Obsolete list failure')
+    current.resolve({ items: [{ id: 'current' }], total: 1 }); await currentRead
+    expect(view.sources[0]?.id).toBe('current')
+    expect(view.sourcesLoading).toBe(false)
+    root.unmount()
+  })
+
+  it('does not publish a replay completion or refresh hidden state after leaving the workbench', async () => {
+    const { root, wrapper, router } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const pending = deferred<Record<string, unknown>>()
+    api.replayIngestParseFailure.mockReturnValueOnce(pending.promise)
+    const replay = view.replayParseFailure({ id: 'failure-a' })
+    await flushPromises()
+    await router.push('/other')
+    pending.resolve({ id: 'failure-a', replayStatus: 'REPLAYED', replayedEventId: 'late-event' })
+    await replay
+    expect(api.listIngestParseFailures).toHaveBeenCalledTimes(1)
+    expect(view.parseFailures).toEqual([])
+    expect(document.body.textContent).not.toContain('late-event')
+    root.unmount()
+  })
+
+  it('creates a fresh source-rule selection after closing and reopening a new source', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    view.openCreateSource(); await flushPromises()
+    const selected = view.newSource.parseRuleIds as string[]
+    selected.push('discarded-rule')
+    view.showSourceDialog = false
+    view.openCreateSource()
+    expect(view.newSource.parseRuleIds).toEqual([])
+    root.unmount()
+  })
+
+  it('replays the failure identity captured before confirmation even if the row changes', async () => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    const confirmation = deferred<string>()
+    api.confirm.mockReturnValueOnce(confirmation.promise)
+    api.replayIngestParseFailure.mockResolvedValueOnce({ id: 'failure-a', replayStatus: 'PENDING' })
+    const row = { id: 'failure-a' }
+    const replay = view.replayParseFailure(row)
+    row.id = 'failure-b'
+    confirmation.resolve('confirm'); await replay
+    expect(api.replayIngestParseFailure).toHaveBeenCalledExactlyOnceWith('failure-a')
+    root.unmount()
+  })
+
 })

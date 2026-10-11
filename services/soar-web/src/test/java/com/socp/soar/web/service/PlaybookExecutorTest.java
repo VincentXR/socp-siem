@@ -6,16 +6,16 @@ import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.http.SocpHttpClient;
 import com.socp.platform.client.service.SocpService;
 import com.socp.platform.tenant.context.TenantContext;
+import com.socp.soar.web.config.SoarRuntimeProperties;
 import com.socp.soar.web.domain.Playbook;
 import com.socp.soar.web.persistence.store.PlaybookStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.mock.env.MockEnvironment;
 
 import java.time.LocalTime;
 import java.util.List;
@@ -40,6 +40,7 @@ class PlaybookExecutorTest {
     @BeforeEach
     void setTenant() {
         TenantContext.set("default");
+        executor = executor(false);
     }
 
     @AfterEach
@@ -65,8 +66,17 @@ class PlaybookExecutorTest {
     @Mock
     private ApprovalService approvalService;
 
-    @InjectMocks
     private PlaybookExecutor executor;
+
+    private PlaybookExecutor executor(boolean simulationEnabled, String... profiles) {
+        SoarRuntimeProperties properties = new SoarRuntimeProperties();
+        properties.setSimulationEnabled(simulationEnabled);
+        MockEnvironment environment = new MockEnvironment();
+        environment.setActiveProfiles(profiles);
+        LegacyPlaybookActions actions = new LegacyPlaybookActions(
+                new PlaybookActionHandlerRegistry(notifyClient, incidentClient, http), properties, environment);
+        return new PlaybookExecutor(store, temporalExecutor, null, actions);
+    }
 
     private static Playbook enabled(String trigger, List<String> actions) {
         return Playbook.create("t", trigger, actions, true);
@@ -196,7 +206,7 @@ class PlaybookExecutorTest {
 
     @Test
     void explicitSimulationHasDistinctStatusAndStableIdempotencyKey() {
-        ReflectionTestUtils.setField(executor, "simulationEnabled", true);
+        executor = executor(true);
         Map<String, Object> alarm = Map.of("id", "AL-SIM-1", "playbookId", "PB-1");
 
         Map<String, Object> first = executor.executeAction("simulate:firewall-block", alarm, false, 2);
@@ -234,8 +244,7 @@ class PlaybookExecutorTest {
 
     @Test
     void productionProfileRejectsSimulationEvenWhenDevelopmentFlagIsEnabled() {
-        ReflectionTestUtils.setField(executor, "simulationEnabled", true);
-        ReflectionTestUtils.setField(executor, "activeProfiles", "prod");
+        executor = executor(true, "prod");
 
         Map<String, Object> result = executor.executeAction("simulate:firewall-block", Map.of(), false);
 

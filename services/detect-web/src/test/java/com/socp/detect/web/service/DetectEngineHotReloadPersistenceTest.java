@@ -1,6 +1,5 @@
 package com.socp.detect.web.service;
 
-import com.socp.detect.web.engine.AlertForwarder;
 import com.socp.detect.web.engine.RecentAlertSink;
 import com.socp.detect.web.persistence.repository.DetectionRouteTopologyRepository;
 import com.socp.detect.web.persistence.repository.RuleContentConflictRepository;
@@ -54,12 +53,13 @@ class DetectEngineHotReloadPersistenceTest {
                 "id", "HOT-RELOAD", "name", "Hot reload fixture", "type", "pattern",
                 "severity", "HIGH", "status", "DRAFT",
                 "match", List.of(Map.of("field", "msg", "op", "contains", "value", "probe"))));
-        engine = new DetectEngineService(store, new RecentAlertSink(10, null, null),
-                mock(AlertForwarder.class), mock(RuleChangePublisher.class));
-        engine.configureCommittedReloadTransaction(transactions);
+        engine = new DetectEngineService(store, new RecentAlertSink(10, null, null));
+        var service = new DetectionRuleService(store, mock(RuleChangePublisher.class),
+                (DetectionEngineLifecycle) org.springframework.test.util.ReflectionTestUtils.getField(engine, "lifecycle"));
+        service.configureCommittedReloadTransaction(transactions);
 
         new TransactionTemplate(transactions).executeWithoutResult(
-                status -> engine.activateRule("HOT-RELOAD"));
+                status -> service.activateRule("HOT-RELOAD"));
 
         @SuppressWarnings("unchecked")
         var loaded = (List<Map<String, Object>>) engine.stats().get("ruleStats");
