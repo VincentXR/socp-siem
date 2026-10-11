@@ -23,7 +23,7 @@ import com.socp.soar.web.persistence.repository.SoarManualTaskRepository;
 import com.socp.soar.web.persistence.repository.SoarNodeRunRepository;
 import com.socp.soar.web.persistence.repository.SoarRunEventRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
-import com.socp.soar.web.service.PlaybookExecutor;
+import com.socp.soar.web.service.LegacyPlaybookActions;
 import com.socp.soar.web.temporal.request.ActionRequest;
 import com.socp.soar.web.temporal.request.SoarNodeRequest;
 import org.junit.jupiter.api.AfterEach;
@@ -62,7 +62,7 @@ class SoarActivityImplExecuteCoverageTest {
     private static final String APPROVAL_KEY = RUN_ID + ":node:" + NODE_ID;
 
     @Mock
-    private PlaybookExecutor executor;
+    private LegacyPlaybookActions executor;
     @Mock
     private SoarRunRepository runs;
     @Mock

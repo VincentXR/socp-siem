@@ -1,7 +1,4 @@
 <script setup lang="ts">
-import { useWriteAccess } from '../composables/useWriteAccess'
-const canWrite = useWriteAccess()
-import { useFormDialog } from '../composables/useFormDialog'
 import { useRoute, useRouter } from 'vue-router'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
@@ -10,16 +7,11 @@ import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 const route = useRoute()
 const router = useRouter()
 
-import { useMutation } from '../composables/useMutation'
-import { useConfirm } from '../composables/useConfirm'
 import ActionFeedback from '../components/ActionFeedback.vue'
 import FormField from '../components/FormField.vue'
 import FormGrid from '../components/FormGrid.vue'
 import FormSection from '../components/FormSection.vue'
 import PagerBar from '../components/PagerBar.vue'
-const mutation = useMutation()
-const { busy: actionBusy, error: actionError } = mutation
-const { confirmDanger } = useConfirm()
 import 'element-plus/es/components/alert/style/css.mjs'
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
@@ -48,253 +40,54 @@ import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import ElMessage from 'element-plus/es/components/message/index.mjs'
 import 'element-plus/es/components/message/style/css.mjs'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import {
-  ApiError,
-  createOutput, updateOutput, createSource, deleteOutput, deleteParseRule, deleteSource, updateSource,
-  ingestSummary, listCategories, listIngestTasks, listOutputs, listParseRulesPage, resolveParseRules, listSourcesPage,
-  previewSource, getSource, validateOutputConfig, renderConfig, startIngestTask, stopIngestTask,
-  listIngestParseFailures, replayIngestParseFailure,
-  SOURCE_TYPES, PARSE_FORMATS,
-  type IngestParseFailure, type IngestTask, type IngestSummary, type LogCategory, type LogSource, type LogSourceInput, type ParseRule, type SinkTarget,
-} from '../api'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { getSource, SOURCE_TYPES, PARSE_FORMATS, type LogSource, type SinkTarget, type IngestParseFailure } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { fmtBytes, fmtTime } from '../lib/ui'
 import PageHeader from '../components/PageHeader.vue'
 import IngestSourceSetup from '../components/IngestSourceSetup.vue'
 import { useIngestCopy } from '../composables/useIngestCopy'
 
+import { useIngestWorkspace } from '../composables/ingest/useIngestWorkspace'
+import { useIngestSources } from '../composables/ingest/useIngestSources'
+import { useIngestOutputs } from '../composables/ingest/useIngestOutputs'
+import { useIngestRules } from '../composables/ingest/useIngestRules'
+import { useIngestTasks } from '../composables/ingest/useIngestTasks'
+import { useIngestQuarantine } from '../composables/ingest/useIngestQuarantine'
+
 const { t } = useI18n()
 const copy = useIngestCopy()
+const workspace = useIngestWorkspace()
+const { canWrite, actionBusy, actionError, confirming, loadErrors, loadError } = workspace
 const setupId = ref('')
 const setupSample = ref('')
 const showSetup = ref(false)
 let setupEditGeneration = 0
 let setupEditController: AbortController | null = null
-const editingOutputId = ref<string | null>(null)
-const outputValidation = ref('')
 const MULTILINE_PLACEHOLDER = '{ start_pattern = "^\\s", mode = "continue_through" }'
 const validTabs = ['tasks', 'sources', 'rules', 'outputs', 'quarantine']
 const ingestTab = ref(validTabs.includes(String(route.query.tab)) ? String(route.query.tab) : 'tasks')
-const sources = ref<LogSource[]>([])
-const sourcePage = ref(1)
-const sourceSize = ref(20)
-const sourceTotal = ref(0)
-const sourceSearchDraft = ref('')
-const sourceQuery = ref('')
-const outputs = ref<SinkTarget[]>([])
-const parseRules = ref<ParseRule[]>([])
-const rulePage = ref(1)
-const ruleSize = ref(20)
-const ruleTotal = ref(0)
-const ruleSearchDraft = ref('')
-const ruleQuery = ref('')
-const sourceRuleOptions = ref<ParseRule[]>([])
-const sourceRuleTotal = ref(0)
-const selectedSourceRules = ref<ParseRule[]>([])
-const sourceRuleSelectionVersion = ref(0)
-const sourceRuleLoading = ref(false)
-let sourceRuleSearchTimer: number | null = null
-let sourceRuleSearchGeneration = 0
-const logCategories = ref<LogCategory[]>([])
-const newSource = ref({ name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', description: '', protocol: 'tcp', charset: 'utf-8', timeField: '', timezone: 'Asia/Shanghai', tags: '', frequency: 1 as number | null, ignoreOlderSeconds: null as number | null, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true })
-const newOutput = ref({ name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true })
-const sourceErrors = ref<Record<string, string>>({})
-const outputErrors = ref<Record<string, string>>({})
-/** Background list refresh, the dialogs, and page actions keep separate errors. */
-type LoadKey = 'sources' | 'outputs' | 'rules' | 'ruleOptions' | 'selectedRules' | 'tasks' | 'summary' | 'categories' | 'quarantine'
-const loadErrors = ref<Partial<Record<LoadKey, string>>>({})
-const loadError = computed(() => Object.values(loadErrors.value).filter(Boolean).join(' · '))
-const loadStates = ref<Partial<Record<LoadKey, boolean>>>({})
-const sourcesLoading = computed(() => Boolean(loadStates.value.sources))
-const outputsLoading = computed(() => Boolean(loadStates.value.outputs))
-const parseRulesLoading = computed(() => Boolean(loadStates.value.rules))
-const parseFailuresLoading = computed(() => Boolean(loadStates.value.quarantine))
-const tasksLoading = computed(() => Boolean(loadStates.value.tasks) || Boolean(loadStates.value.summary))
+const {
+  sources, sourcesLoading, sourcePage, sourceSize, sourceTotal, sourceSearchDraft, loadSources, applySourceSearch,
+  logCategories, loadCategories, sourceRuleOptions, sourceRuleTotal, sourceRuleSelectionVersion, sourceRuleLoading,
+  searchSourceRules, sourceRuleOptionLabel, onSourceRuleChange, newSource, sourceErrors, sourceError,
+  editingSourceId, lastSavedSource, showSourceDialog, showSourceDialogGuard, openCreateSource, openEditSource, saveSource, removeSource,
+} = useIngestSources(workspace, { selectSources: () => onIngestTab('sources'), cancelSetupEdit, openSetup })
+const {
+  outputs, outputsLoading, loadOutputs, outputLabel, credentialLabel, editingOutputId, newOutput, outputErrors,
+  outputError, outputValidation, credentialAction, showOutputDialog, showOutputDialogGuard, openCreateOutput,
+  openEditOutput, checkOutput, addOutput, removeOutput, renderError, renderText, showRender, doRender, copyRender,
+} = useIngestOutputs(workspace)
+const { parseRules, parseRulesLoading, rulePage, ruleSize, ruleTotal, ruleSearchDraft, loadParseRules, applyRuleSearch, removeParseRule } = useIngestRules(workspace)
+const {
+  tasks, taskSummary, tasksLoading, summaryStale, taskBusy, loadTasks, toggleTask, toggleTaskRow, healthMeta,
+  testDialog, testTarget, testSample, testResult, testLoading, openTest, openTestRow, defaultPreviewSample, runTest,
+} = useIngestTasks(workspace)
+const { parseFailures, parseFailuresLoading, parseFailurePage, parseFailureSize, parseFailureTotal, replayingFailure, loadParseFailures, replayParseFailure } = useIngestQuarantine(workspace, ingestTab)
 const refreshing = ref(false)
 let refreshGeneration = 0
-const confirming = ref(false)
-const readControllers = new Map<LoadKey, AbortController>()
-let disposed = false
-const sourceError = ref('')
-const outputError = ref('')
-const renderError = ref('')
-const renderText = ref('')
-const showRender = ref(false)
-const showSourceDialog = ref(false)
-const showOutputDialog = ref(false)
-const editingSourceId = ref<string | null>(null)
-const credentialAction = ref<'KEEP' | 'REPLACE' | 'CLEAR'>('KEEP')
-const lastSavedSource = ref<LogSource | null>(null)
 
-const tasks = ref<IngestTask[]>([])
-const taskSummary = ref<IngestSummary | null>(null)
-const summaryStale = computed(() => !!loadErrors.value.summary && !!taskSummary.value)
-const taskBusy = ref<Record<string, boolean>>({})
-const testDialog = ref(false)
-const testTarget = ref<IngestTask | null>(null)
-const testSample = ref('')
-type ParsePreviewAttempt = { ruleId?: string; rule?: string; format?: string; matched: boolean; error?: string }
-type ParsePreviewResult = { ok: boolean; matched: boolean; sample: string; rule?: string; format?: string; fields: Record<string, string>; attempts?: ParsePreviewAttempt[]; error?: string }
-const testResult = ref<ParsePreviewResult | null>(null)
-const testLoading = ref(false)
-const parseFailures = ref<IngestParseFailure[]>([])
-const parseFailurePage = ref(1)
-const parseFailureSize = ref(50)
-const parseFailureTotal = ref(0)
-const replayingFailure = ref('')
-let previewGeneration = 0
-let previewController: AbortController | null = null
-
-type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
-const HEALTH_KEYS: Record<string, string> = {
-  HEALTHY: 'common.healthy', DEGRADED: 'common.degraded', STALE: 'common.stale',
-  IDLE: 'common.idle', ERROR: 'common.error', DISABLED: 'common.disabled',
-}
-function healthMeta(health: string) {
-  const type: TagType = health === 'HEALTHY' ? 'success' : health === 'ERROR' ? 'danger' : health === 'DEGRADED' || health === 'STALE' ? 'warning' : 'info'
-  return { text: HEALTH_KEYS[health] ? t(HEALTH_KEYS[health]) : health, type }
-}
-function credentialLabel(action: string): string {
-  return action === 'KEEP' ? t('workflow.credentialKEEP') : action === 'REPLACE' ? t('workflow.credentialREPLACE') : t('workflow.credentialCLEAR')
-}
-function outputLabel(id: string | null | undefined): string {
-  if (!id) return copy.value.platformDefault
-  const output = outputs.value.find(item => item.id === id)
-  return output ? `${output.name} · ${output.id}` : id
-}
-
-/** Moves a failure out of the shared action slot into the surface that owns it. */
-function isolateError(target: { value: string }, completed: boolean): void {
-  if (completed) { target.value = ''; return }
-  target.value = actionError.value
-  actionError.value = ''
-}
-
-async function loadList<T>(key: LoadKey, request: (signal: AbortSignal) => Promise<T>, publish: (value: T) => void): Promise<void> {
-  if (disposed) return
-  readControllers.get(key)?.abort()
-  const controller = new AbortController()
-  readControllers.set(key, controller)
-  loadStates.value = { ...loadStates.value, [key]: true }
-  const ownsResult = () => !disposed && readControllers.get(key) === controller && !controller.signal.aborted
-  try {
-    const value = await request(controller.signal)
-    if (!ownsResult()) return
-    publish(value)
-    loadErrors.value = { ...loadErrors.value, [key]: '' }
-  } catch (failure) {
-    if (ownsResult()) loadErrors.value = { ...loadErrors.value, [key]: String(failure) }
-  } finally {
-    if (readControllers.get(key) === controller) {
-      readControllers.delete(key)
-      loadStates.value = { ...loadStates.value, [key]: false }
-    }
-  }
-}
-const loadSources = () => loadList('sources',
-  signal => listSourcesPage(sourcePage.value, sourceSize.value, sourceQuery.value, { signal }), value => {
-    sources.value = value.items
-    sourceTotal.value = value.total
-    const lastPage = Math.max(1, Math.ceil(value.total / sourceSize.value))
-    if (sourcePage.value > lastPage) sourcePage.value = lastPage
-  })
-function applySourceSearch() {
-  sourceQuery.value = sourceSearchDraft.value.trim()
-  if (sourcePage.value === 1) void loadSources()
-  else sourcePage.value = 1
-}
-watch([sourcePage, sourceSize], () => { void loadSources() })
-const loadOutputs = () => loadList('outputs', signal => listOutputs({ signal }), value => { outputs.value = value })
-const loadParseRules = () => loadList('rules',
-  signal => listParseRulesPage(rulePage.value, ruleSize.value, ruleQuery.value, { signal }), value => {
-    parseRules.value = value.items
-    ruleTotal.value = value.total
-    const lastPage = Math.max(1, Math.ceil(value.total / ruleSize.value))
-    if (rulePage.value > lastPage) rulePage.value = lastPage
-  })
-function applyRuleSearch() {
-  ruleQuery.value = ruleSearchDraft.value.trim()
-  if (rulePage.value === 1) void loadParseRules()
-  else rulePage.value = 1
-}
-watch([rulePage, ruleSize], () => { void loadParseRules() })
-async function loadSourceRuleOptions(query: string) {
-  const generation = ++sourceRuleSearchGeneration
-  sourceRuleLoading.value = true
-  await loadList('ruleOptions', signal => listParseRulesPage(1, 50, query, { signal }), value => {
-    sourceRuleOptions.value = value.items
-    sourceRuleTotal.value = value.total
-  })
-  if (generation === sourceRuleSearchGeneration) sourceRuleLoading.value = false
-}
-function searchSourceRules(query: string) {
-  if (sourceRuleSearchTimer !== null) window.clearTimeout(sourceRuleSearchTimer)
-  readControllers.get('ruleOptions')?.abort()
-  sourceRuleOptions.value = []
-  sourceRuleTotal.value = 0
-  sourceRuleLoading.value = true
-  sourceRuleSearchGeneration++
-  sourceRuleSearchTimer = window.setTimeout(() => {
-    sourceRuleSearchTimer = null
-    void loadSourceRuleOptions(query)
-  }, 250)
-}
-function loadSelectedSourceRules(ids: string[]) {
-  selectedSourceRules.value = []
-  if (!ids.length) return Promise.resolve()
-  return loadList('selectedRules', signal => resolveParseRules(ids, { signal }), value => {
-    selectedSourceRules.value = value
-    sourceRuleSelectionVersion.value++
-  })
-}
-function sourceRuleOptionLabel(id: string) {
-  return sourceRuleOptions.value.find(rule => rule.id === id)?.name
-    ?? selectedSourceRules.value.find(rule => rule.id === id)?.name ?? id
-}
-function onSourceRuleChange(ids: string[]) {
-  const known = [...sourceRuleOptions.value, ...selectedSourceRules.value]
-  selectedSourceRules.value = ids.flatMap(id => {
-    const rule = known.find(item => item.id === id)
-    return rule ? [rule] : []
-  })
-}
-const loadCategories = () => loadList('categories', signal => listCategories({ signal }), value => { logCategories.value = value })
-const loadTasks = () => Promise.all([
-  loadList('tasks', signal => listIngestTasks({ signal }), value => { tasks.value = value }),
-  loadList('summary', signal => ingestSummary({ signal }), value => { taskSummary.value = value }),
-])
-const loadParseFailures = () => loadList('quarantine', signal =>
-  listIngestParseFailures(parseFailurePage.value, parseFailureSize.value, { signal }), value => {
-  parseFailures.value = value.items
-  parseFailureTotal.value = value.total
-})
-async function replayParseFailure(row: IngestParseFailure) {
-  if (!canWrite.value || replayingFailure.value || confirming.value || disposed) return
-  confirming.value = true
-  let confirmed = false
-  try { confirmed = await confirmDanger(copy.value.replayWarning) }
-  finally { confirming.value = false }
-  if (!confirmed || !canWrite.value || disposed || replayingFailure.value) return
-  replayingFailure.value = row.id
-  try {
-    const result = await replayIngestParseFailure(row.id)
-    const index = parseFailures.value.findIndex(item => item.id === row.id)
-    if (index >= 0) parseFailures.value.splice(index, 1, result)
-    if (result.replayStatus === 'REPLAYED') {
-      ElMessage.success(t('ingest.replaySucceeded', { eventId: result.replayedEventId || t('time.notAvailable') }))
-    } else {
-      ElMessage.warning(t('ingest.replayFailed', { reason: result.lastError || result.failureReason }))
-    }
-    await loadParseFailures()
-  } catch (failure) {
-    loadErrors.value = { ...loadErrors.value, quarantine: String(failure) }
-  } finally {
-    replayingFailure.value = ''
-  }
-}
 function onIngestTab(key: string | number, syncRoute = true) {
   const tab = String(key)
   ingestTab.value = validTabs.includes(tab) ? tab : 'tasks'
@@ -337,7 +130,7 @@ async function editSourceById(id: string) {
   const generation = setupEditGeneration
   const controller = new AbortController()
   setupEditController = controller
-  const ownsResult = () => !disposed && !controller.signal.aborted && generation === setupEditGeneration
+  const ownsResult = () => !workspace.disposed && !controller.signal.aborted && generation === setupEditGeneration
     && canWrite.value && showSetup.value && setupId.value === id
   try {
     const { source } = await getSource(id, { signal: controller.signal })
@@ -371,279 +164,8 @@ watch(() => route.query.sourceId, id => {
   setupId.value = id; showSetup.value = true
 }, { immediate: true, flush: 'sync' })
 watch(canWrite, allowed => { if (!allowed) cancelSetupEdit() }, { flush: 'sync' })
-
-const EMPTY_SOURCE = { name: '', type: 'FILE', format: 'AUTO', path: '', address: '', topic: '', env: 'local', readFrom: 'beginning', multiline: '', description: '', protocol: 'tcp', charset: 'utf-8', timeField: '', timezone: 'Asia/Shanghai', tags: '', frequency: 1, ignoreOlderSeconds: null as number | null, categoryId: '', groupId: '', sinkTargetId: '', parseRuleIds: [] as string[], enabled: true }
-
-function prepareSourceRuleSelector(ids: string[]) {
-  if (sourceRuleSearchTimer !== null) { window.clearTimeout(sourceRuleSearchTimer); sourceRuleSearchTimer = null }
-  readControllers.get('ruleOptions')?.abort()
-  readControllers.get('selectedRules')?.abort()
-  sourceRuleOptions.value = []
-  selectedSourceRules.value = []
-  sourceRuleSelectionVersion.value++
-  sourceRuleTotal.value = 0
-  loadErrors.value = { ...loadErrors.value, ruleOptions: '', selectedRules: '' }
-  void loadSourceRuleOptions('')
-  void loadSelectedSourceRules(ids)
-}
-function openCreateSource() {
-  if (!canWrite.value) return
-  onIngestTab('sources')
-  editingSourceId.value = null
-  newSource.value = { ...EMPTY_SOURCE }
-  sourceErrors.value = {}
-  sourceError.value = ''
-  actionError.value = ''
-  showSourceDialog.value = true
-  prepareSourceRuleSelector([])
-}
-function openEditSource(source: LogSource) {
-  if (!canWrite.value) return
-  cancelSetupEdit()
-  editingSourceId.value = source.id
-  newSource.value = {
-    name: source.name, type: source.type || 'FILE', format: source.format || 'AUTO',
-    path: source.path || '', address: source.address || '', topic: source.topic || '', env: source.env || 'local',
-    readFrom: source.readFrom || 'beginning', multiline: source.multiline || '', protocol: source.protocol || 'tcp',
-    description: source.description || '', charset: source.charset || 'utf-8', timeField: source.timeField || '',
-    timezone: source.timezone || 'Asia/Shanghai', tags: (source.tags || []).join(','),
-    frequency: source.frequency ?? 1, ignoreOlderSeconds: source.ignoreOlderSeconds ?? null,
-    categoryId: source.categoryId || '', groupId: source.groupId || '',
-    sinkTargetId: source.sinkTargetId || '',
-    parseRuleIds: [...(source.parseRuleIds || [])], enabled: source.enabled,
-  }
-  sourceErrors.value = {}
-  sourceError.value = ''
-  actionError.value = ''
-  showSourceDialog.value = true
-  prepareSourceRuleSelector(source.parseRuleIds || [])
-}
-
-/** Required fields only; empty optional targets are submitted as empty. */
-function validateSource(asDraft = false): boolean {
-  sourceErrors.value = {}
-  if (!newSource.value.name.trim()) sourceErrors.value.name = t('forms.fieldRequired', { field: t('ingest.sourceName') })
-  if (!asDraft && newSource.value.enabled) {
-    if (newSource.value.type === 'FILE' && !newSource.value.path.trim()) sourceErrors.value.path = copy.value.requiredConnection
-    if (['SOCKET', 'SYSLOG', 'KAFKA'].includes(newSource.value.type) && !newSource.value.address.trim()) sourceErrors.value.address = copy.value.requiredConnection
-    if (newSource.value.type === 'KAFKA' && !newSource.value.topic.trim()) sourceErrors.value.topic = copy.value.requiredConnection
-  }
-  return !Object.keys(sourceErrors.value).length
-}
-
-function validateOutput(): boolean {
-  outputErrors.value = {}
-  if (!newOutput.value.name.trim()) outputErrors.value.name = t('forms.fieldRequired', { field: t('ingest.outputName') })
-  if (!['GLS_INGEST', 'HTTP'].includes(newOutput.value.type)) outputErrors.value.type = t('workflow.unsupported')
-  if (editingOutputId.value && credentialAction.value === 'REPLACE' && !newOutput.value.authToken.trim()) outputErrors.value.authToken = t('forms.required')
-  const uri = newOutput.value.uri.trim()
-  if (!uri) outputErrors.value.uri = t('forms.fieldRequired', { field: t('ingest.targetUrl') })
-  else {
-    try {
-      const url = new URL(uri)
-      if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.hash) outputErrors.value.uri = t('forms.invalidInput')
-    } catch { outputErrors.value.uri = t('forms.invalidInput') }
-  }
-  return !Object.keys(outputErrors.value).length
-}
-
-async function saveSource(asDraft = false) {
-  if (!canWrite.value || !validateSource(asDraft)) return
-  sourceError.value = ''
-  isolateError(sourceError, await mutation.run(async () => {
-  const source: LogSourceInput = {
-    name: newSource.value.name.trim(), type: newSource.value.type, format: newSource.value.format,
-    path: newSource.value.path.trim() || null, address: newSource.value.address.trim() || null,
-    topic: newSource.value.topic.trim() || null, env: newSource.value.env.trim() || null,
-    enabled: asDraft ? false : newSource.value.enabled, readFrom: newSource.value.readFrom || null,
-    multiline: newSource.value.multiline.trim() || null, description: newSource.value.description.trim() || null,
-    protocol: newSource.value.protocol || null, charset: newSource.value.charset || null,
-    timeField: newSource.value.timeField.trim() || null, timezone: newSource.value.timezone || null,
-    tags: newSource.value.tags.split(/[,\uFF0C\s]+/).filter(Boolean),
-    frequency: newSource.value.frequency, ignoreOlderSeconds: newSource.value.ignoreOlderSeconds,
-    groupId: newSource.value.groupId || null,
-    categoryId: newSource.value.categoryId || null,
-    sinkTargetId: newSource.value.sinkTargetId || null,
-    parseRuleIds: newSource.value.parseRuleIds,
-  }
-  const saved = editingSourceId.value ? (await updateSource(editingSourceId.value, source)).source : await createSource(source)
-  if (!disposed) { lastSavedSource.value = saved; openSetup(saved.id) }
-  sourceSearchDraft.value = source.name
-  sourceQuery.value = source.name
-  sourcePage.value = 1
-  editingSourceId.value = null
-  showSourceDialog.value = false
-  await loadSources()
-  }))
-}
-async function removeSource(id: string) {
-  if (!await confirmWrite('ingest.deleteSourceConfirm')) return
-  return mutation.run(async () => {
-  await deleteSource(id)
-  await loadSources()
-  })
-}
-/**
- * Turns a failed vector.toml render into actionable, bilingual guidance.
- * The backend copy is Chinese-only and hard-coded, so the two known failure
- * modes (no output target -> 409, viewer role -> 403) are mapped to locale
- * keys instead of surfacing a message a non-Chinese operator cannot act on.
- * Any other status keeps the already-localized transport message untouched.
- */
-function renderFailureHint(failure: unknown): string {
-  if (failure instanceof ApiError && failure.status === 409) return `${t('ingest.renderNoSinkHint')} · ${failure.message}`
-  if (failure instanceof ApiError && failure.status === 403) return t('ingest.renderForbiddenHint')
-  return failure instanceof Error ? failure.message : String(failure)
-}
-async function doRender() {
-  renderError.value = ''
-  renderText.value = ''
-  showRender.value = false
-  let failure: unknown
-  const completed = await mutation.run(async () => {
-    try { renderText.value = await renderConfig(); showRender.value = true }
-    catch (error) { failure = error; throw error }
-  })
-  // A false return with no captured error means the shared action slot was busy:
-  // leave the pending operation's own feedback untouched rather than showing 'undefined'.
-  if (!completed && failure === undefined) return
-  if (completed) return
-  renderError.value = renderFailureHint(failure)
-  // The render surface owns this failure; keep it out of the shared action slot.
-  actionError.value = ''
-}
-async function copyRender() {
-  renderError.value = ''
-  isolateError(renderError, await mutation.run(async () => { await navigator.clipboard.writeText(renderText.value) }))
-}
-function openEditOutput(output: SinkTarget) {
-  if (!canWrite.value) return
-  editingOutputId.value = output.id
-  credentialAction.value = 'KEEP'
-  newOutput.value = { name: output.name, type: output.type, uri: output.uri, authToken: '', enabled: output.enabled }
-  outputErrors.value = {}; outputError.value = ''; outputValidation.value = ''; actionError.value = ''; showOutputDialog.value = true
-}
-function openCreateOutput() {
-  if (!canWrite.value) return
-  editingOutputId.value = null
-  outputValidation.value = ''
-  credentialAction.value = 'REPLACE'
-  newOutput.value = { name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true }
-  outputErrors.value = {}
-  outputError.value = ''
-  actionError.value = ''
-  showOutputDialog.value = true
-}
-function outputPayload() {
-  return { name: newOutput.value.name.trim(), type: newOutput.value.type, uri: newOutput.value.uri.trim(),
-    authToken: !editingOutputId.value || credentialAction.value === 'REPLACE' ? newOutput.value.authToken || null : null, enabled: newOutput.value.enabled }
-}
-async function checkOutput() {
-  if (!canWrite.value || !validateOutput()) return
-  outputValidation.value = ''; outputError.value = ''
-  isolateError(outputError, await mutation.run(async () => {
-    await validateOutputConfig(outputPayload())
-    outputValidation.value = copy.value.validated
-  }))
-}
-watch(newOutput, () => { outputValidation.value = '' }, { deep: true })
-watch(credentialAction, () => { outputValidation.value = ''; newOutput.value.authToken = ''; outputErrors.value = {} })
-async function addOutput() {
-  if (!canWrite.value || !validateOutput()) return
-  outputError.value = ''
-  isolateError(outputError, await mutation.run(async () => {
-  const target = outputPayload()
-  if (editingOutputId.value) await updateOutput(editingOutputId.value, target, credentialAction.value)
-  else await createOutput(target)
-  newOutput.value = { name: '', type: 'GLS_INGEST', uri: '', authToken: '', enabled: true }
-  showOutputDialog.value = false
-  await loadOutputs()
-  }))
-}
-async function removeOutput(id: string) {
-  if (!await confirmWrite('ingest.deleteOutputConfirm')) return
-  return mutation.run(async () => {
-  await deleteOutput(id)
-  await loadOutputs()
-  })
-}
-async function removeParseRule(id: string) {
-  if (!await confirmWrite('ingest.deleteRuleConfirm')) return
-  return mutation.run(async () => {
-  await deleteParseRule(id)
-  await loadParseRules()
-  })
-}
-
-async function confirmWrite(key: string, params?: Record<string, string>): Promise<boolean> {
-  if (!canWrite.value || actionBusy.value || confirming.value || disposed) return false
-  confirming.value = true
-  try {
-    const confirmed = await confirmDanger(t(key, params))
-    return confirmed && canWrite.value && !actionBusy.value && !disposed
-  } finally { confirming.value = false }
-}
-
-async function toggleTask(task: IngestTask) {
-  const { id, name, enabled } = task
-  if (taskBusy.value[id]) return
-  if (!await confirmWrite(enabled ? 'ingest.stopTaskConfirm' : 'ingest.startTaskConfirm', { name })) return
-  if (taskBusy.value[id]) return
-  const current = tasks.value.find(item => item.id === id)
-  if (!current || current.enabled !== enabled) return
-  taskBusy.value = { ...taskBusy.value, [id]: true }
-  try { enabled ? await stopIngestTask(id) : await startIngestTask(id); await loadTasks() }
-  catch (failure) { actionError.value = failure instanceof Error ? failure.message : String(failure) }
-  finally { taskBusy.value = { ...taskBusy.value, [id]: false } }
-}
-function openTest(task: IngestTask) {
-  if (!canWrite.value) return
-  cancelPreview()
-  actionError.value = ''
-  testTarget.value = task; testSample.value = ''; testResult.value = null; testDialog.value = true
-}
-function cancelPreview() {
-  previewGeneration++
-  previewController?.abort()
-  previewController = null
-  testLoading.value = false
-}
-function toggleTaskRow(row: unknown) { toggleTask(row as IngestTask) }
-function openTestRow(row: unknown) { openTest(row as IngestTask) }
-function defaultPreviewSample(task: IngestTask): string {
-  return JSON.stringify({
-    collector: task.collector,
-    host: 'preview-host',
-    source: 'auth',
-    severity: 'HIGH',
-    message: 'Failed password for invalid user admin',
-    user: 'admin',
-  }, null, 2)
-}
-watch(testSample, () => { cancelPreview(); testResult.value = null }, { flush: 'sync' })
-async function runTest() {
-  if (!canWrite.value || !testTarget.value || !testDialog.value || testLoading.value || !testSample.value.trim()) return
-  const target = testTarget.value
-  const generation = ++previewGeneration
-  const controller = new AbortController()
-  previewController = controller
-  testLoading.value = true
-  testResult.value = null
-  const sample = testSample.value
-  try {
-    const result = await previewSource(target.id, sample, { signal: controller.signal })
-    if (!disposed && testDialog.value && generation === previewGeneration && !controller.signal.aborted) testResult.value = result
-  } catch (error) {
-    if (!disposed && testDialog.value && generation === previewGeneration && !controller.signal.aborted) testResult.value = { ok: false, matched: false, sample, fields: {}, error: String(error) }
-  } finally {
-    if (generation === previewGeneration) { previewController = null; testLoading.value = false }
-  }
-}
-
-const showSourceDialogGuard = useFormDialog(showSourceDialog, () => newSource.value, () => actionBusy.value)
-const showOutputDialogGuard = useFormDialog(showOutputDialog, () => ({ output: newOutput.value, credentialAction: credentialAction.value }), () => actionBusy.value)
 async function refreshAll() {
-  if (disposed) return
+  if (workspace.disposed) return
   const generation = ++refreshGeneration
   actionError.value = ''
   loadErrors.value = {}
@@ -653,26 +175,7 @@ async function refreshAll() {
   } finally { if (generation === refreshGeneration) refreshing.value = false }
 }
 onMounted(() => { void refreshAll() })
-watch(testDialog, open => { if (!open) cancelPreview() })
-watch([parseFailurePage, parseFailureSize], () => {
-  if (ingestTab.value === 'quarantine') void loadParseFailures()
-})
-watch(showSourceDialog, open => {
-  if (open) return
-  if (sourceRuleSearchTimer !== null) { window.clearTimeout(sourceRuleSearchTimer); sourceRuleSearchTimer = null }
-  sourceRuleSearchGeneration++
-  sourceRuleLoading.value = false
-  readControllers.get('ruleOptions')?.abort()
-  readControllers.get('selectedRules')?.abort()
-})
-onUnmounted(() => {
-  disposed = true
-  cancelSetupEdit()
-  cancelPreview()
-  if (sourceRuleSearchTimer !== null) window.clearTimeout(sourceRuleSearchTimer)
-  for (const controller of readControllers.values()) controller.abort()
-  readControllers.clear()
-})
+onUnmounted(cancelSetupEdit)
 </script>
 
 <template>

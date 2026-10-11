@@ -27,7 +27,7 @@ import com.socp.soar.web.persistence.repository.SoarManualTaskRepository;
 import com.socp.soar.web.persistence.repository.SoarNodeRunRepository;
 import com.socp.soar.web.persistence.repository.SoarRunEventRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
-import com.socp.soar.web.service.PlaybookExecutor;
+import com.socp.soar.web.service.LegacyPlaybookActions;
 import com.socp.soar.web.temporal.request.ActionRequest;
 import com.socp.soar.web.temporal.request.SoarNodeRequest;
 import org.junit.jupiter.api.AfterEach;
@@ -65,7 +65,7 @@ class SoarActivityImplCoverageTest {
     private static final String APPROVAL_KEY = RUN_ID + ":node:" + NODE_ID;
 
     @Mock
-    private PlaybookExecutor executor;
+    private LegacyPlaybookActions executor;
     @Mock
     private SoarRunRepository runs;
     @Mock
@@ -314,7 +314,7 @@ class SoarActivityImplCoverageTest {
     }
 
     @Test
-    void executeNodeFallsBackToTheLegacyExecutorForNonNamespacedActions() {
+    void historicalGraphActionUsesOnlyTheLegacyActionAdapter() {
         SoarRunEntity run = run("RUNNING");
         givenRunLocked(run);
         givenNoPriorNodeRun();
@@ -327,6 +327,38 @@ class SoarActivityImplCoverageTest {
 
         assertThat(result.status()).isEqualTo("SUCCEEDED");
         assertThat(result.outputJson()).contains("legacy-1");
+        verify(executor).executeAction(eq("notify"), anyMap(), eq(false),
+                eq(NODE_ID.hashCode() & Integer.MAX_VALUE));
+    }
+
+    @Test
+    void namespacedMissingActionNeverFallsBackToLegacyActions() {
+        SoarRunEntity run = run("RUNNING");
+        givenRunLocked(run);
+        givenNoPriorNodeRun();
+        given(connectorRegistry.execute(any(ActionRequest.class)))
+                .willReturn(ActionResult.failed("SOAR_ACTION_NOT_FOUND", "unknown action", false));
+
+        SoarNodeResult result = activity.executeNode(nodeRequest("socp.unknown/action", "{}", 1));
+
+        assertThat(result.status()).isEqualTo("FAILED");
+        assertThat(result.errorCode()).isEqualTo("SOAR_ACTION_NOT_FOUND");
+        org.mockito.Mockito.verifyNoInteractions(executor);
+    }
+
+    @Test
+    void legacyActionDoesNotOverrideAnExistingConnectorFailure() {
+        SoarRunEntity run = run("RUNNING");
+        givenRunLocked(run);
+        givenNoPriorNodeRun();
+        given(connectorRegistry.execute(any(ActionRequest.class)))
+                .willReturn(ActionResult.failed("REMOTE_DENIED", "denied", false));
+
+        SoarNodeResult result = activity.executeNode(nodeRequest("notify", "{}", 1));
+
+        assertThat(result.status()).isEqualTo("FAILED");
+        assertThat(result.errorCode()).isEqualTo("REMOTE_DENIED");
+        org.mockito.Mockito.verifyNoInteractions(executor);
     }
 
     @Test

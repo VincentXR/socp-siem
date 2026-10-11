@@ -491,7 +491,6 @@ body.el-popup-parent--hidden .socp-content { overflow: hidden; }
 .stat-card .label { color: var(--ns-text-3); font-size: var(--ns-fs-meta); margin-top: 4px; font-weight: 500; letter-spacing: 0; text-transform: none; }
 
 /* ============ 按钮 ============ */
-.el-button { border-radius: 6px; font-weight: 500; padding: 8px 18px; }
 .el-button:not(.el-button--primary):not(.el-button--success):not(.el-button--warning):not(.el-button--danger) {
   background: var(--ns-surface); border-color: var(--ns-border-strong); color: var(--ns-text);
 }
@@ -597,7 +596,6 @@ body.el-popup-parent--hidden .socp-content { overflow: hidden; }
 .el-input__wrapper, .el-textarea__inner {
   background: var(--ns-input-bg) !important;
   box-shadow: 0 0 0 1px var(--ns-border-strong) inset !important;
-  border-radius: 12px;
 }
 .el-input__inner { color: var(--ns-text) !important; }
 .el-input__wrapper.is-focus, .el-textarea__inner:focus {
@@ -996,7 +994,7 @@ body {
   background: var(--ns-input-bg);
   box-shadow: 0 0 0 1px var(--ns-border) inset !important;
 }
-/* 控件圆角档：早期 .el-textarea__inner 的 12px 只在无后写规则时生效，这里显式对齐输入框 */
+/* Keep textarea geometry aligned with the resolved compact input controls. */
 .el-textarea__inner { border-radius: 6px; }
 .el-input__wrapper:hover, .el-select__wrapper:hover { box-shadow: 0 0 0 1px var(--ns-border-strong) inset !important; }
 .el-input__wrapper.is-focus, .el-select__wrapper.is-focused { box-shadow: 0 0 0 1px var(--ns-accent) inset, var(--ns-focus) !important; }

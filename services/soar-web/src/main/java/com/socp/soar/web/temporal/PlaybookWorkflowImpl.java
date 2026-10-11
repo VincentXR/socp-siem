@@ -2,15 +2,12 @@ package com.socp.soar.web.temporal;
 
 import com.socp.soar.web.temporal.request.PlaybookExecRequest;
 
-import com.socp.soar.web.domain.PlaybookActionStatus;
-import com.socp.soar.web.domain.PlaybookActionType;
+import com.socp.soar.web.service.LegacyPlaybookResult;
 import io.temporal.activity.ActivityOptions;
 import io.temporal.workflow.Workflow;
 
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -31,51 +28,18 @@ public class PlaybookWorkflowImpl implements PlaybookWorkflow {
 
     @Override
     public Map<String, Object> executePlaybook(PlaybookExecRequest req) {
-        List<Map<String, Object>> results = new ArrayList<>();
-        boolean previousFailed = false;
-        int retryCount = 0;
-        String firstError = null;
-        boolean compensating = false;
-
+        LegacyPlaybookResult result = new LegacyPlaybookResult();
         int actionIndex = 0;
         for (String action : req.actions()) {
-            Map<String, Object> r = activity.executeAction(action, req.alarm(), previousFailed, actionIndex++);
-            results.add(r);
-            if (PlaybookActionType.compensation(action)) {
-                previousFailed = false;
-                compensating = true;
-            } else {
-                boolean ok = PlaybookActionStatus.isSuccessful(String.valueOf(r.get("status")));
-                if (!ok) {
-                    previousFailed = true;
-                    Object at = r.get("attempts");
-                    retryCount += at instanceof Number n ? n.intValue() : 1;
-                    if (firstError == null) {
-                        firstError = String.valueOf(r.getOrDefault("error", "action failed"));
-                    }
-                } else {
-                    previousFailed = false;
-                }
-            }
+            result.accept(action, activity.executeAction(action, req.alarm(), result.previousFailed(), actionIndex++));
         }
-
-        boolean anyFailed = results.stream()
-                .anyMatch(r -> PlaybookActionStatus.isFailed(String.valueOf(r.get("status"))));
-        boolean anySimulated = results.stream()
-                .anyMatch(r -> PlaybookActionStatus.SIMULATED.wireValue().equals(r.get("status")));
-        String execStatus = anyFailed
-                ? (compensating ? "COMPENSATING" : "FAILED")
-                : (anySimulated ? "SIMULATED" : "SUCCESS");
 
         Map<String, Object> exec = new LinkedHashMap<>();
         exec.put("executionId", "EXEC-" + Workflow.randomUUID().toString().substring(0, 8).toUpperCase());
         exec.put("playbookId", req.playbookId());
         exec.put("playbook", req.playbookName());
         exec.put("trigger", req.trigger());
-        exec.put("status", execStatus);
-        exec.put("retryCount", retryCount);
-        if (firstError != null) exec.put("error", firstError);
-        exec.put("results", results);
+        result.appendTo(exec);
         // Temporal Workflow 内禁止非确定性时间源，用 Workflow.currentTimeMillis()
         exec.put("ts", java.time.Instant.ofEpochMilli(Workflow.currentTimeMillis()).toString());
         exec.put("executor", "temporal");

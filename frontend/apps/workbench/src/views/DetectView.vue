@@ -1,16 +1,8 @@
 <script setup lang="ts">
-import { takeDetectionSample } from '../lib/detection-sample'
-import { onBeforeRouteUpdate, useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
-import { watch } from 'vue'
-import { useUnsavedChanges } from '../composables/useUnsavedChanges'
+import { useRoute, useRouter, type LocationQueryRaw } from 'vue-router'
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
-const route = useRoute()
-const router = useRouter()
-const investigationReturn = computed(() => typeof route.query.returnTo === 'string' && /^\/(alarms|cases)(?:[?#]|$)/.test(route.query.returnTo) ? route.query.returnTo : '')
-const showTest = ref(false)
-const ruleKeyword = ref('')
-
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
@@ -29,7 +21,6 @@ import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import ElSwitch from 'element-plus/es/components/switch/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
 import { useLatestRequest } from '../composables/useLatestRequest'
@@ -39,18 +30,24 @@ import RuleRevisionHistory from '../components/RuleRevisionHistory.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { WORKBENCH_STATE } from '../app/workbenchState'
 import {
-  activateGasRule, createGasRule, deleteGasRule, gasStats, listRulePage, getRule, SEVERITIES, updateGasRule,
-  listFields, listWatchlists, testGasRules,
-  listTechniques,
-  type DetectionIngestEvent, type FieldDef, type GasStats, type LateEventPolicy, type ReferenceSet, type RuleCondition, type RuleSpec, type Technique,
+  activateGasRule, deleteGasRule, gasStats, listRulePage, SEVERITIES, updateGasRule,
+  listFields, listWatchlists, listTechniques,
+  type FieldDef, type GasStats, type ReferenceSet, type RuleCondition, type RuleSpec, type Technique,
 } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { useConfirm } from '../composables/useConfirm'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { tOr } from '../utils/i18nLabel'
-import { traceRuleConditions } from '../lib/detection-test'
 import { ApiError } from '../api/core'
+import { ADVANCED_TYPES, RULE_TYPES, STATEFUL_TYPES, clone, normalizeRuleSpec, textValue } from '../lib/detection-editor'
+import { useDetectRuleEditor } from '../composables/detect/useDetectRuleEditor'
+import { useDetectRuleTest } from '../composables/detect/useDetectRuleTest'
 
+const route = useRoute()
+const router = useRouter()
+const investigationReturn = computed(() => typeof route.query.returnTo === 'string' && /^\/(alarms|cases)(?:[?#]|$)/.test(route.query.returnTo) ? route.query.returnTo : '')
+const ruleKeyword = ref('')
+const ruleStatusFilter = ref('')
 const { t } = useI18n()
 const { confirmDanger } = useConfirm()
 const { columnWidth, onHeaderDragEnd } = useTableColumnWidths('detect-rules')
@@ -58,40 +55,16 @@ const state = inject(WORKBENCH_STATE, null)
 const currentRole = computed(() => state?.currentRole.value ?? '')
 const canActivate = computed(() => ['admin', 'role_admin'].includes(currentRole.value.toLowerCase()))
 const canManageRules = computed(() => ['admin', 'role_admin', 'analyst', 'role_analyst'].includes(currentRole.value.toLowerCase()))
-type RuleEditorForm = {
-  id: string; name: string; type: string; severity: string; message: string
-  alertTitle: string; alertDescription: string; enabled: boolean; status: string
-  window: string; keyField: string; groupBy: string; routingField: string
-  lateAllowedLateness: string; lateHandling: 'DROP' | 'ACCEPT'; threshold: number | null
-  valueField: string; warmup: number | null; baselineWindows: number | null; sigma: number | null
-  minCount: number | null; mitre: string; version: string; owner: string
-  contentPack: string; contentVersion: string; match: RuleCondition[]; matchAny: RuleCondition[][]
-  whitelist: RuleCondition[]; steps: RuleCondition[][]
-}
-
-type TestConditionTrace = { condition: RuleCondition; matched: boolean; observed: string; scope?: string }
-type RuleTestTrace = {
-  id: string; name: string; type: string; state: 'MATCHED' | 'CANDIDATE' | 'NO_MATCH'
-  reason: string; conditions: TestConditionTrace[]
-}
-type RuleTestResult = { checked: number; matched: number; candidates: number; traces: RuleTestTrace[] }
-
-const RULE_TYPES = ['pattern', 'threshold', 'correlation', 'correlation-set', 'baseline', 'rare']
-const ADVANCED_TYPES = ['correlation-set', 'baseline', 'rare']
-const STATEFUL_TYPES = ['threshold', 'correlation', 'correlation-set', 'baseline', 'rare']
-
 const rules = ref<RuleSpec[]>([])
 const rulesTotal = ref(0)
 const listRequests = useLatestRequest()
-const editorRequests = useLatestRequest()
-const editorLoading = ref(false)
 let pendingPagination: LocationQueryRaw | null = null
 function updatePagination(patch: LocationQueryRaw): void {
   // The pager emits size and page reset in one tick. Merge them before
   // navigating so the second event cannot restore the previous page size.
   pendingPagination = { ...(pendingPagination ?? route.query), ...patch }
   queueMicrotask(() => {
-    if (!pendingPagination) return
+    if (!pendingPagination || disposed) { pendingPagination = null; return }
     const query = pendingPagination
     pendingPagination = null
     void router.push({ query })
@@ -111,7 +84,6 @@ const techniques = ref<Technique[]>([])
 const gasStat = ref<GasStats>({ rules: 0, eventCount: 0, alertCount: 0, dropCount: 0, suppressedCount: 0, queueLoad: 0 })
 const loading = ref(false)
 const supportLoading = ref(false)
-const saving = ref(false)
 const loadError = ref('')
 const fieldLoadError = ref('')
 const referenceLoadError = ref('')
@@ -120,111 +92,39 @@ const actionMessage = ref('')
 const listActionBusy = ref(false)
 let disposed = false
 onUnmounted(() => { disposed = true })
-const saveError = ref('')
-const saveNotice = ref('')
-const saveConflict = ref(false)
-// The precondition belongs to the fetched head, never to editable advanced JSON.
-const loadedRevisionToken = ref<string>()
 const historyOpen = ref(false)
 const historyRuleId = ref('')
-/** Row-level problems per condition block, rendered inline by the builders. */
-type ConditionErrors = { match: Record<number, string>; matchAny: Record<number, Record<number, string>>; steps: Record<number, Record<number, string>>; whitelist: Record<number, string> }
-const emptyConditionErrors = (): ConditionErrors => ({ match: {}, matchAny: {}, steps: {}, whitelist: {} })
-const conditionErrors = ref<ConditionErrors>(emptyConditionErrors())
-const ruleFieldErrors = ref<Record<string, string>>({})
-const scopeSection = ref<HTMLElement>()
-const logicSection = ref<HTMLElement>()
-const alertSection = ref<HTMLElement>()
-const showRuleEditor = ref(false)
-const ruleEditingId = ref<string | null>(null)
-const sourceRule = ref<RuleSpec | null>(null)
-const advancedJson = ref('{}')
-const advancedError = ref('')
-const ruleStatusFilter = ref('')
-const testInput = ref({
-  source: 'auth', host: 'workbench-sample', severity: 'HIGH', message: 'Failed password for admin',
-  fieldsText: '{\n  "user": "admin",\n  "attempts": 6\n}',
+const editor = useDetectRuleEditor({
+  canManageRules, canActivate, loadError, reloadRules: loadRules, toggleRule,
+  applySample: sample => preview.applySample(sample),
 })
-const testRuleId = ref('')
-const testError = ref('')
-const testing = ref(false)
-const sampleEventsText = ref('')
-const testResult = ref<RuleTestResult | null>(null)
-const testReceipt = ref<{ revision?: string; ruleId: string; fingerprint: string; at: string; result: RuleTestResult } | null>(null)
-function testFingerprint(): string { return JSON.stringify({ form: ruleForm.value, samples: sampleEventsText.value, input: testInput.value, target: testRuleId.value }) }
-const testReceiptStale = computed(() => Boolean(testReceipt.value && (testReceipt.value.fingerprint !== testFingerprint() || testReceipt.value.revision !== loadedRevisionToken.value)))
-const publicationLink = computed(() => ruleEditingId.value ? router.resolve({ name: 'rule-edit', params: { ruleId: ruleEditingId.value } }).href : '')
-async function publishSavedRule(): Promise<void> {
-  if (!sourceRule.value || changes.dirty.value || !canActivate.value || saving.value) return
-  await toggleRule(sourceRule.value)
-  if (ruleEditingId.value) { const updated = normalizeRuleSpec(await getRule(ruleEditingId.value)); if (updated) { sourceRule.value = updated; ruleForm.value = formFromRule(updated); loadedRevisionToken.value = updated.revisionToken; changes.markSaved() } }
-}
-
-
-function emptyCondition(): RuleCondition { return { field: 'msg', op: 'contains', value: '' } }
-function clone<T>(value: T): T { return value == null ? value : JSON.parse(JSON.stringify(value)) as T }
-function cloneConditionGroups(groups: RuleCondition[][] | undefined): RuleCondition[][] { return groups?.length ? clone(groups) : [] }
-
-function emptyRuleForm(): RuleEditorForm {
-  return {
-    id: '', name: '', type: 'pattern', severity: 'HIGH', message: '', alertTitle: '', alertDescription: '', enabled: false,
-    status: 'DRAFT', window: '60s', keyField: 'src_ip', groupBy: 'src_ip', routingField: 'src_ip',
-    lateAllowedLateness: '60s', lateHandling: 'DROP', threshold: 5, valueField: '', warmup: null,
-    baselineWindows: null, sigma: null, minCount: null, mitre: '', version: '', owner: '', contentPack: '', contentVersion: '',
-    match: [emptyCondition()], matchAny: [], whitelist: [], steps: [],
-  }
-}
-
-function textValue(value: unknown): string { return value == null ? '' : String(value) }
-function numberValue(value: unknown): number | null { if (value == null || value === '') return null; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null }
-
-function formFromRule(rule: RuleSpec): RuleEditorForm {
-  const policy = rule.lateEventPolicy && typeof rule.lateEventPolicy === 'object'
-    ? rule.lateEventPolicy as LateEventPolicy
-    : undefined
-  const groupBy = textValue(rule.groupBy || rule.keyField || rule.routingField)
-  return {
-    id: textValue(rule.id), name: textValue(rule.name), type: textValue(rule.type || 'pattern'), severity: textValue(rule.severity || 'HIGH'),
-    message: textValue(rule.message || rule.alert?.description), alertTitle: textValue(rule.alert?.title || rule.name),
-    alertDescription: textValue(rule.alert?.description || rule.message), enabled: Boolean(rule.enabled),
-    status: textValue(rule.status || (rule.enabled ? 'ACTIVE' : 'DRAFT')).toUpperCase(), window: textValue(rule.window),
-    keyField: groupBy, groupBy, routingField: groupBy,
-    lateAllowedLateness: textValue(policy?.allowedLateness || rule.window),
-    lateHandling: String(policy?.handling || 'DROP').toUpperCase() === 'ACCEPT' ? 'ACCEPT' : 'DROP',
-    threshold: numberValue(rule.threshold),
-    valueField: textValue(rule.valueField), warmup: numberValue(rule.warmup), baselineWindows: numberValue(rule.baselineWindows),
-    sigma: numberValue(rule.sigma), minCount: numberValue(rule.minCount), mitre: textValue(rule.mitre), version: textValue(rule.version),
-    owner: textValue(rule.owner), contentPack: textValue(rule.contentPack), contentVersion: textValue(rule.contentVersion),
-    match: clone(rule.match ?? []), matchAny: cloneConditionGroups(rule.matchAny), whitelist: clone(rule.whitelist ?? (rule.allowlist as RuleCondition[] | undefined) ?? []), steps: clone(rule.steps ?? []),
-  }
-}
-
-const ruleForm = ref<RuleEditorForm>(emptyRuleForm())
+const {
+  editorLoading, saving, saveError, saveNotice, saveConflict, loadedRevisionToken,
+  conditionErrors, ruleFieldErrors, scopeSection, logicSection, alertSection,
+  showRuleEditor, ruleEditingId, sourceRule, advancedJson, advancedError, ruleForm,
+  changes, rawOnlyRuleType, publicationLink, onGroupByChange, acceptRestoredRule,
+  syncEditorRoute, closeRuleEditor, saveRule, applyAdvancedJson,
+  downloadRuleDraft, publishSavedRule, addMatchAnyGroup, addStep,
+} = editor
+const preview = useDetectRuleTest({
+  canManageRules, rules, showRuleEditor, ruleEditingId, ruleForm, loadedRevisionToken,
+  identity: () => route.fullPath, draftSpec: editor.draftSpec,
+})
+const {
+  showTest, testInput, testRuleId, testError, testing, sampleEventsText, testResult,
+  testReceipt, testReceiptStale, testStateLabel, conditionScopeLabel, runIsolatedTest,
+} = preview
 const ownerOptions = computed(() => {
   const values = new Set(state?.operatorOptions?.value ?? [])
   const current = ruleForm.value.owner.trim()
   if (current) values.add(current)
   return [...values].filter(Boolean)
 })
-const changes = useUnsavedChanges(() => ({ form: ruleForm.value, json: advancedJson.value }), () => showRuleEditor.value, () => saving.value)
-onBeforeRouteUpdate((to, from) => to.path !== from.path || to.query.copy === from.query.copy || changes.canLeave())
-const rawOnlyRuleType = computed(() => Boolean(ruleForm.value.type) && !RULE_TYPES.includes(ruleForm.value.type))
-
-function normalizeRuleSpec(row: unknown): RuleSpec | null {
-  if (!row || typeof row !== 'object') return null
-  const candidate = row as Partial<RuleSpec>
-  if (candidate.id == null || !String(candidate.id).trim() || candidate.name == null || !String(candidate.name).trim()) return null
-  const status = textValue(candidate.status).toUpperCase()
-  return {
-    ...candidate, id: String(candidate.id), name: String(candidate.name), type: String(candidate.type ?? 'pattern'), severity: String(candidate.severity ?? 'HIGH'),
-    status: status || (candidate.enabled ? 'ACTIVE' : 'DRAFT'), enabled: typeof candidate.enabled === 'boolean' ? candidate.enabled : status === 'ACTIVE',
-  } as RuleSpec
-}
-
 async function loadSupport(): Promise<void> {
-  if (supportLoading.value) return
+  if (supportLoading.value || disposed) return
   supportLoading.value = true
   const [statResult, fieldResult, refsetResult, techniqueResult] = await Promise.allSettled([gasStats(), listFields(), listWatchlists(), listTechniques()])
+  if (disposed) return
   if (statResult.status === 'fulfilled') gasStat.value = statResult.value
   if (fieldResult.status === 'fulfilled') {
     fieldDefs.value = fieldResult.value
@@ -247,18 +147,6 @@ async function loadSupport(): Promise<void> {
   supportLoading.value = false
 }
 
-function onGroupByChange(value: unknown): void {
-  const selected = textValue(value).trim()
-  ruleForm.value.groupBy = selected
-  ruleForm.value.keyField = selected
-  // Stateful aggregation and Kafka routing must use the same dimension. The
-  // routing field is therefore derived from the selected key instead of a
-  // second free-text value that can silently diverge.
-  ruleForm.value.routingField = selected
-}
-
-function onKeyFieldChange(value: unknown): void { onGroupByChange(value) }
-
 function openRuleEditor(row?: unknown): void {
   if (!canManageRules.value) return
   const rule = row ? normalizeRuleSpec(row) : null
@@ -271,274 +159,6 @@ function openRuleHistory(row?: unknown): void {
   historyRuleId.value = String(id)
   historyOpen.value = true
 }
-function acceptRestoredRule(rule: RuleSpec): void {
-  if (ruleEditingId.value === String(rule.id)) {
-    sourceRule.value = clone(rule); ruleForm.value = formFromRule(rule); advancedJson.value = JSON.stringify(rule, null, 2)
-    loadedRevisionToken.value = rule.revisionToken
-    saveError.value = ''; saveConflict.value = false; saveNotice.value = ''; advancedError.value = ''
-    ruleFieldErrors.value = {}; conditionErrors.value = emptyConditionErrors()
-    changes.markSaved()
-  }
-  void loadRules()
-}
-async function syncEditorRoute() {
-  const request = editorRequests.start()
-  showRuleEditor.value = false
-  editorLoading.value = false
-  if (!route.meta.editor) return
-  const id = String(route.params.ruleId || route.query.copy || '')
-  if (!canManageRules.value && (!id || Boolean(route.query.copy))) {
-    await router.replace({ name: 'detect' })
-    return
-  }
-  loadError.value = ''
-  editorLoading.value = Boolean(id)
-  let rule: RuleSpec | null = null
-  try {
-    rule = id ? normalizeRuleSpec(await getRule(id, { signal: request.signal })) : null
-    if (!request.isCurrent()) return
-    if (id && !rule) throw new Error(t('detect.ruleNotFound', { id }))
-  } catch (failure) {
-    if (request.isCurrent()) loadError.value = failure instanceof Error ? failure.message : String(failure)
-    return
-  } finally {
-    if (request.isCurrent()) editorLoading.value = false
-  }
-  ruleEditingId.value = rule && !route.query.copy ? String(rule.id) : null
-  loadedRevisionToken.value = ruleEditingId.value ? rule?.revisionToken : undefined
-  sourceRule.value = rule ? clone(rule) : null
-  ruleForm.value = rule ? formFromRule(rule) : emptyRuleForm()
-  if (route.query.copy && sourceRule.value) {
-    delete (sourceRule.value as Partial<RuleSpec>).id
-    ruleForm.value.id = ''
-    ruleForm.value.name += ' · copy'
-    ruleForm.value.status = 'DRAFT'
-    ruleForm.value.enabled = false
-  }
-  advancedJson.value = JSON.stringify(sourceRule.value ?? {}, null, 2)
-  saveError.value = ''; advancedError.value = ''; saveNotice.value = ''; saveConflict.value = false
-  ruleFieldErrors.value = {}; conditionErrors.value = emptyConditionErrors()
-  showRuleEditor.value = true
-  if (typeof route.query.sample === 'string') {
-    const sample = takeDetectionSample(route.query.sample)
-    if (sample) {
-      sampleEventsText.value = JSON.stringify([sample], null, 2)
-      testInput.value = { source: sample.source || '', host: sample.host || '', severity: sample.severity || 'INFO',
-        message: sample.msg || '', fieldsText: JSON.stringify(sample.fields || {}, null, 2) }
-      saveNotice.value = t('workflow.sampleTransferred')
-    }
-  }
-  changes.markSaved()
-}
-async function closeRuleEditor(): Promise<void> {
-  if (saving.value) return
-  await router.push({ name: 'detect', query: { ...route.query, copy: undefined } })
-}
-
-/** Blank, half-typed, or usable: a row with neither field nor value is blank. */
-function conditionState(condition: RuleCondition): 'blank' | 'incomplete' | 'ok' {
-  const field = textValue(condition.field).trim()
-  const op = textValue(condition.op).trim()
-  const value = textValue(condition.value).trim()
-  if (!field && !value) return 'blank'
-  if (!field || !op || !value) return 'incomplete'
-  return 'ok'
-}
-
-function cleanConditions(conditions: RuleCondition[], errors: Record<number, string>): { rows: RuleCondition[]; blank: number; incomplete: number } {
-  const rows: RuleCondition[] = []
-  let blank = 0
-  let incomplete = 0
-  conditions.forEach((condition, index) => {
-    const state = conditionState(condition)
-    if (state === 'blank') { blank++; return }
-    if (state === 'incomplete') { incomplete++; errors[index] = t('detect.conditionIncomplete'); rows.push(condition); return }
-    // Literal values can contain meaningful spaces; nested metadata belongs to
-    // the condition and must survive a visual edit or an advanced JSON edit.
-    rows.push({ ...clone(condition), field: condition.field.trim(), op: condition.op.trim(), value: condition.value })
-  })
-  return { rows, blank, incomplete }
-}
-
-function cleanGroups(groups: RuleCondition[][], errors: Record<number, Record<number, string>>): { groups: RuleCondition[][]; blank: number; incomplete: number } {
-  const kept: RuleCondition[][] = []
-  let blank = 0
-  let incomplete = 0
-  groups.forEach((group, groupIndex) => {
-    const rowErrors: Record<number, string> = {}
-    const result = cleanConditions(group ?? [], rowErrors)
-    blank += result.blank
-    incomplete += result.incomplete
-    if (result.incomplete) errors[groupIndex] = rowErrors
-    // A group whose rows were all blank carries no meaning; keep the payload clean.
-    if (result.rows.length) kept.push(result.rows)
-  })
-  return { groups: kept, blank, incomplete }
-}
-
-type ConditionBlocks = { match: RuleCondition[]; matchAny: RuleCondition[][]; steps: RuleCondition[][]; whitelist: RuleCondition[] }
-
-/**
- * Prunes blank rows and refuses to save half-typed conditions. Only the blocks
- * the editor actually renders for this rule type are enforced: a correlation
- * rule shows steps, never match/matchAny inputs.
- */
-function checkConditions(): { blocks: ConditionBlocks; blank: number; problem: string } {
-  const correlation = ruleForm.value.type === 'correlation'
-  const errors = emptyConditionErrors()
-  const incompleteBlocks: string[] = []
-  const missingBlocks: string[] = []
-  let blank = 0
-
-  const flat = (key: 'match' | 'whitelist', label: string, rows: RuleCondition[], enforced: boolean): RuleCondition[] => {
-    const found: Record<number, string> = {}
-    const result = cleanConditions(rows, found)
-    blank += result.blank
-    if (result.incomplete && enforced) incompleteBlocks.push(label)
-    errors[key] = enforced ? found : {}
-    return result.rows
-  }
-  const nested = (key: 'matchAny' | 'steps', label: string, groups: RuleCondition[][], enforced: boolean, requireOne: boolean): RuleCondition[][] => {
-    const found: Record<number, Record<number, string>> = {}
-    const result = cleanGroups(groups, found)
-    blank += result.blank
-    if (result.incomplete && enforced) incompleteBlocks.push(label)
-    if (requireOne && !result.groups.length) missingBlocks.push(label)
-    errors[key] = enforced ? found : {}
-    return result.groups
-  }
-
-  const blocks: ConditionBlocks = {
-    match: flat('match', t('detect.allConditions'), ruleForm.value.match, !correlation),
-    matchAny: nested('matchAny', t('detect.anyConditionGroup'), ruleForm.value.matchAny, !correlation, false),
-    steps: nested('steps', t('detect.correlationSteps'), ruleForm.value.steps, correlation, correlation),
-    whitelist: flat('whitelist', t('detect.editor.whitelist'), ruleForm.value.whitelist, true),
-  }
-  conditionErrors.value = errors
-
-  const messages: string[] = []
-  if (incompleteBlocks.length) messages.push(`${t('detect.conditionIncomplete')} ${[...new Set(incompleteBlocks)].join('、')}`)
-  // A correlation rule without a single step has nothing to correlate; the
-  // section already explains that requirement next to the empty list.
-  if (missingBlocks.length) messages.push(t('detect.addStepHint'))
-  return { blocks, blank, problem: messages.join(' · ') }
-}
-
-function focusFirstProblemSection(): void {
-  const element = ruleFieldErrors.value.name ? scopeSection.value
-    : Object.keys(conditionErrors.value.match).length || Object.keys(conditionErrors.value.matchAny).length || Object.keys(conditionErrors.value.steps).length ? logicSection.value
-      : Object.keys(conditionErrors.value.whitelist).length ? alertSection.value
-        : undefined
-  if (element && typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'center' })
-}
-
-/** A draft with unusable conditions cannot be dry-run either. */
-function draftConditions(): ConditionBlocks {
-  const checked = checkConditions()
-  if (checked.problem) throw new Error(checked.problem)
-  return checked.blocks
-}
-function setOptional(target: Record<string, unknown>, key: string, value: unknown): void {
-  if (value === null || value === undefined || (typeof value === 'string' && !value.trim())) delete target[key]
-  else target[key] = value
-}
-
-function buildRuleSpec(conditions: ConditionBlocks): Partial<RuleSpec> {
-  const spec = (sourceRule.value ? clone(sourceRule.value) : {}) as Record<string, unknown>
-  spec.name = ruleForm.value.name.trim(); spec.type = ruleForm.value.type; spec.severity = ruleForm.value.severity
-  setOptional(spec, 'message', ruleForm.value.message); setOptional(spec, 'window', ruleForm.value.window); setOptional(spec, 'keyField', ruleForm.value.keyField)
-  setOptional(spec, 'groupBy', ruleForm.value.groupBy)
-  setOptional(spec, 'routingField', ruleForm.value.routingField); setOptional(spec, 'threshold', ruleForm.value.threshold); setOptional(spec, 'valueField', ruleForm.value.valueField)
-  setOptional(spec, 'warmup', ruleForm.value.warmup); setOptional(spec, 'baselineWindows', ruleForm.value.baselineWindows); setOptional(spec, 'sigma', ruleForm.value.sigma)
-  setOptional(spec, 'minCount', ruleForm.value.minCount); setOptional(spec, 'mitre', ruleForm.value.mitre); setOptional(spec, 'version', ruleForm.value.version)
-  setOptional(spec, 'owner', ruleForm.value.owner); setOptional(spec, 'contentPack', ruleForm.value.contentPack); setOptional(spec, 'contentVersion', ruleForm.value.contentVersion)
-  const rawPolicy = spec.lateEventPolicy
-  const policy = rawPolicy && typeof rawPolicy === 'object' && !Array.isArray(rawPolicy)
-    ? clone(rawPolicy) as Record<string, unknown>
-    : {}
-  if (STATEFUL_TYPES.includes(ruleForm.value.type) || Object.keys(policy).length) {
-    setOptional(policy, 'allowedLateness', ruleForm.value.lateAllowedLateness)
-    setOptional(policy, 'handling', ruleForm.value.lateHandling)
-    if (Object.keys(policy).length) spec.lateEventPolicy = policy
-    else delete spec.lateEventPolicy
-  }
-  const alert = (spec.alert && typeof spec.alert === 'object' ? clone(spec.alert) : {}) as Record<string, unknown>
-  setOptional(alert, 'title', ruleForm.value.alertTitle); setOptional(alert, 'description', ruleForm.value.alertDescription)
-  if (Object.keys(alert).length) spec.alert = alert; else delete spec.alert
-  spec.match = conditions.match; spec.matchAny = conditions.matchAny; spec.steps = conditions.steps; spec.whitelist = conditions.whitelist
-  delete spec.allowlist
-
-  // Lifecycle transitions are separate operations. An edit cannot promote a
-  // draft or disabled rule through the ordinary update endpoint.
-  delete spec.status
-  delete spec.revisionToken
-  if (ruleEditingId.value) {
-    spec.id = ruleEditingId.value
-    spec.enabled = textValue(sourceRule.value?.status).toUpperCase() === 'ACTIVE' ? ruleForm.value.enabled : false
-  } else {
-    delete spec.id; spec.enabled = false
-  }
-  return spec as Partial<RuleSpec>
-}
-
-async function saveRule(): Promise<void> {
-  if (!canManageRules.value || saving.value) return
-  saveError.value = ''
-  saveNotice.value = ''
-  saveConflict.value = false
-  ruleFieldErrors.value = {}
-  if (!ruleForm.value.name.trim()) {
-    ruleFieldErrors.value.name = t('forms.fieldRequired', { field: t('common.name') })
-    saveError.value = t('detect.nameRequired')
-    focusFirstProblemSection()
-    return
-  }
-  const checked = checkConditions()
-  if (checked.problem) {
-    saveError.value = checked.problem
-    focusFirstProblemSection()
-    return
-  }
-  saving.value = true
-  try {
-    const spec = buildRuleSpec(checked.blocks)
-    const saved = ruleEditingId.value ? await updateGasRule(ruleEditingId.value, spec, loadedRevisionToken.value) : await createGasRule(spec)
-    const normalized = normalizeRuleSpec(saved)
-    if (normalized) { ruleEditingId.value = String(normalized.id); sourceRule.value = clone(normalized); ruleForm.value = formFromRule(normalized); advancedJson.value = JSON.stringify(normalized, null, 2) }
-    loadedRevisionToken.value = normalized?.revisionToken
-    changes.markSaved()
-    await loadRules()
-    if (checked.blank) saveNotice.value = t('detect.ignoredEmptyConditions', { count: checked.blank })
-    // The write is settled and the saved form is the new baseline. Release the
-    // navigation guard before moving a newly created rule to its edit route.
-    saving.value = false
-    if (ruleEditingId.value) await router.replace({ name: 'rule-edit', params: { ruleId: ruleEditingId.value }, query: { ...route.query, copy: undefined } })
-  } catch (error) {
-    saveConflict.value = error instanceof ApiError && [412, 428].includes(error.status)
-    saveError.value = saveConflict.value ? t('detect.concurrentEdit') : t('detect.saveFailed', { message: error instanceof Error ? error.message : String(error) })
-  } finally { saving.value = false }
-}
-
-function applyAdvancedJson(): void {
-  if (!canManageRules.value || saving.value) return
-  advancedError.value = ''
-  try {
-    const parsed = JSON.parse(advancedJson.value) as unknown
-    const normalized = normalizeRuleSpec(parsed)
-    if (!normalized) throw new Error(t('detect.invalidRuleJson'))
-    sourceRule.value = clone(normalized); ruleForm.value = formFromRule(normalized); advancedJson.value = JSON.stringify(normalized, null, 2)
-  } catch (error) { advancedError.value = error instanceof Error ? error.message : String(error) }
-}
-
-function downloadRuleDraft(): void {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(buildRuleSpec(draftConditions()), null, 2)], { type: 'application/json' }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = `${(ruleEditingId.value || 'rule').replace(/[^A-Za-z0-9._-]/g, '_')}-draft.json`
-  link.click()
-  URL.revokeObjectURL(url)
-}
-
 function ruleMutationMessage(error: unknown): string {
   return error instanceof ApiError && [412, 428].includes(error.status)
     ? t('detect.listConcurrentEdit') : error instanceof Error ? error.message : String(error)
@@ -548,28 +168,30 @@ function ruleUpdateSpec(rule: RuleSpec, enabled: boolean, status: string): Parti
   const spec = clone(rule) as Partial<RuleSpec>; spec.id = String(rule.id); spec.enabled = enabled; spec.status = status; return spec
 }
 
-async function toggleRule(row: unknown): Promise<void> {
-  if (!canManageRules.value || listActionBusy.value || disposed) return
+async function toggleRule(row: unknown): Promise<boolean> {
+  if (!canManageRules.value || listActionBusy.value || disposed) return false
   const normalized = normalizeRuleSpec(row)
-  if (!normalized) return
+  if (!normalized) return false
   const rule = clone(normalized)
   listActionBusy.value = true
   actionMessage.value = ''
   try {
     const status = textValue(rule.status).toUpperCase()
     if (status === 'ACTIVE' || rule.enabled) {
-      if (!await confirmDanger(t('detect.disableRuleConfirm', { name: textValue(rule.name) || String(rule.id) }))) return
-      if (!canManageRules.value || disposed) return
+      if (!await confirmDanger(t('detect.disableRuleConfirm', { name: textValue(rule.name) || String(rule.id) }))) return false
+      if (!canManageRules.value || disposed) return false
       await updateGasRule(String(rule.id), ruleUpdateSpec(rule, false, 'DISABLED'), rule.revisionToken)
       await loadRules()
-      return
+      return !disposed
     }
-    if (!canActivate.value) { actionMessage.value = t('detect.activationAdminOnly'); return }
-    if (status === 'ARCHIVED') return
+    if (!canActivate.value) { actionMessage.value = t('detect.activationAdminOnly'); return false }
+    if (status === 'ARCHIVED') return false
     await activateGasRule(String(rule.id), rule.revisionToken)
     await loadRules()
+    return !disposed
   } catch (error) {
     if (!disposed) actionMessage.value = ruleMutationMessage(error)
+    return false
   } finally {
     listActionBusy.value = false
   }
@@ -609,8 +231,6 @@ function testSingleRule(row: unknown): void {
   showTest.value = true
 }
 
-function addMatchAnyGroup(): void { if (canManageRules.value) ruleForm.value.matchAny.push([emptyCondition()]) }
-function addStep(): void { if (canManageRules.value) ruleForm.value.steps.push([emptyCondition()]) }
 function ruleStatus(row: unknown): string {
   const rule = row as Partial<RuleSpec>
   return textValue(rule.status).toUpperCase() || (rule.enabled ? 'ACTIVE' : 'DRAFT')
@@ -629,73 +249,17 @@ function typeLabel(type: string): string {
   if (translated) return translated
   return ADVANCED_TYPES.includes(value) ? `${value} · ${t('detect.advancedType')}` : value
 }
-function testStateLabel(state: RuleTestTrace['state']): string {
-  return tOr(t, 'detect.testStates.' + state, state)
-}
-function conditionScopeLabel(scope?: string): string {
-  if (!scope) return ''
-  if (scope === 'match') return t('detect.allConditions')
-  if (scope === 'whitelist') return t('detect.editor.whitelist')
-  const group = /^(matchAny|step) (\d+)$/.exec(scope)
-  if (!group) return scope
-  return group[1] === 'step'
-    ? `${t('detect.step')} ${group[2]}`
-    : `${t('detect.anyConditionGroup')} ${group[2]}`
-}
-
-async function runIsolatedTest(): Promise<void> {
-  if (!canManageRules.value || testing.value) return
-  const identity = `${route.name?.toString()}:${ruleEditingId.value}`
-  const fingerprint = testFingerprint()
-  const revision = loadedRevisionToken.value
-  testError.value = ''; testResult.value = null; testing.value = true
-  try {
-    const parsed = JSON.parse(testInput.value.fieldsText) as unknown
-    if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object') throw new Error(t('detect.fieldsObjectRequired'))
-    const fields = Object.fromEntries(Object.entries(parsed).map(([key, value]) => [key, typeof value === 'string' ? value : JSON.stringify(value)]))
-    const events: DetectionIngestEvent[] = sampleEventsText.value.trim() ? JSON.parse(sampleEventsText.value) : [{
-      source: testInput.value.source, host: testInput.value.host, severity: testInput.value.severity,
-      msg: testInput.value.message, fields,
-    }]
-    if (!Array.isArray(events) || !events.length || events.length > 100) throw new Error(t('detect.sampleLimit'))
-    const selected = showRuleEditor.value ? [{ ...buildRuleSpec(draftConditions()), id: ruleEditingId.value || 'dry-run-draft' }]
-      : testRuleId.value ? rules.value.filter(rule => String(rule.id) === testRuleId.value) : rules.value
-    if (!selected.length || selected.length > 20) throw new Error(t('detect.ruleTestLimit'))
-    const result = await testGasRules(selected, events)
-    if (disposed || identity !== `${route.name?.toString()}:${ruleEditingId.value}`) return
-    const selectedById = new Map(selected.map(rule => [String(rule.id), rule]))
-    const traces: RuleTestTrace[] = result.map(row => {
-      const sourceRule = selectedById.get(String(row.id)) ?? selected.find(rule => rule.name === row.name)
-      const conditionTrace = sourceRule ? traceRuleConditions(sourceRule, events) : { conditions: [], hasConditionMatch: false, whitelistMatched: false }
-      const candidate = !row.matched && !conditionTrace.whitelistMatched && ADVANCED_TYPES.includes(String(sourceRule?.type)) && conditionTrace.hasConditionMatch
-      const state: RuleTestTrace['state'] = row.matched ? 'MATCHED' : candidate ? 'CANDIDATE' : 'NO_MATCH'
-      const reasonKey = conditionTrace.whitelistMatched
-        ? 'detect.testWhitelisted'
-        : state === 'MATCHED' ? 'detect.testMatched' : state === 'CANDIDATE' ? 'detect.testCandidate' : 'detect.testNoMatch'
-      return {
-        id: row.id, name: row.name, type: row.type, state,
-        reason: `${t(reasonKey)} · ${row.eventCount} ${t('detect.sampleEvents')} · ${row.alerts.length} ${t('detect.alarmsCount')}`,
-        conditions: conditionTrace.conditions,
-      }
-    })
-    testResult.value = { checked: traces.length, matched: traces.filter(trace => trace.state === 'MATCHED').length, candidates: traces.filter(trace => trace.state === 'CANDIDATE').length, traces }
-    testReceipt.value = { revision, ruleId: ruleEditingId.value || testRuleId.value || 'current-page', fingerprint, at: new Date().toISOString(), result: testResult.value }
-  } catch (error) { testError.value = error instanceof Error ? error.message : String(error) }
-  finally { testing.value = false }
-}
-
 function applyRuleFilters(): void {
   void router.push({ query: { ...route.query, q: ruleKeyword.value.trim() || undefined,
     status: ruleStatusFilter.value || undefined, page: undefined } })
 }
 
 async function loadRuleList(): Promise<void> {
-  if (route.name !== 'detect') return
+  if (route.name !== 'detect' || disposed) return
   const request = listRequests.start()
   loadError.value = ''
   loading.value = true
-  testRuleId.value = ''
-  testResult.value = null
+  preview.resetPreview()
   try {
     const result = await listRulePage({ page: rulePage.value, size: rulePageSize.value,
       q: typeof route.query.q === 'string' ? route.query.q : undefined,

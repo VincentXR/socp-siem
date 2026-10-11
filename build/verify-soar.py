@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -40,6 +42,55 @@ def warn(name: str, detail: str = "") -> None:
 
 def read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
+
+
+# Route-specific contracts replace formatting-sensitive snippets and raw Map counts.
+# The JDK parser ignores comments and accepts annotation reordering/qualified names.
+TYPED_BODY_CONTRACTS = {
+    ("PATCH", "/playbooks/{id}"): ("UpdatePlaybookRequest", True, False),
+    ("POST", "/node-runs/{id}/resolve-unknown"): ("UnknownResolutionRequest", True, True),
+    ("POST", "/approvals/{id}/decisions"): ("ApprovalDecisionRequest", True, True),
+    ("POST", "/manual-tasks/{id}/complete"): ("PlaybookExecutionRequest", False, True),
+}
+DYNAMIC_BODY_BOUNDARIES = {
+    ("PATCH", "/automation-rules/{id}"),
+    ("POST", "/automation-rules/evaluate"),
+    ("POST", "/automation-rules/test"),
+    ("POST", "/events/evaluate"),
+}
+
+
+def request_body_contracts(paths: list[Path]) -> dict[tuple[str, str], tuple[str, bool, bool]]:
+    java = shutil.which("java")
+    if java is None:
+        raise ValueError("JDK 21 is required to parse Java HTTP contracts")
+    result = subprocess.run(
+        [java, str(ROOT / "build/java/RequestBodyContracts.java"), *map(str, paths)],
+        capture_output=True, text=True, timeout=60, check=False,
+    )
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or "Java HTTP contract parser failed")
+    contracts = {}
+    for line in result.stdout.splitlines():
+        method, route, body_type, valid, required = line.split("\t")
+        key = (method, route)
+        if key in contracts:
+            raise ValueError(f"Duplicate HTTP body route: {key}")
+        contracts[key] = (body_type, valid == "true", required == "true")
+    return contracts
+
+
+def request_body_violations(contracts: dict) -> list[str]:
+    violations = []
+    for route, expected in TYPED_BODY_CONTRACTS.items():
+        actual = contracts.get(route)
+        if (actual is None or actual[0] != expected[0] or actual[2] != expected[2]
+                or (expected[1] and not actual[1])):
+            violations.append(f"{route}: expected {expected}, found {contracts.get(route)}")
+    for route, (body_type, _, _) in contracts.items():
+        if body_type == "Map" and route not in DYNAMIC_BODY_BOUNDARIES:
+            violations.append(f"{route}: dynamic Map body outside a JSON extension boundary")
+    return violations
 
 
 def main() -> int:
@@ -140,8 +191,6 @@ def main() -> int:
     automation_controller = read(f"{controller_dir}/SoarAutomationController.java")
     connector_controller = read(f"{controller_dir}/SoarConnectorController.java")
     http_support = read(f"{controller_dir}/SoarHttpSupport.java")
-    controllers = "\n".join((playbook_controller, run_controller,
-                              automation_controller, connector_controller))
     controller_budgets = {
         "playbook": (playbook_controller, 400),
         "run": (run_controller, 550),
@@ -186,14 +235,13 @@ def main() -> int:
                          "RerunRequest", "UnknownResolutionRequest",
                          "ApprovalDecisionRequest", "PatchConnectionRequest"):
         check(f"typed SOAR request {request_type}", (request_dir / f"{request_type}.java").is_file())
-    check("high-risk SOAR handlers use validated request DTOs",
-          "@Valid @RequestBody(required = false)\n                                                         UpdatePlaybookRequest" in playbook_controller
-          and "@Valid @RequestBody UnknownResolutionRequest" in run_controller
-          and "@Valid @RequestBody ApprovalDecisionRequest" in run_controller
-          and "@RequestBody PlaybookExecutionRequest" in run_controller)
-    dynamic_body_count = len(re.findall(r"@RequestBody(?:\([^)]*\))?\s+Map<", controllers))
-    check("SOAR dynamic request maps stay at JSON extension boundaries",
-          dynamic_body_count == 4, f"found={dynamic_body_count}; patch/evaluation routes are explicit extension boundaries")
+    try:
+        body_contracts = request_body_contracts(sorted((ROOT / controller_dir).glob("*Controller.java")))
+        violations = request_body_violations(body_contracts)
+        check("SOAR request bodies satisfy parsed HTTP contracts", not violations,
+              "; ".join(violations) or f"checked {len(body_contracts)} request-body routes")
+    except (ValueError, OSError, subprocess.TimeoutExpired) as error:
+        check("SOAR request bodies satisfy parsed HTTP contracts", False, str(error))
 
     workflow = read("services/soar-web/src/main/java/com/socp/soar/web/temporal/SoarWorkflowImpl.java")
     workflow += read("services/soar-web/src/main/java/com/socp/soar/web/temporal/SoarWorkflowJsonSupport.java")

@@ -70,9 +70,9 @@ class DetectEngineServiceTest {
         var result = new org.springframework.data.domain.PageImpl<Map<String, Object>>(
                 List.of(Map.of("id", "rule-a", "status", "ACTIVE")));
         when(store.byTechnique("T1110", 2, 20)).thenReturn(result);
-        var service = new DetectEngineService(store, new RecentAlertSink(10, null, null), forwarder, rulePublisher);
+        var service = new DetectEngineService(store, new RecentAlertSink(10, null, null));
         try {
-            assertEquals(result, service.rulesByTechnique("T1110", 2, 20));
+            assertEquals(result, rules(service).rulesByTechnique("T1110", 2, 20));
             org.mockito.Mockito.verifyNoInteractions(forwarder, rulePublisher);
         } finally {
             service.stop();
@@ -87,7 +87,7 @@ class DetectEngineServiceTest {
         });
 
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher);
+                store, new RecentAlertSink(10, null, null));
         try {
             service.start();
             assertNull(TenantContext.get());
@@ -100,8 +100,8 @@ class DetectEngineServiceTest {
     void apiRoleDoesNotRestoreOrRebuildDetectionState() {
         when(store.tenant()).thenReturn("default");
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
-        ReflectionTestUtils.setField(service, "runtimeRole", "api");
+                store, new RecentAlertSink(10, null, null), stateStore);
+        ReflectionTestUtils.setField(lifecycle(service), "runtimeRole", "api");
         try {
             service.start();
 
@@ -111,7 +111,19 @@ class DetectEngineServiceTest {
             assertEquals("api", stats.get().get("runtimeRole"));
             assertEquals(false, stats.get().get("detectionWorkerEnabled"));
             assertEquals(0, stats.get().get("cachedTenantEngines"));
-            assertTrue(!service.ingest(event("default", "api-must-not-ingest")));
+            assertFalse(service.ingest(event("default", "api-must-not-ingest")));
+            assertFalse(service.ingestFromKafka(event("default", "api-must-not-enqueue")));
+            var rejected = org.junit.jupiter.api.Assertions.assertThrows(java.util.concurrent.CompletionException.class,
+                    () -> service.ingestFromKafkaAndAwait(event("default", "api-must-not-await")).join());
+            assertTrue(rejected.getCause() instanceof DetectEngineService.RuntimeUnavailableException);
+            service.reload();
+            service.restoreForPartitions(Set.of(1));
+            service.rebuildForPartitions(Set.of(1));
+            service.restoreAll();
+            lifecycle(service).retryDegradedEngines();
+            assertEquals(0, lifecycle(service).cachedTenantEngines());
+            verify(store, org.mockito.Mockito.never()).list(org.mockito.ArgumentMatchers.anyString());
+            verify(stateStore, org.mockito.Mockito.never()).claim(org.mockito.ArgumentMatchers.any());
             verify(stateStore, org.mockito.Mockito.never()).replayRecentForTenant(
                     org.mockito.ArgumentMatchers.anyString(),
                     org.mockito.ArgumentMatchers.any(Duration.class),
@@ -130,7 +142,7 @@ class DetectEngineServiceTest {
                         org.mockito.ArgumentMatchers.any(Duration.class),
                         org.mockito.ArgumentMatchers.any());
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
+                store, new RecentAlertSink(10, null, null), stateStore);
         try {
             service.start();
 
@@ -155,10 +167,10 @@ class DetectEngineServiceTest {
         });
 
         RecentAlertSink sink = new RecentAlertSink(10, null, null);
-        DetectEngineService service = new DetectEngineService(store, sink, forwarder, rulePublisher);
+        DetectEngineService service = new DetectEngineService(store, sink);
         try {
             Map<String, Object> rule = patternRule();
-            service.addRule(rule);
+            rules(service).addRule(rule);
 
             SecurityEvent event = new SecurityEvent(
                     Instant.now(), "auth", "host-1", "Failed password",
@@ -183,9 +195,9 @@ class DetectEngineServiceTest {
         when(store.delete("missing")).thenReturn(false);
 
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher);
+                store, new RecentAlertSink(10, null, null));
         try {
-            assertTrue(!service.deleteRule("missing"));
+            assertTrue(!rules(service).deleteRule("missing"));
             verify(rulePublisher, org.mockito.Mockito.never()).publish("missing", "delete");
         } finally {
             service.stop();
@@ -195,7 +207,7 @@ class DetectEngineServiceTest {
     @Test
     void partitionRestoreReadsOnlyAssignedState() {
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
+                store, new RecentAlertSink(10, null, null), stateStore);
         try {
             service.restoreForPartitions(Set.of(2));
 
@@ -220,7 +232,7 @@ class DetectEngineServiceTest {
                 org.mockito.ArgumentMatchers.any());
 
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
+                store, new RecentAlertSink(10, null, null), stateStore);
         try {
             TenantContext.set("tenant-a");
             service.restoreAll();
@@ -252,8 +264,7 @@ class DetectEngineServiceTest {
                 org.mockito.ArgumentMatchers.any());
 
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, forwarder, null),
-                forwarder, rulePublisher, stateStore);
+                store, new RecentAlertSink(10, forwarder, null), stateStore);
         service.start();
         try {
             assertTrue(service.ingest(new SecurityEvent(
@@ -298,8 +309,7 @@ class DetectEngineServiceTest {
                 org.mockito.ArgumentMatchers.any());
 
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, forwarder, null),
-                forwarder, rulePublisher, stateStore);
+                store, new RecentAlertSink(10, forwarder, null), stateStore);
         service.start();
         org.mockito.Mockito.clearInvocations(stateStore);
         try {
@@ -348,8 +358,7 @@ class DetectEngineServiceTest {
         when(store.list("default")).thenReturn(List.of(deadDraft, poison, thresholdRule()));
         when(store.tenant()).thenReturn("default");
 
-        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
-                forwarder, rulePublisher);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null));
         try {
             service.start();
             assertTrue(service.ingest(new SecurityEvent(Instant.now(), "system", "host-1",
@@ -382,8 +391,7 @@ class DetectEngineServiceTest {
         }).when(stateStore).replayRecentForTenant(org.mockito.ArgumentMatchers.eq("default"),
                 org.mockito.ArgumentMatchers.any(Duration.class), org.mockito.ArgumentMatchers.any());
 
-        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
-                forwarder, rulePublisher, stateStore);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null), stateStore);
         try {
             service.start();
             assertTrue(service.ingest(new SecurityEvent(Instant.now(), "system", "host-1",
@@ -397,7 +405,7 @@ class DetectEngineServiceTest {
             assertTrue(service.ingest(new SecurityEvent(Instant.now(), "system", "host-1",
                     "heartbeat-2", Map.of("tenant_id", "default"), Severity.INFO)));
 
-            service.retryDegradedEngines();
+            lifecycle(service).retryDegradedEngines();
             assertFalse(asMap(service.stats().get("stateRecovery")).containsKey("pendingRebuilds"),
                     "重试成功后不得留下待重建项");
             assertTrue(replays.get() >= 3, "重试必须再次读取 journal，实际=" + replays.get());
@@ -415,16 +423,16 @@ class DetectEngineServiceTest {
     void boundsTenantEnginesAndRestoresAnEvictedTenant() throws Exception {
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of());
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, null, null), forwarder, rulePublisher, stateStore);
-        ReflectionTestUtils.setField(service, "maxTenantEngines", 1);
+                store, new RecentAlertSink(10, null, null), stateStore);
+        ReflectionTestUtils.setField(lifecycle(service), "maxTenantEngines", 1);
         try {
             service.ingestFromKafkaAndAwait(event("tenant-a", "event-a")).join();
             Thread.sleep(5);
             service.ingestFromKafkaAndAwait(event("tenant-b", "event-b")).join();
-            assertEquals(2, service.cachedTenantEngines());
+            assertEquals(2, lifecycle(service).cachedTenantEngines());
 
-            service.evictIdleEngines();
-            assertEquals(1, service.cachedTenantEngines());
+            lifecycle(service).evictIdleEngines();
+            assertEquals(1, lifecycle(service).cachedTenantEngines());
 
             service.ingestFromKafkaAndAwait(event("tenant-a", "event-a-2")).join();
             verify(stateStore, org.mockito.Mockito.atLeast(2)).replayRecentForTenant(
@@ -440,9 +448,8 @@ class DetectEngineServiceTest {
     void snapshotCheckpointIsPeriodicAndFailureDoesNotBreakIngest() {
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
         when(stateStore.supportsCheckpointReplay()).thenReturn(false);
-        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
-                forwarder, rulePublisher, stateStore, performanceMetrics, snapshotStore);
-        ReflectionTestUtils.setField(service, "snapshotEveryEvents", 2L);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null), stateStore, performanceMetrics, snapshotStore);
+        ReflectionTestUtils.setField(state(service), "snapshotEveryEvents", 2L);
         SecurityEvent event = event("tenant-a", "snapshot-1");
         try {
             service.snapshotAfterDurable(null, 1, 1L);
@@ -453,7 +460,7 @@ class DetectEngineServiceTest {
                     "tenant-a".equals(snapshot.tenantId()) && snapshot.lastProcessedOffset() == 12L));
 
             org.mockito.Mockito.reset(snapshotStore);
-            ReflectionTestUtils.setField(service, "snapshotEveryEvents", 0L);
+            ReflectionTestUtils.setField(state(service), "snapshotEveryEvents", 0L);
             org.mockito.Mockito.doThrow(new IllegalStateException("snapshot store down"))
                     .when(snapshotStore).save(org.mockito.ArgumentMatchers.any());
             service.snapshotAfterDurable(event, null, null);
@@ -488,7 +495,7 @@ class DetectEngineServiceTest {
         InMemoryDetectionStateStore durableState = new InMemoryDetectionStateStore();
         AlertForwarder durableForwarder = new AlertForwarder(store, null, null, durableState);
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, durableForwarder, null), durableForwarder, rulePublisher,
+                store, new RecentAlertSink(10, durableForwarder, null),
                 durableState, performanceMetrics, null, ownership);
         try {
             SecurityEvent input = event("tenant-a", "fenced-event");
@@ -508,9 +515,8 @@ class DetectEngineServiceTest {
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
         when(stateStore.supportsCheckpointReplay()).thenReturn(false);
         when(snapshotStore.supportsAtomicBatch()).thenReturn(true);
-        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
-                forwarder, rulePublisher, stateStore, performanceMetrics, snapshotStore);
-        ReflectionTestUtils.setField(service, "snapshotEveryEvents", 1L);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null), stateStore, performanceMetrics, snapshotStore);
+        ReflectionTestUtils.setField(state(service), "snapshotEveryEvents", 1L);
         try {
             service.snapshotAfterDurable(event("tenant-a", "atomic-snapshot"), 0, 3L);
             verify(snapshotStore).saveAll(org.mockito.ArgumentMatchers.anyList());
@@ -525,10 +531,9 @@ class DetectEngineServiceTest {
         TenantContext.set("tenant-a");
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
         when(stateStore.supportsCheckpointReplay()).thenReturn(false);
-        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
-                forwarder, rulePublisher, stateStore, performanceMetrics, snapshotStore);
-        ReflectionTestUtils.setField(service, "stateShardCount", 4);
-        ReflectionTestUtils.setField(service, "snapshotEveryEvents", 1L);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null), stateStore, performanceMetrics, snapshotStore);
+        ReflectionTestUtils.setField(state(service), "stateShardCount", 4);
+        ReflectionTestUtils.setField(state(service), "snapshotEveryEvents", 1L);
         SecurityEvent routed = new SecurityEvent("routed-1", Instant.now(), "auth", "host-1", "event",
                 Map.of("tenant_id", "tenant-a", "detection_routing_field", "user",
                         "detection_routing_value", "alice", "user", "alice"), Severity.INFO);
@@ -561,8 +566,7 @@ class DetectEngineServiceTest {
                 org.mockito.ArgumentMatchers.any(Instant.class), org.mockito.ArgumentMatchers.anySet(),
                 org.mockito.ArgumentMatchers.any());
 
-        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
-                forwarder, rulePublisher, stateStore, performanceMetrics, snapshotStore);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null), stateStore, performanceMetrics, snapshotStore);
         try {
             service.start();
             verify(snapshotStore).latest("default", "THRESHOLD", 0);
@@ -584,8 +588,7 @@ class DetectEngineServiceTest {
                 Map.of(0, 8L, 2, 14L));
         when(snapshotStore.latest("default", "THRESHOLD", 0)).thenReturn(Optional.of(snapshot));
 
-        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
-                forwarder, rulePublisher, stateStore, performanceMetrics, snapshotStore);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null), stateStore, performanceMetrics, snapshotStore);
         try {
             service.start();
             verify(stateStore).replayCompletedAfter(org.mockito.ArgumentMatchers.eq("default"),
@@ -612,17 +615,17 @@ class DetectEngineServiceTest {
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of());
         when(store.delete("R1")).thenReturn(true);
 
-        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null), forwarder, rulePublisher);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null));
         try {
             org.junit.jupiter.api.Assertions.assertThrows(com.socp.platform.error.exception.ApiException.class,
-                    () -> service.updateRule(Map.of("id", "missing")));
-            service.updateRule(saved);
-            service.activateRule("R1");
+                    () -> rules(service).updateRule(Map.of("id", "missing")));
+            rules(service).updateRule(saved);
+            rules(service).activateRule("R1");
             verify(rulePublisher, org.mockito.Mockito.times(2)).publish("R1", "update");
-            org.junit.jupiter.api.Assertions.assertTrue(service.deleteRule("R1"));
+            org.junit.jupiter.api.Assertions.assertTrue(rules(service).deleteRule("R1"));
             verify(rulePublisher).publish("R1", "delete");
             org.junit.jupiter.api.Assertions.assertThrows(com.socp.platform.error.exception.ApiException.class,
-                    () -> service.activateRule("missing"));
+                    () -> rules(service).activateRule("missing"));
             verify(rulePublisher, org.mockito.Mockito.never()).publish(org.mockito.ArgumentMatchers.eq("missing"), org.mockito.ArgumentMatchers.anyString());
             verify(store, org.mockito.Mockito.never()).get(org.mockito.ArgumentMatchers.anyString());
         } finally { service.stop(); }
@@ -635,8 +638,7 @@ class DetectEngineServiceTest {
                         com.socp.detect.web.persistence.store.DetectionEventClaim.DEAD_LETTERED,
                         com.socp.detect.web.persistence.store.DetectionEventClaim.NEW);
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of());
-        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null),
-                forwarder, rulePublisher, stateStore);
+        DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null), stateStore);
         try {
             assertTrue(service.ingest(event("tenant-a", "done-1")));
             assertTrue(service.ingest(event("tenant-a", "dead-1")));
@@ -647,6 +649,18 @@ class DetectEngineServiceTest {
         } finally {
             service.stop();
         }
+    }
+
+    private DetectionRuleService rules(DetectEngineService service) {
+        return new DetectionRuleService(store, rulePublisher, lifecycle(service));
+    }
+
+    private static DetectionEngineLifecycle lifecycle(DetectEngineService service) {
+        return (DetectionEngineLifecycle) ReflectionTestUtils.getField(service, "lifecycle");
+    }
+
+    private static DetectionStateRecovery state(DetectEngineService service) {
+        return (DetectionStateRecovery) ReflectionTestUtils.getField(service, "state");
     }
 
     private static SecurityEvent event(String tenant, String id) {

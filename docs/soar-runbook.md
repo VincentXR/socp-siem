@@ -166,3 +166,23 @@ histories. The H2 repository regression fixture includes 137 rows per catalog,
 old retained runs absent from the latest 20 results, tied sort values, soft-deleted
 connections and a second tenant. PostgreSQL migration/query behavior still needs
 the existing PostgreSQL contract checks in deployment validation.
+
+## 历史线性剧本兼容验证与退役
+
+旧定时任务和旧审批任务仍使用 `PlaybookExecutor`；保留
+`PlaybookWorkflow` worker，不能只保留 `SoarWorkflow` worker。新图剧本的
+持久队列接收契约不改变上述存量任务的分派语义。退役条件见
+[历史兼容边界](soar-design.md#1711-仍在运行的历史兼容边界)。
+
+本地回归运行：
+
+```bash
+bash build/mvnw.sh -pl services/soar-web -am test \
+  -Dtest=PlaybookWorkflowCompatibilityTest,LegacyPlaybookActionsTest,PlaybookExecutorTest,ScheduledPlaybookRunnerTest,ApprovalServiceTest,SoarActivityImplCoverageTest \
+  -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+合成 history 覆盖空剧本、成功/旧 success 别名、模拟、失败后跳过、补偿失败后继续、
+无前序失败的补偿及未知旧状态。测试核对原有活动参数和结果，并回放整理前实现
+生成的 history；它不证明生产 history 已迁移或旧执行器可以删除。发布前仍需
+目标环境 PostgreSQL/Temporal 的 live 验证和实际 history 抽样回放。
