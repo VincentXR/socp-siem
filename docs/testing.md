@@ -363,10 +363,12 @@ the dependency-outage matrix, the multi-instance/rebalance and routed
 migration/rollback oracles, attack scenarios, and recovery demos, then uploads
 diagnostic logs plus structured JSON evidence.
 
-`.github/workflows/dependency-audit.yml` runs weekly or manually. It applies
+`.github/workflows/dependency-audit.yml` runs weekly, manually, and on PR changes
+to its workflow, Java report verifier/tests, or suppression file. It applies
 OWASP Dependency-Check to the Java reactor and `pnpm audit` to the workbench;
 pull requests also use GitHub dependency review to reject newly introduced
-high-severity vulnerabilities.
+high-severity vulnerabilities. See [dependency audit operations](operations/dependency-audit.md)
+for cache, data freshness, report coverage, and failure handling.
 
 ### Report archive publication
 
