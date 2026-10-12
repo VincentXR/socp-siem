@@ -1,6 +1,12 @@
 name: Dependency Audit
 
 on:
+  pull_request:
+    paths:
+      - .github/workflows/dependency-audit.yml
+      - build/verify-dependency-check.py
+      - build/tests/test_verify_dependency_check.py
+      - config/dependency-check-suppressions.xml
   workflow_dispatch:
   schedule:
     - cron: "15 3 * * 1"
@@ -9,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: dependency-audit
+  group: dependency-audit-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -19,7 +25,7 @@ env:
 jobs:
   java-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -30,43 +36,82 @@ jobs:
           java-version: 21
           cache: maven
 
-      - name: Build Java artifacts
-        run: bash build/mvnw.sh package -DskipTests
+      - name: Test fail-closed report validation
+        run: python3 -m unittest build/tests/test_verify_dependency_check.py
 
       - name: Restore OWASP vulnerability database
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: vulnerability_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/dependency-check
-          key: dependency-check-${{ runner.os }}-v12-${{ github.run_id }}
+          key: dependency-check-${{ runner.os }}-12.2.2-nvd-feed-v1-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            dependency-check-${{ runner.os }}-v12-
+            dependency-check-${{ runner.os }}-12.2.2-nvd-feed-v1-
+
+      - name: Update complete NVD database from official feeds
+        timeout-minutes: 45
+        run: |
+          set -euo pipefail
+          mkdir -p target/dependency-audit
+          # 12.2.2 supports NVD's full yearly + modified feeds without an API key.
+          # -N updates once; absolute paths keep the update and reactor scan aligned.
+          bash build/mvnw.sh -N org.owasp:dependency-check-maven:12.2.2:update-only \
+            -DfailOnError=true -DnvdValidForHours=0 \
+            '-DnvdDatafeedUrl=https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{0}.json.gz' \
+            "-DdataDirectory=${GITHUB_WORKSPACE}/.cache/dependency-check" \
+            2>&1 | tee target/dependency-audit/update.log
+
+      - name: Save successfully updated database before scanning
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/dependency-check
+          key: ${{ steps.vulnerability_cache.outputs.cache-primary-key }}
+
+      - name: Build Java artifacts and record full runtime graph
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          bash build/mvnw.sh package org.apache.maven.plugins:maven-dependency-plugin:3.8.1:tree \
+            -DskipTests -Dscope=runtime -DoutputType=json \
+            -DoutputFile=target/dependency-audit-runtime.json \
+            2>&1 | tee target/dependency-audit/build.log
 
       - name: Scan Java dependency CVEs
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        id: java_scan
+        timeout-minutes: 20
         run: |
-          args=(
-            org.owasp:dependency-check-maven:12.2.2:aggregate
-            -DskipTestScope=true
-            -DfailBuildOnCVSS=8
-            -Dformat=HTML
-            -DdataDirectory=.cache/dependency-check
-            -DsuppressionFile=config/dependency-check-suppressions.xml
-          )
-          if [[ -n "${NVD_API_KEY}" ]]; then
-            args+=("-DnvdApiKey=${NVD_API_KEY}" -DnvdApiDelay=3500)
-          else
-            args+=(-DnvdApiDelay=6000)
-          fi
-          bash build/mvnw.sh "${args[@]}"
+          set -euo pipefail
+          rm -f target/dependency-check-report.{html,json}
+          bash build/mvnw.sh org.owasp:dependency-check-maven:12.2.2:aggregate \
+            -DautoUpdate=false -DfailOnError=true \
+            -DskipTestScope=true -DskipRuntimeScope=false -DfailBuildOnCVSS=8 \
+            -Dformats=HTML,JSON \
+            "-DdataDirectory=${GITHUB_WORKSPACE}/.cache/dependency-check" \
+            "-Dodc.outputDirectory=${GITHUB_WORKSPACE}/target" \
+            "-DsuppressionFile=${GITHUB_WORKSPACE}/config/dependency-check-suppressions.xml" \
+            2>&1 | tee target/dependency-audit/scan.log
+
+      - name: Require fresh complete Java vulnerability report
+        if: ${{ always() && steps.java_scan.outcome != 'skipped' }}
+        run: python3 build/verify-dependency-check.py
 
       - name: Upload Java dependency report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: java-dependency-check-report
-          path: target/dependency-check-report.html
-          if-no-files-found: ignore
+          path: target/dependency-check-report.*
+          if-no-files-found: error
+
+      - name: Upload Java audit diagnostics and runtime graph
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: java-dependency-check-diagnostics
+          path: |
+            target/dependency-audit/
+            **/target/dependency-audit-runtime.json
+          if-no-files-found: error
 
   frontend-audit:
     runs-on: ubuntu-latest
@@ -85,8 +130,23 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - name: Audit frontend dependencies
+      - name: Install locked frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile --registry=https://registry.npmjs.org
+
+      - name: Audit all frontend dependencies and retain complete findings
         working-directory: frontend
         run: |
-          pnpm install --frozen-lockfile
-          pnpm audit --registry=https://registry.npmjs.org --audit-level high
+          set -euo pipefail
+          mkdir -p ../target/frontend-audit
+          # JSON retains moderate/low findings too; the failure threshold stays high.
+          pnpm audit --registry=https://registry.npmjs.org --audit-level high --json \
+            | tee ../target/frontend-audit/pnpm-audit.json
+
+      - name: Upload full frontend audit report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: frontend-dependency-audit-report
+          path: target/frontend-audit/pnpm-audit.json
+          if-no-files-found: error

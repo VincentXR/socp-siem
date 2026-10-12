@@ -9,3 +9,4 @@ overrides:
   brace-expansion@2: 2.1.7
   glob: 10.5.0
   nanoid: 3.3.18
+  source-map-js: 1.2.2
