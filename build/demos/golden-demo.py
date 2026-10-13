@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import argparse
 import atexit
+from contextlib import contextmanager
 import datetime as dt
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -27,6 +29,7 @@ sys.path.insert(0, str(BUILD))
 
 from ports import GATEWAY_URL, base_url  # noqa: E402
 from auth_client import login_token  # noqa: E402
+from middleware_images import image as middleware_image  # noqa: E402
 
 
 USER = os.environ.get("DEMO_USER", "demo")
@@ -141,10 +144,10 @@ def login():
     return token, ""
 
 
-def vector_running():
+def vector_running(container="socp-vector"):
     try:
         result = subprocess.run(
-            ["docker", "inspect", "--format={{.State.Running}}", "socp-vector"],
+            ["docker", "inspect", "--format={{.State.Running}}", container],
             capture_output=True,
             text=True,
             timeout=8,
@@ -446,17 +449,74 @@ def ensure_channel(token):
     return unwrap(result)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--transport",
-        choices=("vector", "ingest"),
-        default="vector",
-        help="vector 走真实采集链；ingest 直接调用 search-config，便于排查",
-    )
-    parser.add_argument("--log-file", default=str(REPO / "demo" / "sample.log"))
-    args = parser.parse_args()
+def verify_case_follow_through(token, alarm, incident, execution, run_id):
+    """Exercise analyst commands, then read durable results through fresh requests.
 
+    Only use this mutating demo against a disposable stack. The recorded closure
+    explicitly describes simulated evidence, not a real containment operation.
+    """
+    def data(service, path, body=None):
+        status, result, _ = request(service, path, token=token, body=body)
+        if status != 200:
+            raise RuntimeError(f"{service} {path}: HTTP {status}, {str(result)[:220]}")
+        return unwrap(result)
+
+    try:
+        alarm_id = str(alarm["id"])
+        case_id = str(incident["id"])
+        path = "/api/v1/incidents/" + urllib.parse.quote(case_id, safe="")
+        evidence = data("alert", "/api/v1/alarms/" + urllib.parse.quote(alarm_id, safe="") + "/evidence")
+        items = evidence.get("items", []) if isinstance(evidence, dict) else []
+        event_ids = [item["eventId"] for item in items if item.get("eventId") and item.get("raw")]
+        if not check("investigation exposes this alarm's raw source evidence",
+                     evidence.get("alarmId") == alarm_id and bool(event_ids), event_ids):
+            return False
+
+        current = data("incident", path)
+        associated = page_items(data("incident", path + "/alarms?page=1&size=100"))
+        if not check("alarm-to-case and case-to-alarm references agree",
+                     current.get("id") == case_id and alarm_id in associated, associated):
+            return False
+        claimed = data("incident", path + "/claim", {
+            "expectedVersion": current["rowVersion"], "idempotencyKey": "golden-claim-" + run_id})
+        owner = claimed["case"].get("assignee")
+        note = {"content": f"Golden Demo {run_id}: reviewed events {','.join(event_ids)}; SOAR run {execution['runId']}. "
+                           "Simulated attack only; no external containment executed.",
+                "idempotencyKey": "golden-note-" + run_id}
+        data("incident", path + "/notes", note)
+        repeated = data("incident", path + "/notes", note)
+        if not check("repeated investigation note returns an idempotent receipt",
+                     repeated.get("duplicate") is True, repeated.get("duplicate")):
+            return False
+        change = {"status": "CLOSED", "expectedVersion": repeated["case"]["rowVersion"],
+                  "idempotencyKey": "golden-close-" + run_id, "classification": "TRUE_POSITIVE",
+                  "result": "Simulated attack detected; demo investigation completed",
+                  "reason": "Raw evidence and the successful no-action SOAR run were reviewed",
+                  "evidence": note["content"], "remainingActions": "None for this disposable fixture"}
+        data("incident", path + "/changes", change)
+        closed = data("incident", path)
+        history = page_items(data("incident", path + "/timeline?page=1&size=100"))
+        notes = [item for item in history if item.get("type") == "NOTE"
+                 and item.get("idempotencyKey") == "note:" + note["idempotencyKey"]]
+        closure_materials = {"Classification": change["classification"], "Result": change["result"],
+                             "Reason": change["reason"], "Evidence": change["evidence"],
+                             "Remaining actions": change["remainingActions"]}
+        closures = [item for item in history if item.get("type") == "CLOSURE"
+                    and item.get("idempotencyKey") == "change:" + change["idempotencyKey"]
+                    and all(f"{label}: {value}" in item.get("message", "")
+                            for label, value in closure_materials.items())]
+        linked = data("incident", "/api/v1/incidents/by-alarm?alarmId=" + urllib.parse.quote(alarm_id, safe=""))
+        return check("fresh reads retain closed case, owner, unique note, closure evidence and alarm link",
+                     closed.get("id") == case_id and closed.get("status") == "CLOSED"
+                     and bool(owner) and closed.get("assignee") == owner
+                     and len(notes) == 1 and notes[0].get("message") == owner + ": " + note["content"]
+                     and len(closures) == 1 and linked.get("id") == case_id,
+                     {"caseId": case_id, "status": closed.get("status"), "notes": len(notes), "closures": len(closures)})
+    except (RuntimeError, KeyError, TypeError, AttributeError) as error:
+        return check("investigation and closure readback", False, error)
+
+
+def run_scenario(args):
     print("=== SOCP Golden Demo: SSH brute force -> account compromise ===")
     print(f"transport={args.transport} gateway={GATEWAY_URL}")
     try:
@@ -467,7 +527,7 @@ def main():
     check("gateway login", bool(token), f"trace={login_trace or 'n/a'}")
 
     if args.transport == "vector":
-        if not check("Vector container is running", vector_running(), "start it with bash build/run-vector.sh start"):
+        if not check("Vector container is running", vector_running(args.vector_container), "start it with bash build/run-vector.sh start"):
             print("\nPrerequisites:")
             print("  bash build/compose.sh up -d")
             print("  bash build/run-all.sh start core")
@@ -666,21 +726,136 @@ def main():
                 for item in reversed(executions)
                 if item.get("playbookId") == playbook.get("id")
                 and (item.get("subject") or {}).get("id") == compromise.get("id")
+                and item.get("status") == "SUCCEEDED"
             ),
             None,
         )
 
     execution = wait_for("SOAR execution", soar_execution)
-    if not check("Outbox fan-out executed SOAR playbook", bool(execution), execution):
+    if not check("Outbox fan-out completed the no-action SOAR playbook", bool(execution), execution):
         return 1
 
-    status, report, report_headers = request("report", "/api/v1/reports/daily", token=token)
-    if not check("report-web exposes downstream analytics", status == 200, report):
+    if not verify_case_follow_through(token, compromise, incident, execution, run_id):
         return 1
+
+    def authoritative_report():
+        status, result, headers = request("report", "/api/v1/reports/daily", token=token)
+        try:
+            report = unwrap(result)
+        except RuntimeError:
+            return None
+        if (status == 200 and isinstance(report, dict) and report.get("source") == "clickhouse"
+                and report.get("degraded") is False and type(report.get("total")) is int
+                and report["total"] > 0):
+            return report, headers
+        return None
+
+    report_result = wait_for("non-degraded ClickHouse report", authoritative_report)
+    if not check("report-web exposes available ClickHouse analytics", bool(report_result), report_result):
+        return 1
+    _, report_headers = report_result
     print(f"\nTrace IDs: login={login_trace or 'n/a'} search={search_trace or 'n/a'} report={report_headers.get('X-Trace-Id', 'n/a')}")
-    print("\nWorkbench verification path: canonical event -> brute force -> account takeover -> privilege escalation -> multi-stage correlation -> entity risk -> incident/SOAR -> audit/trace.")
+    print("\nWorkbench verification path: canonical event -> detections -> risk -> incident/notification/SOAR -> raw evidence -> claim/note/closure -> fresh readback/report.")
     print("This demo intentionally claims at-least-once + idempotent consumers, not exactly-once delivery.")
     return 0
+
+
+def fixture_config(endpoint, collector, token):
+    """Adapt the reference collector only for a private Linux host-network fixture."""
+    target = urllib.parse.urlsplit(endpoint)
+    if (target.scheme != "http" or target.hostname not in ("localhost", "127.0.0.1")
+            or target.username or target.password or target.query or target.fragment
+            or target.path != "/search-config/api/v1/ingest"):
+        raise ValueError("isolated Vector fixture requires the local HTTP ingest endpoint")
+    if not collector or not token:
+        raise ValueError("isolated Vector fixture requires a collector identity and credential")
+    text = (REPO / "agents/vector-pipeline/vector.toml").read_text(encoding="utf-8")
+    replacements = {
+        'read_from = "end"': 'read_from = "beginning"',
+        'uri = "http://host.docker.internal:18081/search-config/api/v1/ingest"':
+            "uri = " + json.dumps(endpoint),
+        'request.headers.Authorization = "Bearer __VECTOR_TOKEN__"':
+            "request.headers.Authorization = " + json.dumps("Bearer " + token)
+            + '\nrequest.headers."X-SOCP-Collector" = ' + json.dumps(collector),
+        'inputs = ["siem_files", "siem_syslog"]': 'inputs = ["siem_files"]',
+    }
+    for old, new in replacements.items():
+        if text.count(old) != 1:
+            raise ValueError("reference Vector fixture contract changed: " + old.split(" = ")[0])
+        text = text.replace(old, new)
+    # This fixture accepts files only. Keeping unused TCP listeners on port 0
+    # still conflicts in Vector's resource graph, before the OS assigns ports.
+    # Remove unrelated listeners, not the normalization/HTTP/disk-buffer path.
+    for section in ("sources.siem_syslog", "sources.siem_internal", "sinks.siem_metrics"):
+        text, count = re.subn(r"(?ms)^\[" + re.escape(section) + r"\]\n.*?(?=^\[|\Z)", "", text)
+        if count != 1:
+            raise ValueError("reference Vector fixture section changed: " + section)
+    return text
+
+
+@contextmanager
+def isolated_vector():
+    """Own exactly one disposable collector; never replace an existing collector."""
+    if not sys.platform.startswith("linux"):
+        raise RuntimeError("--isolated-vector requires a disposable Linux Docker host (as in CI)")
+    config = fixture_config(ingest_url(), COLLECTOR, INGEST_TOKEN)
+    subprocess.run(["bash", str(BUILD / "vector-runtime.sh"), "verify-image"], check=True, cwd=REPO)
+    with tempfile.TemporaryDirectory(prefix="socp-golden-vector-") as directory:
+        private = Path(directory)
+        inputs = private / "input"
+        inputs.mkdir()
+        log_file = inputs / "sample.log"
+        log_file.touch()
+        configuration = private / "vector.toml"
+        configuration.write_text(config, encoding="utf-8")
+        configuration.chmod(0o600)
+        name = private.name
+        result = subprocess.run([
+            "docker", "run", "--detach", "--name", name, "--network", "host", "--memory", "256m",
+            "--label", "io.socp.fixture=golden-demo",
+            "--mount", f"type=bind,source={configuration},target=/etc/vector/vector.toml,readonly",
+            "--mount", f"type=bind,source={inputs},target=/demo,readonly",
+            middleware_image("vector"), "--config", "/etc/vector/vector.toml",
+        ], check=True, capture_output=True, text=True, timeout=60)
+        container = result.stdout.strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", container):
+            raise RuntimeError("Docker did not return the disposable collector's exact container ID")
+        try:
+            yield container, log_file
+        finally:
+            # Only sanitized diagnostics enter uploadable evidence. The credential-
+            # bearing TOML and input mounts stay in the private temporary directory.
+            try:
+                logs = subprocess.run(["docker", "logs", container], capture_output=True,
+                                      text=True, check=False, timeout=15)
+                destination = REPO / ".cache/golden-demo" / (name + ".log")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text((logs.stdout + logs.stderr).replace(INGEST_TOKEN, "[REDACTED]"),
+                                       encoding="utf-8")
+            finally:
+                subprocess.run(["docker", "rm", "--force", "--volumes", container], check=True,
+                               capture_output=True, text=True, timeout=30)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--transport", choices=("vector", "ingest"), default="vector",
+                        help="vector 走真实采集链；ingest 直接调用 search-config，便于排查")
+    parser.add_argument("--log-file", default=str(REPO / "demo/sample.log"))
+    parser.add_argument("--isolated-vector", action="store_true",
+                        help="在隔离 Linux/Docker 环境创建临时采集器并在结束后删除，仅用于验收")
+    args = parser.parse_args()
+    if args.isolated_vector and args.transport != "vector":
+        parser.error("--isolated-vector requires --transport vector")
+    args.vector_container = "socp-vector"
+    if not args.isolated_vector:
+        return run_scenario(args)
+    try:
+        with isolated_vector() as (args.vector_container, args.log_file):
+            return run_scenario(args)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        print(f"[FAIL] Isolated Vector acceptance: {error}")
+        return 1
 
 
 if __name__ == "__main__":

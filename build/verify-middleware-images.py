@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
@@ -20,6 +21,35 @@ COMPOSE = ROOT / "infra/docker-compose.yml"
 CI = ROOT / ".github/workflows/ci.yml"
 FULL_STACK = ROOT / ".github/workflows/full-stack.yml"
 MINIO_DOCKERFILE = ROOT / "deploy/docker/minio/Dockerfile"
+VECTOR_RUNTIME_LOCK = ROOT / "agents/vector-runtime/runtime.lock.json"
+
+
+def workflow_job(workflow: str, job: str) -> str:
+    match = re.search(rf"(?ms)^  {re.escape(job)}:\n(?:(?!^  \S).)*", workflow)
+    return match.group(0) if match else ""
+
+
+def vector_workflow_errors(workflow: str, job: str, test_command: str) -> list[str]:
+    """Keep source builds and failure evidence in the job that runs Vector."""
+    errors: list[str] = []
+    body = workflow_job(workflow, job)
+    build_position = body.find("bash build/vector-runtime.sh image")
+    verify_position = body.find("bash build/vector-runtime.sh verify-image")
+    test_position = body.find(test_command)
+    if not (0 <= build_position < verify_position < test_position):
+        errors.append(f"{job}: build and verify the patched Vector image before its tests")
+    steps = re.split(r"(?m)^      - ", body)
+    build_step = next((step for step in steps if "bash build/vector-runtime.sh image" in step), "")
+    if not re.search(r"(?m)^        timeout-minutes: [1-9][0-9]*\s*$", build_step):
+        errors.append(f"{job}: Vector source compilation needs its own bounded step timeout")
+    if "continue-on-error: true" in build_step:
+        errors.append(f"{job}: Vector source build must fail closed")
+    uploads = [step for step in steps if "uses: actions/upload-artifact@" in step]
+    for evidence in ("target/vector-delivery-evidence/", "services/search-config/target/vector-delivery-evidence/"):
+        if not any("if: always()" in step and re.search(rf"(?m)^\s+{re.escape(evidence)}\s*$", step)
+                   for step in uploads):
+            errors.append(f"{job}: always upload {evidence} including failed tests")
+    return errors
 
 
 def service_image(compose: str, service: str) -> str | None:
@@ -61,6 +91,15 @@ def main() -> int:
     ci = CI.read_text(encoding="utf-8")
     full_stack = FULL_STACK.read_text(encoding="utf-8")
     minio_dockerfile = MINIO_DOCKERFILE.read_text(encoding="utf-8")
+    try:
+        vector_runtime = json.loads(VECTOR_RUNTIME_LOCK.read_text(encoding="utf-8"))
+        if catalog["SOCP_VECTOR_IMAGE"] != vector_runtime["image"]:
+            errors.append("SOCP_VECTOR_IMAGE must match the source-built image in the Vector runtime lock")
+    except (OSError, ValueError, KeyError) as error:
+        errors.append(f"Cannot read pinned Vector runtime image: {error}")
+
+    errors.extend(vector_workflow_errors(ci, "build", "bash build/mvnw.sh verify"))
+    errors.extend(vector_workflow_errors(full_stack, "full-stack-heavy", "-Dtest=VectorConfigRendererContainerTest"))
 
     for service, key in SERVICE_IMAGE_KEYS.items():
         expected = catalog[key]
@@ -113,6 +152,8 @@ def main() -> int:
     vector = (ROOT / "build/run-vector.sh").read_text(encoding="utf-8")
     if "SOCP_VECTOR_IMAGE" not in vector or "middleware-images.env" not in vector:
         errors.append("build/run-vector.sh must read SOCP_VECTOR_IMAGE from the catalog")
+    if 'bash "$ROOT/build/vector-runtime.sh" verify-image' not in vector:
+        errors.append("build/run-vector.sh must verify source-built Vector provenance before startup")
 
     compose_wrapper = (ROOT / "build/compose.sh").read_text(encoding="utf-8")
     if "--env-file" not in compose_wrapper or "middleware-images.env" not in compose_wrapper:

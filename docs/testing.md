@@ -460,10 +460,55 @@ selected source outside the initial page; run
 the 501-source management, remote selection and mobile pagination flow. Pages
 are independent reads, not a snapshot across concurrent catalogue changes.
 
-Run `SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/search-config -am test -Dtest=VectorConfigRendererContainerTest,IngestionOutboxClaimPostgresTest -Dsurefire.failIfNoSpecifiedTests=false`
-to validate a mixed native/external rendered configuration with the pinned
-Vector image, prove an old file is read from the beginning, and repeat the
-same-key predecessor fence on PostgreSQL. The H2 persistence suite
+### Vector disk-buffer delivery
+
+Build the source-pinned patched image before running the rendered-config tests:
+
+```bash
+bash build/vector-runtime.sh verify
+bash build/vector-runtime.sh image
+bash build/vector-runtime.sh verify-image
+SOCP_TESTCONTAINERS=true bash build/mvnw.sh -pl services/search-config -am test -Dtest=VectorConfigRendererContainerTest,IngestionOutboxClaimPostgresTest -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+This validates a mixed native/external rendered configuration with the catalog
+image, proves an old file is read from the beginning, and repeats the same-key
+predecessor fence on PostgreSQL. The Vector suite additionally requires three
+cold one-event deliveries without later input, four sequential quiet-tail IDs
+(each delivered before appending the next), and process-crash replay after the
+source file is removed. The original retry assertion remains exactly eight
+503 responses followed by one 200, nine identical envelopes and a 60-second
+delivery bound. Disk buffering, parser assertions, retry policy and event IDs
+remain part of the contract.
+
+Fixtures keep source/buffer/HTTP observations, exact request bodies, config,
+runtime version and process logs under
+`services/search-config/target/vector-delivery-evidence/`. Assertions inspect
+pre-cleanup delivery; shutdown flushing is not a success. Change CI and Full
+Stack E2E build and verify the patched image before their Vector tests and
+always upload both this directory and repository-root
+`target/vector-delivery-evidence/` (source-build/verification logs), including
+on failure. A provenance mismatch is a failure, not a reason to pull an
+unpatched image or skip the fixture.
+
+For separate native GNU/Linux fault-injection evidence, use
+`build/vector-delivery-probe.py --binary PATH --output NEWDIR --rounds 5
+--events 1 --timeout 30`, optionally with `--delay-library SHIM`. Compile the
+shim using `cc -shared -fPIC -O2 -pthread -o .cache/vector-delay-write.so
+build/fixtures/vector-delay-write.c -ldl` (create `.cache/` first). An official affected binary with disk buffering can be checked using
+`--expect stall --events 1 --timeout 10`; `--buffer memory` is a diagnostic
+negative control only. `--writer-binary OLD_OFFICIAL_BINARY --events 1`
+checks replay across the old-writer/patched-reader process boundary. Use only
+new disposable evidence directories and fixture processes. Never apply
+`LD_PRELOAD` to an existing collector. Native injection proves a targeted
+write-completion boundary and does not replace the Alpine suite; process-crash
+replay does not certify power-loss/fsync behavior.
+
+See [runtime operations](operations/vector-runtime.md) for provenance, features,
+license/SBOM records, Windows Docker Desktop use, and state-preserving upgrade
+and rollback. A patched native Windows binary is unverified.
+
+The H2 persistence suite
 `ConfiguredEventTimePersistenceTest,IngestionOutboxOrderingPersistenceTest`
 also proves that a configured local event time reaches both the database and
 Kafka intent and that retry/delay/competing-publisher ordering completes the

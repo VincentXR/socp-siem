@@ -1,0 +1,185 @@
+From 759cb947eb6ab9989df096c732aafe3529d53c48 Mon Sep 17 00:00:00 2001
+From: Rob Blafford <robert.blafford@datadoghq.com>
+Date: Fri, 17 Jul 2026 11:40:53 -0400
+Subject: [PATCH] fix(buffers): publish disk buffer progress before notifying
+ readers (#25872)
+
+---
+ changelog.d/disk_v2_progress_waits.fix.md     |  3 ++
+ .../src/variants/disk_v2/ledger.rs            | 11 ++++--
+ .../src/variants/disk_v2/tests/invariants.rs  | 29 +++++++++++++++
+ .../src/variants/disk_v2/writer.rs            | 36 +++++++++----------
+ 4 files changed, 57 insertions(+), 22 deletions(-)
+ create mode 100644 changelog.d/disk_v2_progress_waits.fix.md
+
+diff --git a/changelog.d/disk_v2_progress_waits.fix.md b/changelog.d/disk_v2_progress_waits.fix.md
+new file mode 100644
+index 0000000000000..8abd3cd8c9e59
+--- /dev/null
++++ b/changelog.d/disk_v2_progress_waits.fix.md
+@@ -0,0 +1,3 @@
++Prevent disk buffers from stalling by publishing flushed writer progress before notifying readers.
++
++authors: graphcareful
+diff --git a/lib/vector-buffers/src/variants/disk_v2/ledger.rs b/lib/vector-buffers/src/variants/disk_v2/ledger.rs
+index 4deccea30e718..e8f4b92eee5a3 100644
+--- a/lib/vector-buffers/src/variants/disk_v2/ledger.rs
++++ b/lib/vector-buffers/src/variants/disk_v2/ledger.rs
+@@ -375,6 +375,8 @@ where
+     /// Waits for a signal from the writer that progress has been made.
+     ///
+     /// This will occur when a record is written, or when a new data file is created.
++    ///
++    /// Writer progress is published before this notification is sent.
+     #[cfg_attr(test, instrument(skip(self), level = "trace"))]
+     pub async fn wait_for_writer(&self) {
+         self.writer_notify.notified().await;
+@@ -387,16 +389,21 @@ where
+     }
+ 
+     /// Notifies all tasks waiting on progress by the writer.
++    ///
++    /// Callers must publish their shared state before notifying.
+     #[cfg_attr(test, instrument(skip(self), level = "trace"))]
+     pub fn notify_writer_waiters(&self) {
+         self.writer_notify.notify_one();
+     }
+ 
+-    /// Tracks the statistics of a successful write.
+-    pub fn track_write(&self, event_count: u64, record_size: u64) {
++    /// Publishes flushed writer progress and then wakes the reader.
++    pub fn publish_writer_progress(&self, event_count: u64, record_size: u64) -> u64 {
++        let next_record_id = self.state().increment_next_writer_record_id(event_count);
+         self.increment_total_buffer_size(record_size);
+         self.usage_handle
+             .increment_received_event_count_and_byte_size(event_count, record_size);
++        self.notify_writer_waiters();
++        next_record_id
+     }
+ 
+     /// Tracks the statistics of multiple successful reads.
+diff --git a/lib/vector-buffers/src/variants/disk_v2/tests/invariants.rs b/lib/vector-buffers/src/variants/disk_v2/tests/invariants.rs
+index 0143a5851eba4..05e15c4b479d8 100644
+--- a/lib/vector-buffers/src/variants/disk_v2/tests/invariants.rs
++++ b/lib/vector-buffers/src/variants/disk_v2/tests/invariants.rs
+@@ -79,6 +79,35 @@ async fn pending_read_returns_none_when_writer_closed_with_unflushed_write() {
+     fut.instrument(parent.or_current()).await;
+ }
+ 
++#[tokio::test]
++async fn publishing_writer_progress_updates_ledger_before_waking_reader() {
++    let _a = install_tracing_helpers();
++
++    let fut = with_temp_dir(|dir| {
++        let data_dir = dir.to_path_buf();
++
++        async move {
++            let (_writer, _reader, ledger) =
++                create_default_buffer_v2::<_, SizedRecord>(data_dir).await;
++
++            let mut wait_for_writer = spawn(ledger.wait_for_writer());
++            assert_pending!(wait_for_writer.poll());
++            assert!(!wait_for_writer.is_woken());
++
++            let next_record_id = ledger.publish_writer_progress(1, 128);
++
++            assert_eq!(next_record_id, 2);
++            assert_eq!(ledger.state().get_next_writer_record_id(), 2);
++            assert_eq!(ledger.get_total_buffer_size(), 128);
++            assert!(wait_for_writer.is_woken());
++            assert_ready!(wait_for_writer.poll());
++        }
++    });
++
++    let parent = trace_span!("publishing_writer_progress_updates_ledger_before_waking_reader");
++    fut.instrument(parent.or_current()).await;
++}
++
+ #[tokio::test]
+ async fn last_record_is_valid_during_load_when_buffer_correctly_flushed_and_stopped() {
+     let assertion_registry = install_tracing_helpers();
+diff --git a/lib/vector-buffers/src/variants/disk_v2/writer.rs b/lib/vector-buffers/src/variants/disk_v2/writer.rs
+index 995615b0a703c..ba84adc347123 100644
+--- a/lib/vector-buffers/src/variants/disk_v2/writer.rs
++++ b/lib/vector-buffers/src/variants/disk_v2/writer.rs
+@@ -781,11 +781,7 @@ where
+         self.unflushed_bytes += record_size;
+     }
+ 
+-    fn flush_write_state(&mut self) {
+-        self.flush_write_state_partial(self.unflushed_events, self.unflushed_bytes);
+-    }
+-
+-    fn flush_write_state_partial(&mut self, flushed_events: u64, flushed_bytes: u64) {
++    fn publish_flushed_progress(&mut self, flushed_events: u64, flushed_bytes: u64) {
+         debug_assert!(
+             flushed_events <= self.unflushed_events,
+             "tried to flush more events than are currently unflushed"
+@@ -795,14 +791,11 @@ where
+             "tried to flush more bytes than are currently unflushed"
+         );
+ 
+-        self.next_record_id = self
+-            .ledger
+-            .state()
+-            .increment_next_writer_record_id(flushed_events);
+         self.unflushed_events -= flushed_events;
+         self.unflushed_bytes -= flushed_bytes;
+-
+-        self.ledger.track_write(flushed_events, flushed_bytes);
++        self.next_record_id = self
++            .ledger
++            .publish_writer_progress(flushed_events, flushed_bytes);
+     }
+ 
+     fn can_write(&self) -> bool {
+@@ -1076,7 +1069,6 @@ where
+             // We still flush ourselves to disk, etc, to make sure all of the data is there.
+             should_open_next = true;
+             self.flush_inner(true).await?;
+-            self.flush_write_state();
+ 
+             self.reset();
+         }
+@@ -1306,11 +1298,10 @@ where
+         self.track_write(record_events.get(), bytes_written as u64);
+ 
+         // If we did flush some buffered writes during this write, however, we now compensate for
+-        // that after updating our internal state.  We'll also notify the reader, too, since the
+-        // data should be available to read:
++        // that after updating our internal state. Publishing the flushed state also notifies the
++        // reader, after all shared state reflects the readable bytes.
+         if let Some(flush_result) = flush_result {
+-            self.flush_write_state_partial(flush_result.events_flushed, flush_result.bytes_flushed);
+-            self.ledger.notify_writer_waiters();
++            self.publish_flushed_progress(flush_result.events_flushed, flush_result.bytes_flushed);
+         }
+ 
+         // A record at or above the write-buffer size forces the buffered writer to
+@@ -1371,9 +1362,15 @@ where
+         //
+         // TODO: Windows has a page cache as well, and macOS _should_, but we should verify this
+         // behavior works on those platforms as well.
+-        if let Some(writer) = self.writer.as_mut() {
+-            writer.flush().await?;
+-            self.ledger.notify_writer_waiters();
++        let flush_result = if let Some(writer) = self.writer.as_mut() {
++            writer.flush().await?
++        } else {
++            None
++        };
++
++        if let Some(flush_result) = flush_result {
++            // Publish the readable bytes before waking the reader.
++            self.publish_flushed_progress(flush_result.events_flushed, flush_result.bytes_flushed);
+         }
+ 
+         if self.ledger.should_flush() || force_full_flush {
+@@ -1402,7 +1399,6 @@ where
+     #[instrument(skip(self), level = "trace")]
+     pub async fn flush(&mut self) -> io::Result<()> {
+         self.flush_inner(false).await?;
+-        self.flush_write_state();
+         Ok(())
+     }
+ }

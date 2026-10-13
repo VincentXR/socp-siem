@@ -50,7 +50,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    # Original full-stack budget plus the bounded patched Vector source build.
+    timeout-minutes: 130
     env:
       SOCP_PG_USER: socp_runtime
       SOCP_PG_RUNTIME_USER: socp_runtime
@@ -68,8 +69,8 @@ jobs:
       SOCP_CLIENT_EXTERNAL_ALLOWED_HOSTS: "127.0.0.1,localhost"
       SOCP_CLIENT_EXTERNAL_HTTPS_ONLY: "false"
       SOCP_CLIENT_EXTERNAL_ALLOW_PRIVATE_NETWORKS: "true"
-      SOCP_WEBHOOK_FIXTURE_PORT: "38421"
-      SOCP_WEBHOOK_FIXTURE_URL: http://127.0.0.1:38421/notify
+      SOCP_WEBHOOK_FIXTURE_PORT: "28421"
+      SOCP_WEBHOOK_FIXTURE_URL: http://127.0.0.1:28421/notify
       # Fifteen Spring Boot processes plus Kafka/OpenSearch/ClickHouse run on one
       # hosted runner. Keep the evidence job inside a predictable memory budget.
       SOCP_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+UseSerialGC"
@@ -87,6 +88,10 @@ jobs:
       # Its steady-state metadata exceeds the generic 128 MiB evidence budget
       # under concurrent alarm evaluation, so keep the override service-local.
       SOCP_SOAR_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      # Incident's JPA, audit, OpenAPI and lazily loaded Redis nonce client
+      # exceed 128 MiB after routed recovery. A wrapped Metaspace OOM otherwise
+      # looks like a Redis outage and can stall durable alarm deliveries.
+      SOCP_INCIDENT_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
       # The PostgreSQL container defaults to 100 connections. Hikari otherwise
       # reserves up to ten per JVM and exhausts the shared database during the
       # 15-service startup burst.
@@ -100,6 +105,48 @@ jobs:
       PIPELINE_KAFKA: localhost:9092
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Restore source-keyed Vector image
+        id: vector_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/vector-image/vector.tar.gz
+          key: vector-runtime-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('agents/vector-runtime/**', 'build/vector-runtime.sh') }}
+
+      - name: Build and verify patched Vector runtime
+        # Rust compilation has its own budget; delivery tests keep their deadlines.
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          mkdir -p target/vector-delivery-evidence
+          if [ -f .cache/vector-image/vector.tar.gz ]; then
+            gzip -dc .cache/vector-image/vector.tar.gz | docker image load 2>&1 | tee target/vector-delivery-evidence/runtime-build.log
+          else
+            bash build/vector-runtime.sh image 2>&1 | tee target/vector-delivery-evidence/runtime-build.log
+          fi
+          bash build/vector-runtime.sh verify-image 2>&1 | tee target/vector-delivery-evidence/runtime-image.log
+          source infra/middleware-images.env
+          mkdir -p target/vector-delivery-evidence/runtime
+          docker image inspect "$SOCP_VECTOR_IMAGE" > target/vector-delivery-evidence/runtime/image-inspect.json
+          for file in provenance.json sbom.cdx.json buffer-tests.passed.json buffer-tests.list build-apk-packages.txt runtime-apk-db ldd.txt; do
+            docker run --rm --network none --entrypoint /bin/cat "$SOCP_VECTOR_IMAGE" \
+              "/usr/share/vector/socp/$file" > "target/vector-delivery-evidence/runtime/$file"
+          done
+
+      - name: Archive verified Vector image
+        if: steps.vector_cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          source infra/middleware-images.env
+          mkdir -p .cache/vector-image
+          docker image save "$SOCP_VECTOR_IMAGE" | gzip -1 > .cache/vector-image/vector.tar.gz
+
+      - name: Save verified Vector image
+        if: steps.vector_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/vector-image/vector.tar.gz
+          key: ${{ steps.vector_cache.outputs.cache-primary-key }}
 
       - name: Generate disposable job credentials
         run: python3 build/prepare-ci-credentials.py --scope integration
@@ -393,7 +440,7 @@ jobs:
           SOCP_DETECT_ROUTING_SOURCE_GROUP_ID: socp-detect-router-v2
           RECOVERY_TOPIC: socp-detection-routed-v2
           SOCP_REQUIRE_DOWNSTREAM_DRAIN: "true"
-          DETECTION_INSTANCE_URLS: http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082
+          DETECTION_INSTANCE_URLS: http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:28083
         run: |
           mkdir -p .cache/chaos
           python3 build/chaos-pipeline.py --scenario multi_instance --count 30 \
@@ -412,7 +459,7 @@ jobs:
           SOCP_DETECT_ROUTING_SOURCE_GROUP_ID: socp-detect-router-v2
           RECOVERY_TOPIC: socp-detection-routed-v2
           SOCP_REQUIRE_DOWNSTREAM_DRAIN: "true"
-          DETECTION_INSTANCE_URLS: http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082
+          DETECTION_INSTANCE_URLS: http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:28083
         run: |
           python3 build/chaos-pipeline.py --scenario routed_migration --count 20 \
             --run-id "weekly-mig-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
@@ -434,7 +481,7 @@ jobs:
         id: golden_demo
         env:
           GOLDEN_DEMO_DB_EVIDENCE: "true"
-        run: python3 build/demos/golden-demo.py --transport ingest
+        run: python3 build/demos/golden-demo.py --transport vector --isolated-vector
 
       - name: Run dependency failure injection
         if: ${{ !cancelled() && (steps.golden_demo.outcome == 'success' || steps.golden_demo.outcome == 'failure') }}
@@ -453,6 +500,10 @@ jobs:
           --benchmark .cache/chaos/dependency-matrix.json \
           --benchmark .cache/chaos/multi-instance.json
 
+      - name: Reject JVM memory exhaustion even when a later retry recovered
+        if: always()
+        run: python3 build/verify-jvm-memory.py
+
       - name: Upload verification logs
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -460,6 +511,10 @@ jobs:
           name: full-stack-e2e-logs
           path: |
             .cache/
+            !.cache/vector-runtime/**
+            !.cache/vector-image/**
+            target/vector-delivery-evidence/
+            services/search-config/target/vector-delivery-evidence/
             frontend/apps/workbench/test-results/
             frontend/apps/workbench/playwright-report/
           include-hidden-files: true

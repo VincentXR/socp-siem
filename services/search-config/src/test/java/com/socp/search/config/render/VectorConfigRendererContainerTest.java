@@ -6,6 +6,8 @@ import com.socp.search.config.domain.ParseFormat;
 import com.socp.search.config.domain.SinkTarget;
 import com.socp.search.config.domain.SourceType;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.RepeatedTest;
+import org.junit.jupiter.api.RepetitionInfo;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.junit.jupiter.api.io.TempDir;
@@ -13,10 +15,8 @@ import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.utility.DockerImageName;
 import org.testcontainers.utility.MountableFile;
 import org.testcontainers.Testcontainers;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.parser.ParserRegistry;
 import com.socp.search.config.parser.CanonicalEvent;
-import com.sun.net.httpserver.HttpServer;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -30,6 +30,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /** Executes generated config with the pinned Vector image or an explicitly supplied pinned native binary. */
 class VectorConfigRendererContainerTest {
@@ -104,111 +105,98 @@ class VectorConfigRendererContainerTest {
     @Test
     @EnabledIf("vectorRuntimeAvailable")
     void httpSinkRetriesBeyondFiveFailuresThenDeliversAnUnchangedAutoEnvelope() throws Exception {
-        var attempts = new java.util.concurrent.atomic.AtomicInteger();
-        var received = new java.util.concurrent.CopyOnWriteArrayList<String>();
-        var acknowledged = new java.util.concurrent.CountDownLatch(1);
-        HttpServer server = HttpServer.create(new java.net.InetSocketAddress("0.0.0.0", 0), 0);
-        server.createContext("/ready", exchange -> {
-            exchange.sendResponseHeaders(200, -1);
-            exchange.close();
-        });
-        server.createContext("/ingest", exchange -> {
-            received.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
-            int status = attempts.incrementAndGet() <= 8 ? 503 : 200;
-            exchange.sendResponseHeaders(status, -1);
-            exchange.close();
-            if (status == 200) acknowledged.countDown();
-        });
-        server.start();
-        try {
-            String nativeBinary = System.getenv("SOCP_VECTOR_BIN");
-            boolean nativeRuntime = nativeBinary != null && !nativeBinary.isBlank();
-            if (!nativeRuntime) Testcontainers.exposeHostPorts(server.getAddress().getPort());
-            Path input = temporaryDirectory.resolve("retry.log");
-            String raw = new ObjectMapper().writeValueAsString(Map.of(
-                    "eventId", "retry-event", "source", "auth", "host", "auth-host",
-                    "src_ip", "203.0.113.9", "message", "Failed password " + "x".repeat(512)));
-            Files.writeString(input, raw + "\n", StandardCharsets.UTF_8);
-            LogSource source = LogSource.createFull("retry-file", SourceType.FILE, ParseFormat.AUTO,
-                    nativeRuntime ? input.toAbsolutePath().toString() : "/fixture/retry.log", null, null, "test", true,
-                    "beginning", null, null, List.of(), null,
-                    null, "utf-8", "timestamp", "UTC", List.of(), 1, null, null, null);
-            SinkTarget target = new SinkTarget("retry-sink", "test", "HTTP",
-                    "http://" + (nativeRuntime ? "127.0.0.1" : "host.testcontainers.internal")
-                            + ":" + server.getAddress().getPort() + "/ingest",
-                    null, true, Instant.now());
-            // Keep the production retry budget. Shorten only the delay so this
-            // regression reaches attempt nine without a multi-minute test.
-            String config = new VectorConfigRenderer(null).render(List.of(source), ignored -> target, true)
-                    .replace("request.retry_initial_backoff_secs = 2", "request.retry_initial_backoff_secs = 1")
-                    .replace("request.retry_max_duration_secs = 30", "request.retry_max_duration_secs = 1");
-            Path configFile = temporaryDirectory.resolve("retry.toml");
-            if (nativeRuntime) {
-                Path state = Files.createDirectories(temporaryDirectory.resolve("state"));
-                Files.createDirectories(temporaryDirectory.resolve(".cache/vector"));
-                config = "data_dir = \"" + state.toAbsolutePath() + "\"\n" + config;
-            }
-            Files.writeString(configFile, config, StandardCharsets.UTF_8);
-            if (nativeRuntime) {
-                runNativeUntilAcknowledged(nativeBinary, configFile, acknowledged);
-            } else try (GenericContainer<?> vector = new GenericContainer<>(DockerImageName.parse(MiddlewareImages.image("vector")))) {
-                vector.withCopyFileToContainer(MountableFile.forHostPath(configFile), "/etc/vector/vector.toml")
-                        .withCopyFileToContainer(MountableFile.forHostPath(input), "/fixture/retry.log")
-                        .withTmpFs(Map.of("/.cache/vector", "rw"))
-                        .withEnv("VECTOR_LOG", "debug")
-                        .withCreateContainerCmdModifier(command -> command.withEntrypoint("/bin/sh"))
-                        .withCommand("-c", "vector validate --no-environment /etc/vector/vector.toml"
-                                + " && exec vector --config /etc/vector/vector.toml");
-                vector.start();
-                var probe = vector.execInContainer("wget", "-q", "-T", "5", "-O", "/dev/null",
-                        "http://host.testcontainers.internal:" + server.getAddress().getPort() + "/ready");
-                assertEquals(0, probe.getExitCode(),
-                        () -> "Vector fixture endpoint is unreachable: " + probe.getStderr());
-                assertTrue(acknowledged.await(60, TimeUnit.SECONDS),
-                        () -> "Vector did not recover; received HTTP attempts=" + attempts.get()
-                                + " (expected eight 503 responses then one 200):\n" + vector.getLogs());
-            }
-            assertEquals(9, attempts.get());
-            assertEquals(1, received.stream().distinct().count(), "buffered event identity must survive retries");
-            var canonical = new ParserRegistry().parse(received.getLast().strip(), ParseFormat.AUTO, null);
-            assertNull(canonical.get("parse.error"));
-            assertEquals("retry-event", canonical.get("eventId"));
-            assertEquals("auth", canonical.get("source"));
-            assertEquals("203.0.113.9", canonical.get(CanonicalEvent.SOURCE_IP));
-        } finally {
-            server.stop(0);
+        try (var fixture = new VectorDeliveryFixture(temporaryDirectory, "retry", 8)) {
+            fixture.writeInput(VectorDeliveryFixture.event("retry-event"));
+            fixture.start();
+            fixture.awaitAccepted(1);
+            fixture.assertDiskRecordExists();
+            fixture.assertQuiet(1);
+            var received = fixture.received();
+            assertEquals(9, received.size(), "expected eight 503 responses then one 200");
+            assertTrue(received.subList(0, 8).stream().allMatch(attempt -> attempt.status() == 503));
+            assertEquals(200, received.getLast().status());
+            assertEquals(1, received.stream().map(VectorDeliveryFixture.Attempt::body).distinct().count(),
+                    "buffered event identity and every envelope byte must survive retries");
+            assertEvent(received.getLast().body(), "retry-event");
         }
     }
 
-    private static boolean vectorRuntimeAvailable() {
-        String binary = System.getenv("SOCP_VECTOR_BIN");
-        return "true".equals(System.getenv("SOCP_TESTCONTAINERS")) || (binary != null && !binary.isBlank());
-    }
-
-    private void runNativeUntilAcknowledged(String binary, Path config,
-                                            java.util.concurrent.CountDownLatch acknowledged) throws Exception {
-        Process version = new ProcessBuilder(binary, "--version").start();
-        String actualVersion = new String(version.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertEquals(0, version.waitFor());
-        String image = MiddlewareImages.image("vector");
-        String pinnedVersion = image.substring(image.lastIndexOf(':') + 1).split("-")[0];
-        assertTrue(actualVersion.startsWith("vector " + pinnedVersion + " "), actualVersion);
-        Path logs = temporaryDirectory.resolve("vector.log");
-        Process validate = new ProcessBuilder(binary, "validate", "--no-environment", config.toString())
-                .directory(temporaryDirectory.toFile()).redirectErrorStream(true).redirectOutput(logs.toFile()).start();
-        assertEquals(0, validate.waitFor(), () -> readLogs(logs));
-        Process vector = new ProcessBuilder(binary, "--config", config.toString())
-                .directory(temporaryDirectory.toFile()).redirectErrorStream(true).redirectOutput(logs.toFile()).start();
-        try {
-            assertTrue(acknowledged.await(60, TimeUnit.SECONDS), () -> readLogs(logs));
-        } finally {
-            vector.destroy();
-            if (!vector.waitFor(5, TimeUnit.SECONDS)) vector.destroyForcibly().waitFor();
+    @RepeatedTest(3)
+    @EnabledIf("vectorRuntimeAvailable")
+    void coldQuietSingleEventReachesHttpWithoutAnotherSourceWrite(RepetitionInfo repetition) throws Exception {
+        String id = "cold-event-" + repetition.getCurrentRepetition();
+        try (var fixture = new VectorDeliveryFixture(temporaryDirectory, "cold-" + repetition.getCurrentRepetition(), 0)) {
+            fixture.writeInput(VectorDeliveryFixture.event(id));
+            fixture.start();
+            fixture.awaitAccepted(1);
+            fixture.assertDiskRecordExists();
+            fixture.assertQuiet(1);
+            assertEquals(1, fixture.received().size());
+            assertEvent(fixture.acceptedBodies().getFirst(), id);
         }
     }
 
-    private static String readLogs(Path logs) {
-        try { return Files.readString(logs); }
-        catch (java.io.IOException error) { return error.toString(); }
+    @Test
+    @EnabledIf("vectorRuntimeAvailable")
+    void eachIdleTailEventArrivesBeforeTheNextEventIsWritten() throws Exception {
+        try (var fixture = new VectorDeliveryFixture(temporaryDirectory, "idle-tail", 0)) {
+            fixture.writeInput(VectorDeliveryFixture.event("tail-event-0"));
+            fixture.start();
+            for (int event = 0; event < 4; event++) {
+                if (event > 0) fixture.appendInput(VectorDeliveryFixture.event("tail-event-" + event));
+                fixture.awaitAccepted(event + 1);
+                assertEquals(event + 1, fixture.received().size(), "no extra HTTP requests or synthetic keepalive events");
+                assertEvent(fixture.acceptedBodies().get(event), "tail-event-" + event);
+                fixture.assertQuiet(event + 1);
+            }
+            fixture.assertDiskRecordExists();
+            assertEquals(4, fixture.acceptedBodies().stream().distinct().count());
+        }
     }
+
+    @Test
+    @EnabledIf("vectorRuntimeAvailable")
+    void unacknowledgedDiskEventReplaysAfterCrashWithTheIdenticalEnvelope() throws Exception {
+        try (var fixture = new VectorDeliveryFixture(temporaryDirectory, "restart-replay", 0)) {
+            fixture.setOutage(true);
+            fixture.writeInput(VectorDeliveryFixture.event("restart-event"));
+            fixture.start();
+            fixture.awaitFailedAttempt();
+            fixture.assertDiskRecordExists();
+            String bufferedEnvelope = fixture.received().getFirst().body();
+            assertEvent(bufferedEnvelope, "restart-event");
+            assertTrue(fixture.acceptedBodies().isEmpty());
+            fixture.crash();
+            // Remove the original input entirely: success must come from the
+            // retained disk buffer, not source rereading or a new transform/UUID.
+            // This proves process-crash replay, not power-loss/fsync durability.
+            fixture.removeInput();
+            fixture.assertDiskRecordExists();
+            fixture.start();
+            fixture.awaitFailedAttempt();
+            assertTrue(fixture.received().stream().filter(attempt -> attempt.generation() == 2)
+                    .allMatch(attempt -> attempt.body().equals(bufferedEnvelope)));
+            fixture.setOutage(false);
+            fixture.awaitAccepted(1);
+            fixture.assertQuiet(1);
+            assertEquals(1, fixture.acceptedBodies().size());
+            assertEquals(bufferedEnvelope, fixture.acceptedBodies().getFirst());
+            assertEquals(1, fixture.received().stream().map(VectorDeliveryFixture.Attempt::body).distinct().count());
+            assertEvent(fixture.acceptedBodies().getFirst(), "restart-event");
+        }
+    }
+
+    private static void assertEvent(String body, String id) {
+        assertEquals(1, body.lines().filter(line -> !line.isBlank()).count(), "exactly one NDJSON event per quiet batch");
+        var canonical = new ParserRegistry().parse(body.strip(), ParseFormat.AUTO, null);
+        assertNull(canonical.get("parse.error"));
+        assertEquals(id, canonical.get("eventId"));
+        assertEquals("auth", canonical.get("source"));
+        assertEquals("auth-host", canonical.get(CanonicalEvent.HOST_NAME));
+        assertEquals("203.0.113.9", canonical.get(CanonicalEvent.SOURCE_IP));
+        assertEquals("Failed password " + "x".repeat(512), canonical.get(CanonicalEvent.EVENT_MESSAGE));
+        assertFalse(body.isBlank());
+    }
+
+    private static boolean vectorRuntimeAvailable() { return VectorDeliveryFixture.available(); }
 }

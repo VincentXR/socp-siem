@@ -5,6 +5,21 @@ Select checks using the [testing guide](testing.md) and
 [test environment safeguards](testing.md#test-environments). They are
 reference cases, not a claim that a given revision passed them.
 
+Full Stack keeps service-local JVM memory limits; it allocates the incident
+service 192 MiB of Metaspace for its JPA/audit/OpenAPI and Redis paths, independently
+of its 192 MiB heap. This is an isolated CI budget, not production sizing.
+`python3 build/verify-jvm-memory.py --root .cache` rejects memory exhaustion in
+live, production-boot and retained Detection restart logs even if later retries
+succeed. It reports file/line locations without echoing log contents. Redis
+nonce failures retain fail-closed behavior and log safe root-cause type labels,
+so a wrapped local VM failure is not mistaken for a Redis server outage.
+
+The Vector image cache uses the complete local Docker build inputs
+(`agents/vector-runtime/**` and `build/vector-runtime.sh`), including the pinned
+source, patches, toolchain, base images and build flags. Unrelated workflow
+changes do not rebuild Rust. There is no prefix-key fallback; every restored
+image still runs provenance/binary verification and the real delivery tests.
+
 ## Test ownership
 
 - Workbench `scripts/resource-import.test.ts` and `src/lib/ioc-import.test.ts`
@@ -381,7 +396,7 @@ export SOCP_DETECT_OUTPUT_MODE=primary
 export SOCP_DETECT_ROUTING_PUBLISHER_ENABLED=true
 export SOCP_DETECT_CLUSTER_MIN_PARTITIONS=6
 export RECOVERY_TOPIC=socp-detection-routed-v2
-export DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082
+export DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:28083
 bash build/detection-cluster.sh start
 
 python build/chaos-pipeline.py --scenario multi_instance --rebalance-cycles 3
@@ -401,6 +416,12 @@ pass criteria.
 The cluster launcher waits for each old listener to release its port before a
 generation switch; if a port remains occupied, the restart fails with that port
 instead of accepting a partially restarted cluster.
+Default listeners are `18082,28082,28083`; the isolated notification fixture uses
+`28421`. They stay outside Linux's default `32768–60999` ephemeral range, where
+an outbound socket can occupy a port before the HTTP listener binds. Use
+`bash build/detection-cluster.sh ports` to inspect the selected ports without
+starting services. Custom ports must avoid the host's actual ephemeral range
+or be reserved by the operator; these scripts do not change host sysctls.
 
 Two further routed-migration scenarios run against the same cluster:
 
@@ -435,8 +456,64 @@ the same entity and partition placement alongside each run's fresh dataset.
 Golden Demo saves its canonical events, matching alerts, rules and runtime
 state in `.cache/golden-demo/` on exit. `GOLDEN_DEMO_DB_EVIDENCE=true` adds a
 read-only journal snapshot from the disposable `socp-postgres` container.
+Its pass condition includes raw alarm evidence, both directions of the
+alarm/case relationship, a `SUCCEEDED` run of the no-action demo playbook,
+case claim, an idempotent note, closure materials, and fresh reads of the
+closed case and its timeline. The daily report must have `source=clickhouse`,
+`degraded=false`, and a positive integer total; HTTP 200 alone is insufficient.
+The LOG channel and START-to-END playbook do not prove external message
+delivery or real containment. `--transport ingest` bypasses the collector;
+use `--transport vector` with the disposable collector fixture to exercise it.
+This script writes investigation and closure records, so never point it at
+production or a shared business environment. `build/tests/test_golden_demo.py`
+tests the acceptance decisions with simulated responses, not live persistence.
 The independent dependency-failure phase still runs after a Golden Demo
 failure; the failed demo continues to fail the overall job.
+Its Temporal probe publishes its own START-to-END fixture with
+`SOAR_VERIFY_USERNAME/PASSWORD` before stopping Temporal; it never selects an
+arbitrary published or archived catalogue playbook. An analyst creates the Run,
+a separate read must find it QUEUED during the outage, and the same Run must
+reach SUCCEEDED after recovery. The probe restores Temporal in `finally` and
+archives only its own fixture. It does not depend on Golden Demo provisioning.
+
+### Repeatable analyst demonstration
+
+Use a disposable stack prepared with the [local setup](getting-started.md)
+and [verified collector](operations/vector-runtime.md). Check endpoint overrides
+before running: this scenario creates alerts and closes its generated case.
+Run `python3 build/demos/golden-demo.py --transport vector` to use an already
+prepared collector, or `--transport ingest` to test only the downstream service
+chain. Full Stack CI uses `--transport vector --isolated-vector`: it verifies
+the pinned image, starts a private Linux host-network collector using the
+reference pipeline and registered collector credential, then follows its real
+file events through the service chain. This file-only fixture omits the unused
+syslog listener and metrics source/sink; its normalization, HTTP transport,
+event identity and disk buffer remain unchanged. The Docker-enabled script
+suite also runs `vector validate --no-environment` on this exact fixture shape.
+The credential-bearing configuration
+and input file stay outside the checkout. Only redacted collector logs enter
+evidence; cleanup removes exactly that fixture's container and anonymous
+volumes, never an existing collector. The rendered-config container suite
+separately proves retries, quiet-tail delivery and crash replay.
+
+After the command succeeds, use its printed host, alert and case identifiers
+to walk through the workbench:
+
+1. Search for the generated host and open its raw authentication events.
+2. Open the matching brute-force and successful-login alerts; inspect the
+   trigger rule and original evidence rather than only the alert count.
+3. Follow the alert's case link, then verify the case links back to that alert.
+4. Inspect the recorded owner, single investigation note and closure materials;
+   the script already performed claim/note/close, so do not repeat those commands
+   against the closed fixture. Reload the page to confirm persisted state.
+5. Inspect the matching SOAR run (`SUCCEEDED`) and LOG notification (`logged`).
+   Neither the no-action playbook nor LOG is external containment or delivery.
+6. Open the report and confirm the ClickHouse-backed, non-degraded result.
+
+Re-running generates a fresh scenario; retain the run-scoped evidence instead
+of deleting middleware state. A missing expected result is a failed acceptance,
+not a reason to manually create the missing alert or case. Real notification
+recovery and AI append concurrency keep their separate Full API fixtures.
 
 Chaos event injection is a data-plane operation. Set
 `PIPELINE_COLLECTOR_ID`, `PIPELINE_COLLECTOR_TOKEN`, and

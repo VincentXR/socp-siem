@@ -139,7 +139,7 @@ Run the versioned dataset with a unique namespace:
 
 ```bash
 SOCP_DETECT_PROFILE=pg \
-DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082 \
+DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:28083 \
   python build/chaos-pipeline.py --scenario multi_instance --count 30 --rebalance-cycles 3 \
   --run-id local-multi-instance --output .cache/chaos/local-multi-instance.json
 bash build/detection-cluster.sh stop

@@ -12,7 +12,7 @@ Examples (Linux/macOS/WSL):
   python build/chaos-pipeline.py --scenario all --output .cache/chaos.json
   python build/chaos-pipeline.py --scenario duplicate_delivery
   python build/chaos-pipeline.py --scenario alert_web_restart
-  DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:38082 \
+  DETECTION_INSTANCE_URLS=http://127.0.0.1:18082,http://127.0.0.1:28082,http://127.0.0.1:28083 \
     python build/chaos-pipeline.py --scenario multi_instance
 """
 from __future__ import annotations
@@ -105,7 +105,7 @@ def start_auto_detection_cluster():
     TOPIC = os.environ["RECOVERY_TOPIC"]
     raw_ports = os.environ.get(
         "SOCP_DETECT_CLUSTER_PORTS",
-        f"{port_of('detect-web')},28082,38082")
+        f"{port_of('detect-web')},28082,28083")
     ports = [int(item.strip()) for item in raw_ports.split(",") if item.strip()]
     if len(ports) != 3:
         raise RuntimeError("SOCP_DETECT_CLUSTER_PORTS must contain exactly three ports")

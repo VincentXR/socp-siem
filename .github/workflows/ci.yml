@@ -22,7 +22,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Original test budget plus the bounded patched Vector source build.
+    timeout-minutes: 120
     env:
       SOCP_TESTCONTAINERS: "true"
     steps:
@@ -45,6 +46,48 @@ jobs:
         with:
           version: v4.2.4
 
+      - name: Restore source-keyed Vector image
+        id: vector_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/vector-image/vector.tar.gz
+          key: vector-runtime-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('agents/vector-runtime/**', 'build/vector-runtime.sh') }}
+
+      - name: Build and verify patched Vector runtime
+        # Rust compilation has its own budget; delivery tests keep their deadlines.
+        timeout-minutes: 60
+        run: |
+          set -euo pipefail
+          mkdir -p target/vector-delivery-evidence
+          if [ -f .cache/vector-image/vector.tar.gz ]; then
+            gzip -dc .cache/vector-image/vector.tar.gz | docker image load 2>&1 | tee target/vector-delivery-evidence/runtime-build.log
+          else
+            bash build/vector-runtime.sh image 2>&1 | tee target/vector-delivery-evidence/runtime-build.log
+          fi
+          bash build/vector-runtime.sh verify-image 2>&1 | tee target/vector-delivery-evidence/runtime-image.log
+          source infra/middleware-images.env
+          mkdir -p target/vector-delivery-evidence/runtime
+          docker image inspect "$SOCP_VECTOR_IMAGE" > target/vector-delivery-evidence/runtime/image-inspect.json
+          for file in provenance.json sbom.cdx.json buffer-tests.passed.json buffer-tests.list build-apk-packages.txt runtime-apk-db ldd.txt; do
+            docker run --rm --network none --entrypoint /bin/cat "$SOCP_VECTOR_IMAGE" \
+              "/usr/share/vector/socp/$file" > "target/vector-delivery-evidence/runtime/$file"
+          done
+
+      - name: Archive verified Vector image
+        if: steps.vector_cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          source infra/middleware-images.env
+          mkdir -p .cache/vector-image
+          docker image save "$SOCP_VECTOR_IMAGE" | gzip -1 > .cache/vector-image/vector.tar.gz
+
+      - name: Save verified Vector image
+        if: steps.vector_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/vector-image/vector.tar.gz
+          key: ${{ steps.vector_cache.outputs.cache-primary-key }}
+
       - name: Build, test, and analyze backend
         run: bash build/mvnw.sh verify -Pcoverage,quality -Dsurefire.failIfNoSpecifiedTests=false
 
@@ -58,7 +101,8 @@ jobs:
       - name: Verify repository contracts and versioned content
         run: |
           python3 -m unittest build/tests/test_verify_ci_gate.py build/tests/test_ci_scope.py \
-            build/tests/test_webhook_sink.py
+            build/tests/test_webhook_sink.py build/tests/test_middleware_images.py \
+            build/tests/test_vector_delivery_probe.py build/tests/test_vector_runtime.py
           python3 build/verify-repository.py --evidence-dir .cache/evidence
 
       - name: Validate GitHub Actions workflows
@@ -80,7 +124,10 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: validation-evidence
-          path: .cache/evidence/
+          path: |
+            .cache/evidence/
+            target/vector-delivery-evidence/
+            services/search-config/target/vector-delivery-evidence/
           include-hidden-files: true
           if-no-files-found: ignore
 

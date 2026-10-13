@@ -8,7 +8,8 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/toolchain.sh"
 source "$SCRIPT_DIR/ports.env"
 
-PORTS_RAW="${SOCP_DETECT_CLUSTER_PORTS:-${SOCP_PORT_DETECT_WEB},28082,38082}"
+# Keep fixture listeners below Linux's default ephemeral port range.
+PORTS_RAW="${SOCP_DETECT_CLUSTER_PORTS:-${SOCP_PORT_DETECT_WEB},28082,28083}"
 GROUP_ID="${SOCP_KAFKA_GROUP_ID:-socp-detect}"
 PROFILE="${SOCP_DETECT_PROFILE:-pg}"
 JVM_OPTS="${SOCP_DETECT_WEB_JVM_OPTS:-${SOCP_JVM_OPTS:--Xms32m -Xmx256m}}"
@@ -235,10 +236,11 @@ case "${1:-status}" in
   start) start_cluster ;;
   stop) stop_cluster ;;
   restart) stop_cluster; start_cluster ;;
+  ports) csv_ports ;;
   status)
     for port in $(csv_ports); do
       if [ -n "$(pid_on_port "$port" || true)" ]; then echo "UP $port"; else echo "DOWN $port"; fi
     done
     ;;
-  *) echo "usage: $0 {start|stop|restart|status}" >&2; exit 1 ;;
+  *) echo "usage: $0 {start|stop|restart|status|ports}" >&2; exit 1 ;;
 esac
