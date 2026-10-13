@@ -28,10 +28,22 @@ multiple agents without requiring service-specific code changes.
 # Start the core path (search-config is normally on port 18081)
 bash build/run-all.sh start core
 
-# Validate and start Vector using the local binary/configuration
-tooling/vector/bin/vector.exe validate --no-environment vector.toml
-tooling/vector/bin/vector.exe --config vector.toml
+# Build/verify the patched Linux image locally, then create a new collector
+bash build/vector-runtime.sh image
+bash build/vector-runtime.sh verify-image
+bash build/run-vector.sh start
 ```
+
+Run these commands from the repository root. The local image is pinned in
+`infra/middleware-images.env` and includes both required disk-buffer backports.
+On Windows use Docker Desktop Linux containers through Git Bash or WSL; a
+patched native `vector.exe` is not validated and is not an automatic fallback.
+See [runtime provenance, validation, upgrade and rollback](../../docs/operations/vector-runtime.md).
+
+The helper refuses to replace an existing collector. `stop` now keeps the
+container and disk state. Preserve the existing configuration and data directory
+before an upgrade; the helper does not migrate state or create a persistent
+state volume for an old installation.
 
 The exact generated configuration is managed through the Search source APIs:
 

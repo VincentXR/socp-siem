@@ -1,0 +1,7 @@
+**
+!agents/
+!agents/vector-runtime/
+!agents/vector-runtime/**
+!build/
+!build/vector-runtime.sh
+**/__pycache__/

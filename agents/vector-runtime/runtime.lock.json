@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "host_rustc_wrapper_sha256": "712d8a5d3ae1b28ec85851858f62a7b1a113cdecbf3c99ddc87524e8547b6fe0",
+  "build_id": "0.57.0-socp1",
+  "image": "socp/vector:0.57.0-socp1-alpine",
+  "source": {
+    "repository": "https://github.com/vectordotdev/vector",
+    "commit": "8832452f57afb536ea0de53a093f9fd1b669ccec",
+    "url": "https://codeload.github.com/vectordotdev/vector/tar.gz/8832452f57afb536ea0de53a093f9fd1b669ccec",
+    "sha256": "a4600ba8fa761e1bd10086bb99037e949d62a366b4fd55fb95839ee60d2a75e6",
+    "cargo_lock_sha256": "c51420aee0de9b7372ccd575a6ea38b6aa39103b07d54b786b6b00a46fe584ab",
+    "license": "MPL-2.0"
+  },
+  "patches": [
+    {
+      "file": "patches/0001-disk-v2-ledger-ordering.patch",
+      "commit": "759cb947eb6ab9989df096c732aafe3529d53c48",
+      "url": "https://github.com/vectordotdev/vector/commit/759cb947eb6ab9989df096c732aafe3529d53c48",
+      "sha256": "a6f585e4400119e712915af44633fbc4d853f55bbd5eadd8667a858228e543da"
+    },
+    {
+      "file": "patches/0002-disk-v2-write-completion.patch",
+      "commit": "41e9abc6e1c3862b27065cfc35aa892eab4295fa",
+      "url": "https://github.com/vectordotdev/vector/pull/26410",
+      "sha256": "783f985b973eae46e7ada767fe2c9eac622c535aa09ba0e806c1e00f5564ff97"
+    }
+  ],
+  "rust_toolchain": "1.95.0",
+  "builder_image": "docker.io/rust:1.95.0-alpine3.23@sha256:606fd313a0f49743ee2a7bd49a0914bab7deedb12791f3a846a34a4711db7ed2",
+  "runtime_image": "docker.io/timberio/vector:0.57.0-alpine@sha256:19e3526faf4d4b1ed0c28a0d68d4cc3a1e13e437099986a5b7a768707907497c",
+  "features": [
+    "api",
+    "sources-file",
+    "sources-socket",
+    "sources-syslog",
+    "sources-kafka",
+    "sources-internal_metrics",
+    "transforms-remap",
+    "sinks-http",
+    "sinks-prometheus",
+    "sinks-console",
+    "vrl/stdlib",
+    "rdkafka/cmake_build"
+  ],
+  "build_profile": {
+    "name": "release",
+    "opt_level": 2,
+    "lto": false,
+    "codegen_units": 16,
+    "debug": 0,
+    "incremental": false,
+    "jobs": 2
+  },
+  "regression_tests": [
+    "publishing_writer_progress_updates_ledger_before_waking_reader",
+    "explicit_flush_waits_for_write_completion",
+    "implicit_flush_waits_for_write_completion",
+    "direct_write_waits_for_write_completion",
+    "deferred_write_errors_are_not_reported_as_flushed"
+  ],
+  "source_date_epoch": 1784059933
+}

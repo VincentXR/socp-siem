@@ -20,6 +20,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auth_client import login_token  # noqa: E402
@@ -52,10 +53,10 @@ FAIL = 0
 STOPPED_CONTAINERS = []
 
 
-def api(path, method="GET", body=None, token=True):
+def api(path, method="GET", body=None, token=True, bearer=None):
     req = urllib.request.Request(GATEWAY + path, method=method)
     if token:
-        req.add_header("Authorization", "Bearer " + TOKEN)
+        req.add_header("Authorization", "Bearer " + (bearer or TOKEN))
     if body is not None:
         req.add_header("Content-Type", "application/json")
         req.data = json.dumps(body).encode()
@@ -215,6 +216,82 @@ def os_count():
         return -1
 
 
+def temporal_outage():
+    """Own a no-action fixture; never execute an arbitrary catalogue playbook."""
+    book_id = None
+    publisher = None
+    run_id = None
+    try:
+        publisher = login_token(GATEWAY, os.environ.get("SOAR_VERIFY_USERNAME", "admin"),
+                                os.environ.get("SOAR_VERIFY_PASSWORD", "admin123"))
+        suffix = uuid.uuid4().hex
+        definition = {
+            "schemaVersion": "soar.playbook", "entryNodeId": "start",
+            "nodes": [{"id": "start", "type": "START", "name": "Start"},
+                      {"id": "end", "type": "END", "name": "End", "outcome": "SUCCEEDED"}],
+            "edges": [{"from": "start", "to": "end"}],
+        }
+        status, payload = api("/soar-web/api/playbooks/import", "POST", {
+            "name": "CI Temporal outage " + suffix,
+            "description": "Disposable no-action recovery probe", "tags": ["ci", "failure-test"],
+            "definition": definition, "layout": {},
+        }, bearer=publisher)
+        created = api_data(payload) if status in (200, 201) else {}
+        book_id = created.get("playbookId")
+        version_id = created.get("id")
+        if not book_id or not version_id:
+            raise RuntimeError(f"isolated playbook import failed: HTTP {status}")
+        version_path = f"/soar-web/api/playbooks/{book_id}/versions/{int(created.get('version', 1))}"
+        status, payload = api(version_path + "/validate", "POST", bearer=publisher)
+        if status != 200 or api_data(payload).get("valid") is not True:
+            raise RuntimeError(f"isolated playbook validation failed: HTTP {status}")
+        status, payload = api(version_path + "/publish", "POST", bearer=publisher)
+        published = api_data(payload) if status == 200 else {}
+        if published.get("status") != "PUBLISHED" or published.get("id") != version_id:
+            raise RuntimeError(f"isolated playbook publication failed: HTTP {status}")
+
+        try:
+            docker("stop", "socp-temporal")
+            time.sleep(8)
+            status, payload = api("/soar-web/api/runs", "POST", {
+                "requestId": "failure-temporal-" + suffix, "playbookVersionId": version_id,
+                "subject": {"type": "failure-test", "id": suffix}, "inputs": {},
+            })
+            run = api_data(payload) if status in (200, 201, 202) else {}
+            run_id = run.get("runId")
+            check("Temporal 停时 durable Run 保持排队",
+                  bool(run_id) and run.get("status") == "QUEUED",
+                  f"st={status} runId={run_id} status={run.get('status')}")
+            if run_id:
+                read_status, payload = api("/soar-web/api/runs/" + run_id)
+                stored = api_data(payload) if read_status == 200 else {}
+                check("独立查询确认排队 Run 已持久化",
+                      stored.get("runId") == run_id and stored.get("status") == "QUEUED",
+                      f"st={read_status} status={stored.get('status')}")
+        finally:
+            docker("start", "socp-temporal")
+
+        if run_id:
+            deadline = time.monotonic() + 90
+            stored = {}
+            while time.monotonic() < deadline:
+                status, payload = api("/soar-web/api/runs/" + run_id)
+                stored = api_data(payload) if status == 200 else {}
+                if stored.get("status") in ("SUCCEEDED", "FAILED", "CANCELLED", "UNKNOWN"):
+                    break
+                time.sleep(1)
+            check("Temporal 恢复后同一 Run 完成",
+                  stored.get("runId") == run_id and stored.get("status") == "SUCCEEDED",
+                  f"runId={run_id} status={stored.get('status')}")
+    except (RuntimeError, ValueError, TypeError, AttributeError) as error:
+        check("Temporal 隔离故障验证", False, str(error))
+    finally:
+        if book_id and publisher:
+            status, _ = api("/soar-web/api/playbooks/" + book_id, "PATCH",
+                            {"status": "ARCHIVED"}, bearer=publisher)
+            check("归档本次隔离剧本", status == 200, f"st={status} playbookId={book_id}")
+
+
 def main():
     global TOKEN
     print("== 0. 前置 ==")
@@ -273,46 +350,7 @@ def main():
 
     # ---------- 场景 3：停 Temporal ----------
     print("\n== 3. Temporal 故障：SOAR 保留 durable Run，不执行进程内回退 ==")
-    docker("stop", "socp-temporal")
-    time.sleep(8)  # 等 TemporalExecutor 缓存（5s）过期并重新探测到不可达
-    st, payload = api("/soar-web/api/playbooks?size=100", "GET")
-    listing = api_data(payload) if st == 200 else {}
-    playbooks = listing.get("items", []) if isinstance(listing, dict) else listing
-    playbooks = playbooks if isinstance(playbooks, list) else []
-    published = None
-    for item in playbooks:
-        playbook_id = item.get("id") if isinstance(item, dict) else None
-        if not playbook_id:
-            continue
-        vst, versions_payload = api(f"/soar-web/api/playbooks/{playbook_id}/versions", "GET")
-        versions = api_data(versions_payload) if vst == 200 else {}
-        if isinstance(versions, dict):
-            versions = versions.get("items", [])
-        if isinstance(versions, list):
-            published = next((v for v in versions if v.get("status") == "PUBLISHED"), None)
-        if published:
-            break
-    d = published
-    pb = d if isinstance(d, dict) and d else None
-    if pb:
-        st2, run_payload = api("/soar-web/api/runs", "POST", {
-            "requestId": "failure-temporal-" + str(int(time.time())),
-            "playbookVersionId": pb.get("id"),
-            "subject": {"type": "failure-test", "id": "temporal-down"},
-            "inputs": {"source": "failure-tests"},
-        })
-        run = api_data(run_payload) if st2 in (200, 201, 202) else run_payload
-        status = run.get("status") if isinstance(run, dict) else None
-        # SOAR contract: accepting a run while Temporal is unavailable only
-        # commits a durable QUEUED/WAITING_APPROVAL projection.  No action is
-        # executed in-process and the dispatcher will resume after recovery.
-        ex = {"executionId": "queued" if status in ("QUEUED", "WAITING_APPROVAL") else None}
-        st2 = 200 if st2 == 202 else st2
-        check("Temporal 停时 durable Run 保持排队", st2 == 200 and ex.get("executionId"), f"st={st2} status={status}")
-    else:
-        check("Temporal 停时 durable Run 保持排队", False, "无已发布剧本")
-    docker("start", "socp-temporal")
-    time.sleep(8)
+    temporal_outage()
 
     # ---------- 场景 4：停 PostgreSQL ----------
     print("\n== 4. PostgreSQL 故障：进程存活，恢复后自愈 ==")

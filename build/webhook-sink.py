@@ -22,7 +22,7 @@ WebhookSinkServer = _FIXTURE.WebhookSinkServer
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=38421)
+    parser.add_argument("--port", type=int, default=28421)
     args = parser.parse_args()
     server = WebhookSinkServer((args.host, args.port), WebhookSink)
     def stop(_signum, _frame):
