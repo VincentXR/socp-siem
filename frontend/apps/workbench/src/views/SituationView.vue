@@ -289,7 +289,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page-pad view-enter sit-wrap">
-    <PageHeader :eyebrow="t('menuGroup.overview')" :title="t('situation.title')" :description="t('situation.description')">
+    <PageHeader :eyebrow="t('menuGroup.operations')" :title="t('situation.title')" :description="t('situation.description')">
       <template #actions>
         <el-button size="small" :loading="situationFetching" @click="loadSituation">{{ t('common.refresh') }}</el-button>
       </template>
@@ -297,7 +297,7 @@ onUnmounted(() => {
     <el-alert
       v-if="situationErrors.length"
       :title="situationStale ? t('situation.staleData') : situationErrors.length === 4 ? t('situation.dataUnavailable') : t('situation.partialData')"
-      :description="situationErrors.join(' · ')"
+      :description="[...new Set(situationErrors)].join(' · ')"
       type="warning"
       :closable="false"
       show-icon

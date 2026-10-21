@@ -48,7 +48,7 @@ const LEVELS = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const
 
 const refreshLabel = computed(() => props.updatedAt
   ? t('overview.lastRefresh', { time: d(new Date(props.updatedAt), 'dateTime') })
-  : t('overview.awaitingRefresh'))
+  : t(props.error ? 'overview.partialRefresh' : 'overview.awaitingRefresh'))
 const trendSum = computed(() => Object.values(props.sitStats?.trend7d ?? {}).reduce((a, b) => a + b, 0))
 const maxLevel = computed(() => Math.max(1, ...LEVELS.map(level => props.sitStats?.bySeverity?.[level] ?? 0)))
 const topRisk = computed(() => (props.sitStats?.topRisk ?? []).slice(0, 5))
@@ -113,7 +113,7 @@ function severityLabel(level: string): string { return tOr(t, `severities.${leve
             <h2 id="overview-attention-title">{{ t('overview.needsAttention') }}</h2>
             <p>{{ t('overview.needsAttentionHint') }}</p>
           </div>
-          <span class="overview-window mono">{{ t('overview.totalWindow', { count: stat.total }) }}</span>
+          <span class="overview-window mono">{{ t('overview.totalWindow', { count: availability?.stats ? stat.total : '—' }) }}</span>
         </div>
 
         <div class="overview-kpis">
@@ -179,7 +179,7 @@ function severityLabel(level: string): string { return tOr(t, `severities.${leve
         </div>
         <div class="overview-analytics-grid">
           <el-card shadow="never" class="ov-card">
-            <template #header><div class="ov-card-head"><span>{{ t('overview.alarmTrend') }}</span><span class="ov-card-sub">{{ t('overview.dailyTotal', { total: trendSum }) }}</span></div></template>
+            <template #header><div class="ov-card-head"><span>{{ t('overview.alarmTrend') }}</span><span class="ov-card-sub">{{ t('overview.dailyTotal', { total: availability?.stats ? trendSum : '—' }) }}</span></div></template>
             <TrendChart v-if="availability?.stats" :data="sitStats?.trend7d" style="height: 216px" /><p v-else role="status">{{ t('experience.unknownData') }}</p>
           </el-card>
           <el-card shadow="never" class="ov-card overview-severity-card">

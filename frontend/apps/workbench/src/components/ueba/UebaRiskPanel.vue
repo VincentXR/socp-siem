@@ -24,6 +24,7 @@ import { useI18n } from '../../composables/useI18n'
 const props = defineProps<{
   theme: 'light' | 'dark'
   entities: RiskEntity[]
+  error?: string
   summary: RiskSummary | null
   riskLimit: number
 }>()
@@ -93,7 +94,7 @@ onUnmounted(() => {
       <el-input-number :model-value="riskLimit" :min="5" :max="100" :step="5" size="small" @change="onLimitChange" />
       <el-button size="small" @click="emit('refresh')">{{ t('common.refresh') }}</el-button>
       <span style="font-size:12px;color:var(--ns-text-3)">
-        {{ t('ueba.scoreFormula', { hours: summary?.halfLifeHours ?? 6 }) }}
+        {{ summary?.halfLifeHours == null ? t('experience.unknownData') : t('ueba.scoreFormula', { hours: summary.halfLifeHours }) }}
       </span>
     </div>
     <el-row :gutter="12">
@@ -106,7 +107,7 @@ onUnmounted(() => {
       <el-col :xs="24" :md="14">
         <el-card shadow="never">
           <template #header>{{ t('ueba.entityDetails') }}</template>
-          <el-table :data="entities" size="small" border height="340" @row-click="emit('select', $event)">
+          <el-table :data="entities" :empty-text="t(error ? 'experience.unknownData' : 'common.empty')" size="small" border height="340" @row-click="emit('select', $event)">
             <el-table-column :label="t('ueba.riskScore')" width="80">
               <template #default="{ row }"><span class="risk-pill" :class="`risk-${String(row.level || 'INFO').toLowerCase()}`">{{ row.risk }}</span></template>
             </el-table-column>

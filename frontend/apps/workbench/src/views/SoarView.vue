@@ -71,6 +71,7 @@ const showEditor = ref(Boolean(route.meta.editor))
 const selectedPlaybookId = ref(String(route.params.playbookId || ''))
 const createRequestToken = ref(route.name === 'playbook-new' ? 1 : 0)
 const loadError = ref('')
+const playbookLoadFailed = ref(false)
 const editorRef = ref<{
   hasUnsavedChanges: boolean
   applyRunHighlights?: (rows: readonly RunHighlightRow[] | null | undefined) => void
@@ -202,6 +203,7 @@ async function loadBaseData(): Promise<void> {
       listTemplates({ signal: controller.signal }),
     ])
     if (disposed || controller.signal.aborted || baseController !== controller) return
+    playbookLoadFailed.value = playbookResult.status === 'rejected'
     if (playbookResult.status === 'fulfilled') {
       const page = playbookResult.value
       playbookTotal.value = page.total
@@ -397,10 +399,12 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
         <el-button v-if="canWrite && !showEditor" type="primary" size="small" @click="chooseTemplate = true">{{ t('soar.createPlaybook') }}</el-button>
       </template>
     </PageHeader>
+    <div v-if="loadError" class="soar-load-error" role="alert">{{ loadError }}</div>
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('soar.readOnly') }}</div>
     <el-button v-if="returnTo" @click="router.push(returnTo)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
     <div v-if="contextAlarmId || contextCaseId" class="soar-context-banner">
-      <span>{{ t('soar.contextFromAlarm') }} <code>{{ contextAlarmId }}</code></span>
+      <span v-if="contextAlarmId">{{ t('soar.contextFromAlarm') }} <code>{{ contextAlarmId }}</code></span>
+      <span v-if="contextCaseId">{{ t('cases.caseId') }} <code>{{ contextCaseId }}</code></span>
       <small>{{ t('soar.contextFromAlarmHint') }}</small>
     </div>
 
@@ -426,7 +430,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
                 <small class="soar-header-hint">{{ t('soar.playbookListHint') }}</small>
               </div>
             </template>
-            <el-table v-loading="loading" :data="playbooks" size="small" :empty-text="t('common.empty')">
+            <el-table v-loading="loading" :data="playbooks" size="small" :empty-text="t(playbookLoadFailed ? 'experience.unknownData' : 'common.empty')">
               <el-table-column :label="t('common.name')" min-width="220" show-overflow-tooltip>
                 <template #default="{ row }">
                   <div class="soar-playbook-name">{{ row.name }}</div>
@@ -536,7 +540,6 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
       </el-tab-pane>
     </el-tabs>
 
-    <div v-if="loadError" class="soar-load-error" role="alert">{{ loadError }}</div>
 
     <!-- Approval Decision Dialog -->
     <el-dialog

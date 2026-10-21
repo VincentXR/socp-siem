@@ -227,7 +227,7 @@ onUnmounted(() => {
     <ActionFeedback :error="loadError" />
     <el-button v-if="loadError" link @click="loadAttack">{{ t('common.retry') }}</el-button>
     <ActionFeedback :error="coverageError ? `${attackCov ? t('attack.staleCoverage') : t('attack.coverageUnavailable')} ${coverageError}` : ''" />
-    <PageHeader :title="t('attack.title')" :description="t('attack.description')">
+    <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('attack.title')" :description="t('attack.description')">
       <template #actions><el-button :loading="activityLoading" :disabled="!techniques.length" @click="loadActivity">{{ t('attack.refreshActivity') }}</el-button><el-button :loading="attackLoading" @click="computeAttackCov">{{ t('attack.refreshCoverage') }}</el-button></template>
     </PageHeader>
     <el-card shadow="never" class="attack-card">
@@ -260,7 +260,7 @@ onUnmounted(() => {
       </div>
     </el-card>
     <el-card shadow="never">
-      <el-table :data="techniques" size="small" border>
+      <el-table :data="techniques" :empty-text="t(loadError ? 'experience.unknownData' : 'common.empty')" size="small" border>
         <el-table-column prop="id" :label="t('attack.techniqueId')" width="110" />
         <el-table-column prop="name" :label="t('attack.name')" min-width="180" show-overflow-tooltip />
         <el-table-column prop="tactic" :label="t('attack.tactic')" width="130" show-overflow-tooltip />

@@ -225,7 +225,7 @@ useDebouncedWatch(keyword, () => {
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('experience.endpointAgents')" :description="t('endpoints.description')">
+    <PageHeader :eyebrow="t('menuGroup.context')" :title="t('experience.endpointAgents')" :description="t('endpoints.description')">
       <template #actions><el-button size="small" @click="installOpen = true">{{ t('experience.installAgent') }}</el-button><el-button size="small" :loading="loading" @click="refresh">{{ t('common.refresh') }}</el-button></template>
     </PageHeader>
 

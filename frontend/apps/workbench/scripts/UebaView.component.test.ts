@@ -38,6 +38,21 @@ beforeEach(() => {
   mocks.uebaScore.mockResolvedValue(score(10))
 })
 describe('UEBA request ownership', () => {
+  it('distinguishes unavailable summary and watchlists from real zeroes', async () => {
+    mocks.uebaSummary.mockRejectedValueOnce(new Error('unavailable'))
+    mocks.listWatchlists.mockRejectedValueOnce(new Error('unavailable'))
+    mocks.uebaEntities.mockRejectedValueOnce(new Error('unavailable'))
+    const wrapper = await setup()
+    try {
+      expect(wrapper.findAll('.stat-card .num').map(item => item.text())).toEqual(['—', '—', '—', '—', '—'])
+      expect(wrapper.findComponent(UebaRiskPanel).props('error')).toContain('unavailable')
+      await (wrapper.vm as unknown as { loadUeba: () => Promise<void> }).loadUeba()
+      await flushPromises()
+      expect(wrapper.findAll('.stat-card .num').at(-1)!.text()).toBe('0')
+      expect(wrapper.findComponent(UebaRiskPanel).props('error')).toBe('')
+    } finally { wrapper.unmount() }
+  })
+
   it('does not start a score request when initial catalogue reads finish after leaving', async () => {
     const lists = deferred<never[]>()
     mocks.listWatchlists.mockReturnValueOnce(lists.promise)

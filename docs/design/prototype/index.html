@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOCP 工作台 · 全新界面方案</title>
+<meta name="description" content="SOCP SIEM 工作台重设计：设计系统与可交互高保真原型。">
+<script>
+  // 主题在首帧前落定，避免闪白。默认跟随系统，用户显式选择后持久化。
+  (function () {
+    try {
+      var qs = new URLSearchParams(location.search).get('theme');
+      var saved = localStorage.getItem('socp.theme');
+      var sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var theme = qs || saved || (sysDark ? 'dark' : 'light');
+      document.documentElement.dataset.theme = theme;
+    } catch (e) { /* 隐私模式下忽略 */ }
+  })();
+</script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body data-rail="boot">
+
+<a class="skip-link" href="#main">跳至主内容</a>
+
+<svg class="sprite" aria-hidden="true" focusable="false" width="0" height="0">
+  <defs>
+    <g id="i-grid" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></g>
+    <g id="i-bell" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M18 15.5V11a6 6 0 1 0-12 0v4.5L4.5 18h15L18 15.5Z"/><path d="M10 21h4"/></g>
+    <g id="i-target" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/></g>
+    <g id="i-brain" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><circle cx="5" cy="6.5" r="1.8"/><circle cx="19" cy="6.5" r="1.8"/><circle cx="5" cy="17.5" r="1.8"/><circle cx="19" cy="17.5" r="1.8"/><path d="M9.6 10.2 6.4 7.6M14.4 10.2l3.2-2.6M9.6 13.8l-3.2 2.6M14.4 13.8l3.2 2.6"/></g>
+    <g id="i-search" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 4.5 4.5"/></g>
+    <g id="i-case" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3.5 8.5h17v10a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-10Z"/><path d="M9 8.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v3"/><path d="M3.5 13h17"/></g>
+    <g id="i-server" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3.5" y="4" width="17" height="6" rx="1.5"/><rect x="3.5" y="14" width="17" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01" stroke-linecap="round"/></g>
+    <g id="i-endpoint" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16.5V20" stroke-linecap="round"/></g>
+    <g id="i-radar" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5" stroke-dasharray="2 3"/><path d="M12 12 17 7"/><circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none"/></g>
+    <g id="i-rules" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h9M4 12h6M4 18h8"/><path d="m15 16.5 2 2 4-4.5"/></g>
+    <g id="i-ingest" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v11"/><path d="m8 10.5 4 4 4-4"/><path d="M4 17v2.5a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V17"/></g>
+    <g id="i-list" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 6.5h12M8 12h12M8 17.5h12"/><circle cx="4.2" cy="6.5" r="1" fill="currentColor" stroke="none"/><circle cx="4.2" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="4.2" cy="17.5" r="1" fill="currentColor" stroke="none"/></g>
+    <g id="i-meta" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="7.5" ry="2.8"/><path d="M4.5 6v12c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8V6"/><path d="M4.5 12c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8"/></g>
+    <g id="i-soar" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3" y="4" width="7" height="6" rx="1.5"/><rect x="14" y="14" width="7" height="6" rx="1.5"/><path d="M10 7h4a3 3 0 0 1 3 3v4" stroke-linecap="round"/></g>
+    <g id="i-notify" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M20.5 3.5 10 9.5l-4.5-.8-1.5 2 3.6 2.2 2.2 3.6 2-1.5-.8-4.5 6-10.5Z"/></g>
+    <g id="i-chart" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 20V4"/><path d="M4 20h16"/><path d="M8 16v-4M12.5 16V8M17 16v-6"/></g>
+    <g id="i-shield" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3.2 5 6v5.5c0 4.3 2.9 7.7 7 9.3 4.1-1.6 7-5 7-9.3V6l-7-2.8Z"/><path d="m9 12 2.2 2.2L15.5 10" stroke-linecap="round"/></g>
+    <g id="i-spark" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3.5l1.9 5.1 5.1 1.9-5.1 1.9L12 17.5l-1.9-5.1L5 10.5l5.1-1.9L12 3.5Z"/><path d="M18.5 16.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8.8-2.2Z"/></g>
+    <g id="i-palette" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M12 3.5a8.5 8.5 0 0 0 0 17c1.4 0 2-.9 2-1.8 0-1.4-1.2-1.6-1.2-2.7 0-.9.8-1.5 1.7-1.5h1.4a4.6 4.6 0 0 0 4.6-4.6c0-3.6-3.8-6.4-8.5-6.4Z"/><circle cx="8" cy="9" r="1.1" fill="currentColor" stroke="none"/><circle cx="12" cy="7.2" r="1.1" fill="currentColor" stroke="none"/><circle cx="16" cy="9" r="1.1" fill="currentColor" stroke="none"/></g>
+    <g id="i-refresh" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v4.5h-4.5"/></g>
+    <g id="i-close" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></g>
+    <g id="i-check" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7"/></g>
+    <g id="i-chevron" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></g>
+    <g id="i-sun" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.8v2.2M12 19v2.2M2.8 12H5M19 12h2.2M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6"/></g>
+    <g id="i-moon" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></g>
+    <g id="i-more" fill="currentColor"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></g>
+    <g id="i-filter" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M3.5 5.5h17l-6.6 7.6v5.6l-3.8 2v-7.6L3.5 5.5Z"/></g>
+    <g id="i-clock" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 1.8"/></g>
+    <g id="i-user" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="12" cy="8.5" r="3.8"/><path d="M4.8 20a7.4 7.4 0 0 1 14.4 0"/></g>
+    <g id="i-arrow" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></g>
+    <g id="i-download" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v10M8 10l4 4 4-4M4.5 19.5h15"/></g>
+    <g id="i-sort" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v16M4.5 16.5 8 20l3.5-3.5M16 20V4M12.5 7.5 16 4l3.5 3.5"/></g>
+    <g id="i-panel" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/></g>
+    <g id="i-lock" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="4.5" y="10" width="15" height="10" rx="2"/><path d="M8.5 10V7.5a3.5 3.5 0 0 1 7 0V10"/></g>
+  </defs>
+</svg>
+
+<div class="app">
+  <aside class="rail" id="rail" aria-label="主导航">
+    <div class="rail__brand">
+      <span class="brand__mark" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span class="brand__text">
+        <b>SOCP</b>
+        <em>Security Operations</em>
+      </span>
+      <button class="rail__collapse" id="railToggle" type="button" aria-expanded="true" aria-controls="rail" title="折叠导航 (\)">
+        <svg width="16" height="16" aria-hidden="true"><use href="#i-panel"/></svg>
+        <span class="sr-only">折叠导航</span>
+      </button>
+    </div>
+    <nav class="rail__nav" id="railNav" aria-label="工作台模块"></nav>
+    <div class="rail__foot">
+      <button class="rail__user" type="button">
+        <span class="avatar" aria-hidden="true">林</span>
+        <span class="rail__user-meta">
+          <b>林可</b>
+          <em>分析员 · L2</em>
+        </span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="shell">
+    <header class="topbar">
+      <button class="iconbtn menu-btn" id="menuBtn" type="button" aria-label="打开导航" aria-controls="rail">
+        <svg width="16" height="16" aria-hidden="true"><use href="#i-list"/></svg>
+      </button>
+      <div class="topbar__crumb">
+        <span class="crumb__group" id="crumbGroup">监控</span>
+        <span class="crumb__sep" aria-hidden="true">/</span>
+        <h1 class="crumb__page" id="crumbPage">态势总览</h1>
+      </div>
+
+      <button class="cmdbar" id="cmdOpen" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="palette">
+        <svg width="15" height="15" aria-hidden="true"><use href="#i-search"/></svg>
+        <span>搜索页面、告警、资产或 IOC</span>
+        <kbd class="kbd" data-kbd>⌘K</kbd>
+      </button>
+
+      <div class="topbar__tools">
+        <span class="freshness" id="freshness" title="最近一次成功查询的时间（客户端新鲜度，非事件水位）">
+          <span class="freshness__dot" aria-hidden="true"></span>
+          <span class="freshness__label">数据</span>
+          <time class="mono" id="freshTime">12s 前</time>
+        </span>
+        <button class="iconbtn" id="refreshBtn" type="button" title="刷新全部数据源">
+          <svg width="16" height="16" aria-hidden="true"><use href="#i-refresh"/></svg>
+          <span class="sr-only">刷新</span>
+        </button>
+        <span class="topbar__divider" aria-hidden="true"></span>
+        <button class="iconbtn" id="themeBtn" type="button" aria-pressed="false" title="切换明暗主题">
+          <svg width="16" height="16" aria-hidden="true" class="icon-sun"><use href="#i-sun"/></svg>
+          <svg width="16" height="16" aria-hidden="true" class="icon-moon"><use href="#i-moon"/></svg>
+          <span class="sr-only">切换明暗主题</span>
+        </button>
+        <button class="tenant" type="button" title="当前租户">
+          <svg width="14" height="14" aria-hidden="true"><use href="#i-lock"/></svg>
+          <span>默认租户</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="main" tabindex="-1" class="main">
+
+      <!-- ══════════════ 视图 1 · 态势总览 ══════════════ -->
+      <section class="view is-active" data-view="overview" aria-labelledby="ovTitle">
+        <div class="pagehead">
+          <div class="pagehead__lead">
+            <p class="eyebrow">监控 · 全景</p>
+            <h2 id="ovTitle">态势总览</h2>
+            <p class="pagehead__sub">四类数据源独立刷新，最新时间取各源最旧的成功时间。</p>
+          </div>
+          <div class="pagehead__tools">
+            <div class="seg" role="group" aria-label="时间范围">
+              <button type="button" class="seg__btn is-on" aria-pressed="true">24 小时</button>
+              <button type="button" class="seg__btn" aria-pressed="false">7 天</button>
+              <button type="button" class="seg__btn" aria-pressed="false">30 天</button>
+            </div>
+            <button class="btn btn--ghost" type="button" id="ovRefresh">
+              <svg width="15" height="15" aria-hidden="true"><use href="#i-refresh"/></svg>刷新
+            </button>
+          </div>
+        </div>
+
+        <div class="kpis" id="kpis"></div>
+
+        <div class="grid grid--trend">
+          <section class="panel panel--chart">
+            <header class="panel__head">
+              <div>
+                <h3>告警与事件趋势</h3>
+                <p class="panel__sub">按小时聚合 · 双轴归一化显示</p>
+              </div>
+              <div class="legend" aria-hidden="true">
+                <span class="legend__item"><i class="legend__swatch legend__swatch--area"></i>事件量</span>
+                <span class="legend__item"><i class="legend__swatch legend__swatch--line"></i>告警量</span>
+              </div>
+            </header>
+            <div class="chart" id="trendChart"></div>
+          </section>
+
+          <section class="panel">
+            <header class="panel__head">
+              <div>
+                <h3>严重级别分布</h3>
+                <p class="panel__sub">含 INFO · 共 128 条待处置</p>
+              </div>
+            </header>
+            <div class="dist" id="sevDist"></div>
+          </section>
+        </div>
+
+        <div class="grid grid--split">
+          <section class="panel">
+            <header class="panel__head">
+              <div>
+                <h3>ATT&amp;CK 覆盖与命中</h3>
+                <p class="panel__sub">近 24h 命中次数 · 深色为高频</p>
+              </div>
+              <a class="link" href="#" data-goto="attack">查看矩阵<svg width="14" height="14" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+            </header>
+            <div class="attack" id="attackMatrix"></div>
+          </section>
+
+          <section class="panel">
+            <header class="panel__head">
+              <div>
+                <h3>TOP 风险实体</h3>
+                <p class="panel__sub">风险分由告警严重度与资产权重合成</p>
+              </div>
+            </header>
+            <ul class="entities" id="topEntities"></ul>
+          </section>
+        </div>
+
+        <section class="panel">
+          <header class="panel__head">
+            <div>
+              <h3>最近告警</h3>
+              <p class="panel__sub">实时追加 · 默认按发生时间倒序</p>
+            </div>
+            <a class="link" href="#" data-goto="alarms">进入队列<svg width="14" height="14" aria-hidden="true"><use href="#i-arrow"/></svg></a>
+          </header>
+          <div class="table-wrap" id="recentAlarms"></div>
+        </section>
+      </section>
+
+      <!-- ══════════════ 视图 2 · 告警队列 ══════════════ -->
+      <section class="view" data-view="alarms" aria-labelledby="alTitle" hidden>
+        <div class="pagehead">
+          <div class="pagehead__lead">
+            <p class="eyebrow">监控 · 研判</p>
+            <h2 id="alTitle">告警队列</h2>
+            <p class="pagehead__sub">默认进入待处置范围（OPEN + INVESTIGATING），避免新噪声掩埋未认领工作。</p>
+          </div>
+          <div class="pagehead__tools">
+            <button class="btn btn--ghost" type="button" id="exportBtn">
+              <svg width="15" height="15" aria-hidden="true"><use href="#i-download"/></svg>导出
+            </button>
+            <button class="btn btn--primary" type="button" id="claimTop">
+              <svg width="15" height="15" aria-hidden="true"><use href="#i-user"/></svg>认领选中
+            </button>
+          </div>
+        </div>
+
+        <div class="savedviews" role="tablist" aria-label="保存视图">
+          <button role="tab" aria-selected="true" class="savedviews__tab" data-view-filter="ACTIVE">待处置 <span class="count">128</span></button>
+          <button role="tab" aria-selected="false" class="savedviews__tab" data-view-filter="mine">我负责 <span class="count">2</span></button>
+          <button role="tab" aria-selected="false" class="savedviews__tab" data-view-filter="ALL">全部 <span class="count">1,406</span></button>
+        </div>
+
+        <div class="filterbar">
+          <label class="field field--search">
+            <span class="sr-only">搜索规则名或实体</span>
+            <svg width="15" height="15" aria-hidden="true"><use href="#i-search"/></svg>
+            <input type="search" id="alarmSearch" placeholder="搜索规则、实体或告警 ID" autocomplete="off">
+          </label>
+          <div class="chips" id="sevChips" role="group" aria-label="严重级别筛选"></div>
+          <label class="field field--compact">
+            <span class="sr-only">状态</span>
+            <select id="statusFilter">
+              <option value="ACTIVE">待处置</option>
+              <option value="mine">仅我负责</option>
+              <option value="OPEN">OPEN</option>
+              <option value="INVESTIGATING">INVESTIGATING</option>
+              <option value="RESOLVED">RESOLVED</option>
+              <option value="CLOSED">CLOSED</option>
+              <option value="SUPPRESSED">SUPPRESSED</option>
+              <option value="ALL">全部状态</option>
+            </select>
+          </label>
+          <label class="field field--compact">
+            <span class="sr-only">时间范围</span>
+            <select id="rangeFilter">
+              <option>近 24 小时</option>
+              <option>近 7 天</option>
+              <option>全部时间</option>
+            </select>
+          </label>
+          <button class="btn btn--quiet" type="button" id="moreFilters" aria-expanded="false" aria-controls="extraFilters">
+            <svg width="15" height="15" aria-hidden="true"><use href="#i-filter"/></svg>更多筛选
+          </button>
+        </div>
+
+        <div class="filterbar filterbar--extra" id="extraFilters" hidden>
+          <label class="field field--compact">
+            <span class="sr-only">负责人</span>
+            <select id="ownerFilter">
+              <option value="">全部负责人</option>
+              <option value="unassigned">仅未分配</option>
+              <option value="林可">林可</option>
+              <option value="周骏">周骏</option>
+              <option value="陈默">陈默</option>
+            </select>
+          </label>
+          <button class="chip" type="button" id="riskChip" aria-pressed="false">风险 ≥ 80</button>
+          <button class="btn btn--quiet btn--sm" type="button" id="resetExtra">清除附加筛选</button>
+        </div>
+
+        <div class="resultbar">
+          <p class="resultbar__count"><b id="alarmCount">128</b> 条告警 <span class="dot" aria-hidden="true">·</span> <span class="muted">本页 <b id="pageShown">12</b> 条 · 已选 <b id="selCount">0</b> 项</span></p>
+          <button class="btn btn--quiet btn--sm" type="button" id="sortBtn">
+            <svg width="14" height="14" aria-hidden="true"><use href="#i-sort"/></svg>发生时间 ↓
+          </button>
+        </div>
+
+        <div class="table-wrap table-wrap--queue">
+          <table class="table" id="alarmTable">
+            <caption class="sr-only">告警队列，默认待处置范围，按发生时间倒序</caption>
+            <thead>
+              <tr>
+                <th class="col-check"><label class="checkbox"><input type="checkbox" id="checkAll" aria-label="全选当前页"><span></span></label></th>
+                <th class="col-sev">严重</th>
+                <th>告警 / 检测规则</th>
+                <th>实体</th>
+                <th class="col-risk">风险</th>
+                <th>状态</th>
+                <th>负责人</th>
+                <th class="col-time">发生时间</th>
+                <th class="col-act"><span class="sr-only">操作</span></th>
+              </tr>
+            </thead>
+            <tbody id="alarmBody"></tbody>
+          </table>
+          <div class="empty" id="alarmEmpty" hidden>
+            <div class="empty__art" aria-hidden="true"><svg width="40" height="40"><use href="#i-search"/></svg></div>
+            <h4>没有匹配的告警</h4>
+            <p>调整严重级别或状态筛选，或切换到「全部」范围。</p>
+            <button class="btn btn--ghost" type="button" data-reset-filters>清除全部筛选</button>
+          </div>
+        </div>
+
+        <div class="pager">
+          <p class="pager__meta" id="pagerMeta">第 1–12 条，共 <b>128</b> 条 <span class="muted">· 示例仅载入首页</span></p>
+          <div class="pager__btns" id="pagerBtns">
+            <button class="btn btn--quiet btn--sm" type="button" disabled>上一页</button>
+            <button class="page is-on" type="button" aria-current="page" disabled>1</button>
+            <button class="page" type="button" disabled>2</button>
+            <button class="page" type="button" disabled>3</button>
+            <span class="page page--gap" aria-hidden="true">…</span>
+            <button class="page" type="button" disabled>11</button>
+            <button class="btn btn--quiet btn--sm" type="button" disabled>下一页</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════════════ 视图 3 · 日志检索 ══════════════ -->
+      <section class="view" data-view="search" aria-labelledby="sqTitle" hidden>
+        <div class="pagehead">
+          <div class="pagehead__lead">
+            <p class="eyebrow">调查 · 检索</p>
+            <h2 id="sqTitle">日志检索</h2>
+            <p class="pagehead__sub">草稿与已应用查询分离：编辑不触发检索，⌘↵ 或「运行」才生效。</p>
+          </div>
+        </div>
+
+        <div class="querybar">
+          <div class="querybar__editor">
+            <span class="querybar__prompt" aria-hidden="true">SPL</span>
+            <label class="sr-only" for="queryInput">SPL 查询</label>
+            <input id="queryInput" class="mono" type="text" spellcheck="false" autocomplete="off"
+                   value='dataset="windows.security" | search "4625" | stats count by source.ip, user.name'>
+            <button class="querybar__clear" id="queryClear" type="button" title="清空">
+              <svg width="14" height="14" aria-hidden="true"><use href="#i-close"/></svg><span class="sr-only">清空查询</span>
+            </button>
+          </div>
+          <label class="field field--compact field--time">
+            <svg width="14" height="14" aria-hidden="true"><use href="#i-clock"/></svg>
+            <span class="sr-only">时间范围</span>
+            <select id="timeRange">
+              <option>近 24 小时</option>
+              <option>近 7 天</option>
+              <option>近 30 天</option>
+              <option>自定义…</option>
+              <option>全部时间</option>
+            </select>
+          </label>
+          <button class="btn btn--primary" type="button" id="runQuery">
+            运行 <kbd class="kbd kbd--ondark" data-kbd>⌘↵</kbd>
+          </button>
+          <button class="btn btn--ghost btn--icon" type="button" title="保存查询" id="saveQuery">
+            <svg width="15" height="15" aria-hidden="true"><use href="#i-download"/></svg><span class="sr-only">保存查询</span>
+          </button>
+        </div>
+
+        <p class="notice" id="unapplied" hidden>
+          <span class="notice__dot" aria-hidden="true"></span>
+          查询已修改，尚未运行。分页、导出与结果链接仍指向已应用的查询。
+          <button class="link" type="button" id="revertQuery">还原</button>
+        </p>
+
+        <div class="searchlayout">
+          <aside class="fields" aria-label="字段字典">
+            <header class="fields__head">
+              <h3>字段</h3>
+              <button class="iconbtn iconbtn--sm" type="button" title="折叠字段面板" id="fieldsToggle">
+                <svg width="14" height="14" aria-hidden="true"><use href="#i-chevron"/></svg><span class="sr-only">折叠字段面板</span>
+              </button>
+            </header>
+            <label class="field field--search field--sm">
+              <span class="sr-only">筛选字段</span>
+              <svg width="14" height="14" aria-hidden="true"><use href="#i-search"/></svg>
+              <input type="search" id="fieldSearch" placeholder="筛选字段">
+            </label>
+            <ul class="fields__list" id="fieldList"></ul>
+          </aside>
+
+          <div class="searchmain">
+            <div class="histo" id="histo" aria-hidden="true"></div>
+            <div class="histo__axis" aria-hidden="true"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>现在</span></div>
+
+            <div class="resultbar resultbar--search">
+              <p class="resultbar__count"><b id="eventCount">1,284</b> 条事件 <span class="dot" aria-hidden="true">·</span> <span class="muted" id="searchMeta">耗时 0.42s · 扫描 12.4M 条 · 已应用查询</span></p>
+              <div class="resultbar__tools">
+                <button class="btn btn--quiet btn--sm" type="button" id="viewToggle" aria-pressed="false">表格视图</button>
+                <button class="btn btn--quiet btn--sm" type="button" id="jumpAlarm">关联告警</button>
+              </div>
+            </div>
+
+            <div class="pivots" id="pivots" hidden></div>
+
+            <div class="events" id="events"></div>
+
+            <div class="pager" id="searchPager">
+              <p class="pager__meta" id="searchPagerMeta">第 1–8 条，共 <b>1,284</b> 条 <span class="muted">· 已应用查询 · 示例仅载入首页</span></p>
+              <div class="pager__btns">
+                <button class="btn btn--quiet btn--sm" type="button" disabled>上一页</button>
+                <button class="page is-on" type="button" aria-current="page" disabled>1</button>
+                <button class="page" type="button" disabled>2</button>
+                <button class="page" type="button" disabled>3</button>
+                <span class="page page--gap" aria-hidden="true">…</span>
+                <button class="page" type="button" disabled>161</button>
+                <button class="btn btn--quiet btn--sm" type="button" disabled>下一页</button>
+              </div>
+            </div>
+
+            <div class="empty" id="searchEmpty" hidden>
+              <div class="empty__art" aria-hidden="true"><svg width="40" height="40"><use href="#i-search"/></svg></div>
+              <h4>该时间窗内没有事件</h4>
+              <p>已应用查询：<code class="mono" id="emptyQuery"></code>。放宽时间范围或移除字段过滤后重试。</p>
+              <button class="btn btn--ghost" type="button" id="emptyReset">改为近 7 天</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ══════════════ 视图 4 · 设计系统 ══════════════ -->
+      <section class="view" data-view="system" aria-labelledby="dsTitle" hidden>
+        <div class="pagehead">
+          <div class="pagehead__lead">
+            <p class="eyebrow">设计交付 · 规范</p>
+            <h2 id="dsTitle">设计系统</h2>
+            <p class="pagehead__sub">令牌、字阶、间距与组件状态。所有对比度数值为实测值（WCAG 相对亮度公式）。</p>
+          </div>
+          <div class="pagehead__tools">
+            <button class="btn btn--ghost" type="button" id="dsTheme">切到深色查看映射</button>
+          </div>
+        </div>
+
+        <section class="panel">
+          <header class="panel__head"><div><h3>颜色令牌</h3><p class="panel__sub">语义优先：数据色不参与装饰，装饰不使用数据色</p></div></header>
+          <div class="swatches" id="swatches"></div>
+          <div class="table-wrap">
+            <table class="table table--spec">
+              <thead><tr><th>组合</th><th>前景</th><th>背景</th><th>对比度</th><th>判定</th></tr></thead>
+              <tbody id="contrastBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <div class="grid grid--split">
+          <section class="panel">
+            <header class="panel__head"><div><h3>字阶与数字</h3><p class="panel__sub">基准 14px · 数据表内数字启用等宽数字</p></div></header>
+            <div class="type" id="typeScale"></div>
+          </section>
+          <section class="panel">
+            <header class="panel__head"><div><h3>间距与圆角</h3><p class="panel__sub">4px 基准栅格 · 圆角随容器层级递增</p></div></header>
+            <div class="scale" id="spaceScale"></div>
+            <div class="radiusrow" id="radiusRow"></div>
+          </section>
+        </div>
+
+        <section class="panel">
+          <header class="panel__head"><div><h3>组件与状态</h3><p class="panel__sub">默认 / 悬停 / 聚焦 / 禁用 · 焦点环 2px、偏移 2px</p></div></header>
+          <div class="specimens">
+            <div class="specimen">
+              <p class="specimen__label">按钮</p>
+              <div class="specimen__row">
+                <button class="btn btn--primary" type="button">主要操作</button>
+                <button class="btn btn--ghost" type="button">次要操作</button>
+                <button class="btn btn--quiet" type="button">静默</button>
+                <button class="btn btn--danger" type="button">终止进程</button>
+                <button class="btn btn--primary" type="button" disabled>禁用</button>
+              </div>
+            </div>
+            <div class="specimen">
+              <p class="specimen__label">输入</p>
+              <div class="specimen__row specimen__row--wide">
+                <label class="field"><span class="field__label">默认</span><input placeholder="主机名或 IP"></label>
+                <label class="field is-focus"><span class="field__label">聚焦</span><input value="db-prod-07"></label>
+                <label class="field is-error"><span class="field__label">错误</span><input value="10.0.0." aria-invalid="true"><span class="field__msg">请输入完整 IPv4 地址</span></label>
+                <label class="field is-disabled"><span class="field__label">禁用</span><input value="继承租户策略" disabled></label>
+              </div>
+            </div>
+            <div class="specimen">
+              <p class="specimen__label">严重级别与状态</p>
+              <div class="specimen__row">
+                <span class="sev sev--critical"><i aria-hidden="true"></i>CRITICAL</span>
+                <span class="sev sev--high"><i aria-hidden="true"></i>HIGH</span>
+                <span class="sev sev--medium"><i aria-hidden="true"></i>MEDIUM</span>
+                <span class="sev sev--low"><i aria-hidden="true"></i>LOW</span>
+                <span class="sev sev--info"><i aria-hidden="true"></i>INFO</span>
+                <span class="status status--open">OPEN</span>
+                <span class="status status--inv">INVESTIGATING</span>
+                <span class="status status--res">RESOLVED</span>
+                <span class="status status--closed">CLOSED</span>
+              </div>
+            </div>
+            <div class="specimen">
+              <p class="specimen__label">加载 / 空态 / 错误</p>
+              <div class="states">
+                <div class="statebox">
+                  <div class="skel skel--title"></div>
+                  <div class="skel skel--row"></div>
+                  <div class="skel skel--row skel--short"></div>
+                  <p class="statebox__cap">骨架屏 · 保留布局尺寸</p>
+                </div>
+                <div class="statebox statebox--center">
+                  <svg width="24" height="24" aria-hidden="true" class="muted-icon"><use href="#i-search"/></svg>
+                  <p class="statebox__t">无匹配结果</p>
+                  <p class="statebox__cap">说明原因 + 一个恢复动作</p>
+                </div>
+                <div class="statebox statebox--error">
+                  <p class="statebox__t">证据读取失败</p>
+                  <p class="statebox__cap">保留已成功的数据，仅重试失败面板。</p>
+                  <button class="btn btn--ghost btn--sm" type="button">仅重试此面板</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel panel--notes">
+          <header class="panel__head"><div><h3>交互与无障碍契约</h3></div></header>
+          <div class="notes">
+            <ul>
+              <li><b>跳转链接</b>为 body 首个可聚焦元素，直达 <code class="mono">#main</code>。</li>
+              <li><b>命令面板</b>在真实 input 上使用 <code class="mono">role="combobox"</code>，<code class="mono">aria-activedescendant</code> 指向当前项；输入法确认不选择页面。</li>
+              <li><b>抽屉</b>带焦点陷阱，关闭后焦点回到打开它的行；备注有未保存改动时阻止 Esc 关闭。</li>
+              <li><b>动效</b>遵循 <code class="mono">prefers-reduced-motion</code>，包括运行期变更。</li>
+              <li><b>主题</b>默认跟随系统并在系统切换时实时跟进；手动切换后记住选择，命令面板可恢复跟随系统。</li>
+              <li><b>目标尺寸</b>指针目标 ≥ 24×24（WCAG 2.2 AA）；移动端主操作 ≥ 44×44。</li>
+              <li><b>状态不靠颜色</b>单独表达：严重级别同时有文字标签与色带。</li>
+            </ul>
+          </div>
+        </section>
+      </section>
+      <!-- ══════════════ 视图 5 · 其他模块占位 ══════════════ -->
+      <section class="view" data-view="stub" hidden aria-label="模块占位"></section>
+    </main>
+  </div>
+</div>
+
+<!-- 命令面板 -->
+<div class="scrim" id="paletteScrim" hidden></div>
+<div class="palette" id="palette" role="dialog" aria-modal="true" aria-labelledby="paletteTitle" hidden>
+  <h2 id="paletteTitle" class="sr-only">命令面板</h2>
+  <div class="palette__input">
+    <svg width="16" height="16" aria-hidden="true"><use href="#i-search"/></svg>
+    <input id="paletteInput" type="text" role="combobox" aria-expanded="true" aria-controls="paletteList"
+           aria-autocomplete="list" aria-activedescendant="" placeholder="输入页面、实体或操作…" autocomplete="off" spellcheck="false">
+    <kbd class="kbd">ESC</kbd>
+  </div>
+  <div class="palette__body" id="paletteList" role="listbox" aria-label="搜索结果"></div>
+  <div class="palette__foot" aria-hidden="true">
+    <span><kbd class="kbd">↑</kbd><kbd class="kbd">↓</kbd> 移动</span>
+    <span><kbd class="kbd">↵</kbd> 打开</span>
+    <span class="palette__hint">共 20 个模块</span>
+  </div>
+</div>
+
+<!-- 告警详情抽屉 -->
+<div class="scrim" id="drawerScrim" hidden></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle" hidden>
+  <header class="drawer__head">
+    <div class="drawer__titlewrap">
+      <span class="drawer__id mono" id="drawerId">ALM-2026-1042</span>
+      <h2 id="drawerTitle">告警详情</h2>
+    </div>
+    <button class="iconbtn" id="drawerClose" type="button" title="关闭">
+      <svg width="16" height="16" aria-hidden="true"><use href="#i-close"/></svg><span class="sr-only">关闭详情</span>
+    </button>
+  </header>
+  <div class="drawer__body" id="drawerBody"></div>
+  <footer class="drawer__foot">
+    <button class="btn btn--primary" type="button" id="drawerClaim"><svg width="15" height="15" aria-hidden="true"><use href="#i-user"/></svg>认领</button>
+    <button class="btn btn--ghost" type="button" id="drawerInvestigate">转为调查中</button>
+    <button class="btn btn--quiet" type="button" id="drawerLogs">查看原始日志</button>
+  </footer>
+</aside>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

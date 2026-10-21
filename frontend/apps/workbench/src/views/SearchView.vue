@@ -518,7 +518,7 @@ onMounted(() => {
   <div class="page-pad view-enter">
     <el-button v-if="investigationReturn" @click="router.push(investigationReturn)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
     <p v-if="route.query.draft" role="status">{{ t('analystJourney.reviewSuggestedSearch') }}</p>
-    <PageHeader :eyebrow="t('menuGroup.alarmsAndEvents')" :title="t('search.title')" :description="t('search.description')" />
+    <PageHeader :eyebrow="t('menuGroup.operations')" :title="t('search.title')" :description="t('search.description')" />
     <el-button size="small" :aria-expanded="fieldBrowserOpen" @click="fieldBrowserOpen = !fieldBrowserOpen">{{ t('experience.fields') }}</el-button>
     <div v-if="route.query.sourceId || route.query.eventId" class="search-result-hint">source_id: {{ route.query.sourceId || '—' }} · eventId: {{ route.query.eventId || '—' }}</div>
     <div class="search-workspace" :class="{ 'search-workspace--compact': !fieldBrowserOpen }">

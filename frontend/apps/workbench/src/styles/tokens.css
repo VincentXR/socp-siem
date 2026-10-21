@@ -1,3 +1,13 @@
+/**
+ * 设计令牌 · 尺度与几何
+ *
+ * 这里只放与主题无关的刻度；颜色令牌（含 --ns-sev-*）在 styles.css 顶部的
+ * 单一 [data-theme] 块内定义，避免同一主题出现两套取值。
+ *
+ * 刻度依据 docs/design/workbench-redesign.md：
+ * - 4px 基准间距，圆角随容器层级递增
+ * - 字阶为唯一正数档位，页面不得写 12.5px 这类小数号
+ */
 :root {
   --ns-space-1: 4px;
   --ns-space-2: 8px;
@@ -6,25 +16,36 @@
   --ns-space-5: 20px;
   --ns-space-6: 24px;
   --ns-space-8: 32px;
-  --ns-radius-sm: 5px;
-  --ns-radius-md: 8px;
-  --ns-radius-lg: 12px;
+
+  /* 圆角：4 徽标 → 6 控件 → 10 面板 → 12 浮层 */
+  --ns-radius-sm: 4px;
+  --ns-radius-md: 6px;
+  --ns-radius-lg: 10px;
+  --ns-radius-xl: 12px;
   --ns-radius-pill: 999px;
-  /* 字阶（唯一的正数字号档位；页面不得再写 12.5px 这类小数号） */
-  --ns-fs-hero: 30px;
-  --ns-fs-title: 24px;
+
+  /* 字阶（唯一的正数字号档位） */
+  --ns-fs-hero: 32px;
+  --ns-fs-title: 26px;
   --ns-fs-subtitle: 16px;
   --ns-fs-body: 13px;
   --ns-fs-label: 12px;
   --ns-fs-meta: 11px;
   --ns-fs-badge: 10px;
-  --ns-content-max: 1440px;
-  --ns-sidebar-width: 224px;
-  --ns-header-height: 60px;
+
+  --ns-content-max: 1560px;
+  --ns-sidebar-width: 232px;
+  --ns-header-height: 56px;
+
   --ns-motion-fast: 120ms;
   --ns-motion-base: 180ms;
   --ns-motion-slow: 280ms;
+  --ns-ease: cubic-bezier(0.2, 0.7, 0.3, 1);
+
   --ns-font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  --ns-font-ui: Inter, -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC', 'Noto Sans SC', 'Microsoft YaHei', sans-serif;
-  --ns-focus: 0 0 0 3px rgba(37, 99, 235, .16);
+  --ns-font-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+
+  /* 焦点环：2px 实色环 + 2px 底色留白，满足非文本 3:1 对比 */
+  --ns-focus: 0 0 0 2px var(--ns-surface), 0 0 0 4px var(--ns-accent);
 }

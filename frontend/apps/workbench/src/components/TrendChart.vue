@@ -30,7 +30,7 @@ function themeColor(key: string): string {
   const map: Record<string, string> = {
     label: dark ? '#e6edf3' : '#1f2328',
     axis: dark ? '#8b949e' : '#57606a',
-    accent: cssColor('--ns-accent', dark ? '#60a5fa' : '#2563eb'),
+    accent: cssColor('--ns-accent', dark ? '#8fa6ff' : '#1e46d6'),
     success: cssColor('--ns-success', dark ? '#3fb950' : '#15803d'),
   }
   return map[key] ?? '#57606a'
@@ -55,7 +55,7 @@ async function render() {
       series: [{
         type: 'line', smooth: true, showSymbol: false, data: vals,
         lineStyle: { color: themeColor('accent'), width: 2 },
-        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: dark ? 'rgba(96,165,250,.35)' : 'rgba(37,99,235,.24)' }, { offset: 1, color: 'rgba(0,0,0,0)' }]) },
+        areaStyle: { color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [{ offset: 0, color: dark ? 'rgba(143,166,255,.32)' : 'rgba(30,70,214,.24)' }, { offset: 1, color: 'rgba(0,0,0,0)' }]) },
       }],
     }, true)
     return
@@ -87,7 +87,7 @@ async function render() {
       },
       areaStyle: {
         color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: dark ? 'rgba(68,147,248,.4)' : 'rgba(9,105,218,.32)' },
+          { offset: 0, color: dark ? 'rgba(143,166,255,.34)' : 'rgba(30,70,214,.22)' },
           { offset: 1, color: 'rgba(0,0,0,0)' },
         ]),
       },

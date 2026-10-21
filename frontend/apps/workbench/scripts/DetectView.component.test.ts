@@ -22,6 +22,23 @@ vi.mock('../src/api', async importOriginal => ({ ...await importOriginal<object>
 vi.mock('element-plus/es/components/message-box/index.mjs', () => ({ default: { confirm: mocks.confirm } }))
 
 describe('rule list confirmation', () => {
+  it('shows unknown counters on a failed read and real zeroes only after recovery', async () => {
+    mocks.gasStats.mockRejectedValueOnce(new Error('engine unavailable'))
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect', component: DetectView }] })
+    await router.push('/detect')
+    const wrapper = mount(RouterView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } } })
+    try {
+      await flushPromises()
+      expect(wrapper.findAll('.detect-stat b').map(item => item.text())).toEqual(['—', '—', '—', '—'])
+      expect(wrapper.text()).toContain('engine unavailable')
+      mocks.gasStats.mockResolvedValueOnce({ rules: 0, eventCount: 0, alertCount: 0, queueLoad: 0 })
+      await (wrapper.findComponent(DetectView).vm as unknown as { loadSupport: () => Promise<void> }).loadSupport()
+      await flushPromises()
+      expect(wrapper.findAll('.detect-stat b').map(item => item.text())).toEqual(['0', '0', '0', '0%'])
+      expect(wrapper.text()).not.toContain('engine unavailable')
+    } finally { wrapper.unmount() }
+  })
+
   it('prevents duplicate disabling and retains the confirmed revision and complete payload', async () => {
     mocks.updateGasRule.mockClear(); mocks.confirm.mockClear()
     const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/detect', component: DetectView }] })

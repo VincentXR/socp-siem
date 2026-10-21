@@ -92,7 +92,7 @@ onUnmounted(() => { disposed = true; request.cancel() })
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :title="t('compliance.mappingTitle')" :description="t('compliance.mappingDescription')">
+    <PageHeader :eyebrow="t('experience.coverage')" :title="t('compliance.mappingTitle')" :description="t('compliance.mappingDescription')">
       <template #actions><el-button size="small" :loading="loading" @click="loadCompliance()">{{ t('common.refresh') }}</el-button><el-button size="small" :loading="loading" :disabled="!coverage" @click="compute">{{ t('compliance.recalculate') }}</el-button></template>
     </PageHeader>
     <ActionFeedback :error="loadError" />

@@ -355,7 +355,7 @@ watch([() => route.query.q, () => route.query.page, () => route.query.type, () =
 <template>
   <div class="page-pad view-enter">
     <ActionFeedback v-if="!showAssetDialog && !importPreviewOpen" :error="actionError" />
-    <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('assets.title')" :description="t('assets.description')">
+    <PageHeader :eyebrow="t('menuGroup.context')" :title="t('assets.title')" :description="t('assets.description')">
       <template #actions>
         <el-button v-if="canWrite" type="primary" size="small" :disabled="actionBusy" @click="openCreateAsset">{{ t('assets.createAsset') }}</el-button>
         <el-button v-if="canWrite" size="small" :disabled="actionBusy" @click="selectAssetImport">{{ t('assets.importAssets') }}</el-button>

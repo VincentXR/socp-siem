@@ -62,6 +62,17 @@ describe('notification configuration and test delivery', () => {
   })
   afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
 
+  it('keeps a receipt failure local to history instead of marking the channel list unavailable', async () => {
+    mocks.dispatchLog.mockRejectedValueOnce(new Error('receipt history offline'))
+    await open()
+    await click('取消')
+    const view = wrapper.findComponent(NotifyView).vm as unknown as { loadError: string; logsError: string }
+    expect(view.loadError).toBe('')
+    expect(view.logsError).toContain('receipt history offline')
+    expect(wrapper.find('.notify-card').text()).not.toContain('尚无成功观测')
+    expect(wrapper.text().match(/receipt history offline/g)).toHaveLength(1)
+  })
+
   it('fetches real receipt pages and preserves exact filters through navigation', async () => {
     mocks.dispatchLog.mockResolvedValue({ items: [], total: 65 })
     const router = await open()

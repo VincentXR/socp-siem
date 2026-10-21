@@ -102,9 +102,9 @@ const recentItems = computed(() => {
 
 function isGroupCollapsed(group: MenuGroup): boolean {
   const key = groupKey(group)
-  return Object.prototype.hasOwnProperty.call(collapsedGroups.value, key)
-    ? collapsedGroups.value[key] === true
-    : group.defaultCollapsed === true
+  // Read even absent keys so Vue tracks the first preference change.
+  const saved = collapsedGroups.value[key]
+  return typeof saved === 'boolean' ? saved : group.defaultCollapsed === true
 }
 
 function updateSidebarMode(): void {
@@ -150,7 +150,7 @@ onUnmounted(() => {
     <a href="#main-content" class="skip-link" @click.prevent="skipToContent">{{ t('app.skipToContent') }}</a>
     <aside id="socp-primary-navigation" class="socp-sider" :class="{ 'is-mobile-open': mobileSidebarOpen }" :aria-hidden="mobileViewport && !mobileSidebarOpen" :inert="mobileViewport && !mobileSidebarOpen ? true : undefined">
       <div class="socp-sidebar-brand">
-        <button type="button" class="socp-logo" :title="t('menu.overview')" :aria-label="t('menu.overview')" @click="goOverview"><span class="dot" />{{ t('app.title') }}</button>
+        <button type="button" class="socp-logo" :title="t('menu.overview')" :aria-label="t('menu.overview')" @click="goOverview"><span class="brand-mark" aria-hidden="true"><i /><i /><i /></span>{{ t('app.title') }}</button>
         <button type="button" class="socp-sidebar-close" :aria-label="t('nav.closeNavigation')" @click="mobileSidebarOpen = false">×</button>
       </div>
       <div v-if="recentItems.length > 0" class="socp-recent-nav">
@@ -172,7 +172,7 @@ onUnmounted(() => {
         <template v-for="group in menuGroups" :key="group.group">
           <button type="button" class="socp-menu-group" :class="{ 'is-secondary': group.secondary }" :aria-expanded="!isGroupCollapsed(group)" @click="toggleGroup(group)">
             <span>{{ group.group }}</span>
-            <span class="socp-menu-group-toggle" aria-hidden="true">{{ isGroupCollapsed(group) ? '+' : '−' }}</span>
+            <span class="socp-menu-group-toggle" aria-hidden="true">{{ isGroupCollapsed(group) ? '▸' : '▾' }}</span>
           </button>
           <div v-show="!isGroupCollapsed(group)" class="socp-menu-items">
             <button
@@ -296,7 +296,7 @@ button.socp-logo {
   .socp-sider.is-mobile-open { transform: translateX(0); }
   .socp-logo { justify-content: flex-start; padding: 0 20px; font-size: 14px; }
   .socp-menu { padding: 12px; }
-  .socp-menu-group { display: flex; justify-content: space-between; padding: 12px 10px 6px; font-size: 10px; }
+  .socp-menu-group { display: flex; justify-content: space-between; padding: 10px; font-size: 12px; }
   .socp-menu-group-toggle { display: inline; }
   .socp-menu-item { justify-content: flex-start; width: 100%; margin: 2px 0; padding: 0 12px; }
   .socp-menu-item span:not(.icon) { display: inline; }

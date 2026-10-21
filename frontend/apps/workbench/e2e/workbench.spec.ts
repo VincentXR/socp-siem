@@ -617,6 +617,48 @@ test('viewer cannot navigate to write-oriented configuration pages', async ({ pa
   expect(unexpected).toEqual([])
 })
 
+test('sidebar groups respond on first interaction and retain preferences across reloads', async ({ page }) => {
+  const unexpected = await installNetworkGuard(page)
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  await mockSession(page, 'admin')
+  await page.goto('/overview')
+  const data = page.getByRole('button', { name: 'Ingestion & Data', exact: true })
+  const reports = page.getByRole('button', { name: 'Compliance & Reports', exact: true })
+  await expect(page.locator('[data-menu-key="ingest"]')).toBeVisible()
+  await expect(reports).toHaveAttribute('aria-expanded', 'false')
+  await reports.click()
+  await expect(reports).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.locator('[data-menu-key="report"]')).toBeVisible()
+  await data.click()
+  await expect(page.locator('[data-menu-key="ingest"]')).toBeHidden()
+  await page.reload()
+  await expect(data).toHaveAttribute('aria-expanded', 'false')
+  await expect(reports).toHaveAttribute('aria-expanded', 'true')
+  await data.click()
+  await expect(page.locator('[data-menu-key="ingest"]')).toBeVisible()
+  expect(unexpected).toEqual([])
+})
+
+test('alarm filters stay within the viewport and keep a long catalogue failure readable', async ({ page }) => {
+  const unexpected = await installNetworkGuard(page)
+  await mockSession(page)
+  await page.route('**/detect-web/api/v1/rules/options*', route => route.fulfill({ status: 503,
+    contentType: 'application/json', body: JSON.stringify({ message: 'rule catalogue unavailable' }) }))
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await page.goto('/alarms')
+  await expect(page.locator('.alarm-catalog-hint')).toBeVisible()
+  for (const width of [1280, 900, 390]) {
+    await page.setViewportSize({ width, height: 844 })
+    await expect(page.locator('.alarm-keyword-input input')).toBeVisible()
+    const hint = await page.locator('.alarm-catalog-hint').boundingBox()
+    expect(hint!.width).toBeGreaterThan(180)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    const queue = await page.locator('.view--alarms > .alarm-toolbar-actions .el-select').boundingBox()
+    expect(queue!.width).toBeGreaterThan(120)
+  }
+  expect(unexpected).toEqual([])
+})
+
 test('router preserves deep links and browser back navigation', async ({ page }) => {
   const unexpected = await installNetworkGuard(page)
   await mockSession(page)

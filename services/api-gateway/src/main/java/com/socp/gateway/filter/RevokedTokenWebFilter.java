@@ -37,11 +37,13 @@ public class RevokedTokenWebFilter implements WebFilter, Ordered {
         if (jti == null) return chain.filter(exchange);
 
         return revocations.isRevoked(jti)
+                // Scope recovery to the lookup. Routing/controller errors must
+                // reach the normal gateway error handler, not masquerade as auth failures.
+                .onErrorResume(failure -> reject(exchange, HttpStatus.SERVICE_UNAVAILABLE,
+                        "Session revocation service unavailable").then(Mono.<Boolean>empty()))
                 .flatMap(revoked -> revoked
                         ? reject(exchange, HttpStatus.UNAUTHORIZED, "Session has been revoked")
-                        : chain.filter(exchange))
-                .onErrorResume(failure -> reject(exchange, HttpStatus.SERVICE_UNAVAILABLE,
-                        "Session revocation service unavailable"));
+                        : chain.filter(exchange));
     }
 
     private static String token(ServerWebExchange exchange) {

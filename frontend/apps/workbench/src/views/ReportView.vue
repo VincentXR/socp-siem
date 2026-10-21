@@ -229,7 +229,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :title="t('report.title')" :description="t('report.description')">
+    <PageHeader :eyebrow="t('experience.coverage')" :title="t('report.title')" :description="t('report.description')">
       <template #actions><el-button size="small" :loading="reportLoading" @click="loadReport">{{ t('common.refresh') }}</el-button><el-button v-if="canWrite" type="primary" size="small" :loading="archiveBusy" :disabled="!report || Boolean(reportError)" @click="doArchive">{{ t('experience.saveSnapshot') }}</el-button><el-button size="small" @click="openArchive">{{ t('experience.snapshots') }}</el-button></template>
     </PageHeader>
     <p>{{ t('experience.snapshotScope') }} · {{ report?.date || '—' }} · {{ sourceLabel(report?.source) }}</p>
@@ -256,14 +256,14 @@ onUnmounted(() => {
     <el-row :gutter="12" class="report-charts">
       <el-col :xs="24" :md="12"><el-card shadow="never">
         <template #header>{{ t('report.alarmSeverityDistribution') }}</template>
-        <EmptyState v-if="!report" :title="summaryLoading ? t('common.loading') : t('common.empty')" />
+        <EmptyState v-if="!report" :title="t(summaryLoading ? 'common.loading' : reportError ? 'experience.unknownData' : 'common.empty')" />
         <div ref="barEl" v-show="report" style="height:300px" />
       </el-card></el-col>
       <el-col :xs="24" :md="12"><el-card shadow="never">
         <template #header>{{ t('report.sevenDayTrend') }}</template>
         <div v-if="trendError" class="report-source-error" role="alert"><span>{{ t('report.trendLoadFailed') }} {{ trendError.message }}</span><el-button link :loading="trendLoading" @click="loadTrend">{{ t('common.retry') }}</el-button></div>
         <el-alert v-if="trend?.degraded" type="warning" :title="t('report.degradedTitle', { source: sourceLabel(trend.source) })" :description="trend.degradationReason || t('report.degradedDescription')" :closable="false" />
-        <EmptyState v-if="!trend" :title="trendLoading ? t('common.loading') : t('common.empty')" />
+        <EmptyState v-if="!trend" :title="t(trendLoading ? 'common.loading' : trendError ? 'experience.unknownData' : 'common.empty')" />
         <div ref="lineEl" v-show="trend" style="height:300px" />
       </el-card></el-col>
     </el-row>
@@ -276,8 +276,8 @@ onUnmounted(() => {
       <div v-if="generatedArchiveKey" class="report-generated" role="status"><span>{{ t('report.generatedSnapshot', { day: reportDate(generatedArchiveKey) }) }}</span><el-button type="primary" plain :loading="downloadKey === generatedArchiveKey" :disabled="Boolean(downloadKey)" @click="downloadArchive(generatedArchiveKey)">{{ t('experience.downloadJson') }}</el-button></div>
       <div class="report-archive-filter"><el-input v-model="archiveName" clearable :placeholder="t('experience.snapshotName')" :aria-label="t('experience.snapshotName')" /><el-input v-model="archiveDate" type="date" :disabled="!archiveRoot || archiveBusy" :placeholder="t('report.allDates')" :aria-label="t('report.archiveDate')" clearable /><el-button :loading="archiveLoading" @click="loadArchive">{{ t('common.refresh') }}</el-button></div>
       <el-alert v-if="archiveInfo?.truncated" type="warning" :title="t('report.archiveTruncated', { limit: archiveInfo.limit })" :closable="false" />
-      <EmptyState v-if="!archiveInfo?.objects.length" :title="archiveLoading ? t('common.loading') : t('common.empty')" />
-      <el-table v-if="archiveInfo?.objects.length" :data="archiveObjects" size="small" border>
+      <EmptyState v-if="!archiveInfo?.objects.length" :title="t(archiveLoading ? 'common.loading' : archiveError ? 'experience.unknownData' : 'common.empty')" />
+      <el-table v-if="archiveInfo?.objects.length" :data="archiveObjects" size="small" border :empty-text="t('experience.noMatches')">
         <el-table-column :label="t('report.reportFile')" min-width="240" show-overflow-tooltip><template #default="{ row }"><strong>{{ reportName(row.key) }}</strong><span class="report-file-date">{{ reportDate(row.key) }}</span><details class="report-storage-details"><summary>{{ t('report.storageDetails') }}</summary><span class="mono">{{ row.key }}</span></details></template></el-table-column>
         <el-table-column prop="size" :label="t('report.size')" width="120"><template #default="{ row }">{{ reportSize(row.size) }}</template></el-table-column>
         <el-table-column :label="t('common.actions')" width="90" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" :loading="downloadKey === row.key" :disabled="Boolean(downloadKey)" @click="downloadArchive(row.key)">{{ t('experience.downloadJson') }}</el-button></template></el-table-column>

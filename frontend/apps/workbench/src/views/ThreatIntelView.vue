@@ -275,7 +275,7 @@ watch([() => route.query.q, () => route.query.page, () => route.query.type], () 
     <ActionFeedback v-if="!showIocDialog && !importPreviewVisible" :error="actionError" />
     <ActionFeedback :error="statsError" />
     <el-alert v-if="importResult" :title="t('threat.importSkipped', { imported: importResult.imported, skipped: importResult.skipped })" :type="importResult.skipped ? 'warning' : 'success'" :closable="false"><ul v-if="importResult.errors.length"><li v-for="(error, index) in importResult.errors.slice(0, 20)" :key="index">{{ error }}</li></ul></el-alert>
-    <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('threat.title')" :description="t('threat.description')"><template #actions><el-button size="small" :loading="loading" @click="loadTi">{{ t('common.refresh') }}</el-button></template></PageHeader>
+    <PageHeader :eyebrow="t('menuGroup.context')" :title="t('threat.title')" :description="t('threat.description')"><template #actions><el-button size="small" :loading="loading" @click="loadTi">{{ t('common.refresh') }}</el-button></template></PageHeader>
     <div class="page-metrics ti-metrics"><MetricCard :label="t('threat.total')" tone="info">{{ tiStat.total ?? '\u2014' }}</MetricCard><MetricCard v-for="(count, kind) in (tiStat.byType || {})" :key="kind" :label="kind">{{ count }}</MetricCard></div>
 
     <div class="threat-query-layout">

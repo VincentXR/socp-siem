@@ -7,7 +7,7 @@ import ElMessage from 'element-plus/es/components/message/index.mjs'
 import LoginView from './LoginView.vue'
 import AppShell from './components/AppShell.vue'
 import { getVisibleMenuGroups } from './app/navigation'
-import { exportAlarms } from './api'
+import { exportAlarms, HEALTH_TARGETS } from './api'
 import { useAlarmQuery } from './composables/useAlarmQuery'
 import { useAuth } from './composables/useAuth'
 import { useOverview } from './composables/useOverview'
@@ -138,7 +138,7 @@ onMounted(async () => {
     <AppShell
       v-else
       :health-state="overview.healthStatus.value"
-      :health-coverage="`${Object.keys(overview.healths.value).length} / 14`"
+      :health-coverage="Object.keys(overview.healths.value).length ? t('overview.onlineCoverage', { online: HEALTH_TARGETS.filter(target => overview.healths.value[target.name] === 'up').length, total: HEALTH_TARGETS.length }) : '—'"
       :menu-groups="menuGroups"
       :active-menu="activeMenu"
       :active-label="activeLabel"
