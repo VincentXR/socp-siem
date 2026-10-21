@@ -36,6 +36,8 @@ const canWrite = useWriteAccess()
 const { confirmDanger } = useConfirm()
 
 const loadError = ref('')
+const entitiesError = ref('')
+const watchlistsLoaded = ref(false)
 const techniqueError = ref('')
 const loading = ref(false)
 const riskEntities = ref<RiskEntity[]>([])
@@ -75,10 +77,11 @@ async function loadUeba() {
   if (disposed) return
   techniqueError.value = techniques.status === 'rejected' ? String(techniques.reason) : ''
   if (techniques.status === 'fulfilled') attackTechniques.value = techniques.value.items.map(technique => ({ id: technique.id, name: technique.name }))
-  loadError.value = [entities, summary, lists].filter(item => item.status === 'rejected').map(item => String((item as PromiseRejectedResult).reason)).join(' · ')
+  loadError.value = [...new Set([entities, summary, lists].filter(item => item.status === 'rejected').map(item => String((item as PromiseRejectedResult).reason)))].join(' · ')
+  entitiesError.value = entities.status === 'rejected' ? String(entities.reason) : ''
   if (entities.status === 'fulfilled') riskEntities.value = entities.value
   if (summary.status === 'fulfilled') riskSummary.value = summary.value
-  if (lists.status === 'fulfilled' && loadedWatchlistRevision === watchlistRevision) watchlists.value = lists.value
+  if (lists.status === 'fulfilled' && loadedWatchlistRevision === watchlistRevision) { watchlists.value = lists.value; watchlistsLoaded.value = true }
   if (!scoreResult.value && !scoreLoading.value) void calcScore()
   } finally {
     techniquesLoading.value = false
@@ -157,7 +160,7 @@ onMounted(loadUeba)
 <template>
   <div class="page-pad view-enter">
     <el-button v-if="investigationReturn" @click="router.push(investigationReturn)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
-    <PageHeader :eyebrow="t('menuGroup.assetsAndIntel')" :title="t('ueba.title')" :description="t('ueba.description')">
+    <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('ueba.title')" :description="t('ueba.description')">
       <template #actions><el-button size="small" :loading="loading" @click="loadUeba">{{ t('common.refresh') }}</el-button></template>
     </PageHeader>
     <ActionFeedback :error="loadError" />
@@ -167,9 +170,9 @@ onMounted(loadUeba)
     <el-row class="metrics-row" :gutter="12" style="margin-bottom:14px">
       <el-col :xs="24" :sm="12" :md="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.entities ?? '—' }}</div><div class="label">{{ t('ueba.entityCount') }}</div></div></el-card></el-col>
       <el-col :xs="24" :sm="12" :md="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ riskSummary?.maxRisk ?? '—' }}</div><div class="label">{{ t('ueba.maxRisk') }}</div></div></el-card></el-col>
-      <el-col :xs="24" :sm="12" :md="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ (riskSummary?.byLevel?.CRITICAL ?? 0) + (riskSummary?.byLevel?.HIGH ?? 0) }}</div><div class="label">{{ t('ueba.highRiskEntities') }}</div></div></el-card></el-col>
-      <el-col :xs="24" :sm="12" :md="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.halfLifeHours ?? 0 }}h</div><div class="label">{{ t('ueba.halfLife') }}</div></div></el-card></el-col>
-      <el-col :xs="24" :sm="12" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ watchlists.length }}</div><div class="label">{{ t('ueba.watchlists') }}</div></div></el-card></el-col>
+      <el-col :xs="24" :sm="12" :md="5"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ riskSummary ? (riskSummary.byLevel?.CRITICAL ?? 0) + (riskSummary.byLevel?.HIGH ?? 0) : '—' }}</div><div class="label">{{ t('ueba.highRiskEntities') }}</div></div></el-card></el-col>
+      <el-col :xs="24" :sm="12" :md="5"><el-card shadow="never"><div class="stat-card"><div class="num">{{ riskSummary?.halfLifeHours == null ? '—' : `${riskSummary.halfLifeHours}h` }}</div><div class="label">{{ t('ueba.halfLife') }}</div></div></el-card></el-col>
+      <el-col :xs="24" :sm="12" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ watchlistsLoaded ? watchlists.length : '—' }}</div><div class="label">{{ t('ueba.watchlists') }}</div></div></el-card></el-col>
     </el-row>
 
     <el-tabs v-model="uebaTab">
@@ -177,6 +180,7 @@ onMounted(loadUeba)
         <UebaRiskPanel
           :theme="props.theme"
           :entities="riskEntities"
+          :error="entitiesError"
           :summary="riskSummary"
           :risk-limit="riskLimit"
           @update:risk-limit="riskLimit = $event"

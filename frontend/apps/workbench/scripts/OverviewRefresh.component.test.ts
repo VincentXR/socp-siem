@@ -19,6 +19,17 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('overview successful refresh time', () => {
+  it('labels a partial initial load and does not present unknown totals as zero', () => {
+    const wrapper = shallowMount(OverviewView, { props: {
+      stat: { total: 0, critical: 0, high: 0, activeCases: 0, online: 0 }, healths: {}, filteredAlarms: [],
+      availability: { alarms: false, stats: false, cases: false }, updatedAt: 0, error: 'offline',
+    }, global: { renderStubDefaultSlot: true, stubs: { PageHeader: false } } })
+    try {
+      expect(wrapper.findComponent(PageHeader).text()).toContain('部分数据未能加载')
+      expect(wrapper.find('.overview-window').text()).toContain('—')
+    } finally { wrapper.unmount() }
+  })
+
   it('keeps the oldest successful fetch through an in-flight or failed refresh', async () => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000)
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })

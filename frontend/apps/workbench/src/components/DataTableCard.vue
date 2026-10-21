@@ -26,7 +26,7 @@ const props = withDefaults(defineProps<{
 const currentPage = defineModel<number>('currentPage', { default: 1 })
 const pageSize = defineModel<number>('pageSize', { default: 10 })
 const { t } = useI18n()
-// 表格在 loading/error 期间保持挂载（旧数据与分页器不被销毁），只有真正的空结果才换成空态。
+// Keep the table mounted, but do not expose its empty placeholder on a failed initial read.
 const isEmpty = computed(() => !props.loading && !props.error && props.total === 0)
 </script>
 
@@ -38,7 +38,7 @@ const isEmpty = computed(() => !props.loading && !props.error && props.total ===
       <span>{{ props.error }}</span>
       <el-button v-if="props.retry" size="small" @click="props.retry?.()">{{ t('common.refresh') }}</el-button>
     </div>
-    <div v-show="!isEmpty" v-loading="props.loading" class="data-table-content">
+    <div v-show="!isEmpty && !(props.error && props.total === 0)" v-loading="props.loading" class="data-table-content">
       <slot />
     </div>
     <div v-if="isEmpty" class="list-state-empty">

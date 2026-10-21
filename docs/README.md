@@ -18,6 +18,7 @@ and sections needed for the current change.
 | API, auth, or tenant behavior | [API contract](api-contract.md), [tenant isolation](tenant-isolation.md) |
 | Persistence, migrations, or event delivery | Owning module's migrations; [idempotency](idempotency-contract.md); [migration repair](operations/database-migration-repair.md) only for checksum drift/repair |
 | Workbench UI | [Frontend guidelines](frontend-guidelines.md) |
+| Workbench visual redesign (design tokens, IA, prototype) | [Redesign spec](design/workbench-redesign.md) |
 | Verification | [Local change matrix](validation-matrix.md#local-change-validation), then relevant commands in [testing](testing.md) |
 | Deployment or production configuration | [Production readiness](production-readiness.md), plus the relevant deployment/runbook below |
 | Coding-agent instructions, Skills, or task prompts | [Agent guidance maintenance](#agent-instructions-and-skills) |

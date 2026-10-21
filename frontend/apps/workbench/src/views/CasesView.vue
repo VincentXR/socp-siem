@@ -505,7 +505,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
     <ActionFeedback :error="exportMutation.error.value" />
     <ActionFeedback v-if="!drawerVisible && !createDialogVisible" :error="actionError" />
     <el-button v-if="returnTarget" link @click="router.push(returnTarget)">{{ t('cases.returnToOrigin') }}</el-button>
-    <PageHeader :eyebrow="t('menuGroup.alarmsAndEvents')" :title="t('cases.title')" :description="t('cases.description')">
+    <PageHeader :eyebrow="t('menuGroup.operations')" :title="t('cases.title')" :description="t('cases.description')">
       <template #actions>
         <el-button v-if="canWrite" type="primary" size="small" :disabled="actionBusy" @click="openCreateCase">{{ t('cases.createCase') }}</el-button>
         <el-button v-if="canWrite" size="small" :loading="exportMutation.busy.value" @click="exportMutation.run(caseApi.export)">{{ t('cases.exportJson') }}</el-button>
@@ -522,7 +522,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
     <DataTableCard v-model:current-page="page" v-model:page-size="size" :total="total" :loading="loading" :error="loadError" :retry="loadCases" :empty-title="t('cases.emptyCases')" :empty-description="t('cases.noMatches')">
       <template #toolbar>
         <FilterToolbar :count="total">
-        <el-select v-model="queueFilter" :disabled="actionBusy" :aria-label="t('cases.queue')" @change="page = 1">
+        <el-select v-model="queueFilter" :disabled="actionBusy" :aria-label="t('cases.queue')" :placeholder="t('cases.allWork')" @change="page = 1">
           <el-option :label="t('cases.allWork')" value="" />
           <el-option :label="t('cases.myWork')" value="mine" :disabled="!currentUser" />
           <el-option :label="t('cases.unassigned')" value="unassigned" />

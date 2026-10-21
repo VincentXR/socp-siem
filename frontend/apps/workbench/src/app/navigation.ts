@@ -39,12 +39,23 @@ export function getVisibleMenuGroups(role = 'viewer', t: (key: string) => string
       ],
     },
     {
+      group: t('experience.configuration'),
+      defaultCollapsed: false,
+      items: [
+        { key: 'ingest', label: t('menu.ingest'), icon: 'ingest' },
+        { key: 'meta', label: t('experience.fieldDictionary'), icon: 'meta' },
+        { key: 'refset', label: t('experience.enrichmentSets'), icon: 'refset' },
+      ],
+    },
+    {
       group: t('menuGroup.detectAndResponse'),
       items: [
         { key: 'detect', label: t('menu.detect'), icon: 'detect' },
+        { key: 'attack', label: t('menu.attack'), icon: 'attack' },
         { key: 'ueba', label: t('menu.ueba'), icon: 'ueba' },
         { key: 'soar', label: t('menu.soar'), icon: 'soar' },
         { key: 'ai', label: t('menu.ai'), icon: 'ai' },
+        { key: 'notify', label: t('menu.notify'), icon: 'notify' },
       ],
     },
     {
@@ -53,18 +64,6 @@ export function getVisibleMenuGroups(role = 'viewer', t: (key: string) => string
         { key: 'endpoints', label: t('experience.endpointAgents'), icon: 'endpoints' },
         { key: 'assets', label: t('menu.assets'), icon: 'assets' },
         { key: 'threat-intel', label: t('menu.threat'), icon: 'threat' },
-        { key: 'attack', label: t('menu.attack'), icon: 'attack' },
-      ],
-    },
-    {
-      group: t('experience.configuration'),
-      defaultCollapsed: true,
-      secondary: true,
-      items: [
-        { key: 'refset', label: t('experience.enrichmentSets'), icon: 'refset' },
-        { key: 'ingest', label: t('menu.ingest'), icon: 'ingest' },
-        { key: 'meta', label: t('experience.fieldDictionary'), icon: 'meta' },
-        { key: 'notify', label: t('menu.notify'), icon: 'notify' },
       ],
     },
     {

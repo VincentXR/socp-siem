@@ -69,7 +69,7 @@ type JsonObject = Record<string, unknown>
 
 const FLOW_ID = 'soar-flow'
 const TONE_COLORS: Record<string, string> = {
-  start: '#2563eb',
+  start: '#1e46d6',
   end: '#64748b',
   action: '#0891b2',
   logic: '#7c3aed',

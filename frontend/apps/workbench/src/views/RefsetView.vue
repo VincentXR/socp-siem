@@ -224,14 +224,14 @@ onUnmounted(() => { disposed = true; listRequest.cancel() })
   <div class="page-pad view-enter">
     <ActionFeedback :error="loadError" />
     <ActionFeedback :error="actionError" />
-    <PageHeader :title="t('experience.enrichmentSets')" :description="t('refset.ingestionOnly')">
+    <PageHeader :eyebrow="t('experience.configuration')" :title="t('experience.enrichmentSets')" :description="t('refset.ingestionOnly')">
       <template #actions><el-button v-if="canWrite" type="primary" size="small" @click="openCreateSet">{{ t('refset.createSet') }}</el-button></template>
     </PageHeader>
     <el-button link type="primary" @click="router.push({ name: 'ueba', query: { tab: 'watchlists' } })">{{ t('experience.detectionWatchlists') }}</el-button>
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('refset.readOnly') }}</div>
 
     <el-input v-model="keyword" :placeholder="t('forms.search')" clearable />
-    <el-table v-if="loading || loadError || filteredSets.length" v-loading="loading" :data="filteredSets" border allow-drag-last-column style="margin-top:16px" @header-dragend="onHeaderDragEnd">
+    <el-table v-if="loading || loadError || filteredSets.length" v-loading="loading" :data="filteredSets" :empty-text="t(loadError ? 'experience.unknownData' : 'experience.noMatches')" border allow-drag-last-column style="margin-top:16px" @header-dragend="onHeaderDragEnd">
       <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="200" />
       <el-table-column prop="description" column-key="description" :label="t('common.description')" :width="columnWidth('description')" min-width="200" show-overflow-tooltip />
       <el-table-column column-key="entries" :label="t('forms.entries')" :width="columnWidth('entries', 120)"><template #default="{ row }">{{ row.entries.length }}</template></el-table-column>

@@ -315,7 +315,7 @@ function runStatusLabel(status: string): string {
    type label, handles and palette dots. Kept unscoped so palette items (a sibling
    component) inherit the same per-tone colours. Run-path highlight classes override
    the accent via their own --run-status-color and are unaffected. */
-.tone-start { --soar-node-color: #2563eb; }
+.tone-start { --soar-node-color: #1e46d6; }
 .tone-end { --soar-node-color: #64748b; }
 .tone-action { --soar-node-color: #0891b2; }
 .tone-logic { --soar-node-color: #7c3aed; }

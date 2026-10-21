@@ -60,6 +60,23 @@ describe('soar approvals lifecycle', () => {
     document.body.textContent = ''
   })
 
+  it('identifies a case-only response context without an empty alarm reference', async () => {
+    const { wrapper } = await mountSoar('/soar?caseId=case-context')
+    try {
+      expect(wrapper.find('.soar-context-banner').text()).toContain('case-context')
+      expect(wrapper.findAll('.soar-context-banner code')).toHaveLength(1)
+    } finally { wrapper.unmount() }
+  })
+
+  it('does not mark an empty successful playbook catalogue unavailable when templates fail', async () => {
+    mocks.listTemplates.mockRejectedValueOnce(new Error('templates offline'))
+    const { wrapper } = await mountSoar('/soar')
+    try {
+      expect(wrapper.find('.soar-load-error').text()).toContain('templates offline')
+      expect(wrapper.find('.soar-card .el-table__empty-text').text()).toBe('暂无数据')
+    } finally { wrapper.unmount() }
+  })
+
   it('pages more than 200 pending approvals and fetches a deep-linked older request independently', async () => {
     mocks.listApprovalsPage.mockResolvedValue(approvalPage([{ id: 'first', status: 'PENDING' }], 251))
     mocks.getApproval.mockResolvedValue({ id: 'old-pending', runId: 'run-1', actionRef: 'firewall.block', status: 'PENDING' })

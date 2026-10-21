@@ -15,7 +15,7 @@ export function useIngestWorkspace() {
   const confirming = ref(false)
   const loadErrors = ref<Partial<Record<IngestLoadKey, string>>>({})
   const loadStates = ref<Partial<Record<IngestLoadKey, boolean>>>({})
-  const loadError = computed(() => Object.values(loadErrors.value).filter(Boolean).join(' · '))
+  const loadError = computed(() => [...new Set(Object.values(loadErrors.value).filter(Boolean))].join(' · '))
   const readControllers = new Map<IngestLoadKey, AbortController>()
   let disposed = false
 

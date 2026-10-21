@@ -189,13 +189,12 @@ async function loadNotify() {
       listChannels({ signal: request.signal }, channelPage.value, channelSize.value), dispatchLog({ signal: request.signal }, { page: logPage.value, size: logSize.value, status: logStatus.value || undefined, alarmId: logAlarmId.value.trim() || undefined, channel: logChannel.value.trim() || undefined }),
     ])
     if (!request.isCurrent()) return
-    const failures: string[] = []
+    loadError.value = ''
     if (channelResult.status === 'fulfilled') { channels.value = channelResult.value.items; channelTotal.value = channelResult.value.total }
-    else failures.push(String(channelResult.reason))
+    else loadError.value = String(channelResult.reason)
     logsError.value = ''
     if (logResult.status === 'fulfilled') { logs.value = logResult.value.items; logTotal.value = logResult.value.total }
-    else { logsError.value = String(logResult.reason); failures.push(logsError.value) }
-    loadError.value = failures.join(' · ')
+    else logsError.value = String(logResult.reason)
     const lastChannelPage = channelResult.status === 'fulfilled' ? Math.max(1, Math.ceil(channelTotal.value / channelSize.value)) : channelPage.value
     const lastLogPage = logResult.status === 'fulfilled' ? Math.max(1, Math.ceil(logTotal.value / logSize.value)) : logPage.value
     if (channelPage.value > lastChannelPage || logPage.value > lastLogPage) {
@@ -323,7 +322,7 @@ onMounted(loadNotify)
   <div class="page-pad view-enter">
     <ActionFeedback :error="loadError" />
     <ActionFeedback :error="actionError" />
-    <PageHeader :title="t('notify.title')" :description="t('notify.description')">
+    <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('notify.title')" :description="t('notify.description')">
       <template #actions>
         <el-button size="small" :loading="loading" @click="loadNotify">{{ t('common.refresh') }}</el-button>
         <el-button v-if="canWrite" type="primary" size="small" :disabled="actionBusy" @click="openChannel()">{{ t('notify.createChannel') }}</el-button>
@@ -333,7 +332,7 @@ onMounted(loadNotify)
     <el-card shadow="never" class="notify-card">
       <template #header><span>{{ t('notify.channels') }}</span></template>
       <p class="dialog-hint">{{ t('workflow.channelScope') }}</p>
-      <el-input v-model="keyword" :placeholder="t('workflow.searchThisPage')" clearable style="margin-bottom:12px" /><el-table v-loading="loading" :data="filteredChannels" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onHeaderDragEnd">
+      <el-input v-model="keyword" :placeholder="t('workflow.searchThisPage')" clearable style="margin-bottom:12px" /><el-table v-loading="loading" :data="filteredChannels" size="small" border allow-drag-last-column :empty-text="t(loadError ? 'experience.unknownData' : 'common.empty')" @header-dragend="onHeaderDragEnd">
         <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name', 140)" />
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 120)"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
         <el-table-column column-key="target" :label="t('notify.target')" :width="columnWidth('target')" min-width="200" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ displayTarget(row as Channel) }}</span></template></el-table-column>
@@ -353,7 +352,7 @@ onMounted(loadNotify)
       </div>
       <p class="dialog-hint">{{ t('workflow.notificationRecovery') }}</p>
       <ActionFeedback :error="logsError" />
-      <el-table v-loading="loading" :data="logs" size="small" border :empty-text="t('common.empty')">
+      <el-table v-loading="loading" :data="logs" size="small" border :empty-text="t(logsError ? 'experience.unknownData' : 'common.empty')">
         <el-table-column type="expand"><template #default="{ row }">
           <div class="notify-receipt-detail">
             <div><b>{{ t('notify.alarmId') }}</b><el-button v-if="row.alarmId && !row.alarmId.startsWith('test')" link type="primary" @click="openReceipt(row)">{{ row.alarmId }}</el-button><span v-else>{{ row.alarmId || '—' }}</span></div>

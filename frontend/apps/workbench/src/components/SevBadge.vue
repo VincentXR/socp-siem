@@ -34,5 +34,5 @@ const tone = computed(() => {
 </script>
 
 <template>
-  <span class="sev-badge" :data-tone="tone">{{ displayValue }}</span>
+  <span class="sev-badge" :data-tone="tone"><i class="sev-bar" aria-hidden="true" />{{ displayValue }}</span>
 </template>

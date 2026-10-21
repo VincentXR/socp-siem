@@ -16,7 +16,7 @@ import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { localDateTime, utcInstant } from '../lib/time-range'
-import { ALARM_DISP_STATUSES, ALARM_FILTER_STATUSES } from '../app/alarm-statuses'
+import { ALARM_DISP_STATUSES, ALARM_FILTER_STATUSES, ALARM_STATUS_ACTIVE, ALARM_STATUS_ALL } from '../app/alarm-statuses'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import InvestigationReadiness from '../components/InvestigationReadiness.vue'
@@ -77,6 +77,42 @@ function searchOwner() { assignee.value = ''; props.onSearch() }
 function searchAssignee() { owner.value = ''; props.onSearch() }
 function myQueue() {
   owner.value = ''; assignee.value = props.currentUser || ''; status.value = 'ACTIVE'; props.onSearch()
+}
+
+/**
+ * 保存视图只是既有 status/owner 过滤的快捷入口，不引入新的 URL 键：
+ * 待处置 = status=ACTIVE（服务端 OPEN + INVESTIGATING 范围），
+ * 我负责 = owner=mine，全部 = status=ALL（显式取消状态过滤）。
+ */
+type SavedView = 'active' | 'mine' | 'all'
+const savedViews = computed(() => [
+  { id: 'active' as SavedView, label: t('alarms.savedViewActive') },
+  { id: 'mine' as SavedView, label: t('alarms.savedViewMine') },
+  { id: 'all' as SavedView, label: t('alarms.savedViewAll') },
+])
+const savedView = computed<SavedView | ''>(() => {
+  if (owner.value === 'mine') return 'mine'
+  if (status.value === ALARM_STATUS_ALL) return 'all'
+  if (!status.value || status.value === ALARM_STATUS_ACTIVE) return 'active'
+  return ''
+})
+function applySavedView(view: SavedView) {
+  assignee.value = ''
+  owner.value = view === 'mine' ? 'mine' : ''
+  status.value = view === 'all' ? ALARM_STATUS_ALL : ALARM_STATUS_ACTIVE
+  props.onSearch()
+}
+
+/** 严重级别列与风险分列的语义标记，供样式层做行内对齐与强调。 */
+function cellClassName({ row, column }: { row: Alarm; column: { property?: string | null } }): string {
+  const classes: string[] = []
+  const property = column.property ?? ''
+  if (property === 'severity') classes.push('alarm-sev-cell')
+  if (property === 'riskScore') {
+    classes.push('alarm-risk-cell')
+    if (Number((row as Alarm).riskScore ?? 0) >= 80) classes.push('alarm-risk-high')
+  }
+  return classes.join(' ')
 }
 const pageNum = defineModel<number>('pageNum', { default: 1 })
 const drawerVisible = ref(false)
@@ -239,7 +275,19 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
 
 <template>
   <div class="page-pad view-enter view--alarms">
-    <PageHeader :eyebrow="t('menuGroup.alarmsAndEvents')" :title="t('alarms.title')" :description="t('alarms.description')" />
+    <PageHeader :eyebrow="t('menuGroup.operations')" :title="t('alarms.title')" :description="t('alarms.description')" />
+    <div class="alarm-savedviews" role="tablist" :aria-label="t('alarms.savedViews')">
+      <button
+        v-for="tab in savedViews"
+        :key="tab.id"
+        type="button"
+        role="tab"
+        class="alarm-savedview"
+        :aria-selected="savedView === tab.id"
+        :data-tab="tab.id"
+        @click="applySavedView(tab.id)"
+      >{{ tab.label }}</button>
+    </div>
     <div class="alarm-toolbar">
       <div class="alarm-filter-controls">
         <el-input v-model="keyword" class="alarm-keyword-input" :placeholder="t('alarms.keywordPlaceholder')" clearable @keyup.enter="props.onSearch" @clear="props.onSearch" />
@@ -273,7 +321,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
     </div>
 
     <div class="alarm-toolbar-actions">
-      <el-select v-model="owner" :aria-label="t('analystJourney.workQueue')" @change="searchOwner">
+      <el-select v-model="owner" :aria-label="t('analystJourney.workQueue')" :placeholder="t('analystJourney.allWork')" @change="searchOwner">
         <el-option :label="t('analystJourney.allWork')" value="" /><el-option :label="t('analystJourney.myWork')" value="mine" /><el-option :label="t('analystJourney.unassigned')" value="unassigned" />
       </el-select>
       <span v-if="route.query.entity">{{ t('analystJourney.exactEntity', { entity: String(route.query.entity) }) }} </span>
@@ -309,17 +357,17 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
     </div>
 
     <el-card shadow="never" class="alarm-table-card">
-      <el-table v-loading="props.loading" :data="props.filteredAlarms" class="alarm-table" height="100%" size="small" row-key="id" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @sort-change="handleSortChange" @row-click="openAlarmRow" @selection-change="handleSelectionChange">
+      <el-table v-loading="props.loading" :data="props.filteredAlarms" class="alarm-table" height="100%" size="small" row-key="id" border allow-drag-last-column :cell-class-name="cellClassName" @header-dragend="onHeaderDragEnd" @sort-change="handleSortChange" @row-click="openAlarmRow" @selection-change="handleSelectionChange">
         <el-table-column v-if="props.canWrite" type="selection" width="44" fixed="left" />
-        <el-table-column prop="occurredAt" column-key="occurredAt" :label="t('alarms.occurredAt')" :width="columnWidth('occurredAt', 172)" sortable="custom"><template #default="{ row }"><span class="mono">{{ relTime(row.occurredAt) }}</span></template></el-table-column>
-        <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 100)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+        <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 112)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
         <el-table-column prop="title" column-key="title" :label="t('alarms.alertTitle')" :width="columnWidth('title', 220)" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.title || row.ruleName || row.ruleId }}</template></el-table-column>
         <el-table-column prop="ruleName" column-key="ruleName" :label="t('alarms.ruleName')" :width="columnWidth('ruleName')" min-width="180" sortable="custom" show-overflow-tooltip><template #default="{ row }">{{ row.ruleName || row.ruleId }}</template></el-table-column>
         <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity')" min-width="150" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="assignee" :label="t('assets.owner')" min-width="130"><template #default="{ row }">{{ row.assignee || t('analystJourney.unassigned') }}</template></el-table-column>
-        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 125)" sortable="custom"><template #default="{ row }"><span class="alarm-status" :class="(row.status || 'OPEN').toLowerCase()">{{ tOr(t, 'statuses.' + (row.status || 'OPEN'), row.status ?? '') }}</span></template></el-table-column>
         <el-table-column prop="riskScore" column-key="riskScore" :label="t('alarms.riskScore')" :width="columnWidth('riskScore', 90)" sortable="custom"><template #default="{ row }">{{ row.riskScore ?? '—' }}</template></el-table-column>
-        <el-table-column prop="message" column-key="message" :label="t('common.message')" :width="columnWidth('message')" min-width="260" show-overflow-tooltip />
+        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 125)" sortable="custom"><template #default="{ row }"><span class="alarm-status" :class="(row.status || 'OPEN').toLowerCase()">{{ tOr(t, 'statuses.' + (row.status || 'OPEN'), row.status ?? '') }}</span></template></el-table-column>
+        <el-table-column prop="assignee" :label="t('assets.owner')" min-width="130"><template #default="{ row }">{{ row.assignee || t('analystJourney.unassigned') }}</template></el-table-column>
+        <el-table-column prop="occurredAt" column-key="occurredAt" :label="t('alarms.occurredAt')" :width="columnWidth('occurredAt', 132)" sortable="custom"><template #default="{ row }"><span class="mono">{{ relTime(row.occurredAt) }}</span></template></el-table-column>
+        <el-table-column prop="message" column-key="message" :label="t('common.message')" :width="columnWidth('message')" min-width="180" show-overflow-tooltip />
         <el-table-column :label="t('common.actions')" width="78" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click.stop="openAlarmRow(row)">{{ t('alarms.triage') }}</el-button></template></el-table-column>
         <template #empty>
           <EmptyState v-if="!props.loading && !props.error" :title="t('alarms.noAlarmsFound')" :description="t('alarms.adjustFiltersHint')"><template #action><InvestigationReadiness :can-inspect="Boolean(props.canWrite)" /></template></EmptyState>

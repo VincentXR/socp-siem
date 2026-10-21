@@ -236,14 +236,14 @@ watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]
 <template>
   <div class="page-pad view-enter" :class="{ 'ai-context-layout': contextAlarmId }">
     <el-button v-if="investigationReturn" @click="router.push(investigationReturn)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
-    <PageHeader :eyebrow="t('menuGroup.analyticsAndAi')" :title="t('ai.title')" :description="t('ai.description')" />
+    <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('ai.title')" :description="t('ai.description')" />
     <el-button v-if="contextAlarmId" @click="genericVisible = !genericVisible">{{ t('analystJourney.generalQuestions') }}</el-button>
     <el-card v-if="!contextAlarmId || genericVisible" shadow="never" class="ai-panel">
       <div class="ai-ask-row">
         <el-input
           v-model="question"
           clearable
-          :placeholder="t('ai.placeholder')"
+          :placeholder="t('ai.placeholder')" :aria-label="t('ai.placeholder')"
           @keyup.enter="() => ask()"
         />
         <el-button type="primary" :loading="loading" @click="() => ask()">{{ t('ai.askBtn') }}</el-button>
@@ -300,7 +300,7 @@ watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]
         <el-button link type="primary" size="small" @click="openAlarm">{{ t('ai.investigation.openAlarm') }}</el-button>
       </div>
       <div class="ai-ask-row">
-        <el-input v-model="alertId" clearable :placeholder="t('ai.investigation.alertId')" @keyup.enter="investigate" />
+        <el-input v-model="alertId" clearable :placeholder="t('ai.investigation.alertId')" :aria-label="t('ai.investigation.alertId')" @keyup.enter="investigate" />
         <el-button type="primary" :loading="investigationLoading" @click="investigate">{{ t('ai.investigation.investigate') }}</el-button>
         <el-button v-if="investigation" :disabled="investigationLoading" @click="reanalyze">{{ t('ai.investigation.reanalyze') }}</el-button>
       </div>

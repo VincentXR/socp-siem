@@ -37,6 +37,15 @@ Run `git diff --check` and inspect the final diff. Once relevant checks pass,
 repeat or broaden them only for new changes, failures, or unresolved risks.
 Do not weaken tests or safety controls to obtain a passing result.
 
+Keep verification proportional and useful: prefer a small regression that
+reproduces the reported failure plus the affected module's relevant checks.
+Do not add redundant tests, unrelated test infrastructure, or broad suites
+merely to increase counts. Once a check passes, rerun it only for a subsequent
+relevant change, a failure, or a concrete unresolved risk. Do not repeatedly
+run full frontend/backend suites for a localized change. Retain required
+security, persistence and contract verification for boundaries actually changed,
+and report missing evidence rather than expanding verification without a reason.
+
 If a required check cannot run, exhaust safe local alternatives and report the
 specific blocker and missing evidence; do not claim verified completion.
 The handoff should state what changed, exact validation commands and results,

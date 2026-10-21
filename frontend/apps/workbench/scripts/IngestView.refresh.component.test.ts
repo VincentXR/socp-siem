@@ -70,6 +70,17 @@ beforeEach(() => {
 })
 
 describe('ingest independent reads', () => {
+  it('deduplicates the same upstream failure without reporting an empty successful list', async () => {
+    api.listSourcesPage.mockRejectedValueOnce(new Error('upstream unavailable'))
+    api.listIngestTasks.mockRejectedValueOnce(new Error('upstream unavailable'))
+    api.ingestSummary.mockRejectedValueOnce(new Error('upstream unavailable'))
+    const { root, wrapper } = await setup(); await flushPromises()
+    try {
+      expect((wrapper.vm as unknown as View).loadError).toBe('Error: upstream unavailable')
+      expect(wrapper.text()).toContain(translate('experience.unknownData'))
+    } finally { root.unmount() }
+  })
+
   it('preserves output credentials by default and only replaces or clears with explicit intent', async () => {
     const { root, wrapper } = await setup(); await flushPromises()
     const view = wrapper.vm as unknown as View

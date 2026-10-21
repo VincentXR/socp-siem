@@ -70,7 +70,7 @@ const loadError = computed(() => [
   [t('meta.dataSourceTypes'), typesRequest.error.value?.message],
   [t('meta.logCategories'), categoriesRequest.error.value?.message],
   [t('meta.fieldDictionary'), fieldsRequest.error.value?.message],
-].filter(([, error]) => error).map(([label, error]) => `${label}: ${error}`).join(' ? '))
+].filter(([, error]) => error).map(([label, error]) => `${label}: ${error}`).join(' · '))
 const dataSourceTypes = computed(() => typesRequest.data.value ?? [])
 const logCategories = computed(() => categoriesRequest.data.value ?? [])
 const fieldDefs = computed(() => fieldsRequest.data.value ?? [])
@@ -206,7 +206,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page-pad view-enter">
-    <PageHeader :eyebrow="t('menuGroup.ingestAndConfig')" :title="t('meta.title')" :description="t('meta.description')">
+    <PageHeader :eyebrow="t('experience.configuration')" :title="t('experience.fieldDictionary')" :description="t('meta.description')">
       <template #actions>
         <el-button size="small" :loading="loading" @click="loadMeta">{{ t('common.refresh') }}</el-button>
       </template>
@@ -242,7 +242,7 @@ onUnmounted(() => {
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.registryTitle') }}</template>
-          <el-table v-loading="typesLoading" :data="dataSourceTypes" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onDsHeaderDragEnd">
+          <el-table v-loading="typesLoading" :data="dataSourceTypes" size="small" border allow-drag-last-column :empty-text="t(typesRequest.error.value ? 'experience.unknownData' : 'common.empty')" @header-dragend="onDsHeaderDragEnd">
             <el-table-column prop="code" column-key="code" :label="t('meta.code')" :width="dsColumnWidth('code', 130)" />
             <el-table-column prop="name" column-key="name" :label="t('meta.name')" :width="dsColumnWidth('name', 150)" />
             <el-table-column prop="description" column-key="description" :label="t('meta.explanation')" :width="dsColumnWidth('description')" min-width="300" show-overflow-tooltip />
@@ -281,7 +281,7 @@ onUnmounted(() => {
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.taxonomyTitle') }}</template>
-          <el-table v-loading="categoriesLoading" :data="logCategories" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onCategoryHeaderDragEnd">
+          <el-table v-loading="categoriesLoading" :data="logCategories" size="small" border allow-drag-last-column :empty-text="t(categoriesRequest.error.value ? 'experience.unknownData' : 'common.empty')" @header-dragend="onCategoryHeaderDragEnd">
             <el-table-column prop="code" column-key="code" :label="t('meta.code')" :width="categoryColumnWidth('code', 120)" />
             <el-table-column prop="name" column-key="name" :label="t('meta.name')" :width="categoryColumnWidth('name', 130)" />
             <el-table-column prop="description" column-key="description" :label="t('meta.explanation')" :width="categoryColumnWidth('description')" min-width="260" show-overflow-tooltip />
@@ -326,7 +326,7 @@ onUnmounted(() => {
         </el-dialog>
         <el-card shadow="never">
           <template #header>{{ t('meta.fieldDictionaryTitle') }}</template>
-          <el-table v-loading="fieldsLoading" :data="fieldDefs" size="small" border allow-drag-last-column :empty-text="t('common.empty')" @header-dragend="onFieldHeaderDragEnd">
+          <el-table v-loading="fieldsLoading" :data="fieldDefs" size="small" border allow-drag-last-column :empty-text="t(fieldsRequest.error.value ? 'experience.unknownData' : 'common.empty')" @header-dragend="onFieldHeaderDragEnd">
             <el-table-column prop="fieldName" column-key="fieldName" :label="t('meta.fieldName')" :width="fieldColumnWidth('fieldName', 130)" />
             <el-table-column prop="fieldLabel" column-key="fieldLabel" :label="t('meta.fieldLabel')" :width="fieldColumnWidth('fieldLabel', 110)" />
             <el-table-column prop="fieldType" column-key="fieldType" :label="t('meta.dataType')" :width="fieldColumnWidth('fieldType', 80)" />

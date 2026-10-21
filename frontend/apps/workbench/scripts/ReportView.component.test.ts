@@ -36,6 +36,21 @@ beforeEach(() => {
 })
 
 describe('report source and lifecycle ownership', () => {
+  it('does not label unavailable report sources as empty results', async () => {
+    mocks.dailyReport.mockRejectedValueOnce(new Error('daily offline'))
+    mocks.trend7d.mockRejectedValueOnce(new Error('trend offline'))
+    mocks.listArchive.mockRejectedValueOnce(new Error('archive offline'))
+    const wrapper = setup(); await flushPromises()
+    try {
+      const states = wrapper.findAll('.empty-state')
+      expect(states).toHaveLength(3)
+      for (const state of states) expect(state.text()).toContain(translate('experience.unknownData'))
+      expect(wrapper.text()).toContain('daily offline')
+      expect(wrapper.text()).toContain('trend offline')
+      expect(wrapper.text()).toContain('archive offline')
+    } finally { wrapper.unmount() }
+  })
+
   it('keeps a successful daily report when trend fails and retries only the failed source', async () => {
     mocks.trend7d.mockRejectedValueOnce(new Error('trend unavailable'))
     const wrapper = setup(); await flushPromises()

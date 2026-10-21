@@ -134,6 +134,14 @@ shortcuts, SOAR menu/save keys, reduced motion and configuration confirmation.
 These browser checks run real UI behavior with explicitly mocked backend
 endpoints; they do not replace live-service or collector acceptance.
 
+`AppShell.component.test.ts` and the sidebar case in `e2e/workbench.spec.ts`
+cover first-click expansion with no saved preference, persistence, and active
+group navigation. `DataTableCard.component.test.ts` distinguishes an initial
+read failure from an empty successful result while preserving existing rows.
+Detection, overview, ingestion, notification, UEBA and report component tests
+also check unavailable data, independent source failures and recovery; a failed
+read must not become a measured zero or a successful empty result.
+
 `IngestBodyLimitAdviceTest` checks bounded raw reads, chunked/underreported
 lengths and method/class limits without weakening collector limits.
 `RuleControllerTest` checks the real manual Detection routes reject oversized
