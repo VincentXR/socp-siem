@@ -47,6 +47,7 @@ function goSoar(): void {
     :stat="stat"
     :sit-stats="sitStats"
     :filtered-alarms="alarms"
+    :priority-alarms="overview.priorityAlarms.value"
     :healths="healths"
     :loading="overviewLoading"
     :refreshing="overview.refreshing.value"

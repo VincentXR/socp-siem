@@ -2,6 +2,7 @@
 import 'element-plus/es/components/drawer/style/css.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import { useRouter } from 'vue-router'
+import { ALARM_STATUS_ALL } from '../app/alarm-statuses'
 import { techniqueAlarms } from '../api/investigation-context'
 import PagerBar from '../components/PagerBar.vue'
 import { get } from '../api/core'
@@ -271,14 +272,14 @@ onUnmounted(() => {
     <el-drawer :model-value="Boolean(selectedTechnique)" :title="t('experience.technique')" size="min(700px, 96vw)" @close="closeTechnique">
       <template v-if="selectedTechnique">
         <h2>{{ selectedTechnique.id }} · {{ selectedTechnique.name }}</h2><p>{{ selectedTechnique.description }}</p>
-        <el-button type="primary" @click="router.push({ name: 'alarms', query: { technique: selectedTechnique.id } })">{{ t('experience.matchingAlarms') }}</el-button>
+        <el-button type="primary" @click="router.push({ name: 'alarms', query: { status: ALARM_STATUS_ALL, technique: selectedTechnique.id } })">{{ t('experience.matchingAlarms') }}</el-button>
         <el-button v-if="canWrite" @click="router.push({ name: 'detect', query: { technique: selectedTechnique.id } })">{{ t('experience.configureRule') }}</el-button>
         <h3>{{ t('experience.mappedRules') }}</h3>
         <ActionFeedback :error="detailRules.error.value?.message || ''" />
         <el-button v-if="detailRules.error.value" @click="loadTechniqueRules">{{ t('common.retry') }}</el-button>
         <p v-if="detailRules.loading.value">{{ t('common.loading') }}</p>
         <p v-else-if="detailRules.data.value && !detailRules.data.value.items.length">{{ t('experience.unmapped') }}</p>
-        <div v-for="rule in detailRules.data.value?.items || []" :key="rule.id"><el-button v-if="canWrite" link @click="router.push({ name: 'rule-edit', params: { ruleId: rule.id } })">{{ rule.name }}</el-button><span v-else>{{ rule.name }}</span> · {{ rule.status }} <el-button link type="primary" @click="router.push({ name: 'alarms', query: { rule: rule.id, technique: selectedTechnique.id } })">{{ t('workflow.relatedAlarms') }}</el-button></div>
+        <div v-for="rule in detailRules.data.value?.items || []" :key="rule.id"><el-button v-if="canWrite" link @click="router.push({ name: 'rule-edit', params: { ruleId: rule.id } })">{{ rule.name }}</el-button><span v-else>{{ rule.name }}</span> · {{ rule.status }} <el-button link type="primary" @click="router.push({ name: 'alarms', query: { status: ALARM_STATUS_ALL, rule: rule.id, technique: selectedTechnique.id } })">{{ t('workflow.relatedAlarms') }}</el-button></div>
         <PagerBar :current-page="techniqueRulePage" :page-size="techniqueRuleSize" :total="detailRules.data.value?.total || 0" @update:current-page="setTechniqueRulePage" @update:page-size="setTechniqueRuleSize" />
         <h3>{{ t('experience.matchingAlarms') }}</h3><ActionFeedback :error="detailAlarms.error.value?.message || ''" />
         <p v-if="detailAlarms.loading.value">{{ t('common.loading') }}</p>

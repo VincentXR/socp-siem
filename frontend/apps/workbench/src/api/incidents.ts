@@ -26,7 +26,7 @@ export interface CreateCaseFromAlarmResult {
   duplicate?: boolean
 }
 export const createCaseFromAlarm = (alarm: Alarm) =>
-  post<CreateCaseFromAlarmResult>('/incident-web/api/v1/incidents/from-alarm', alarm)
+  post<CreateCaseFromAlarmResult>(`/incident-web/api/v1/incidents/from-alarm/${encodeURIComponent(alarm.id)}`)
 export const exportCases = () => downloadFile('/incident-web/api/v1/incidents/export', 'cases.json')
 
 export interface CaseChanges {

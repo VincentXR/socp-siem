@@ -2,6 +2,7 @@ import { computed, onMounted, onUnmounted, ref, type Ref } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { healthState } from '../lib/health-state'
 import { HEALTH_TARGETS, alarmStats, caseStats, getHealthSnapshot, listAlarmsPaged } from '../api'
+import { ALARM_STATUS_ACTIVE } from '../app/alarm-statuses'
 
 export function useOverview(enabled: Ref<boolean>, healthEnabled: Ref<boolean> = enabled) {
   const alarmsQuery = useQuery({
@@ -10,6 +11,17 @@ export function useOverview(enabled: Ref<boolean>, healthEnabled: Ref<boolean> =
     // instead of downloading every tenant alarm on each ten-second poll.
     queryFn: ({ signal }) => listAlarmsPaged(1, 100, undefined, undefined, undefined, undefined,
       'occurredAt', 'descending', { signal }),
+    enabled,
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false,
+  })
+
+  const priorityQuery = useQuery({
+    queryKey: ['overview', 'priority'],
+    // Pending work is independent of the seven-day historical summary: old
+    // investigations must remain visible, and resolved alarms must not crowd it out.
+    queryFn: ({ signal }) => listAlarmsPaged(1, 5, undefined, undefined, ALARM_STATUS_ACTIVE, undefined,
+      'riskScore', 'descending', { signal }),
     enabled,
     refetchInterval: 10_000,
     refetchIntervalInBackground: false,
@@ -45,12 +57,13 @@ export function useOverview(enabled: Ref<boolean>, healthEnabled: Ref<boolean> =
   let healthClock: ReturnType<typeof setInterval> | undefined
   onMounted(() => { healthClock = setInterval(() => { observedNow.value = Date.now() }, 15_000) })
   onUnmounted(() => { if (healthClock !== undefined) clearInterval(healthClock) })
-  const availability = computed(() => ({ alarms: Boolean(alarmsQuery.data.value), stats: Boolean(statsQuery.data.value), cases: Boolean(casesQuery.data.value) }))
+  const availability = computed(() => ({ alarms: Boolean(alarmsQuery.data.value), priority: Boolean(priorityQuery.data.value), stats: Boolean(statsQuery.data.value), cases: Boolean(casesQuery.data.value) }))
   const healthStatus = computed(() => healthState(healthQuery.data.value?.services ?? {}, HEALTH_TARGETS, {
     fetching: healthQuery.isFetching.value, failed: healthQuery.isError.value, updatedAt: Math.min(healthQuery.dataUpdatedAt.value, Date.parse(healthQuery.data.value?.checkedAt ?? '') || healthQuery.dataUpdatedAt.value), now: observedNow.value,
   }))
   const healthUpdatedAt = healthQuery.dataUpdatedAt
   const alarms = computed(() => alarmsQuery.data.value?.items ?? [])
+  const priorityAlarms = computed(() => priorityQuery.data.value?.items ?? [])
   const healths = computed(() => healthQuery.data.value?.services ?? {})
   const sitStats = computed(() => statsQuery.data.value ?? null)
   const recentAlarms = computed(() => {
@@ -67,24 +80,24 @@ export function useOverview(enabled: Ref<boolean>, healthEnabled: Ref<boolean> =
     activeCases: casesQuery.data.value?.open ?? 0,
     online: Object.values(healths.value).filter(status => status === 'up').length,
   }))
-  const loading = computed(() => alarmsQuery.isPending.value || healthQuery.isPending.value || statsQuery.isPending.value || casesQuery.isPending.value)
-  const refreshing = computed(() => alarmsQuery.isFetching.value || healthQuery.isFetching.value || statsQuery.isFetching.value || casesQuery.isFetching.value)
+  const loading = computed(() => alarmsQuery.isPending.value || priorityQuery.isPending.value || healthQuery.isPending.value || statsQuery.isPending.value || casesQuery.isPending.value)
+  const refreshing = computed(() => alarmsQuery.isFetching.value || priorityQuery.isFetching.value || healthQuery.isFetching.value || statsQuery.isFetching.value || casesQuery.isFetching.value)
   // Sources refresh independently. Report the oldest successful fetch, never
   // a click time or a failed attempt, and wait until every source has data.
-  const updatedAt = computed(() => Math.min(alarmsQuery.dataUpdatedAt.value, healthQuery.dataUpdatedAt.value,
+  const updatedAt = computed(() => Math.min(alarmsQuery.dataUpdatedAt.value, priorityQuery.dataUpdatedAt.value, healthQuery.dataUpdatedAt.value,
     statsQuery.dataUpdatedAt.value, casesQuery.dataUpdatedAt.value))
   const error = computed(() => {
-    const failure = alarmsQuery.error.value ?? healthQuery.error.value ?? statsQuery.error.value ?? casesQuery.error.value
+    const failure = alarmsQuery.error.value ?? priorityQuery.error.value ?? healthQuery.error.value ?? statsQuery.error.value ?? casesQuery.error.value
     return failure instanceof Error ? failure.message : failure ? String(failure) : ''
   })
 
   async function refreshOverview() {
-    await Promise.allSettled([alarmsQuery.refetch(), healthQuery.refetch(), statsQuery.refetch(), casesQuery.refetch()])
+    await Promise.allSettled([alarmsQuery.refetch(), priorityQuery.refetch(), healthQuery.refetch(), statsQuery.refetch(), casesQuery.refetch()])
   }
 
   async function loadOverviewStats() {
     await statsQuery.refetch().catch(() => undefined)
   }
 
-  return { availability, healthStatus, healthUpdatedAt, alarms, healths, sitStats, stat, loading, refreshing, updatedAt, error, refreshOverview, loadOverviewStats }
+  return { availability, healthStatus, healthUpdatedAt, alarms, priorityAlarms, healths, sitStats, stat, loading, refreshing, updatedAt, error, refreshOverview, loadOverviewStats }
 }

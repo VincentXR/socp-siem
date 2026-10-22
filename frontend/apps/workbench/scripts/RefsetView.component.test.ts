@@ -21,11 +21,13 @@ interface EntryActions {
   selectedId: string
   entrySelection: string[]
   importText: string
+  entryText: Record<string, string>
   openSet: (id: string) => Promise<void>
   openImport: () => void
   removeEntry: (value: string) => Promise<void>
   removeSelected: () => Promise<void>
   importEntries: () => Promise<void>
+  addEntry: (id: string) => Promise<void>
   removeRefSet: (id: string) => Promise<void>
 }
 
@@ -63,6 +65,28 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.resetAllMocks() })
 
 describe('reference set operation targets', () => {
+  it('imports the advertised separators as separate values while preserving spaces inside a value', async () => {
+    const actions = await mountSets()
+    actions.openImport()
+    actions.importText = 'one, two； privileged user\none;'
+    await actions.importEntries()
+    expect(api.addRefEntry.mock.calls).toEqual([['a', 'one'], ['a', 'two'], ['a', 'privileged user']])
+  })
+
+  it('does not erase a newer entry draft when an earlier append completes', async () => {
+    const actions = await mountSets()
+    const write = deferred<unknown>()
+    api.addRefEntry.mockReturnValueOnce(write.promise)
+    actions.entryText = { a: 'submitted entry' }
+    const saved = actions.addEntry('a')
+    await flushPromises()
+    actions.entryText.a = 'next entry'
+    write.resolve({})
+    await saved
+    expect(api.addRefEntry).toHaveBeenCalledExactlyOnceWith('a', 'submitted entry')
+    expect(actions.entryText.a).toBe('next entry')
+  })
+
   it('does not restore deleted entries from a late list response', async () => {
     const actions = await mountSets()
     const old = deferred<Array<{ id: string; name: string; entries: string[] }>>()
@@ -103,7 +127,7 @@ describe('reference set operation targets', () => {
     await mountSets()
     expect(api.listRulePage).not.toHaveBeenCalled()
     expect(wrapper!.text()).toContain('接入事件富化')
-    const remove = wrapper!.findAll('button').find(button => button.classes().includes('is-plain') && button.text() === '删除')
+    const remove = wrapper!.findAll('button').find(button => button.classes().includes('is-plain') && button.text() === '删除参考集')
     expect(remove).toBeDefined()
     expect(remove!.attributes('disabled')).toBeUndefined()
   })

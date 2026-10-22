@@ -46,6 +46,7 @@ import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
+import RowActivate from '../components/RowActivate.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useDebouncedWatch } from '../composables/useDebouncedWatch'
@@ -205,6 +206,11 @@ async function loadAlarms() {
     if (!request.isCurrent()) return
     associatedAlarms.value = result.items; associatedAlarmTotal.value = result.total
     alarmDetails.value = {}; alarmDetailErrors.value = []
+    const lastPage = Math.max(1, Math.ceil(result.total / associatedAlarmPageSize.value))
+    if (associatedAlarmPage.value > lastPage) {
+      associatedAlarmPage.value = lastPage
+      return // The page watcher reloads the remaining evidence after detach/move.
+    }
     // Bound detail fan-out to four reads at a time while keeping failed IDs navigable.
     for (let offset = 0; offset < result.items.length; offset += 4) {
       if (!request.isCurrent()) return
@@ -231,6 +237,8 @@ async function loadRules() {
     const result = await caseApi.rules(id, associatedRulePage.value, associatedRulePageSize.value, { signal: request.signal })
     if (!request.isCurrent()) return
     associatedRules.value = result.items; associatedRuleTotal.value = result.total
+    const lastPage = Math.max(1, Math.ceil(result.total / associatedRulePageSize.value))
+    if (associatedRulePage.value > lastPage) { associatedRulePage.value = lastPage; return }
     if (canWrite.value && result.items.length) {
       const records = await lookupRuleOptions(result.items, { signal: request.signal })
       if (!request.isCurrent()) return
@@ -501,7 +509,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
 </script>
 
 <template>
-  <div class="page-pad view-enter">
+  <div class="page-pad view-enter cases-page">
     <ActionFeedback :error="exportMutation.error.value" />
     <ActionFeedback v-if="!drawerVisible && !createDialogVisible" :error="actionError" />
     <el-button v-if="returnTarget" link @click="router.push(returnTarget)">{{ t('cases.returnToOrigin') }}</el-button>
@@ -512,7 +520,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
       </template>
     </PageHeader>
 
-    <div class="page-metrics">
+    <div class="page-metrics case-metrics">
       <MetricCard :label="t('cases.totalCases')" tone="info">{{ stats.total ?? '—' }}</MetricCard>
       <MetricCard :label="t('cases.activeCases')" tone="warning">{{ stats.open ?? '—' }}</MetricCard>
       <MetricCard :label="t('cases.resolvedCases')" tone="success">{{ stats.resolved ?? '—' }}</MetricCard>
@@ -534,15 +542,15 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
         </FilterToolbar>
       </template>
       <el-table :data="cases" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openCaseRow">
-        <el-table-column prop="id" column-key="id" :label="t('cases.caseId')" :width="columnWidth('id', 180)" show-overflow-tooltip />
-        <el-table-column prop="title" column-key="title" :label="t('cases.caseTitle')" :width="columnWidth('title')" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="title" column-key="title" :label="t('cases.caseTitle')" :width="columnWidth('title')" min-width="220"><template #default="{ row }"><RowActivate class="case-title-link" :aria-label="row.title" :title="row.title" @activate="openCaseRow(row)">{{ row.title }}</RowActivate></template></el-table-column>
+        <el-table-column prop="id" column-key="id" :label="t('cases.caseNo')" :width="columnWidth('id', 150)" show-overflow-tooltip><template #default="{ row }"><span class="mono" :title="row.id">{{ row.caseNo || row.id }}</span></template></el-table-column>
         <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity', 130)" show-overflow-tooltip />
         <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 90)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
         <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 120)"><template #default="{ row }"><el-tag :type="row.status === 'OPEN' ? 'danger' : row.status === 'RESOLVED' || row.status === 'CLOSED' ? 'success' : 'warning'" size="small">{{ tOr(t, 'statuses.' + row.status, row.status) }}</el-tag></template></el-table-column>
-        <el-table-column prop="assignee" column-key="assignee" :label="t('cases.assignee')" min-width="120"><template #default="{ row }">{{ row.assignee || t('cases.unassigned') }}</template></el-table-column>
-        <el-table-column column-key="age" :label="t('cases.age')" width="100"><template #default="{ row }"><span :title="row.createdAt ? d(row.createdAt) : ''">{{ age(row.createdAt) }}</span></template></el-table-column>
-        <el-table-column prop="alarmCount" column-key="alarmCount" :label="t('cases.associatedAlarms')" :width="columnWidth('alarmCount', 90)"><template #default="{ row }">{{ row.alarmCount ?? row.alarmIds.length }}</template></el-table-column>
-        <el-table-column :label="t('common.actions')" width="180" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" :disabled="actionBusy" @click.stop="openCaseRow(row)">{{ t('cases.detailsTimeline') }}</el-button><el-button v-if="canWrite && !row.assignee && currentUser" link :disabled="actionBusy" @click.stop="claim(row)">{{ t('cases.claim') }}</el-button></template></el-table-column>
+        <el-table-column prop="assignee" column-key="assignee" :label="t('cases.assignee')" width="120" show-overflow-tooltip><template #default="{ row }">{{ row.assignee || t('cases.unassigned') }}</template></el-table-column>
+        <el-table-column column-key="age" :label="t('cases.age')" width="100"><template #default="{ row }"><span class="case-age" :title="row.createdAt ? d(row.createdAt) : ''">{{ age(row.createdAt) }}</span></template></el-table-column>
+        <el-table-column prop="alarmCount" column-key="alarmCount" :label="t('cases.associatedAlarms')" :width="columnWidth('alarmCount', 90)"><template #default="{ row }"><span class="case-evidence-count">{{ row.alarmCount ?? row.alarmIds.length }}</span></template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="150" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" :disabled="actionBusy" @click.stop="openCaseRow(row)">{{ t('cases.detailsTimeline') }}</el-button><el-button v-if="canWrite && !row.assignee && currentUser" link :disabled="actionBusy" @click.stop="claim(row)">{{ t('cases.claim') }}</el-button></template></el-table-column>
       </el-table>
     </DataTableCard>
 
@@ -571,7 +579,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
       </template>
     </el-dialog>
 
-    <el-drawer :model-value="drawerVisible" :before-close="closeDetail" :title="`${t('cases.title')} · ${detail?.title ?? selectedId}`" size="min(840px, 96vw)" @closed="restoreDrawerFocus">
+    <el-drawer class="case-detail-drawer" :model-value="drawerVisible" :before-close="closeDetail" :title="`${t('cases.title')} · ${detail?.title ?? selectedId}`" size="min(840px, 96vw)" @closed="restoreDrawerFocus">
       <p v-if="detailLoading" role="status">{{ t('common.loading') }}</p>
       <ActionFeedback :error="detailError" />
       <el-button v-if="detailError" @click="loadDetail">{{ t('common.retry') }}</el-button>
@@ -585,7 +593,7 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
           <el-button v-if="canWrite" :loading="exportMutation.busy.value" @click="exportMutation.run(() => caseApi.exportSummary(detail!.id))">{{ t('cases.summary') }}</el-button>
         </div>
         <p class="dialog-hint">{{ t('cases.summaryHint') }}</p>
-        <el-descriptions :column="2" size="small" border>
+        <el-descriptions class="case-summary" :column="2" size="small" border>
           <el-descriptions-item :label="t('cases.caseId')">{{ detail.id }}</el-descriptions-item>
           <el-descriptions-item v-if="detail.caseNo" :label="t('cases.caseNo')">{{ detail.caseNo }}</el-descriptions-item>
           <el-descriptions-item :label="t('common.entity')">{{ detail.entity }}</el-descriptions-item>
@@ -619,13 +627,15 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
               </FormField>
             </FormGrid>
           </FormSection>
-          <el-divider content-position="left">{{ t('cases.note') }}</el-divider>
+          <section class="case-note-composer" :aria-label="t('cases.note')">
+          <h3>{{ t('cases.note') }}</h3>
           <p class="dialog-hint">{{ t('cases.noteHint') }}</p>
           <el-input v-model="noteContent" type="textarea" :rows="3" :maxlength="8000" :disabled="actionBusy" :aria-label="t('cases.note')" />
           <FormField :label="t('cases.evidenceLinks')">
             <el-input v-model="noteEvidence" type="textarea" :rows="2" :maxlength="6000" :disabled="actionBusy" :aria-label="t('cases.evidenceLinks')" />
           </FormField>
           <el-button :loading="actionBusy" @click="addNote">{{ t('cases.addNote') }}</el-button>
+          </section>
         </template>
         <el-divider content-position="left">{{ t('cases.timeline') }}</el-divider>
         <section class="case-timeline" :aria-label="t('cases.timeline')" :aria-busy="timelineLoading">
@@ -700,10 +710,32 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
 </template>
 
 <style scoped>
-.case-work-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.case-alarm-list { display: grid; gap: 8px; }
-.case-alarm-card { padding: 8px; border: 1px solid var(--el-border-color); border-radius: 6px; overflow-wrap: anywhere; }
+.case-metrics { gap: 14px; }
+.case-metrics :deep(.metric-card) { min-height: 100px; padding: 16px 20px; }
+.case-metrics :deep(.metric-card-value) { font-size: 28px; font-variant-numeric: tabular-nums; }
+.cases-page :deep(.el-table .mono) { color: var(--ns-text-3); font-size: 12px; }
+.case-title-link { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ns-text); font-size: 13px; font-weight: 600; }
+.case-title-link:hover { color: var(--ns-accent); }
+.case-age { color: var(--ns-text-2); font-variant-numeric: tabular-nums; }
+.case-evidence-count { display: inline-flex; align-items: center; justify-content: center; min-width: 30px; min-height: 26px; padding: 0 6px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); color: var(--ns-text-2); background: var(--ns-surface-muted); font-variant-numeric: tabular-nums; }
+.case-work-actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-lg); background: var(--ns-surface-muted); }
+.case-work-actions :deep(.el-button + .el-button) { margin-left: 0; }
+.case-summary { margin-bottom: 20px; }
+.case-summary :deep(.el-descriptions__table) { table-layout: fixed; }
+.case-summary :deep(.el-descriptions__content) { overflow-wrap: anywhere; }
+.case-note-composer { display: grid; gap: 12px; margin: 20px 0 24px; padding: 16px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-lg); background: var(--ns-surface-muted); }
+.case-note-composer h3 { margin: 0; color: var(--ns-text); font-size: 14px; font-weight: 600; }
+.case-note-composer .dialog-hint { margin: -4px 0 0; }
+.case-note-composer > :deep(.el-button) { justify-self: end; }
+.case-alarm-list { display: grid; gap: 10px; }
+.case-alarm-card { padding: 12px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-lg); background: var(--ns-surface); overflow-wrap: anywhere; }
+.case-alarm-card:hover { border-color: var(--ns-border-strong); }
 .case-event-message { white-space: pre-wrap; overflow-wrap: anywhere; }
+.case-timeline :deep(.el-timeline) { padding-left: 8px; }
+.case-timeline :deep(.el-timeline-item__wrapper) { padding-left: 24px; }
+.case-timeline :deep(.el-timeline-item__content) { padding: 12px 14px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-lg); background: var(--ns-surface); }
+.case-timeline :deep(.el-timeline-item__timestamp) { margin-bottom: 10px; color: var(--ns-text-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+.case-timeline :deep(.el-timeline-item__node) { background: var(--ns-accent); }
 .case-timeline a { overflow-wrap: anywhere; }
 .case-object-list { overflow-wrap: anywhere; }
 
@@ -712,5 +744,10 @@ watch([() => route.query.page, () => route.query.q, () => route.query.status, ()
   flex-wrap: wrap;
   justify-content: flex-start;
   row-gap: 8px;
+}
+@media (max-width: 720px) {
+  .case-metrics { gap: 10px; }
+  .case-metrics :deep(.metric-card) { min-height: 90px; padding: 14px; }
+  .case-note-composer { padding: 12px; }
 }
 </style>

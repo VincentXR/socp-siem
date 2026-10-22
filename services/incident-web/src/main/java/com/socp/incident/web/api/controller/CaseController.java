@@ -74,6 +74,15 @@ public class CaseController {
         return ApiResult.ok(service.fromAlarm(alarm.asMap()));
     }
 
+    /** Analyst action: resolve the tenant-owned alarm by ID instead of trusting browser-supplied facts. */
+    @RequireRole({"admin", "analyst"})
+    @RequirePermission("case:write")
+    @AuditOperation(action = "CREATE_INCIDENT", target = "case")
+    @PostMapping("/incidents/from-alarm/{alarmId}")
+    public ApiResult<Map<String, Object>> fromExistingAlarm(@PathVariable String alarmId) {
+        return ApiResult.ok(service.fromExistingAlarm(alarmId));
+    }
+
     @RequireRole({"admin", "analyst"})
     @RequirePermission("case:write")
     @AuditOperation(action = "CREATE_INCIDENT", target = "case")

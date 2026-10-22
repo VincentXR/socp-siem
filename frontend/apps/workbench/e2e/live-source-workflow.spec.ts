@@ -36,7 +36,9 @@ async function login(page: Page): Promise<void> {
   await page.getByLabel('Password').fill(
     process.env.SOCP_E2E_PASSWORD ?? process.env.SOAR_VERIFY_PASSWORD ?? 'admin123',
   )
-  await page.getByRole('button', { name: 'Sign In to Console' }).click()
+  // Scope to the credential form, not marketing copy or the separate SSO action.
+  // The mocked login regression exercises this same form-scoped locator.
+  await page.locator('form').getByRole('button').click()
   await expect(page.locator('.socp-shell')).toBeVisible()
 }
 

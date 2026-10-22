@@ -1,4 +1,5 @@
-import { mount, flushPromises } from '@vue/test-utils'
+import { DOMWrapper, mount, flushPromises } from '@vue/test-utils'
+import { ElDropdown } from 'element-plus/es/components/dropdown/index.mjs'
 import { h, ref } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -88,7 +89,9 @@ describe('asset investigation and reviewed writes', () => {
     expect(mocks.get).not.toHaveBeenCalled()
     expect(mocks.related).not.toHaveBeenCalled()
     expect(mocks.endpointList).not.toHaveBeenCalled()
-    await click('详情')
+    const name = wrapper.find('.row-activate')
+    expect(name.attributes('aria-label')).toBe('查看资产：Asset listed')
+    await name.trigger('keydown', { key: 'Enter' }); await flushPromises()
     expect(mocks.get).toHaveBeenCalledWith('listed', expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(mocks.related).toHaveBeenCalledWith('203.0.113.7', 'Asset listed', 1, 20, expect.anything())
     wrapper.find('.el-drawer').findComponent(PagerBar).vm.$emit('update:currentPage', 2)
@@ -178,7 +181,10 @@ describe('asset investigation and reviewed writes', () => {
     const confirmation = deferred<string>()
     mocks.confirm.mockReturnValueOnce(confirmation.promise)
     const router = await open('/assets')
-    await click('删除')
+    await wrapper.findComponent(ElDropdown).find('button').trigger('click'); await flushPromises()
+    const menuItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === '删除')
+    expect(menuItem).toBeTruthy()
+    await new DOMWrapper(menuItem!).trigger('click'); await flushPromises()
     await router.push('/assets?assetId=other'); await flushPromises()
     mocks.list.mockRejectedValueOnce(new Error('Refresh unavailable'))
     confirmation.resolve('confirm'); await flushPromises()

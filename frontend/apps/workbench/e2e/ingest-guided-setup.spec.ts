@@ -4,6 +4,8 @@ import { expectMobileNavigationClosed, isWorkbenchBackendUrl } from './helpers'
 test('guided setup keeps preview and authoritative first-event verification separate', async ({ page }, testInfo) => {
   const unexpected: string[] = [], errors: string[] = []
   let degraded = true, previewWrites = 0, searches = 0
+  const receivedAt = new Date().toISOString()
+  const toml = '[sources.source_a]\ntype = "file"\ninclude = ["/var/log/app.log"]\n'
   page.on('pageerror', error => errors.push(error.message))
   await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
   const source = { id: 'source-a', name: 'Real application source', type: 'FILE', format: 'JSON', path: '/var/log/app.log', enabled: true, parseRuleIds: [] }
@@ -15,6 +17,11 @@ test('guided setup keeps preview and authoritative first-event verification sepa
     if (path === '/api/v1/system/health') {
       await route.fulfill({ json: { code: 0, message: 'OK', data: { status: 'up', services: {}, checkedAt: '2026-10-02T00:00:00Z' } } }); return
     }
+    if (path === '/search-config/api/v1/sources/source-a/vector-config') {
+      expect(route.request().method()).toBe('GET')
+      expect(route.request().headers()['accept']).toContain('text/plain')
+      await route.fulfill({ contentType: 'text/plain;charset=UTF-8', body: toml }); return
+    }
     let data: unknown
     if (path === '/search-config/api/v1/sources/source-a/setup') data = { source, collectorTag: 'search-real-application-source', nativeVector: true, appliedState: 'UNKNOWN', configurationVersion: 'saved-fingerprint', output: { id: 'platform-search-ingest', name: 'Platform ingest', type: 'SEARCH', uri: 'https://ingest.example/ingest', enabled: true }, pipeline: [], problems: [] }
     else if (path === '/search-config/api/v1/sources/source-a/preview') {
@@ -25,7 +32,9 @@ test('guided setup keeps preview and authoritative first-event verification sepa
     else if (path === '/search-config/api/v1/search') {
       searches++
       expect(url.searchParams.get('q')).toContain('source_id="source-a"')
-      data = { source: degraded ? 'local-cache' : 'opensearch', degraded, events: [{ eventId: 'indexed-event-a', timestamp: new Date().toISOString(), msg: 'actual event', fields: { source_id: source.id } }] }
+      expect(url.searchParams.get('limit')).toBe('20')
+      const historical = !url.searchParams.get('q')?.includes('timestamp>=')
+      data = { source: degraded ? 'local-cache' : 'opensearch', degraded, events: historical ? [{ eventId: 'indexed-event-a', timestamp: '2020-01-01T00:00:00Z', msg: 'actual historical event', fields: { source_id: source.id, ingested_at: receivedAt } }] : [] }
     }
     else if (path === '/search-config/api/v1/sources') data = { items: [source], total: 1, page: 1, size: 20, totalPages: 1 }
     else if (path === '/search-config/api/v1/parse-rules' || path === '/search-config/api/v1/ingest/parse-failures') data = { items: [], total: 0, page: 1, size: 50, totalPages: 0 }
@@ -43,12 +52,21 @@ test('guided setup keeps preview and authoritative first-event verification sepa
   await expect(drawer).toContainText('This does not prove admission or collection')
   expect(previewWrites).toBe(1)
   expect(searches).toBe(0)
+  await drawer.getByRole('button', { name: 'Render source configuration', exact: true }).click()
+  await expect(drawer.locator('pre').filter({ hasText: '[sources.source_a]' })).toHaveText(toml)
+  await expect(drawer.getByRole('button', { name: 'Copy configuration', exact: true })).toBeVisible()
+  await expect(drawer).toContainText('Collector applied state: unknown')
   await drawer.getByRole('button', { name: 'Check indexed events' }).click()
   await expect(drawer).toContainText('verification remains inconclusive')
   degraded = false
   await drawer.getByRole('button', { name: 'Check indexed events' }).click()
+  await expect(drawer).toContainText('No indexed event from this source has an event time within the last 24 hours')
+  await drawer.getByLabel('Event time range').selectOption('all')
+  await drawer.getByRole('button', { name: 'Check indexed events' }).click()
   await expect(drawer).toContainText('A real indexed event was observed for this source')
   await expect(drawer).toContainText('indexed-event-a')
+  await expect(drawer).toContainText('2020-01-01T00:00:00Z')
+  await expect(drawer).toContainText('does not prove that the latest configuration was applied')
   await page.setViewportSize({ width: 390, height: 844 })
   await expectMobileNavigationClosed(page)
   await expect.poll(() => drawer.evaluate(element => {

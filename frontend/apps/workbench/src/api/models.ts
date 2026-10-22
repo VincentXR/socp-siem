@@ -184,7 +184,7 @@ export type SearchSource = 'opensearch' | 'local-cache' | 'unspecified'
 export interface SearchResult {
   total: number
   events: SearchEvent[]
-  stat: { type: string; rows: Array<{ key: string; count: number }> } | null
+  stat: { type: string; rows: Array<{ key: string; count: number }>; approximate?: boolean; sumOtherDocCount?: number } | null
   timeline?: Array<{ key: string; count: number }>
   timelineApproximate?: boolean
   source: SearchSource

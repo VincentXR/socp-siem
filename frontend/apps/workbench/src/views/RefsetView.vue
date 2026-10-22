@@ -36,6 +36,7 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRequest } from '../composables/useRequest'
 import PageHeader from '../components/PageHeader.vue'
+import FilterToolbar from '../components/FilterToolbar.vue'
 import FormField from '../components/FormField.vue'
 import FormGrid from '../components/FormGrid.vue'
 import FormSection from '../components/FormSection.vue'
@@ -133,7 +134,7 @@ async function importEntries() {
   if (!id) return
   importError.value = ''
   isolateError(importError, await mutation.run(async () => {
-    const values = [...new Set(importText.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean))]
+    const values = [...new Set(importText.value.split(/[\r\n,，;；]+/).map(value => value.trim()).filter(Boolean))]
     if (!values.length) throw new Error(t('forms.fieldRequired', { field: t('refset.initialEntries') }))
     const failedValues: string[] = []
     for (const value of values) {
@@ -183,13 +184,14 @@ async function removeRefSet(id: string) {
   }))
 }
 async function addEntry(id: string) {
-  if (!canWrite.value) return
-  const value = (entryText.value[id] || '').trim()
+  if (!canWrite.value || actionBusy.value) return
+  const submittedDraft = entryText.value[id] || ''
+  const value = submittedDraft.trim()
   if (!value) return
   entryError.value = ''
   isolateError(entryError, await mutation.run(async () => {
   await addRefEntry(id, value)
-  entryText.value[id] = ''
+  if (entryText.value[id] === submittedDraft) entryText.value[id] = ''
   await loadRefSets()
   }))
 }
@@ -221,34 +223,33 @@ onUnmounted(() => { disposed = true; listRequest.cancel() })
 </script>
 
 <template>
-  <div class="page-pad view-enter">
+  <div class="page-pad view-enter refset-view">
     <ActionFeedback :error="loadError" />
     <ActionFeedback :error="actionError" />
     <PageHeader :eyebrow="t('experience.configuration')" :title="t('experience.enrichmentSets')" :description="t('refset.ingestionOnly')">
-      <template #actions><el-button v-if="canWrite" type="primary" size="small" @click="openCreateSet">{{ t('refset.createSet') }}</el-button></template>
+      <template #actions><el-button size="small" :loading="loading" @click="loadRefSets">{{ t('common.refresh') }}</el-button><el-button v-if="canWrite" type="primary" size="small" @click="openCreateSet">{{ t('refset.createSet') }}</el-button></template>
     </PageHeader>
-    <el-button link type="primary" @click="router.push({ name: 'ueba', query: { tab: 'watchlists' } })">{{ t('experience.detectionWatchlists') }}</el-button>
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('refset.readOnly') }}</div>
 
-    <el-input v-model="keyword" :placeholder="t('forms.search')" clearable />
+    <FilterToolbar :count="listRequest.data.value ? filteredSets.length : undefined"><el-input v-model="keyword" :placeholder="t('refset.searchSets')" :aria-label="t('refset.searchSets')" clearable style="width:min(320px,100%)" /><template #actions><el-button link @click="router.push({ name: 'ueba', query: { tab: 'watchlists' } })">{{ t('experience.detectionWatchlists') }} <span aria-hidden="true">↗</span></el-button></template></FilterToolbar>
     <el-table v-if="loading || loadError || filteredSets.length" v-loading="loading" :data="filteredSets" :empty-text="t(loadError ? 'experience.unknownData' : 'experience.noMatches')" border allow-drag-last-column style="margin-top:16px" @header-dragend="onHeaderDragEnd">
-      <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="200" />
+      <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="200" show-overflow-tooltip />
       <el-table-column prop="description" column-key="description" :label="t('common.description')" :width="columnWidth('description')" min-width="200" show-overflow-tooltip />
-      <el-table-column column-key="entries" :label="t('forms.entries')" :width="columnWidth('entries', 120)"><template #default="{ row }">{{ row.entries.length }}</template></el-table-column>
-      <el-table-column :label="t('common.actions')" width="120" :resizable="false"><template #default="{ row }"><el-button link @click="openSet(row.id)">{{ t('forms.entries') }}</el-button></template></el-table-column>
+      <el-table-column column-key="entries" :label="t('forms.entries')" :width="columnWidth('entries', 120)"><template #default="{ row }"><span class="entry-count">{{ row.entries.length }}</span></template></el-table-column>
+      <el-table-column :label="t('common.actions')" width="140" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" @click="openSet(row.id)">{{ t('refset.viewEntries') }}</el-button></template></el-table-column>
     </el-table>
     <el-empty v-if="!loading && !loadError && !actionError && !filteredSets.length" :description="keyword ? t('experience.noMatches') : t('refset.empty')"><el-button v-if="keyword" @click="keyword = ''">{{ t('experience.clearFilters') }}</el-button><el-button v-else-if="canWrite" type="primary" @click="openCreateSet">{{ t('refset.createSet') }}</el-button></el-empty>
     <el-drawer :model-value="Boolean(selectedId)" :before-close="beforeEntriesClose" :title="selected?.name || t('forms.entries')" size="min(760px, 96vw)" @update:model-value="value => { if (!value) selectedId = '' }">
       <template v-if="selected">
-        <ActionFeedback :error="entryError" /><el-input v-model="entrySearch" :placeholder="t('forms.search')" clearable @input="entryPage = 1" />
+        <ActionFeedback :error="entryError" /><el-input v-model="entrySearch" :placeholder="t('refset.searchItems')" :aria-label="t('refset.searchItems')" clearable @input="entryPage = 1" />
         <div v-if="canWrite" class="section-toolbar"><el-input v-model="entryText[selected.id]" :placeholder="t('refset.addItem')" @keyup.enter="addEntry(selected.id)" /><el-button :loading="actionBusy" @click="addEntry(selected.id)">{{ t('common.add') }}</el-button><el-button @click="openImport">{{ t('forms.import') }}</el-button></div>
         <div class="refset-selection-toolbar"><span>{{ t('refset.visibleCount', { count: filteredEntries.length }) }} · {{ t('refset.selectedCount', { count: entrySelection.length }) }}</span><el-button v-if="canWrite" link size="small" :disabled="!visibleEntryValues.length" @click="selectVisible">{{ t('refset.selectVisible') }}</el-button><el-button v-if="canWrite" link size="small" :disabled="!visibleEntryValues.length" @click="clearVisible">{{ t('refset.clearVisible') }}</el-button><el-button v-if="canWrite && entrySelection.length" link type="danger" size="small" :disabled="actionBusy" @click="removeSelected">{{ t('refset.deleteSelected', { count: entrySelection.length }) }}</el-button></div>
         <DataTableCard v-model:current-page="entryPage" v-model:page-size="entrySize" :total="filteredEntries.length" :loading="loading"><el-table :data="pagedEntries"><el-table-column v-if="canWrite" width="48"><template #default="{ row }"><el-checkbox :model-value="entrySelection.includes(row.value)" @update:model-value="value => toggleEntrySelection(row.value, Boolean(value))" /></template></el-table-column><el-table-column prop="value" :label="t('refset.entryValue')" /><el-table-column v-if="canWrite" width="100"><template #default="{ row }"><el-button link type="danger" :disabled="actionBusy" @click="removeEntry(row.value)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table></DataTableCard>
         <p class="form-hint">{{ t('refset.ingestionOnly') }}</p>
-        <el-button v-if="canWrite" type="danger" plain :disabled="actionBusy" @click="removeRefSet(selected.id)">{{ t('common.delete') }}</el-button>
       </template>
+      <template v-if="selected && canWrite" #footer><el-button type="danger" plain :disabled="actionBusy" @click="removeRefSet(selected.id)">{{ t('refset.deleteSet') }}</el-button></template>
     </el-drawer>
-    <el-dialog v-model="importing" :before-close="importGuard.beforeClose" :title="t('forms.import')" width="640px" append-to-body :close-on-click-modal="false"><ActionFeedback :error="importError" /><el-input v-model="importText" type="textarea" :disabled="actionBusy" :rows="10" :placeholder="t('refset.initialEntriesPlaceholder')" /><template #footer><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="importEntries">{{ t('forms.import') }}</el-button></template></el-dialog>
+    <el-dialog v-model="importing" :before-close="importGuard.beforeClose" :title="t('forms.import')" width="640px" append-to-body :close-on-click-modal="false"><ActionFeedback :error="importError" /><p class="form-hint">{{ t('refset.importHint') }}</p><el-input v-model="importText" type="textarea" :disabled="actionBusy" :rows="10" :placeholder="t('refset.initialEntriesPlaceholder')" /><template #footer><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="importEntries">{{ t('forms.import') }}</el-button></template></el-dialog>
 
     <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="t('refset.createSet')" width="520px"><ActionFeedback :error="createError" />
       <el-form :disabled="actionBusy || !canWrite" label-position="top">
@@ -268,3 +269,9 @@ onUnmounted(() => { disposed = true; listRequest.cancel() })
     </el-dialog>
   </div>
 </template>
+
+<style scoped>
+.refset-view > :deep(.el-table) { border-radius:10px; overflow:hidden; }
+.entry-count { display:inline-flex; justify-content:center; min-width:30px; padding:2px 8px; border:1px solid var(--ns-border); border-radius:6px; background:var(--ns-bg-subtle); color:var(--ns-text-2); font-size:12px; font-variant-numeric:tabular-nums; }
+.refset-selection-toolbar { flex-wrap:wrap; padding:10px 12px; margin:12px 0; border:1px solid var(--ns-border); border-radius:8px; background:var(--ns-bg-subtle); }
+</style>

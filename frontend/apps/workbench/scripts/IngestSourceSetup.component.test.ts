@@ -88,6 +88,33 @@ describe('source-first guided ingestion', () => {
     expect(router.currentRoute.value.query.q).toBe('eventId="real-event"')
     wrapper.unmount()
   })
+  it('can verify newly received historical events without treating receipt time as event time', async () => {
+    const receivedAt = new Date().toISOString()
+    api.splSearch.mockImplementation((query: string) => Promise.resolve({
+      source: 'opensearch', degraded: false,
+      events: query.includes('timestamp>=') ? [] : [{
+        eventId: 'historical-event', timestamp: '2020-01-01T00:00:00Z', msg: 'historical collector event',
+        fields: { source_id: 'source-a', ingested_at: receivedAt },
+      }],
+    }))
+    const { wrapper, router } = await setup()
+    await button(wrapper, '检查已索引事件').trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('事件时间在最近 24 小时内')
+    expect(wrapper.text()).not.toContain('historical collector event')
+    await wrapper.get('#source-event-range').setValue('all')
+    await button(wrapper, '检索源事件').trigger('click'); await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ q: 'source_id="source-a"', range: 'all' })
+    await button(wrapper, '检查已索引事件').trigger('click'); await flushPromises()
+    expect(api.splSearch).toHaveBeenLastCalledWith('source_id="source-a"', expect.objectContaining({ limit: 20 }))
+    expect(wrapper.text()).toContain('historical collector event')
+    expect(wrapper.text()).toContain('2020-01-01T00:00:00Z')
+    expect(wrapper.text()).toContain('不代表最新配置已应用')
+    await button(wrapper, '打开事件').trigger('click'); await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ q: 'eventId="historical-event"', range: 'all' })
+    await wrapper.get('#source-event-range').setValue('24h')
+    expect(wrapper.text()).not.toContain('historical collector event')
+    wrapper.unmount()
+  })
   it('clears prior event evidence when a new check fails', async () => {
     api.splSearch.mockResolvedValueOnce({ source: 'opensearch', degraded: false, events: [{ eventId: 'real', fields: { source_id: 'source-a' }, msg: 'old evidence' }] }).mockRejectedValueOnce(new Error('index unavailable'))
     const { wrapper } = await setup()

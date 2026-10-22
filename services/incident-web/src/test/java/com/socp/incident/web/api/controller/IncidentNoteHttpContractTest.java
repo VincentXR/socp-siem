@@ -221,6 +221,98 @@ class IncidentNoteHttpContractTest {
         assertThat(store.timeline(caseId, 0, 20).getContent().stream().filter(row -> "CLOSURE".equals(row.getType())).count()).isOne();
     }
 
+    @Test
+    void analystCanAdmitAnAuthoritativeAlarmWithoutServiceIdentity() throws Exception {
+        jdbc.execute("create table if not exists t_incident_merge_lock (tenant_id varchar(64), shard_id integer, created_at timestamp, primary key(tenant_id,shard_id))");
+        jdbc.execute("create table if not exists t_incident_alarm_exclusion (tenant_id varchar(64), alarm_id varchar(255), created_at timestamp, primary key(tenant_id,alarm_id))");
+        String alarmId = "manual-" + UUID.randomUUID();
+        when(alerts.getAlarm(alarmId)).thenReturn(new ServiceCall(
+                com.socp.platform.client.service.SocpService.ALERT, "http://alert", true, 200,
+                json.writeValueAsString(Map.of("code", 0, "data", Map.of("id", alarmId,
+                        "tenantId", tenant, "ruleId", "verified-rule", "severity", "CRITICAL",
+                        "entity", "verified-host", "message", "verified evidence"))), null, 1, false, 1));
+
+        var first = admit(alarmId, "analyst");
+        assertThat(first.statusCode()).as("HTTP response: %s", first.body()).isEqualTo(200);
+        var receipt = json.readTree(first.body()).path("data");
+        String caseId = receipt.path("caseId").asText();
+        assertThat(caseId).isNotBlank();
+        assertThat(receipt.path("created").asBoolean()).isTrue();
+        assertThat(store.get(caseId).entity()).isEqualTo("verified-host");
+        assertThat(store.get(caseId).severity()).isEqualTo("CRITICAL");
+        assertThat(store.alarms(caseId, 0, 10).getContent()).containsExactly(alarmId);
+        assertThat(legacyCases.findByAlarmId(alarmId).id()).isEqualTo(caseId);
+        var replay = admit(alarmId, "admin");
+        assertThat(replay.statusCode()).isEqualTo(200);
+        assertThat(json.readTree(replay.body()).path("data").path("caseId").asText()).isEqualTo(caseId);
+        assertThat(json.readTree(replay.body()).path("data").path("duplicate").asBoolean()).isTrue();
+        assertThat(store.timeline(caseId, 0, 10).getTotalElements()).isOne();
+    }
+
+    @Test
+    void manualAdmissionRejectsUnprivilegedUsersBeforeReadingAlarmFacts() throws Exception {
+        assertThat(admit("protected-alarm", "viewer").statusCode()).isEqualTo(403);
+        assertThat(admit("protected-alarm", null).statusCode()).isEqualTo(401);
+        org.mockito.Mockito.verifyNoInteractions(alerts);
+        assertThat(store.count()).isZero();
+    }
+
+    @Test
+    void manualAdmissionFailsClosedOnMissingForeignOrUnavailableAlarmFacts() throws Exception {
+        when(alerts.getAlarm("alarm-1")).thenReturn(alarmResponse(200,
+                "{\"code\":0,\"data\":{\"id\":\"alarm-1\",\"tenantId\":\"other-tenant\"}}"));
+        assertThat(admit("alarm-1", "analyst").statusCode()).isEqualTo(404);
+        when(alerts.getAlarm("alarm-1")).thenReturn(alarmResponse(200,
+                json.writeValueAsString(Map.of("code", 0, "data", Map.of("id", "other-alarm", "tenantId", tenant)))));
+        assertThat(admit("alarm-1", "analyst").statusCode()).isEqualTo(404);
+        when(alerts.getAlarm("alarm-1")).thenReturn(alarmResponse(404, "{\"code\":404}"));
+        assertThat(admit("alarm-1", "analyst").statusCode()).isEqualTo(404);
+        when(alerts.getAlarm("alarm-1")).thenReturn(alarmResponse(503, "unavailable"));
+        assertThat(admit("alarm-1", "analyst").statusCode()).isEqualTo(503);
+        when(alerts.getAlarm("alarm-1")).thenReturn(alarmResponse(200, "not-json"));
+        assertThat(admit("alarm-1", "analyst").statusCode()).isEqualTo(503);
+        assertThat(store.count()).isZero();
+    }
+
+    @Test
+    void manualAdmissionDoesNotReportSuccessOrUndoAnExplicitDetach() throws Exception {
+        jdbc.execute("create table if not exists t_incident_merge_lock (tenant_id varchar(64), shard_id integer, created_at timestamp, primary key(tenant_id,shard_id))");
+        jdbc.execute("create table if not exists t_incident_alarm_exclusion (tenant_id varchar(64), alarm_id varchar(255), created_at timestamp, primary key(tenant_id,alarm_id))");
+        jdbc.update("insert into t_incident_alarm_exclusion (tenant_id, alarm_id, created_at) values (?, ?, current_timestamp)",
+                tenant, "detached-alarm");
+        when(alerts.getAlarm("detached-alarm")).thenReturn(alarmResponse(200,
+                json.writeValueAsString(Map.of("code", 0, "data", Map.of("id", "detached-alarm", "tenantId", tenant)))));
+
+        var response = admit("detached-alarm", "analyst");
+
+        assertThat(response.statusCode()).isEqualTo(409);
+        assertThat(json.readTree(response.body()).path("message").asText()).contains("案件证据页");
+        assertThat(store.count()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from t_incident_alarm_exclusion where tenant_id = ? and alarm_id = ?",
+                Long.class, tenant, "detached-alarm")).isOne();
+    }
+
+    private ServiceCall alarmResponse(int status, String body) {
+        return new ServiceCall(com.socp.platform.client.service.SocpService.ALERT, "http://alert",
+                status == 200, status, body, null, 1, false, 1);
+    }
+
+    private java.net.http.HttpResponse<String> admit(String alarmId, String role) throws Exception {
+        SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), new JWTClaimsSet.Builder()
+                .subject("analyst-9").claim("tenant", tenant).claim("role", role).audience("socp-api")
+                .expirationTime(Date.from(Instant.now().plusSeconds(300))).build());
+        jwt.sign(new MACSigner(JWT_SECRET.getBytes(StandardCharsets.UTF_8)));
+        var request = java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://localhost:" + port
+                        + "/incident-web/api/v1/incidents/from-alarm/" + alarmId))
+                .header("X-Tenant-Id", "untrusted-header-tenant")
+                .timeout(java.time.Duration.ofSeconds(10))
+                .POST(java.net.http.HttpRequest.BodyPublishers.noBody());
+        if (role != null) request.header("Authorization", "Bearer " + jwt.serialize());
+        try (var http = java.net.http.HttpClient.newHttpClient()) {
+            return http.send(request.build(), java.net.http.HttpResponse.BodyHandlers.ofString());
+        }
+    }
+
     private JsonNode accepted(ServiceCall response) throws Exception {
         assertThat(response.status()).as("HTTP response: %s", response.body()).isEqualTo(200);
         JsonNode envelope = json.readTree(response.body());

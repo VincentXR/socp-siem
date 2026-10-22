@@ -16,6 +16,7 @@ async function openEditor(path: string) {
   const router = createRouter({ history: createMemoryHistory(), routes: [
     { path: '/parsers/new', name: 'parser-new', component: ParseRuleEditorView },
     { path: '/parsers/:parserId/edit', name: 'parser-edit', component: ParseRuleEditorView },
+    { path: '/ingest', name: 'ingest', component: { template: '<div>Ingest</div>' } },
   ] })
   await router.push(path)
   await router.isReady()
@@ -25,6 +26,21 @@ async function openEditor(path: string) {
 }
 
 describe('parse editor route ownership', () => {
+  it.each([
+    { path: '/parsers/new?sourceId=source-a', label: '返回接入向导', query: { tab: 'sources', sourceId: 'source-a' } },
+    { path: '/parsers/new', label: '返回解析规则', query: { tab: 'rules' } },
+  ])('returns to the context identified by $label', async ({ path, label, query }) => {
+    const { router, wrapper } = await openEditor(path)
+    try {
+      const back = wrapper.find('.page-header button')
+      expect(back.text()).toBe(label)
+      await back.trigger('click'); await flushPromises()
+      expect(router.currentRoute.value.name).toBe('ingest')
+      expect(router.currentRoute.value.query).toEqual(query)
+      expect(mocks.createParseRule).not.toHaveBeenCalled()
+    } finally { wrapper.unmount() }
+  })
+
   it('keeps the latest remote source search when an older response arrives late', async () => {
     let resolveOld!: (value: { items: { id: string; name: string }[]; total: number; page: number; size: number; totalPages: number }) => void
     mocks.listSourcesPage.mockResolvedValueOnce({ items: [], total: 0, page: 1, size: 50, totalPages: 0 })
@@ -78,7 +94,7 @@ describe('parse editor route ownership', () => {
     expect(wrapper.findAllComponents(ElSelect)[1]!.props('modelValue')).toBe('missing-source')
     expect(wrapper.text()).toContain('missing-source')
     expect(wrapper.text()).toContain('Source detail unavailable')
-    expect(wrapper.find('.editor-footer button').exists()).toBe(true)
+    expect(wrapper.find('.editor-footer .el-button--primary').exists()).toBe(true)
     wrapper.unmount()
   })
 
@@ -90,7 +106,7 @@ describe('parse editor route ownership', () => {
     await router.push('/parsers/b/edit')
     await flushPromises()
     expect(wrapper.find('input').element.value).toBe('Parser b')
-    await wrapper.find('.editor-footer button').trigger('click')
+    await wrapper.find('.editor-footer .el-button--primary').trigger('click')
     await flushPromises()
     expect(mocks.updateParseRule).toHaveBeenCalledWith('b', expect.objectContaining({ name: 'Parser b', pattern: 'b' }))
     wrapper.unmount()
@@ -115,7 +131,7 @@ describe('parse editor route ownership', () => {
     mocks.updateParseRule.mockRejectedValueOnce(new Error('Database unavailable'))
     const { wrapper } = await openEditor('/parsers/a/edit')
     await wrapper.find('input').setValue('Unsaved parser name')
-    await wrapper.find('.editor-footer button').trigger('click')
+    await wrapper.find('.editor-footer .el-button--primary').trigger('click')
     await flushPromises()
     expect(wrapper.find('input').element.value).toBe('Unsaved parser name')
     expect(wrapper.text()).toContain('Database unavailable')
@@ -128,7 +144,7 @@ describe('parse editor route ownership', () => {
     const filtersField = wrapper.findAll('textarea').find(field => field.element.value === '[]')
     expect(filtersField).toBeDefined()
     await filtersField!.setValue('{}')
-    await wrapper.find('.editor-footer button').trigger('click')
+    await wrapper.find('.editor-footer .el-button--primary').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('筛选条件（filters）必须是 JSON 数组。')
     expect(mocks.updateParseRule).not.toHaveBeenCalled()

@@ -76,6 +76,33 @@ class InvestigationAgentServiceTest {
     }
 
     @Test
+    void unfinishedOrFailedInvestigationsCannotProduceAnIncidentSummary() {
+        TenantContext.set("tenant-a");
+        for (String status : List.of("NEW", "RUNNING", "FAILED")) {
+            InvestigationRepository repository = mock(InvestigationRepository.class);
+            IncidentClient incidents = mock(IncidentClient.class);
+            InvestigationEntity entity = new InvestigationEntity();
+            entity.setId("INV-1");
+            entity.setTenantId("tenant-a");
+            entity.setStatus(status);
+            entity.setResultJson("{}");
+            given(repository.findByIdAndTenantId("INV-1", "tenant-a")).willReturn(Optional.of(entity));
+            given(repository.claimAppend(anyString(), anyString(), anyString(), anyString(), any(), any()))
+                    .willReturn(1);
+            InvestigationAgentService service = new InvestigationAgentService(
+                    repository, mock(AlertClient.class), mock(SearchClient.class), incidents,
+                    mock(ThreatClient.class), mock(LlmChatClient.class), mock(AuditSink.class), properties());
+
+            assertThatThrownBy(() -> service.appendToIncident("INV-1", "CASE-1"))
+                    .as("status %s cannot be appended", status)
+                    .isInstanceOf(com.socp.platform.error.exception.ApiException.class)
+                    .extracting("code").isEqualTo(409);
+            verify(repository, never()).claimAppend(anyString(), anyString(), anyString(), anyString(), any(), any());
+            org.mockito.Mockito.verifyNoInteractions(incidents);
+        }
+    }
+
+    @Test
     void appendingSummaryWithAnExplicitIncidentIsIdempotent() {
         TenantContext.set("tenant-a");
         InvestigationRepository repository = mock(InvestigationRepository.class);

@@ -128,7 +128,7 @@ export function useIngestSources(workspace: IngestWorkspace, navigation: SourceN
       path: source.path || '', address: source.address || '', topic: source.topic || '', env: source.env || 'local',
       readFrom: source.readFrom || 'beginning', multiline: source.multiline || '', protocol: source.protocol || 'tcp',
       description: source.description || '', charset: source.charset || 'utf-8', timeField: source.timeField || '',
-      timezone: source.timezone || 'Asia/Shanghai', tags: (source.tags || []).join(','),
+      timezone: source.timezone ?? '', tags: (source.tags || []).join(','),
       frequency: source.frequency ?? 1, ignoreOlderSeconds: source.ignoreOlderSeconds ?? null,
       categoryId: source.categoryId || '', groupId: source.groupId || '',
       sinkTargetId: source.sinkTargetId || '',

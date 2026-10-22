@@ -214,9 +214,15 @@ test('SOAR workbench covers draft lifecycle, run inspection and human controls',
   const state = await installSoarMocks(page, 'admin')
   await page.goto('/soar')
   await expect(page.locator('.soar-view')).toBeVisible()
+  await expect(page.getByText('Existing response', { exact: true }).first()).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('soar-workspace-light.png'), fullPage: true, animations: 'disabled' })
+  await page.getByRole('button', { name: 'Dark', exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await page.screenshot({ path: testInfo.outputPath('soar-workspace-dark.png'), fullPage: true, animations: 'disabled' })
+  await page.getByRole('button', { name: 'Light', exact: true }).click()
 
   await page.getByRole('button', { name: /Create Playbook|新建剧本/ }).click()
-  await page.getByRole('dialog', { name: 'Choose template' }).getByRole('button', { name: 'Blank playbook', exact: true }).click()
+  await page.getByRole('dialog', { name: 'Choose template' }).getByRole('button', { name: 'Create blank playbook', exact: true }).click()
   await expect(page).toHaveURL(/\/soar\/playbooks\/new$/)
   await expect(page.locator('.soar-editor')).toBeVisible()
   const createDialog = page.getByRole('dialog', { name: /Create blank playbook|创建空白剧本/ })
@@ -242,7 +248,7 @@ test('SOAR workbench covers draft lifecycle, run inspection and human controls',
   await expect(publishConfirm).not.toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('soar-editor.png'), fullPage: true })
 
-  await page.getByRole('button', { name: 'Back to list', exact: true }).click()
+  await page.getByRole('button', { name: 'Back to playbooks', exact: true }).click()
   await page.getByRole('tab', { name: 'Runs' }).click()
   await expect(page.locator('.soar-run-summary')).toContainText('run-1')
   await expect(page.locator('.soar-run-summary')).toContainText('Succeeded')
@@ -261,7 +267,7 @@ test('SOAR workbench covers draft lifecycle, run inspection and human controls',
   await expect(page.locator('.soar-editor-message')).toContainText('Loaded the revision 1 run path')
   await expect(page.getByRole('dialog', { name: 'Create blank playbook' })).not.toBeVisible()
 
-  await page.getByRole('button', { name: 'Back to list', exact: true }).click()
+  await page.getByRole('button', { name: 'Back to playbooks', exact: true }).click()
   await page.getByRole('tab', { name: /Approvals/ }).click()
   const approvalTable = page.locator('.soar-approval-table')
   await expect(approvalTable).toContainText('run-1')
@@ -379,7 +385,7 @@ test('SOAR keyboard actions leave inputs, dialogs and other page controls alone'
   // Synthetic cancellation checks isolate app handling from the browser's native menu.
   expect(await definition.evaluate(input => input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true, cancelable: true })))).toBe(true)
   await expect(page.getByRole('menu', { name: 'Node actions menu' })).not.toBeVisible()
-  await page.getByRole('button', { name: 'Back to list', exact: true }).focus()
+  await page.getByRole('button', { name: 'Back to playbooks', exact: true }).focus()
   await page.keyboard.press('Delete')
   await expect(end).toBeVisible()
   await end.dblclick()
@@ -444,7 +450,11 @@ test('SOAR catalog reaches later pages and retains truthful run history through 
     await expect(catalog.locator('.soar-playbook-name').first()).toHaveText(`Catalog playbook ${(index + 1) * 25}`)
   }
   await expect(catalog.locator('.soar-playbook-name')).toHaveCount(12)
-  await expect(catalog).toContainText('2025-01-01T00:00:00Z')
+  const runTime = catalog.locator('time[datetime="2025-01-01T00:00:00Z"]')
+  const localizedTime = await page.evaluate(value => new Intl.DateTimeFormat('en-US', {
+    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(new Date(value)), '2025-01-01T00:00:00Z')
+  await expect(runTime).toHaveText(localizedTime)
   await expect(catalog).toContainText('No retained runs')
   await expect(pager.getByRole('button', { name: 'Next', exact: true })).toBeDisabled()
   await page.screenshot({ path: testInfo.outputPath('soar-later-catalog-page.png'), fullPage: true })
@@ -473,8 +483,8 @@ test('SOAR editor route switches invalidate delayed version loads before any sav
   })
   try {
     await page.goto('/soar/playbooks/pb-existing/edit')
-    await page.getByRole('button', { name: 'Back to list', exact: true }).click()
-    await page.locator('tr').filter({ hasText: 'Second playbook' }).getByRole('button', { name: 'View', exact: true }).click()
+    await page.getByRole('button', { name: 'Back to playbooks', exact: true }).click()
+    await page.locator('tr').filter({ hasText: 'Second playbook' }).getByRole('button', { name: 'Edit playbook', exact: true }).click()
     await expect(page.locator('.vue-flow__node[data-id="start"]')).toContainText('Second identity')
     release()
     await expect(page.locator('.vue-flow__node[data-id="start"]')).toContainText('Second identity')

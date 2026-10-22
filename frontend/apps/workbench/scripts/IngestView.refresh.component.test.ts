@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { nextTick, ref } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ElSelect } from 'element-plus/es/components/select/index.mjs'
 import IngestView from '../src/views/IngestView.vue'
 import PageHeader from '../src/components/PageHeader.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
@@ -41,7 +42,7 @@ type View = { refreshAll: () => Promise<void>; sources: Array<{ id: string }>; l
   openCreateOutput: () => void; doRender: () => Promise<void>
   editingSourceId: string | null; onIngestTab: (tab: string) => void }
 async function setup() {
-  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: IngestView }, { path: '/other', component: { template: '<div>Other page</div>' } }] })
+  const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/', component: IngestView }, { path: '/other', component: { template: '<div>Other page</div>' } }, { path: '/search', name: 'search', component: { template: '<div>Search page</div>' } }] })
   await router.push('/')
   const role = ref('admin')
   const root = mount(RouterView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: role } } } })
@@ -70,6 +71,21 @@ beforeEach(() => {
 })
 
 describe('ingest independent reads', () => {
+  it('opens a replayed historical event without restricting it to the quarantine reception time', async () => {
+    // The persisted list has receivedAt, but eventTimestamp is only returned
+    // by the initial replay response and disappears on the following refresh.
+    api.listIngestParseFailures.mockResolvedValue({ items: [{ id: 'failure-old', receivedAt: '2026-10-22T10:00:00Z',
+      collectorId: 'collector-a', rawPayload: 'timestamp=2020-01-01T00:00:00Z message=old', failureReason: 'old parser',
+      parserVersion: 'v1', replayStatus: 'REPLAYED', replayAttempts: 1, replayedEventId: 'historical-event' }], total: 1, page: 1, size: 50, totalPages: 1 })
+    const { root, router } = await setup(); await flushPromises()
+    await router.push({ query: { tab: 'quarantine' } }); await flushPromises()
+    const eventLink = root.findAll('button').find(button => button.text() === 'historical-event')!
+    expect(eventLink).toBeDefined()
+    await eventLink.trigger('click'); await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ q: 'eventId="historical-event"', range: 'all' })
+    root.unmount()
+  })
+
   it('deduplicates the same upstream failure without reporting an empty successful list', async () => {
     api.listSourcesPage.mockRejectedValueOnce(new Error('upstream unavailable'))
     api.listIngestTasks.mockRejectedValueOnce(new Error('upstream unavailable'))
@@ -260,6 +276,28 @@ describe('ingest independent reads', () => {
       sinkTargetId: 'sink-a', parseRuleIds: ['rule-a'], tags: ['team=blue'], groupId: 'group-a',
     }))
     root.unmount()
+  })
+
+  it.each([null, ''])('preserves the implicit UTC timezone when renaming a source with timezone %s', async timezone => {
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as View
+    try {
+      view.openEditSource({ id: 'utc-source', name: 'Before', type: 'FILE', format: 'JSON',
+        path: '/var/log/utc.log', timeField: 'local_time', timezone, enabled: true } as LogSource)
+      await flushPromises()
+      const timezoneSelect = wrapper.findAllComponents(ElSelect).find(select => select.props('placeholder') === translate('ingest.timezoneDefault'))
+      expect(timezoneSelect).toBeDefined()
+      expect(timezoneSelect!.text()).toContain(translate('ingest.timezoneDefault'))
+      view.newSource.name = 'After'
+      await view.saveSource()
+      expect(api.updateSource).toHaveBeenCalledWith('utc-source', expect.objectContaining({
+        name: 'After', timeField: 'local_time', timezone: null,
+      }))
+      // New sources keep their deliberate UI default; only editing must avoid
+      // replacing the backend's implicit UTC interpretation with Shanghai.
+      view.openCreateSource()
+      expect(view.newSource.timezone).toBe('Asia/Shanghai')
+    } finally { root.unmount() }
   })
 
   it('shows and retains the latest replay outcome before refreshing quarantine', async () => {

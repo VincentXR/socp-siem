@@ -42,7 +42,7 @@ const isEmpty = computed(() => !props.loading && !props.error && props.total ===
       <slot />
     </div>
     <div v-if="isEmpty" class="list-state-empty">
-      <div class="list-empty-mark">—</div>
+      <div class="list-empty-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3h8l4 4v13H4V3h4Z"/><path d="M15 3v5h5M8 12h8M8 16h5"/></svg></div>
       <strong>{{ props.emptyTitle || t('common.empty') }}</strong>
       <span v-if="props.emptyDescription">{{ props.emptyDescription }}</span>
       <slot name="empty-actions" />

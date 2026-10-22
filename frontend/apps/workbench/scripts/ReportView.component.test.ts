@@ -10,7 +10,8 @@ import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import { translate } from '../src/i18n'
 
 const mocks = vi.hoisted(() => ({ dailyReport: vi.fn(), trend7d: vi.fn(), listArchive: vi.fn(), archiveReport: vi.fn(),
-  downloadArchivedReport: vi.fn(), loadEcharts: vi.fn(), init: vi.fn(), success: vi.fn(), error: vi.fn() }))
+  downloadArchivedReport: vi.fn(), loadEcharts: vi.fn(), init: vi.fn(), success: vi.fn(), error: vi.fn(), push: vi.fn() }))
+vi.mock('vue-router', async original => ({ ...await original<typeof import('vue-router')>(), useRouter: () => ({ push: mocks.push }) }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...mocks }))
 vi.mock('../src/lib/echarts', () => ({ loadEcharts: mocks.loadEcharts }))
 vi.mock('element-plus/es/components/message/index.mjs', () => ({ default: { success: mocks.success, error: mocks.error } }))
@@ -36,6 +37,17 @@ beforeEach(() => {
 })
 
 describe('report source and lifecycle ownership', () => {
+  it('opens the report rule across all dispositions within its reported time window', async () => {
+    mocks.dailyReport.mockResolvedValueOnce({ ...summary, date: '2026-09-23', queryWindow: 'today',
+      generatedAt: '2026-09-23T10:00:00Z', byRule: [{ ruleId: 'rule-history', rule: 'Historical rule', count: 42 }] })
+    const wrapper = setup(); await flushPromises()
+    try {
+      wrapper.findAllComponents(ElButton).find(button => button.text() === 'Historical rule')!.vm.$emit('click')
+      expect(mocks.push).toHaveBeenCalledWith({ name: 'alarms', query: { status: 'ALL', rule: 'rule-history',
+        from: '2026-09-23T00:00:00Z', to: '2026-09-23T10:00:00Z' } })
+    } finally { wrapper.unmount() }
+  })
+
   it('does not label unavailable report sources as empty results', async () => {
     mocks.dailyReport.mockRejectedValueOnce(new Error('daily offline'))
     mocks.trend7d.mockRejectedValueOnce(new Error('trend offline'))

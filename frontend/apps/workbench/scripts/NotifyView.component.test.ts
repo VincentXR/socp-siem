@@ -257,6 +257,42 @@ describe('notification configuration and test delivery', () => {
     expect(wrapper.text()).toContain('Saved channel')
   })
 
+  it('keeps the saved channel authoritative while a separate test delivery is pending', async () => {
+    const stale = deferred<{ items: typeof channel[]; total: number }>()
+    const testing = deferred<{ status: string }>()
+    mocks.listChannels.mockReturnValueOnce(stale.promise)
+    mocks.testChannel.mockReturnValueOnce(testing.promise)
+    await open()
+    await click('保存并测试')
+    const view = wrapper.findComponent(NotifyView).vm as unknown as { channels: typeof channel[]; loading: boolean }
+    expect(view.channels).toContainEqual(channel)
+    stale.resolve({ items: [{ ...channel, name: 'Obsolete catalog' }], total: 1 })
+    await flushPromises()
+    expect(view.channels).toContainEqual(channel)
+    expect(view.channels.some(item => item.name === 'Obsolete catalog')).toBe(false)
+    expect(view.loading).toBe(false)
+    testing.resolve({ status: 'sent' })
+    await flushPromises()
+  })
+
+  it.each(['toggle', 'remove'] as const)('retains the acknowledged channel %s when its background reload fails', async operation => {
+    mocks.listChannels.mockResolvedValue({ items: [channel], total: 1 })
+    mocks.toggleChannel.mockResolvedValue({ channel: { ...channel, enabled: true } })
+    mocks.deleteChannel.mockResolvedValue({ removed: true, id: channel.id })
+    await open(true)
+    await click('取消')
+    mocks.listChannels.mockRejectedValueOnce(new Error('catalog temporarily unavailable'))
+    const view = wrapper.findComponent(NotifyView).vm as unknown as {
+      channels: typeof channel[]; channelTotal: number; actionError: string; loadError: string
+      toggle: (id: string) => Promise<void>; removeChannel: (id: string) => Promise<void>
+    }
+    await (operation === 'toggle' ? view.toggle(channel.id) : view.removeChannel(channel.id))
+    expect(view.channels).toEqual(operation === 'toggle' ? [{ ...channel, enabled: true }] : [])
+    expect(view.channelTotal).toBe(operation === 'toggle' ? 1 : 0)
+    expect(view.actionError).toBe('')
+    expect(view.loadError).toContain('catalog temporarily unavailable')
+  })
+
   it('distinguishes local logging from external delivery and rejects an unknown success status', async () => {
     mocks.testChannel.mockResolvedValueOnce({ status: 'queued' }).mockResolvedValueOnce({ status: 'logged' })
     await open()

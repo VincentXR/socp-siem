@@ -21,10 +21,10 @@ const result = (msg: string, nextCursor: string | null = null): SearchResult => 
 })
 
 let wrapper: VueWrapper | undefined
-async function mountSearch(query: Record<string, string> = {}, identity = { currentUser: ref('alice'), currentTenant: ref('tenant-a') }) {
+async function mountSearch(query: Record<string, string> = {}, identity = { currentUser: ref('alice'), currentTenant: ref('tenant-a') }, role = 'analyst') {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/search', name: 'search', component: SearchView }] })
   await router.push({ name: 'search', query })
-  wrapper = mount(RouterView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: identity } } })
+  wrapper = mount(RouterView, { global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { ...identity, currentRole: ref(role) } } } })
   await flushPromises()
   return router
 }
@@ -43,6 +43,44 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); vi.resetAllMocks() })
 
 describe('search investigation state', () => {
+  it('keeps viewer search available without exposing or invoking restricted exports', async () => {
+    await mountSearch({ q: 'source=auth', range: 'all' }, undefined, 'ROLE_VIEWER')
+    expect(api.splSearch).toHaveBeenCalledTimes(1)
+    expect(wrapper!.text()).toContain('first')
+    expect(button('Run Search')).toBeDefined()
+    expect(button('Export JSON')).toBeUndefined()
+    expect(button('Export CSV')).toBeUndefined()
+    const view = wrapper!.getComponent(SearchView).vm as unknown as { exportCurrent: (format: 'json' | 'csv') => Promise<void> }
+    await view.exportCurrent('json')
+    expect(api.exportSearch).not.toHaveBeenCalled()
+  })
+
+  it('keeps empty histogram buckets empty instead of drawing artificial activity', async () => {
+    api.splSearch.mockResolvedValue({ ...result('event with a gap'), timeline: [
+      { key: '2026-09-19', count: 0 },
+      { key: '2026-09-20', count: 10 },
+    ] })
+    await mountSearch({ q: 'source=auth', range: 'all' })
+    const bars = wrapper!.findAll('.search-timeline-track i')
+    expect(bars[0].attributes('style')).toContain('height: 0%')
+    expect(bars[1].attributes('style')).toContain('height: 100%')
+    expect(wrapper!.findAll('.search-timeline-value').map(value => value.text())).toEqual(['0', '10'])
+  })
+
+  it('identifies truncated aggregation groups without treating them as a full distribution', async () => {
+    api.splSearch.mockResolvedValue({ ...result('grouped event'), stat: {
+      type: 'count', rows: [{ key: 'auth', count: 60 }], approximate: true, sumOtherDocCount: 40,
+    } })
+    await mountSearch({ q: '* | count by source', range: 'all' })
+    expect(wrapper!.get('[data-testid="aggregation-limited"]').text()).toContain('40 events belong to groups not shown')
+    expect(wrapper!.text()).toContain('grouped event')
+    api.splSearch.mockResolvedValue({ ...result('complete distribution'), stat: {
+      type: 'count', rows: [{ key: 'auth', count: 100 }], approximate: false, sumOtherDocCount: 0,
+    } })
+    await button('Run Search').trigger('click'); await flushPromises()
+    expect(wrapper!.find('[data-testid="aggregation-limited"]').exists()).toBe(false)
+  })
+
   it('isolates saved queries across tenant and subject changes and discards the unscoped legacy store', async () => {
     const item = (name: string) => JSON.stringify([{ id: name, name, query: 'source=auth', range: 'all' }])
     localStorage.setItem('socp.search.saved-queries', item('legacy-secret'))

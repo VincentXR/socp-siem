@@ -2,6 +2,7 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { h, ref } from 'vue'
 import { createRouter, createMemoryHistory, RouterView } from 'vue-router'
 import { describe, expect, it, vi } from 'vitest'
+import { ElDropdownItem } from 'element-plus/es/components/dropdown/index.mjs'
 import DetectView from '../src/views/DetectView.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import { ApiError } from '../src/api/core'
@@ -253,7 +254,12 @@ describe('rule editor identity', () => {
       await button!.trigger('click')
       await flushPromises()
     }
-    await click('复制')
+    expect(wrapper.find('.page-header .el-select').exists()).toBe(false)
+    expect(wrapper.find('.rule-search .el-select').exists()).toBe(true)
+    await click('更多')
+    const copyAction = wrapper.findAllComponents(ElDropdownItem).find(item => item.text() === '复制')
+    expect(copyAction).toBeDefined()
+    await copyAction!.find('[role="menuitem"]').trigger('click'); await flushPromises()
     const apply = wrapper.find('.advanced-json button')
     expect(apply.exists()).toBe(true)
     await apply.trigger('click')

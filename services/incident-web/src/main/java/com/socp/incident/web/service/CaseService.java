@@ -10,6 +10,7 @@ import com.socp.incident.web.persistence.store.CaseStore;
 import com.socp.incident.web.persistence.entity.AlarmCaseLinkEntity;
 import com.socp.incident.web.persistence.repository.AlarmCaseLinkRepository;
 import com.socp.incident.web.persistence.entity.CaseTimelineEntity;
+import com.socp.platform.client.service.AlertClient;
 import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import org.springframework.data.domain.Page;
@@ -44,6 +45,7 @@ public class CaseService {
     private final CaseStore store;
     private final AlarmCaseLinkRepository alarmLinks;
     private final IncidentAggregationLock aggregationLock;
+    private final AlertClient alerts;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private org.springframework.jdbc.core.JdbcTemplate associationJdbc;
 
@@ -66,12 +68,54 @@ public class CaseService {
         this(store, alarmLinks, null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     public CaseService(CaseStore store, AlarmCaseLinkRepository alarmLinks,
                        IncidentAggregationLock aggregationLock) {
+        this(store, alarmLinks, aggregationLock, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public CaseService(CaseStore store, AlarmCaseLinkRepository alarmLinks,
+                       IncidentAggregationLock aggregationLock, AlertClient alerts) {
         this.store = store;
         this.alarmLinks = alarmLinks;
         this.aggregationLock = aggregationLock;
+        this.alerts = alerts;
+    }
+
+    /** Interactive admission accepts identity only; alarm facts come from the owning service. */
+    @Transactional
+    public Map<String, Object> fromExistingAlarm(String alarmId) {
+        if (alarmId == null || alarmId.isBlank() || alarmId.length() > 128) {
+            throw ApiException.badRequest("alarmId must contain between 1 and 128 characters");
+        }
+        String tenantId = tenant();
+        var call = alerts == null ? null : alerts.getAlarm(alarmId);
+        if (call == null || !call.ok()) {
+            if (call != null && call.status() == 404) throw ApiException.notFound("Alarm not found");
+            throw ApiException.of(503, "Alarm ownership could not be verified");
+        }
+        Map<String, Object> alarm;
+        try {
+            var envelope = MAPPER.readTree(call.body());
+            var fact = envelope.has("data") ? envelope.get("data") : envelope;
+            if ((envelope.has("code") && envelope.path("code").asInt(-1) != 0)
+                    || !alarmId.equals(fact.path("id").asText())
+                    || !tenantId.equals(fact.path("tenantId").asText())) {
+                throw ApiException.notFound("Alarm not found");
+            }
+            alarm = MAPPER.convertValue(fact, new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+        } catch (ApiException failure) {
+            throw failure;
+        } catch (Exception invalid) {
+            throw ApiException.of(503, "Alarm ownership response was invalid");
+        }
+        // Reuse the same local transaction, cross-instance locks and stable alarm
+        // identity as automatic admission. A deliberate detach is not a success.
+        Map<String, Object> receipt = fromAlarm(alarm);
+        if (Boolean.TRUE.equals(receipt.get("detached"))) {
+            throw ApiException.conflict("此告警已被人工解除关联，请到案件证据页明确重新关联");
+        }
+        return receipt;
     }
 
     /** 由告警自动建案/归并。alarm 至少含 id/ruleId/ruleName/severity/entity/message/occurredAt。 */

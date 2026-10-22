@@ -108,7 +108,7 @@ describe('AI investigation context', () => {
     const pending = deferred<InvestigationResult>()
     mocks.appendInvestigationToIncident.mockReturnValueOnce(pending.promise)
     const wrapper = setupInvestigation(); await flushPromises()
-    const append = () => wrapper.findAllComponents(ElButton).find(button => button.props('type') === 'success')!
+    const append = () => wrapper.get('.ai-append-row').findComponent(ElButton)
     append().vm.$emit('click'); await nextTick()
     expect(mocks.appendInvestigationToIncident).toHaveBeenCalledWith('job-a', undefined)
     mocks.route.query = { alarmId: 'b' }; await flushPromises()

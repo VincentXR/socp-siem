@@ -94,6 +94,20 @@ export async function requestJson<T>(path: string, init: RequestInit = {}, optio
   }
 }
 
+/** Plain-text artifacts still use the same cookie, cancellation and error boundary. */
+export async function requestText(path: string, init: RequestInit = {}, options: ApiRequestOptions = {}): Promise<string> {
+  const headers = new Headers(init.headers)
+  // Error responses use the JSON API envelope, even when success is TOML/text.
+  headers.set('Accept', 'text/plain, application/json;q=0.9')
+  const raw = await requestRaw(path, { ...init, headers }, options)
+  try {
+    await assertOk(raw.response, options.notifyUnauthorized !== false)
+    return await raw.response.text()
+  } finally {
+    raw.cleanup()
+  }
+}
+
 export async function get<T>(path: string, options?: ApiRequestOptions): Promise<T> {
   return requestJson<T>(path, {}, options)
 }

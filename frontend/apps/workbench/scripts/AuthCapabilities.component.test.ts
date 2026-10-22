@@ -45,7 +45,7 @@ describe('authenticated capability contract', () => {
     ['approver', ['soar:approve'], false],
   ] as const)('keeps the overview SOAR shortcut aligned with navigation for %s / %j', async (role, permissions, visible) => {
     const overview = {
-      stat: ref({}), sitStats: ref({}), alarms: ref([]), healths: ref({}),
+      stat: ref({}), sitStats: ref({}), alarms: ref([]), priorityAlarms: ref([]), healths: ref({}),
       error: ref(''), loading: ref(false), availability: ref({}), healthStatus: ref('success'),
       refreshing: ref(false), updatedAt: ref(0),
     }

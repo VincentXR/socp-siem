@@ -71,9 +71,9 @@ public class CaseAlarmAssociationService {
         }
         Case source = store.getMetadata(caseId);
         requireVersion(source, command.expectedVersion());
-        if (target != null) requireVersion(store.getMetadata(target), command.targetExpectedVersion());
+        Case destination = target == null ? source : store.getMetadata(target);
+        if (target != null) requireVersion(destination, command.targetExpectedVersion());
         if (!"DETACH".equals(command.operation())) {
-            Case destination = target == null ? source : store.getMetadata(target);
             if (!CaseState.openNames().contains(destination.status())) throw ApiException.conflict("Reopen the destination case before associating alarms");
         }
         // The authoritative alert service checks ownership. A guessed foreign ID is never stored.
@@ -83,6 +83,7 @@ public class CaseAlarmAssociationService {
             throw ApiException.of(503, "Alarm ownership could not be verified");
         }
         String ruleId;
+        String incomingSeverity;
         try {
             var envelope = json.readTree(call.body());
             var alarm = envelope.has("data") ? envelope.get("data") : envelope;
@@ -90,6 +91,7 @@ public class CaseAlarmAssociationService {
                     || !command.alarmId().equals(alarm.path("id").asText())
                     || !tenant.equals(alarm.path("tenantId").asText())) throw ApiException.notFound("Alarm not found");
             ruleId = alarm.path("ruleId").asText("");
+            incomingSeverity = alarm.path("severity").asText("");
         } catch (ApiException failure) { throw failure; }
         catch (Exception invalid) { throw ApiException.of(503, "Alarm ownership response was invalid"); }
         AlarmCaseLinkEntity link = links.findByTenantIdAndAlarmId(tenant, command.alarmId()).orElse(null);
@@ -110,6 +112,10 @@ public class CaseAlarmAssociationService {
                 links.delete(link); links.flush();
                 jdbc.update("insert into t_incident_alarm_exclusion (tenant_id, alarm_id, created_at) values (?, ?, current_timestamp)", tenant, command.alarmId());
             }
+        }
+        if (!"DETACH".equals(command.operation())) {
+            Case prioritized = destination.withRaisedSeverity(incomingSeverity);
+            if (prioritized != destination) store.saveMetadata(prioritized);
         }
         String message = actor + ": " + command.operation() + " alarm " + command.alarmId()
                 + (target == null ? "" : " to " + target) + "\nReason: " + command.reason().trim();

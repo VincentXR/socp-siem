@@ -281,6 +281,10 @@ public class InvestigationAgentService {
         String tenant = TenantContext.require();
         InvestigationEntity entity = repository.findByIdAndTenantId(investigationId, tenant)
                 .orElseThrow(() -> ApiException.notFound("Investigation does not exist: " + investigationId));
+        if (entity.getAppendedAt() == null
+                && !"COMPLETED".equals(entity.getStatus()) && !"PARTIAL".equals(entity.getStatus())) {
+            throw ApiException.of(409, "AI 研判尚未形成可入案结果，请等待完成；失败的研判需先重新提交");
+        }
         Map<String, Object> result = read(entity.getResultJson());
         if (entity.getAppendedAt() != null) {
             result.put("duplicate", true);

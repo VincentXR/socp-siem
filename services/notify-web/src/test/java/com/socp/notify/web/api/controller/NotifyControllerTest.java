@@ -123,6 +123,28 @@ class NotifyControllerTest {
     }
 
     @Test
+    void channelTestOnlyAcknowledgesConfirmedDeliveryAndPreservesDiagnosticReceipts() {
+        Channel channel = new Channel("CH-TEST", "Ops", "WEBHOOK", "http://ops", true, "");
+        given(channels.get("CH-TEST")).willReturn(channel);
+        for (String status : List.of("sent", "logged", "failed", "unknown")) {
+            Map<String, Object> receipt = Map.of("status", status, "detail", "provider diagnostic",
+                    "deliveryId", "delivery-1", "retryable", false);
+            given(dispatcher.test(channel)).willReturn(receipt);
+
+            var response = controller().test("CH-TEST");
+
+            boolean confirmed = List.of("sent", "logged").contains(status);
+            assertEquals(confirmed ? HttpStatus.OK : HttpStatus.BAD_GATEWAY, response.getStatusCode(), status);
+            assertEquals(confirmed ? 0 : 502, response.getBody().code(), status);
+            assertSame(receipt, response.getBody().data());
+            if ("unknown".equals(status)) {
+                org.assertj.core.api.Assertions.assertThat(response.getBody().message())
+                        .contains("尚未确认", "重复");
+            }
+        }
+    }
+
+    @Test
     void notifyReturnsNonRetryableBusinessStatusForATerminalChannelFailure() {
         TenantContext.set("tenant-a");
         NotifyAlarmRequest request = new NotifyAlarmRequest();

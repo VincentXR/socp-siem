@@ -14,6 +14,8 @@ test('viewer navigation keeps operational pages and hides configuration pages', 
   assert.ok(!keys.includes('ai'))
   assert.ok(!keys.includes('soar'))
   assert.ok(!keys.includes('notify'))
+  assert.ok(!keys.includes('assets'))
+  assert.ok(!keys.includes('endpoints'))
 })
 
 test('analyst navigation exposes ingestion and detection management', () => {
@@ -24,6 +26,8 @@ test('analyst navigation exposes ingestion and detection management', () => {
   assert.ok(keys.includes('ai'))
   assert.ok(keys.includes('soar'))
   assert.ok(keys.includes('notify'))
+  assert.ok(keys.includes('assets'))
+  assert.ok(keys.includes('endpoints'))
 })
 
 test('role-prefixed viewer and unissuable approver roles fail closed', () => {
@@ -32,6 +36,8 @@ test('role-prefixed viewer and unissuable approver roles fail closed', () => {
 
   assert.ok(!viewerKeys.includes('detect'))
   assert.ok(!viewerKeys.includes('ingest'))
+  assert.ok(!viewerKeys.includes('assets'))
+  assert.ok(!viewerKeys.includes('endpoints'))
   assert.ok(!approverKeys.includes('soar'))
   assert.ok(!approverKeys.includes('detect'))
   assert.ok(!approverKeys.includes('notify'))
@@ -44,6 +50,8 @@ test('unknown roles fail closed like viewers', () => {
   assert.ok(!keys.includes('detect'))
   assert.ok(!keys.includes('ai'))
   assert.ok(!keys.includes('soar'))
+  assert.ok(!keys.includes('assets'))
+  assert.ok(!keys.includes('endpoints'))
 })
 
 test('admin navigation exposes the same operator pages', () => {
@@ -74,6 +82,8 @@ test('delegated SOAR capabilities expose response navigation without unrelated d
   assert.ok(keys.includes('soar'))
   assert.ok(!keys.includes('detect'))
   assert.ok(!keys.includes('ingest'))
+  assert.ok(!keys.includes('assets'))
+  assert.ok(!keys.includes('endpoints'))
 })
 
 test('unknown SOAR permissions and unissuable roles do not open response navigation', () => {
