@@ -16,6 +16,7 @@ const { confirmDanger } = useConfirm()
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/card/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
+import 'element-plus/es/components/dropdown/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
 import 'element-plus/es/components/loading/style/css.mjs'
@@ -26,6 +27,7 @@ import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
+import { ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus/es/components/dropdown/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import { vLoading } from 'element-plus/es/components/loading/index.mjs'
@@ -44,6 +46,11 @@ import { getChannel, updateChannel, testChannel, createChannel, deleteChannel, d
 import { useI18n } from '../composables/useI18n'
 
 const { t, d } = useI18n()
+function channelCommand(command: string, channel: Channel): void {
+  if (command === 'test') void sendTest(channel)
+  else if (command === 'toggle') void toggle(channel.id)
+  else if (command === 'delete') void removeChannel(channel.id)
+}
 const route = useRoute()
 const router = useRouter()
 const channelPage = ref(1)
@@ -233,12 +240,20 @@ function resetChannelForm() {
   fieldErrors.value = {}
 }
 
+function discardPreMutationReads(): void {
+  // A read started before an acknowledged write must not replace its receipt,
+  // including while the separate test-delivery request is still running.
+  latestRead.cancel()
+  loading.value = false
+}
+
 /** Retain the acknowledged resource before any separate test delivery can fail. */
 async function persistChannel(): Promise<string> {
   if (form.value.type === 'LOG') form.value.target = 'local'
   const payload = { ...form.value, name: form.value.name.trim(), target: form.value.target.trim() }
   const saved = editingId.value ? await updateChannel(editingId.value, payload) : await createChannel(payload)
   if (!saved?.id) throw new Error(t('notify.saveUnconfirmed'))
+  discardPreMutationReads()
   editingId.value = saved.id
   form.value = { name: saved.name, type: saved.type, target: saved.target, enabled: saved.enabled, description: saved.description || '' }
   dialogVisibleGuard.markSaved()
@@ -291,6 +306,10 @@ async function removeChannel(id: string) {
   if (!await confirmWrite('notify.confirmDelete')) return
   return mutation.run(async () => {
     await deleteChannel(id)
+    discardPreMutationReads()
+    const removed = channels.value.some(channel => channel.id === id)
+    channels.value = channels.value.filter(channel => channel.id !== id)
+    if (removed) channelTotal.value = Math.max(0, channelTotal.value - 1)
     await loadNotify()
   })
 }
@@ -302,7 +321,12 @@ async function toggle(id: string) {
   // The API toggles rather than sets state; do not invert a catalog that
   // changed while the operator was reading the confirmation.
   if (channels.value.find(item => item.id === id)?.enabled !== enabled) return
-  return mutation.run(async () => { await toggleChannel(id); await loadNotify() })
+  return mutation.run(async () => {
+    const result = await toggleChannel(id)
+    discardPreMutationReads()
+    channels.value = channels.value.map(channel => channel.id === id ? result.channel : channel)
+    await loadNotify()
+  })
 }
 
 async function confirmWrite(key: string, params?: Record<string, string>): Promise<boolean> {
@@ -319,31 +343,31 @@ onMounted(loadNotify)
 </script>
 
 <template>
-  <div class="page-pad view-enter">
+  <div class="page-pad view-enter notify-view">
     <ActionFeedback :error="loadError" />
     <ActionFeedback :error="actionError" />
     <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('notify.title')" :description="t('notify.description')">
       <template #actions>
-        <el-button size="small" :loading="loading" @click="loadNotify">{{ t('common.refresh') }}</el-button>
-        <el-button v-if="canWrite" type="primary" size="small" :disabled="actionBusy" @click="openChannel()">{{ t('notify.createChannel') }}</el-button>
+        <el-button :loading="loading" @click="loadNotify">{{ t('common.refresh') }}</el-button>
+        <el-button v-if="canWrite" type="primary" :disabled="actionBusy" @click="openChannel()">{{ t('notify.createChannel') }}</el-button>
       </template>
     </PageHeader>
 
     <el-card shadow="never" class="notify-card">
-      <template #header><span>{{ t('notify.channels') }}</span></template>
-      <p class="dialog-hint">{{ t('workflow.channelScope') }}</p>
-      <el-input v-model="keyword" :placeholder="t('workflow.searchThisPage')" clearable style="margin-bottom:12px" /><el-table v-loading="loading" :data="filteredChannels" size="small" border allow-drag-last-column :empty-text="t(loadError ? 'experience.unknownData' : 'common.empty')" @header-dragend="onHeaderDragEnd">
-        <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name', 140)" />
+      <template #header><div class="notify-section-heading"><span class="notify-section-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16v12H4z"/><path d="m4 7 8 6 8-6"/></svg></span><strong>{{ t('notify.channels') }}</strong></div></template>
+      <div class="notify-channel-toolbar"><p class="dialog-hint">{{ t('workflow.channelScope') }}</p><el-input v-model="keyword" class="notify-channel-search" :placeholder="t('workflow.searchThisPage')" :aria-label="t('workflow.searchThisPage')" clearable /></div>
+      <el-table v-loading="loading" :data="filteredChannels" size="small" border allow-drag-last-column :empty-text="t(loadError ? 'experience.unknownData' : 'common.empty')" @header-dragend="onHeaderDragEnd">
+        <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="180" show-overflow-tooltip />
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 120)"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
         <el-table-column column-key="target" :label="t('notify.target')" :width="columnWidth('target')" min-width="200" show-overflow-tooltip><template #default="{ row }"><span class="mono">{{ displayTarget(row as Channel) }}</span></template></el-table-column>
         <el-table-column column-key="enabled" :label="t('common.enable')" :width="columnWidth('enabled', 90)"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.enabled') : t('common.disabled') }}</el-tag></template></el-table-column>
-        <el-table-column v-if="canWrite" :label="t('common.actions')" width="180" :resizable="false"><template #default="{ row }"><el-button link size="small" :disabled="actionBusy" @click="openChannel(row as Channel)">{{ t('common.edit') }}</el-button><details class="notify-more"><summary>{{ t('experience.more') }}</summary><el-button link size="small" :disabled="actionBusy" @click="sendTest(row as Channel)">{{ t('forms.test') }}</el-button><el-button link type="primary" size="small" :disabled="actionBusy" @click="toggle(row.id)">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-button><el-button link type="danger" size="small" :disabled="actionBusy" @click="removeChannel(row.id)">{{ t('common.delete') }}</el-button></details></template></el-table-column>
+        <el-table-column v-if="canWrite" :label="t('common.actions')" width="150" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" :disabled="actionBusy" @click="openChannel(row as Channel)">{{ t('common.edit') }}</el-button><el-dropdown class="notify-row-menu" trigger="click" @command="command => channelCommand(String(command), row as Channel)"><el-button link size="small" :disabled="actionBusy || confirming" :aria-label="t('notify.moreActions', { name: row.name })">{{ t('common.more') }}</el-button><template #dropdown><el-dropdown-menu><el-dropdown-item command="test">{{ t('notify.testChannel') }}</el-dropdown-item><el-dropdown-item command="toggle">{{ row.enabled ? t('common.disable') : t('common.enable') }}</el-dropdown-item><el-dropdown-item command="delete" divided class="notify-delete-action">{{ t('common.delete') }}</el-dropdown-item></el-dropdown-menu></template></el-dropdown></template></el-table-column>
       </el-table>
       <PagerBar v-model:current-page="channelPage" v-model:page-size="channelSize" :total="channelTotal" @update:current-page="syncChannelPage()" @update:page-size="syncChannelPage(true)" />
     </el-card>
 
-    <el-card shadow="never">
-      <template #header>{{ t('experience.delivery') }}</template>
+    <el-card shadow="never" class="notify-delivery-card">
+      <template #header><div class="notify-section-heading"><span class="notify-section-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 4h12v16H4V8"/><path d="m3 3 6 6M3 9h6V3M8 13h8M8 17h5"/></svg></span><strong>{{ t('experience.delivery') }}</strong></div></template>
       <div class="notify-log-filters">
         <el-input v-model="logAlarmId" clearable :placeholder="t('experience.alarmId')" :aria-label="t('experience.alarmId')" @change="syncLogFilters()" />
         <el-input v-model="logChannel" clearable :placeholder="t('notify.channel')" :aria-label="t('notify.channel')" @change="syncLogFilters()" />
@@ -364,17 +388,17 @@ onMounted(loadNotify)
             <div class="notify-receipt-detail-full"><b>{{ t('common.details') }}</b><span>{{ row.detail || row.error || '—' }}</span></div>
           </div>
         </template></el-table-column>
-        <el-table-column prop="ts" :label="t('common.timestamp')" width="210"><template #default="{ row }">{{ d(row.ts) }}</template></el-table-column>
+        <el-table-column prop="ts" :label="t('common.timestamp')" width="184"><template #default="{ row }">{{ d(row.ts) }}</template></el-table-column>
         <el-table-column prop="channel" :label="t('notify.channel')" min-width="150" show-overflow-tooltip />
         <el-table-column prop="type" :label="t('common.type')" width="110"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
-        <el-table-column prop="ruleId" :label="t('notify.rule')" min-width="200"><template #default="{ row }"><el-button v-if="row.ruleId && row.ruleId !== 'operator-recovery'" link type="primary" @click="router.push({ name: 'detect', query: { ruleId: row.ruleId } })">{{ row.ruleId }}</el-button><span v-else>{{ row.ruleId || '—' }}</span></template></el-table-column>
-        <el-table-column prop="errorCode" :label="t('notify.errorCode')" min-width="180" show-overflow-tooltip />
-        <el-table-column :label="t('common.status')" width="100"><template #default="{ row }"><el-tag :type="dispatchStatusType(row.status)" size="small">{{ dispatchStatusLabel(row.status) }}</el-tag></template></el-table-column>
+        <el-table-column prop="ruleId" :label="t('notify.rule')" min-width="180" show-overflow-tooltip><template #default="{ row }"><el-button v-if="row.ruleId && row.ruleId !== 'operator-recovery'" link type="primary" @click="router.push({ name: 'detect', query: { ruleId: row.ruleId } })">{{ row.ruleId }}</el-button><span v-else>{{ row.ruleId || '—' }}</span></template></el-table-column>
+        <el-table-column prop="errorCode" :label="t('notify.errorCode')" min-width="160" show-overflow-tooltip />
+        <el-table-column :label="t('common.status')" width="116" fixed="right"><template #default="{ row }"><el-tag :type="dispatchStatusType(row.status)" size="small">{{ dispatchStatusLabel(row.status) }}</el-tag></template></el-table-column>
       </el-table>
       <PagerBar v-model:current-page="logPage" v-model:page-size="logSize" :total="logTotal" @update:current-page="syncLogFilters(false)" @update:page-size="syncLogFilters()" />
     </el-card>
 
-    <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="editingId ? t('common.edit') : t('notify.createChannel')" width="640px" :close-on-click-modal="false"><ActionFeedback :error="dialogError" />
+    <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="editingId ? t('notify.editChannel') : t('notify.createChannel')" width="640px" :close-on-click-modal="false"><ActionFeedback :error="dialogError" />
       <p v-if="testState !== 'idle'" role="status" class="dialog-hint">{{ t(testState === 'running' ? 'notify.savedTesting' : 'notify.savedTestFailed') }}</p>
       <el-form :disabled="actionBusy" label-position="top">
         <FormGrid :columns="2">
@@ -398,7 +422,7 @@ onMounted(loadNotify)
           </FormField>
         </FormGrid>
       </el-form>
-      <template #footer><el-button :disabled="actionBusy" @click="dialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addChannel">{{ t('common.save') }}</el-button><el-button v-if="canWrite" plain :loading="actionBusy" @click="saveAndTestChannel">{{ t(testState === 'failed' && !dialogVisibleGuard.dirty.value ? 'notify.retryTest' : 'notify.saveAndTest') }}</el-button></template>
+      <template #footer><el-button :disabled="actionBusy" @click="dialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" :loading="actionBusy" @click="saveAndTestChannel">{{ t(testState === 'failed' && !dialogVisibleGuard.dirty.value ? 'notify.retryTest' : 'notify.saveAndTest') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addChannel">{{ t('common.save') }}</el-button></template>
     </el-dialog>
   </div>
 </template>
@@ -410,11 +434,22 @@ onMounted(loadNotify)
 .notify-receipt-detail span { overflow-wrap:anywhere }
 .notify-receipt-detail-full { grid-column:1 / -1 }
 @media (max-width: 720px) { .notify-receipt-detail { grid-template-columns:1fr } .notify-receipt-detail-full { grid-column:auto } }
-</style>
-
-<style scoped>
 .notify-log-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .notify-log-filters > * { max-width: 250px; }
-.notify-more { display: inline-block; margin-left: 8px; vertical-align: top; }
-.notify-more summary { cursor: pointer; color: var(--ns-text-2); }
+.notify-channel-search { width: min(360px, 100%); margin-bottom: 12px; }
+.notify-delete-action { color: var(--ns-danger); }
+.notify-row-menu { margin-left: 12px; vertical-align: middle; }
+.notify-card { margin-top: 0; }
+.notify-delivery-card { margin-top: 20px; }
+.notify-section-heading { display: flex; align-items: center; gap: 10px; }
+.notify-section-icon { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; color: var(--ns-accent-fg); background: color-mix(in srgb, var(--ns-accent) 7%, transparent); }
+.notify-section-icon svg { width: 18px; height: 18px; }
+.notify-channel-toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 16px; }
+.notify-channel-toolbar .dialog-hint { flex: 1 1 300px; margin: 0; line-height: 1.7; }
+.notify-channel-toolbar .notify-channel-search { flex: 0 1 300px; margin: 0; }
+.notify-log-filters { padding: 12px; background: var(--ns-bg-subtle); border: 1px solid var(--ns-border); border-radius: 9px; gap: 10px; }
+.notify-log-filters > :deep(.el-input), .notify-log-filters > :deep(.el-select) { flex: 1 1 180px; }
+.notify-receipt-detail { margin: 8px 16px; padding: 16px 18px; gap: 16px 24px; background: var(--ns-bg-subtle); border: 1px solid var(--ns-border); border-radius: 9px; }
+.notify-receipt-detail-full { padding-top: 12px; border-top: 1px solid var(--ns-border); line-height: 1.7; }
+@media (max-width: 720px) { .notify-channel-toolbar .notify-channel-search { flex-basis: 100%; } .notify-log-filters > * { max-width: none; } .notify-receipt-detail { margin: 8px; padding: 14px; } }
 </style>

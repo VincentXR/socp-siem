@@ -4,6 +4,35 @@ This document owns shared workbench interactions, internationalization, and oper
 conventions. Feature-specific behavior remains with the feature code and API
 contracts.
 
+## Readability and action hierarchy
+
+Shared tokens use 14px body copy, 13px table data/buttons, and 12px supporting
+text. Table headers keep normal casing; rows have a 44px minimum rhythm and
+grow for wrapped evidence rather than clipping it. Regular actions are 32px
+high; compact table actions retain a 28px target. Keep feature overrides local
+and use the shared tokens instead of shrinking text to fit more controls.
+
+Business pages use cool neutral work surfaces, restrained blue accents and
+separate filter, result and detail areas. Keep dense evidence readable on both
+themes; the overview's dark signal panel is not a template for every page.
+Status colors carry their existing meaning, and decorative charts or invented
+live indicators must not fill empty states. Configuration sections use concise
+numbered headings; raw receipts and JSON remain secondary diagnostic surfaces.
+
+Page actions describe the operation (for example, edit a channel or preview
+parsing), not just “confirm”. Put filters in the list toolbar, independent
+creation/export actions in its actions slot, and keep one clear primary action
+per working area. Group secondary management actions into a keyboard-accessible
+menu; keep irreversible actions separate and retain their confirmation and
+authorization. Dialog footers place cancel before save, with save on the right.
+
+High-frequency lists expose keyboard-accessible titles, fixed action columns
+where horizontal scrolling is needed, and a current range/total in the shared
+pager. Investigation links are secondary actions; raw JSON is supplementary,
+not the default reading surface. Different route paths reset the main scroll
+region to the page header; query-only changes retain its position and URL
+filters. Parser editing returns to its source setup when opened from that source.
+
 ## Log investigation
 
 The search editor keeps a draft separately from the applied query. Enter runs
@@ -28,7 +57,20 @@ Alarm evidence links carry their event query directly and use `range=all`,
 so historical evidence is not hidden by the default recent-time window.
 Search controls precede the field dictionary on narrow screens.
 
+Replay-success links from the ingestion quarantine also use the durable event ID
+and `range=all`: the input's receipt time is not its event time, and a later list
+refresh need not retain the replay response's event timestamp. Grouped search
+results expose the server's `approximate` / `sumOtherDocCount` metadata so a
+bounded top-bucket result is not presented as a complete distribution.
+
 ## Analyst investigation and response
+
+The overview's dark signal panel shows the existing seven-UTC-day alarm
+statistics, not a live threat score. Its trend uses actual daily buckets;
+missing buckets/data do not become a decorative activity curve. Severity bars
+use real proportions, leave zero values empty and include unclassified/other
+alarms. The priority queue remains independent of that window. Service signal
+segments reflect known target health only, with missing observations left unknown.
 
 Alarm links preserve the selected alarm, drawer tab, filters, and return route.
 Exact entity, rule and ATT&CK technique pivots are tenant-scoped server filters;
@@ -43,6 +85,13 @@ closing an alarm.
 Alarm drawer notes, closure reasons, assignments, status changes and feedback drafts
 block accidental dismissal/navigation. Retrying an unavailable evidence or delivery
 panel reloads failed reads only, preserving successful data and investigation drafts.
+Use the returned disposition/channel object after an acknowledged write; a failed
+follow-up list read must not turn a successful save into a failed operation or
+restore pre-write data. Reads started before that acknowledgement are invalidated.
+Likewise, a confirmed case ID remains navigable if its detail read fails, and an
+accepted delivery replay leaves `DEAD` immediately. Retrying the failed read must
+not repeat the write. A later successful association read supersedes the retained
+case receipt, including when another analyst has since detached it.
 
 Case drawers separate investigation controls/timeline from associated evidence.
 Analysts can attach an unassigned alarm, detach it, or move it to a selected case;
@@ -50,6 +99,8 @@ these commands require a reason, both affected case versions for moves, and a st
 retry key. A 409 keeps the association draft for review. The server validates the
 alarm and both cases in the authenticated tenant. Manual detach persists across
 automatic replays. AI links use the registered `ai` route and carry case context.
+When detach/move removes the last item on an evidence page, alarm and rule lists
+return to their last valid page rather than stranding the analyst on an empty page.
 
 Search supports `range=custom` with UTC `from`/`to`. AI-suggested SPL uses the
 `draft` query key, so navigation alone does not execute generated queries.
@@ -65,6 +116,8 @@ declared context fields are materialized into the displayed form. Invalid
 form drafts block execution. Changing editor identity invalidates pending
 reads and write results; a late save never replaces newer graph edits or
 retargets a different playbook.
+Template installation is also a durable write: pending installation blocks closing
+or navigating away, and completion after forced unmount cannot navigate back.
 
 Run links carry `runId`, with alarm/case context retained through navigation.
 The receipt panel offers bounded latest events and separate history pages.
@@ -77,6 +130,20 @@ and an unexpired request. Terminal run status is displayed alongside action
 receipts rather than inferred from submission success.
 
 ## Keyboard and modal behavior
+
+The login page, session bootstrap, sidebar and favicon share
+`src/assets/brand-mark.svg`: two enclosing facets around a central signal,
+using solid shapes that stay readable at favicon size. Do not recreate the
+mark with text, icon-font glyphs or page-specific variants.
+Login artwork is decorative, not a live health signal. Keep capability
+discovery, retry feedback and available authentication methods visible; desktop
+brand artwork collapses on narrow screens so the form remains the main task.
+Do not advertise an idle timeout or end-to-end signing guarantee from the
+login page; authentication and session lifetime follow the configured gateway.
+
+The sidebar has stable grouped navigation, without a duplicate recent-pages
+section. Use the command palette for quick page switching and browser history
+for returning to a prior route; these do not imply a saved investigation session.
 
 The shell's first keyboard link moves focus past navigation into the main
 workbench region. The command palette uses a combobox on the actual input,
@@ -124,6 +191,19 @@ to an omitted HTTP status filter. Disposition selectors use the service's
 state without claiming every conflict was caused by another analyst. Both the vocabulary and the two
 query-only values come from `src/app/alarm-statuses.ts`, which mirrors
 `com.socp.alert.domain.AlarmState` — do not re-declare status arrays in a view.
+
+Historical pivots from reports, severity totals, ATT&CK, rule verification, assets,
+threat indicators and UEBA explicitly carry `status=ALL`. They must not inherit
+the triage queue's `ACTIVE` default and hide closed evidence. Report links retain
+their reported time window; opening the work queue directly still defaults to
+pending work. Direct alarm-ID links continue to load the target independently
+of list filters.
+
+The overview priority queue uses its own bounded, server-side `ACTIVE` query,
+ordered by risk score without a date cutoff. It must not reuse the historical
+`stats.topRisk` summary: closed alarms belong in historical totals, while an
+older unresolved investigation still belongs in the work queue. A failed queue
+read is shown as unavailable, not as an empty result inferred from other metrics.
 
 URL-synced lists reject invalid page tokens, preserve unmanaged deep-link
 keys, suppress navigation echo writes, and scope watchers to the owning
@@ -257,6 +337,12 @@ JSON fallback is acceptable only for values the typed UI cannot represent; it
 must not be the primary control.
 
 ## Asset investigation and import
+
+Asset and endpoint inventory reads, and search exports, require an admin or
+analyst role in their owning services. Match that boundary in navigation,
+direct-route handling and related-resource actions; a viewer's delegated SOAR
+permission does not grant access to these domains. Keep ordinary search available
+to viewers without exposing an export action that can only return 403.
 
 Asset links use `/assets?assetId=<internal-id>` and fetch the asset directly,
 independently of inventory filters/page. Related endpoints load only when a

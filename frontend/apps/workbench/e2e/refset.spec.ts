@@ -39,7 +39,7 @@ test('reference set drawer stays on its target until batch deletion completes', 
   })
   try {
     await page.goto('/reference-sets')
-    await page.getByRole('row').filter({ hasText: 'First set' }).getByRole('button', { name: 'Manage entries' }).click()
+    await page.getByRole('row').filter({ hasText: 'First set' }).getByRole('button', { name: 'View entries', exact: true }).click()
     const drawer = page.getByRole('dialog', { name: 'First set' })
     await drawer.getByRole('button', { name: 'Select visible', exact: true }).click()
     await drawer.getByRole('button', { name: 'Delete 2', exact: true }).click()
@@ -54,7 +54,7 @@ test('reference set drawer stays on its target until batch deletion completes', 
     await expect(drawer).not.toContainText('2 selected')
     await drawer.locator('.el-drawer__close-btn').click()
     await expect(drawer).not.toBeVisible()
-    await page.getByRole('row').filter({ hasText: 'Second set' }).getByRole('button', { name: 'Manage entries' }).click()
+    await page.getByRole('row').filter({ hasText: 'Second set' }).getByRole('button', { name: 'View entries', exact: true }).click()
     const second = page.getByRole('dialog', { name: 'Second set' })
     await expect(second).toContainText('one')
     await expect(second).toContainText('two')

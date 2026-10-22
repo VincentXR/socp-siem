@@ -76,6 +76,18 @@ describe('case selection, drafts and timeline', () => {
   })
   afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
 
+  it('opens a case from its readable title with Space while retaining its identifier', async () => {
+    mocks.list.mockResolvedValueOnce({ items: [{ ...incident('listed'), caseNo: 'CASE-0042' }], total: 1 })
+    const router = await open('/cases')
+    const trigger = wrapper.get('.case-title-link')
+    expect(trigger.attributes('aria-label')).toBe('Case listed')
+    expect(wrapper.text()).toContain('CASE-0042')
+    expect(wrapper.get('[title="listed"]').exists()).toBe(true)
+    await trigger.trigger('keydown', { key: ' ' }); await flushPromises()
+    expect(router.currentRoute.value.query.caseId).toBe('listed')
+    expect(mocks.get).toHaveBeenCalledWith('listed', expect.anything())
+  })
+
   it('keeps association drafts and reuses the operation key after a conflict', async () => {
     await open()
     const view = wrapper.findComponent(CasesView).vm as unknown as {
@@ -126,6 +138,38 @@ describe('case selection, drafts and timeline', () => {
     expect(wrapper.find('.case-alarm-list').text()).toContain('Hydrated alarm')
     expect(wrapper.findAll('.case-alarm-card')).toHaveLength(6)
     expect(wrapper.findAll('.case-alarm-card')[1].find('.case-object-link').text()).toBe(ids[1])
+  })
+
+  it('returns to the last available evidence page after detaching its final alarm and rule', async () => {
+    let remaining = 21
+    const ids = Array.from({ length: 21 }, (_, index) => index + 1)
+    mocks.alarms.mockImplementation(async (_id, page, size) => ({ items: ids.slice(0, remaining).slice((page - 1) * size, page * size).map(id => `alarm-${id}`), total: remaining }))
+    mocks.rules.mockImplementation(async (_id, page, size) => ({ items: ids.slice(0, remaining).slice((page - 1) * size, page * size).map(id => `rule-${id}`), total: remaining }))
+    mocks.alarm.mockImplementation(async id => ({ id, title: id, severity: 'HIGH', status: 'OPEN', ruleId: id.replace('alarm', 'rule') }))
+    mocks.ruleOptions.mockImplementation(async ruleIds => ruleIds.map((id: string) => ({ id, name: id, status: 'ACTIVE' })))
+    mocks.changeAssociation.mockImplementation(async () => {
+      remaining = 20
+      return { case: { ...incident('outside'), rowVersion: 1, alarmCount: 20, ruleCount: 20 }, changed: true, duplicate: false }
+    })
+    await open()
+    const view = wrapper.findComponent(CasesView).vm as unknown as {
+      associatedAlarmPage: number; associatedRulePage: number; associatedAlarms: string[]; associatedRules: string[]
+      association: { reason: string }; openAssociation: (operation: 'DETACH', id: string) => Promise<void>; saveAssociation: () => Promise<void>
+    }
+    view.associatedAlarmPage = 2; view.associatedRulePage = 2
+    await flushPromises()
+    expect(view.associatedAlarms).toEqual(['alarm-21'])
+    expect(view.associatedRules).toEqual(['rule-21'])
+    await view.openAssociation('DETACH', 'alarm-21')
+    view.association.reason = 'Unrelated evidence'
+    await view.saveAssociation(); await flushPromises()
+    expect(mocks.changeAssociation).toHaveBeenCalledWith('outside', expect.objectContaining({ operation: 'DETACH', alarmId: 'alarm-21' }))
+    expect(view.associatedAlarmPage).toBe(1)
+    expect(view.associatedRulePage).toBe(1)
+    expect(view.associatedAlarms).toHaveLength(20)
+    expect(view.associatedRules).toHaveLength(20)
+    expect(view.associatedAlarms).toContain('alarm-1')
+    expect(view.associatedRules).toContain('rule-1')
   })
 
   it('opens a case outside the list page even when the list fails, and retries a missing detail', async () => {

@@ -3,6 +3,7 @@ import 'element-plus/es/components/button/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import { MENU_ICONS, type MenuGroup } from '../app/navigation'
 import CommandPalette from './CommandPalette.vue'
+import BrandMark from './BrandMark.vue'
 import { useI18n } from '../composables/useI18n'
 import { tOr } from '../utils/i18nLabel'
 import { useRoute } from 'vue-router'
@@ -44,7 +45,6 @@ function goOverview(): void {
 }
 
 const collapsedGroups = ref<Record<string, boolean>>({})
-const recentMenuKeys = ref<string[]>([])
 const paletteOpen = ref(false)
 const mobileSidebarOpen = ref(false)
 
@@ -80,7 +80,6 @@ function skipToContent(): void {
 const isMobileViewport = () => typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 860px)').matches)
 const mobileViewport = ref(isMobileViewport())
 const COLLAPSED_GROUPS_KEY = 'socp.sidebar.collapsed-groups'
-const RECENT_MENU_KEY = 'socp.sidebar.recent-menus'
 
 function groupKey(group: MenuGroup): string {
   return group.items.map(item => item.key).join(',')
@@ -89,16 +88,7 @@ function groupKey(group: MenuGroup): string {
 try {
   const stored = localStorage.getItem(COLLAPSED_GROUPS_KEY)
   if (stored) collapsedGroups.value = JSON.parse(stored) as Record<string, boolean>
-  const recent = localStorage.getItem(RECENT_MENU_KEY)
-  if (recent) recentMenuKeys.value = JSON.parse(recent) as string[]
 } catch { /* keep the expanded defaults */ }
-
-const recentItems = computed(() => {
-  const items = props.menuGroups.flatMap(group => group.items)
-  return recentMenuKeys.value
-    .map(key => items.find(item => item.key === key))
-    .filter((item): item is MenuGroup['items'][number] => Boolean(item) && item?.key !== props.activeMenu)
-})
 
 function isGroupCollapsed(group: MenuGroup): boolean {
   const key = groupKey(group)
@@ -125,8 +115,6 @@ function toggleGroup(group: MenuGroup): void {
 
 watch(() => props.activeMenu, activeMenu => {
   mobileSidebarOpen.value = false
-  recentMenuKeys.value = [activeMenu, ...recentMenuKeys.value.filter(key => key !== activeMenu)].slice(0, 3)
-  try { localStorage.setItem(RECENT_MENU_KEY, JSON.stringify(recentMenuKeys.value)) } catch { /* optional preference */ }
   const activeGroup = props.menuGroups.find(group => group.items.some(item => item.key === activeMenu))
   if (activeGroup && isGroupCollapsed(activeGroup)) {
     collapsedGroups.value[groupKey(activeGroup)] = false
@@ -150,23 +138,8 @@ onUnmounted(() => {
     <a href="#main-content" class="skip-link" @click.prevent="skipToContent">{{ t('app.skipToContent') }}</a>
     <aside id="socp-primary-navigation" class="socp-sider" :class="{ 'is-mobile-open': mobileSidebarOpen }" :aria-hidden="mobileViewport && !mobileSidebarOpen" :inert="mobileViewport && !mobileSidebarOpen ? true : undefined">
       <div class="socp-sidebar-brand">
-        <button type="button" class="socp-logo" :title="t('menu.overview')" :aria-label="t('menu.overview')" @click="goOverview"><span class="brand-mark" aria-hidden="true"><i /><i /><i /></span>{{ t('app.title') }}</button>
+        <button type="button" class="socp-logo" :title="t('menu.overview')" :aria-label="t('menu.overview')" @click="goOverview"><BrandMark class="sidebar-brand-mark" /><span class="sidebar-wordmark">{{ t('app.title') }}</span></button>
         <button type="button" class="socp-sidebar-close" :aria-label="t('nav.closeNavigation')" @click="mobileSidebarOpen = false">×</button>
-      </div>
-      <div v-if="recentItems.length > 0" class="socp-recent-nav">
-        <div class="socp-recent-label">{{ t('common.recent') }}</div>
-        <button
-          v-for="item in recentItems"
-          :key="`recent-${item.key}`"
-          type="button"
-          class="socp-recent-item"
-          :class="{ active: activeMenu === item.key }"
-          :title="item.label"
-          @click="selectMenu(item.key)"
-        >
-          <span class="icon" aria-hidden="true" v-html="`<svg viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'>${MENU_ICONS[item.icon] || ''}</svg>`" />
-          <span>{{ item.label }}</span>
-        </button>
       </div>
       <nav class="socp-menu" :aria-label="t('app.console')">
         <template v-for="group in menuGroups" :key="group.group">
@@ -265,6 +238,8 @@ button.socp-logo {
   font-family: inherit;
   cursor: pointer;
 }
+.sidebar-brand-mark { width: 30px; height: 30px; }
+.sidebar-wordmark { font-size: 15px; font-weight: 650; letter-spacing: .025em; white-space: nowrap; }
 .header-crumb-link {
   margin: 0;
   padding: 0;

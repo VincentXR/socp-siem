@@ -24,6 +24,7 @@ import AlarmDispositionDrawer from '../components/AlarmDispositionDrawer.vue'
 import EmptyState from '../components/EmptyState.vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
+import RowActivate from '../components/RowActivate.vue'
 import SevBadge from '../components/SevBadge.vue'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { relTime } from '../lib/ui'
@@ -276,6 +277,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
 <template>
   <div class="page-pad view-enter view--alarms">
     <PageHeader :eyebrow="t('menuGroup.operations')" :title="t('alarms.title')" :description="t('alarms.description')" />
+    <section class="alarm-query-panel" :aria-label="t('analystJourney.workQueue')">
     <div class="alarm-savedviews" role="tablist" :aria-label="t('alarms.savedViews')">
       <button
         v-for="tab in savedViews"
@@ -305,7 +307,7 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
         </el-select>
         <el-select v-model="assignee" clearable filterable :placeholder="t('cases.assignee')" style="width:160px" @change="searchAssignee"><el-option v-for="owner in props.assigneeOptions" :key="owner" :label="assigneeLabel(owner)" :value="owner" /></el-select>
         <el-button v-if="props.currentUser" size="small" @click="myQueue">{{ t('workflow.myQueue') }}</el-button>
-        <el-button size="small" @click="props.onSearch">{{ t('common.search') }}</el-button>
+        <el-button type="primary" @click="props.onSearch">{{ t('common.search') }}</el-button>
         <small v-if="ruleCatalogError" class="alarm-catalog-hint" :title="ruleCatalogError">{{ t('alarms.ruleCatalogUnavailable') }}</small>
         <small v-else-if="ruleOptionsTotal > ruleOptions.length" class="alarm-catalog-hint">{{ t('detect.refineRuleSearch', { total: ruleOptionsTotal }) }}</small>
       </div>
@@ -313,20 +315,23 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
         <label>{{ t('workflow.timeFrom') }}<input v-model="fromInput" type="datetime-local" step="0.001" :aria-label="t('workflow.timeFrom')" /></label>
         <label>{{ t('workflow.timeTo') }}<input v-model="toInput" type="datetime-local" step="0.001" :aria-label="t('workflow.timeTo')" /></label>
       </div>
-      <div class="alarm-toolbar-actions">
-        <span class="toolbar-count">{{ t('common.total', { total: props.alarmPageData.total }) }}</span>
-        <el-button size="small" :loading="exporting === 'csv'" :disabled="Boolean(exporting)" @click="handleExport('csv', props.exportCsv)">{{ t('common.exportCsv') }}</el-button>
-        <el-button size="small" :loading="exporting === 'json'" :disabled="Boolean(exporting)" @click="handleExport('json', props.exportJson)">{{ t('common.exportJson') }}</el-button>
-      </div>
     </div>
 
-    <div class="alarm-toolbar-actions">
+    <div class="alarm-query-footer">
+    <div class="alarm-queue-context">
       <el-select v-model="owner" :aria-label="t('analystJourney.workQueue')" :placeholder="t('analystJourney.allWork')" @change="searchOwner">
         <el-option :label="t('analystJourney.allWork')" value="" /><el-option :label="t('analystJourney.myWork')" value="mine" /><el-option :label="t('analystJourney.unassigned')" value="unassigned" />
       </el-select>
       <span v-if="route.query.entity">{{ t('analystJourney.exactEntity', { entity: String(route.query.entity) }) }} </span>
       <span v-if="route.query.from || route.query.to">{{ route.query.from || '…' }} → {{ route.query.to || '…' }}</span>
     </div>
+      <div class="alarm-toolbar-actions">
+        <span class="toolbar-count">{{ t('common.total', { total: props.alarmPageData.total }) }}</span>
+        <el-button size="small" :loading="exporting === 'csv'" :disabled="Boolean(exporting)" @click="handleExport('csv', props.exportCsv)">{{ t('common.exportCsv') }}</el-button>
+        <el-button size="small" :loading="exporting === 'json'" :disabled="Boolean(exporting)" @click="handleExport('json', props.exportJson)">{{ t('common.exportJson') }}</el-button>
+      </div>
+    </div>
+    </section>
     <div v-if="props.canWrite && selectedAlarms.length" class="alarm-batchbar">
       <strong>{{ selectedAlarms.length }} {{ t('alarms.selected') }}</strong>
       <span>{{ t('alarms.batchHint') }}</span>
@@ -357,17 +362,16 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
     </div>
 
     <el-card shadow="never" class="alarm-table-card">
-      <el-table v-loading="props.loading" :data="props.filteredAlarms" class="alarm-table" height="100%" size="small" row-key="id" border allow-drag-last-column :cell-class-name="cellClassName" @header-dragend="onHeaderDragEnd" @sort-change="handleSortChange" @row-click="openAlarmRow" @selection-change="handleSelectionChange">
+      <el-table v-loading="props.loading" :data="props.filteredAlarms" class="alarm-table" size="small" row-key="id" border allow-drag-last-column :cell-class-name="cellClassName" @header-dragend="onHeaderDragEnd" @sort-change="handleSortChange" @row-click="openAlarmRow" @selection-change="handleSelectionChange">
         <el-table-column v-if="props.canWrite" type="selection" width="44" fixed="left" />
         <el-table-column prop="severity" column-key="severity" :label="t('common.severity')" :width="columnWidth('severity', 112)" sortable="custom"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
-        <el-table-column prop="title" column-key="title" :label="t('alarms.alertTitle')" :width="columnWidth('title', 220)" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ row.title || row.ruleName || row.ruleId }}</template></el-table-column>
-        <el-table-column prop="ruleName" column-key="ruleName" :label="t('alarms.ruleName')" :width="columnWidth('ruleName')" min-width="180" sortable="custom" show-overflow-tooltip><template #default="{ row }">{{ row.ruleName || row.ruleId }}</template></el-table-column>
-        <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity')" min-width="150" sortable="custom" show-overflow-tooltip />
-        <el-table-column prop="riskScore" column-key="riskScore" :label="t('alarms.riskScore')" :width="columnWidth('riskScore', 90)" sortable="custom"><template #default="{ row }">{{ row.riskScore ?? '—' }}</template></el-table-column>
+        <el-table-column prop="title" column-key="title" :label="t('alarms.alertTitle')" :width="columnWidth('title')" min-width="260"><template #default="{ row }"><div class="alarm-title-cell"><RowActivate :aria-label="row.title || row.ruleName || row.ruleId" :title="row.title || row.ruleName || row.ruleId" @activate="openAlarmRow(row)">{{ row.title || row.ruleName || row.ruleId }}</RowActivate><small v-if="row.message" :title="row.message">{{ row.message }}</small></div></template></el-table-column>
+        <el-table-column prop="ruleName" column-key="ruleName" :label="t('alarms.ruleName')" :width="columnWidth('ruleName', 150)" min-width="130" sortable="custom" show-overflow-tooltip><template #default="{ row }">{{ row.ruleName || row.ruleId }}</template></el-table-column>
+        <el-table-column prop="entity" column-key="entity" :label="t('common.entity')" :width="columnWidth('entity', 140)" min-width="120" sortable="custom" show-overflow-tooltip />
+        <el-table-column prop="riskScore" column-key="riskScore" :label="t('alarms.riskScore')" :width="columnWidth('riskScore', 90)" sortable="custom"><template #default="{ row }"><span class="alarm-risk-value">{{ row.riskScore ?? '—' }}</span></template></el-table-column>
         <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 125)" sortable="custom"><template #default="{ row }"><span class="alarm-status" :class="(row.status || 'OPEN').toLowerCase()">{{ tOr(t, 'statuses.' + (row.status || 'OPEN'), row.status ?? '') }}</span></template></el-table-column>
-        <el-table-column prop="assignee" :label="t('assets.owner')" min-width="130"><template #default="{ row }">{{ row.assignee || t('analystJourney.unassigned') }}</template></el-table-column>
-        <el-table-column prop="occurredAt" column-key="occurredAt" :label="t('alarms.occurredAt')" :width="columnWidth('occurredAt', 132)" sortable="custom"><template #default="{ row }"><span class="mono">{{ relTime(row.occurredAt) }}</span></template></el-table-column>
-        <el-table-column prop="message" column-key="message" :label="t('common.message')" :width="columnWidth('message')" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="assignee" :label="t('assets.owner')" width="120" show-overflow-tooltip><template #default="{ row }">{{ row.assignee || t('analystJourney.unassigned') }}</template></el-table-column>
+        <el-table-column prop="occurredAt" column-key="occurredAt" :label="t('alarms.occurredAt')" :width="columnWidth('occurredAt', 132)" sortable="custom"><template #default="{ row }"><span class="mono" :title="row.occurredAt">{{ relTime(row.occurredAt) }}</span></template></el-table-column>
         <el-table-column :label="t('common.actions')" width="78" fixed="right" :resizable="false"><template #default="{ row }"><el-button link type="primary" size="small" @click.stop="openAlarmRow(row)">{{ t('alarms.triage') }}</el-button></template></el-table-column>
         <template #empty>
           <EmptyState v-if="!props.loading && !props.error" :title="t('alarms.noAlarmsFound')" :description="t('alarms.adjustFiltersHint')"><template #action><InvestigationReadiness :can-inspect="Boolean(props.canWrite)" /></template></EmptyState>
@@ -380,3 +384,33 @@ async function handleExport(format: 'csv' | 'json', exporter: () => Promise<void
     <AlarmDispositionDrawer v-model="drawerVisible" :alarm="currentAlarm" :go-case="props.goCase" :go-search="props.goSearch" :go-ai="props.goAi" :go-soar="props.goSoar" :assignee-options="props.assigneeOptions" :assignee-labels="props.assigneeLabels" :can-write="props.canWrite" :can-admin="props.canAdmin" @updated="props.loadPage" />
   </div>
 </template>
+
+<style scoped>
+.alarm-query-panel { margin-bottom: 16px; overflow: hidden; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-xl); background: var(--ns-surface); }
+.alarm-savedviews { gap: 4px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--ns-border); background: color-mix(in srgb, var(--ns-accent) 3%, var(--ns-surface)); }
+.alarm-savedview { height: 32px; border: 1px solid transparent; border-radius: var(--ns-radius-md); font-size: 13px; }
+.alarm-savedview[aria-selected='true'] { border-color: color-mix(in srgb, var(--ns-accent) 18%, var(--ns-border)); background: var(--ns-surface); color: var(--ns-accent-fg); box-shadow: 0 1px 2px rgb(0 0 0 / 4%); }
+.alarm-savedview[aria-selected='true']::after { display: none; }
+.alarm-savedview:focus-visible { outline: 2px solid var(--ns-accent); outline-offset: 2px; }
+.alarm-toolbar { gap: 12px; margin: 0; padding: 16px; border: 0; border-radius: 0; background: transparent; }
+.alarm-filter-controls { gap: 10px; }
+.alarm-query-footer { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--ns-border); background: var(--ns-surface-muted); }
+.alarm-queue-context { display: flex; align-items: center; flex: 1 1 220px; flex-wrap: wrap; gap: 10px; min-width: 0; color: var(--ns-text-2); font-size: 12px; }
+.alarm-queue-context :deep(.el-select) { width: 180px; max-width: 100%; }
+.alarm-queue-context > span { overflow-wrap: anywhere; }
+.alarm-toolbar-actions { flex-wrap: wrap; }
+.alarm-toolbar-actions .toolbar-count { margin-right: 4px; color: var(--ns-text-2); font-variant-numeric: tabular-nums; }
+.alarm-risk-value { display: inline-flex; align-items: center; justify-content: center; min-width: 32px; min-height: 26px; padding: 0 4px; border-radius: var(--ns-radius-sm); background: var(--ns-surface-muted); }
+.alarm-table :deep(.alarm-risk-high) .alarm-risk-value { background: color-mix(in srgb, var(--ns-sev-critical) 9%, transparent); }
+.alarm-title-cell { display: grid; min-width: 0; gap: 3px; line-height: 1.4; }
+.alarm-title-cell :deep(.row-activate), .alarm-title-cell small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alarm-title-cell :deep(.row-activate) { color: var(--ns-text); font-size: 13px; font-weight: 600; }
+.alarm-title-cell :deep(.row-activate:hover) { color: var(--ns-accent); }
+.alarm-title-cell small { color: var(--ns-text-3); font-size: 12px; }
+@media (max-width: 720px) {
+  .alarm-savedviews { padding: 10px; }
+  .alarm-toolbar, .alarm-query-footer { padding: 12px; }
+  .alarm-toolbar-actions { width: 100%; margin-left: 0; }
+  .alarm-toolbar-actions .toolbar-count { margin-right: auto; }
+}
+</style>

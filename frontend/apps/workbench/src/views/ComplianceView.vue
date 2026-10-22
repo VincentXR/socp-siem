@@ -22,11 +22,14 @@ import PageHeader from '../components/PageHeader.vue'
 import { complianceCoverage, complianceFrameworks, lookupRuleOptions } from '../api'
 import { useRequest } from '../composables/useRequest'
 import { useI18n } from '../composables/useI18n'
+import { useFocusReturn } from '../composables/useFocusReturn'
 
 const { t, locale } = useI18n()
 const router = useRouter()
 const canWrite = useWriteAccess()
 const selectedControl = ref<CoverageControl | null>(null)
+const detailVisible = computed(() => Boolean(selectedControl.value))
+const restoreDetailFocus = useFocusReturn(detailVisible)
 
 type Framework = { name: string; controls: Array<{ id: string; name: string; ruleIds: string[] }> }
 type Coverage = {
@@ -107,7 +110,7 @@ onUnmounted(() => { disposed = true; request.cancel() })
     </div>
 
     <el-card v-for="framework in (coverage?.byFramework ?? [])" :key="framework.framework" shadow="never" class="compliance-card">
-      <div class="compliance-card-head"><strong>{{ framework.framework }}</strong><span>{{ t('compliance.mappingCoverage') }} {{ framework.coverage }}%</span></div>
+      <template #header><div class="compliance-card-head"><strong>{{ framework.framework }}</strong><span>{{ t('compliance.mappingCoverage') }} <b>{{ framework.coverage }}%</b></span></div><div class="compliance-coverage-track" aria-hidden="true"><span :style="{ width: `${Math.max(0, Math.min(100, framework.coverage))}%` }" /></div></template>
       <el-table :data="framework.controls" size="small" border>
         <el-table-column prop="id" :label="t('compliance.control')" width="120" />
         <el-table-column prop="name" :label="t('compliance.name')" min-width="200"><template #default="{ row }"><el-button link type="primary" @click="selectedControl = row as CoverageControl">{{ row.name }}</el-button></template></el-table-column>
@@ -117,8 +120,8 @@ onUnmounted(() => { disposed = true; request.cancel() })
       </el-table>
     </el-card>
     <el-empty v-if="!loading && !loadError && !coverage?.byFramework?.length" :description="t('compliance.noData')" />
-    <el-drawer :model-value="Boolean(selectedControl)" :title="t('experience.control')" size="min(640px, 96vw)" @close="selectedControl = null">
-      <template v-if="selectedControl"><h2>{{ selectedControl.id }} · {{ selectedControl.name }}</h2>
+    <el-drawer :model-value="detailVisible" :title="t('experience.control')" size="min(640px, 96vw)" @close="selectedControl = null" @closed="restoreDetailFocus">
+      <template v-if="selectedControl"><h2 class="control-detail-title">{{ selectedControl.id }} · {{ selectedControl.name }}</h2>
         <p>{{ t('experience.owner') }}: {{ selectedControl.owner || '—' }}</p><p>{{ t('experience.expires') }}: {{ formatTime(selectedControl.validUntil) }}</p>
         <p>{{ t('compliance.assessmentStatus') }}: {{ selectedControl.assessment || t('compliance.notVerified') }}</p>
         <h3>{{ t('experience.mappedRules') }}</h3>
@@ -127,11 +130,20 @@ onUnmounted(() => { disposed = true; request.cancel() })
         <h3>{{ t('experience.evidence') }}</h3><pre class="control-evidence">{{ selectedControl.evidence ? JSON.stringify(selectedControl.evidence, null, 2) : '—' }}</pre>
         <p>{{ t('compliance.assessmentNotice') }}</p>
       </template>
+      <template #footer><el-button @click="selectedControl = null">{{ t('common.close') }}</el-button></template>
     </el-drawer>
     <div v-if="coverage" class="compliance-footnote">{{ t('compliance.contentVersion', { value: coverage.contentVersion || t('time.notAvailable') }) }} · {{ t('compliance.generatedAt', { value: formatTime(coverage.generatedAt) }) }}</div>
   </div>
 </template>
 
 <style scoped>
-.control-evidence { white-space: pre-wrap; overflow-wrap: anywhere; }
+.control-evidence { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; border: 1px solid var(--ns-border); border-radius: 9px; background: var(--ns-bg-subtle); color: var(--ns-text-2); font-size: 12px; line-height: 1.7; }
+.compliance-card-head { gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.compliance-card-head strong { font-size: 15px; font-weight: 650; }
+.compliance-card-head span { color: var(--ns-text-2); font-size: 12px; font-weight: 400; }
+.compliance-card-head b { margin-left: 6px; color: var(--ns-accent-fg); font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.compliance-coverage-track { height: 4px; background: var(--ns-bg-inset); border-radius: 3px; overflow: hidden; }
+.compliance-coverage-track > span { display: block; height: 100%; background: var(--ns-accent); border-radius: inherit; }
+.control-detail-title { margin: 0 0 20px; font-size: 20px; line-height: 1.5; overflow-wrap: anywhere; }
+.compliance-footnote { padding: 12px 0; line-height: 1.7; }
 </style>

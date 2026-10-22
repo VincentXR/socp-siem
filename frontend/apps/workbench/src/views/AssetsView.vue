@@ -17,6 +17,7 @@ const { busy: actionBusy, error: actionError } = mutation
 import 'element-plus/es/components/button/style/css.mjs'
 import 'element-plus/es/components/dialog/style/css.mjs'
 import 'element-plus/es/components/drawer/style/css.mjs'
+import 'element-plus/es/components/dropdown/style/css.mjs'
 import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
 import 'element-plus/es/components/message/style/css.mjs'
@@ -26,6 +27,7 @@ import 'element-plus/es/components/tag/style/css.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
+import { ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus/es/components/dropdown/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
@@ -39,6 +41,8 @@ import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
 import PagerBar from '../components/PagerBar.vue'
+import RowActivate from '../components/RowActivate.vue'
+import { useFocusReturn } from '../composables/useFocusReturn'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useDebouncedWatch } from '../composables/useDebouncedWatch'
 import { useLatestRequest } from '../composables/useLatestRequest'
@@ -48,6 +52,7 @@ import { readImportRows, type ImportRow } from '../lib/resource-import'
 import { useI18n } from '../composables/useI18n'
 import { useConfirm } from '../composables/useConfirm'
 import { tOr } from '../utils/i18nLabel'
+import { ALARM_STATUS_ALL } from '../app/alarm-statuses'
 
 const { t, d } = useI18n()
 const { confirmDanger } = useConfirm()
@@ -68,6 +73,7 @@ const endpointPage = ref(1)
 const endpointSize = ref(20)
 const endpointTotal = ref(0)
 const assetDetailOpen = ref(false)
+const restoreDetailFocus = useFocusReturn(assetDetailOpen)
 const detailAsset = ref<Asset | null>(null)
 const detailLoading = ref(false)
 const detailError = ref('')
@@ -197,6 +203,10 @@ function closeDetail() {
   void router.push({ query })
 }
 
+function assetCommand(command: string, asset: Asset): void {
+  if (command === 'delete') void removeAsset(asset.id)
+}
+
 function openEditAsset(asset: Asset) {
   if (!canWrite.value || actionBusy.value) return
   actionError.value = ''
@@ -211,7 +221,7 @@ function openEditAsset(asset: Asset) {
 function viewAssetAlarms(): void {
   const asset = detailAsset.value
   if (!asset?.ip.trim()) return
-  void router.push({ name: 'alarms', query: { q: asset.ip.trim() } })
+  void router.push({ name: 'alarms', query: { status: ALARM_STATUS_ALL, q: asset.ip.trim() } })
 }
 
 function viewAssetEndpoints(): void {
@@ -357,9 +367,9 @@ watch([() => route.query.q, () => route.query.page, () => route.query.type, () =
     <ActionFeedback v-if="!showAssetDialog && !importPreviewOpen" :error="actionError" />
     <PageHeader :eyebrow="t('menuGroup.context')" :title="t('assets.title')" :description="t('assets.description')">
       <template #actions>
-        <el-button v-if="canWrite" type="primary" size="small" :disabled="actionBusy" @click="openCreateAsset">{{ t('assets.createAsset') }}</el-button>
-        <el-button v-if="canWrite" size="small" :disabled="actionBusy" @click="selectAssetImport">{{ t('assets.importAssets') }}</el-button>
-        <el-button size="small" :loading="loading" @click="loadAssets">{{ t('common.refresh') }}</el-button>
+        <el-button :loading="loading" @click="loadAssets">{{ t('common.refresh') }}</el-button>
+        <el-button v-if="canWrite" :disabled="actionBusy" @click="selectAssetImport">{{ t('assets.importAssets') }}</el-button>
+        <el-button v-if="canWrite" type="primary" :disabled="actionBusy" @click="openCreateAsset">{{ t('assets.createAsset') }}</el-button>
         <input ref="assetImportInput" type="file" accept=".csv,.json,application/json,text/csv" hidden @change="importAssetFile" />
       </template>
     </PageHeader>
@@ -388,21 +398,24 @@ watch([() => route.query.q, () => route.query.page, () => route.query.type, () =
       </template>
       <template #empty-actions><el-button v-if="hasFilters" @click="clearFilters">{{ t('experience.clearFilters') }}</el-button><el-button v-else-if="canWrite" type="primary" @click="openCreateAsset">{{ t('assets.createAsset') }}</el-button></template>
       <el-table :data="assets" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="row => openAssetDetail(row as Asset)">
-        <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="180" show-overflow-tooltip />
+        <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="200" show-overflow-tooltip><template #default="{ row }"><RowActivate :aria-label="t('assets.openDetails', { name: row.name })" @activate="openAssetDetail(row as Asset)">{{ row.name }}</RowActivate></template></el-table-column>
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 100)">
           <template #default="{ row }">{{ assetTypes.find(item => item.value === row.type)?.label ?? row.type }}</template>
         </el-table-column>
-        <el-table-column prop="ip" column-key="ip" :label="t('common.ip')" :width="columnWidth('ip', 120)" />
+        <el-table-column prop="ip" column-key="ip" :label="t('common.ip')" :width="columnWidth('ip', 150)" show-overflow-tooltip />
         <el-table-column prop="os" column-key="os" :label="t('endpoints.os')" :width="columnWidth('os', 170)" show-overflow-tooltip />
         <el-table-column prop="owner" column-key="owner" :label="t('assets.owner')" :width="columnWidth('owner', 100)" show-overflow-tooltip />
         <el-table-column prop="criticality" column-key="criticality" :label="t('assets.criticality')" :width="columnWidth('criticality', 90)">
           <template #default="{ row }"><el-tag :type="row.criticality === 'CRITICAL' ? 'danger' : row.criticality === 'HIGH' ? 'warning' : 'info'" size="small">{{ criticalityOptions.find(item => item.value === row.criticality)?.label ?? row.criticality }}</el-tag></template>
         </el-table-column>
-        <el-table-column :label="t('common.actions')" width="190" :resizable="false">
+        <el-table-column :label="t('common.actions')" width="150" fixed="right" :resizable="false">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" :disabled="actionBusy" @click.stop="openAssetDetail(row as Asset)">{{ t('common.details') }}</el-button>
             <el-button v-if="canWrite" link type="primary" size="small" :disabled="actionBusy" @click.stop="openEditAsset(row as Asset)">{{ t('common.edit') }}</el-button>
-            <el-button v-if="canWrite" link type="danger" size="small" :disabled="actionBusy" @click.stop="removeAsset(row.id)">{{ t('common.delete') }}</el-button>
+            <el-button v-else link type="primary" size="small" @click.stop="openAssetDetail(row as Asset)">{{ t('common.details') }}</el-button>
+            <el-dropdown v-if="canWrite" class="asset-row-menu" trigger="click" @click.stop @command="command => assetCommand(String(command), row as Asset)">
+              <el-button link size="small" :disabled="actionBusy" :aria-label="t('assets.moreActions', { name: row.name })">{{ t('common.more') }}</el-button>
+              <template #dropdown><el-dropdown-menu><el-dropdown-item command="delete" class="asset-delete-action">{{ t('common.delete') }}</el-dropdown-item></el-dropdown-menu></template>
+            </el-dropdown>
           </template>
         </el-table-column>
       </el-table>
@@ -454,7 +467,7 @@ watch([() => route.query.q, () => route.query.page, () => route.query.type, () =
       <template #footer><el-button :disabled="actionBusy" @click="importGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" :disabled="!importRows.length" @click="confirmAssetImport">{{ t('assets.confirmImport') }}</el-button></template>
     </el-dialog>
 
-    <el-drawer :model-value="assetDetailOpen" :before-close="closeDetail" :title="detailAsset?.name || t('assets.assetDetails')" size="min(680px, 96vw)">
+    <el-drawer :model-value="assetDetailOpen" :before-close="closeDetail" :title="detailAsset?.name || t('assets.assetDetails')" size="min(680px, 96vw)" @closed="restoreDetailFocus">
       <p v-if="detailLoading" role="status">{{ t('common.loading') }}</p>
       <ActionFeedback :error="detailError" />
       <el-button v-if="detailError" @click="loadDetail">{{ t('common.retry') }}</el-button>
@@ -495,13 +508,19 @@ watch([() => route.query.q, () => route.query.page, () => route.query.type, () =
           </div>
         </section>
 
-        <div v-if="canWrite" class="asset-detail-actions"><el-button type="primary" :disabled="actionBusy" @click="openEditAsset(detailAsset)">{{ t('common.edit') }}</el-button></div>
       </template>
+      <template #footer><el-button :disabled="actionBusy" @click="closeDetail">{{ t('common.close') }}</el-button><el-button v-if="detailAsset && canWrite" type="primary" :disabled="actionBusy" @click="openEditAsset(detailAsset)">{{ t('common.edit') }}</el-button></template>
     </el-drawer>
   </div>
 </template>
 
 <style scoped>
+.asset-delete-action { color: var(--ns-danger); }
+.asset-row-menu { margin-left: 12px; vertical-align: middle; }
+.asset-detail-status .mono { overflow-wrap: anywhere; font-size: 12px; }
+.asset-detail-grid dt, .asset-detail-grid dd { font-size: 13px; }
+.asset-detail-muted { font-size: 12px; line-height: 1.6; }
+.asset-detail-links { gap: 8px; flex-wrap: wrap; }
 .asset-endpoints :deep(.el-pagination) {
   min-width: 0;
   flex-wrap: wrap;

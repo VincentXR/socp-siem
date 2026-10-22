@@ -14,9 +14,9 @@ export interface MenuGroup {
 import { canOpenSoarWorkbench, normalizeRole } from './roles.ts'
 
 /** Navigation is kept outside the shell so views do not own layout concerns. */
-// Configuration pages are available to operators who can manage detections
-// and ingestion. Viewer remains intentionally read-only.
-const MENU_VIEWER_HIDDEN = new Set(['ingest', 'meta', 'detect', 'soar', 'notify', 'refset', 'ai'])
+// Configuration and inventory pages require admin/analyst in their owning
+// services. Viewer can read investigations, but not restricted inventory.
+const MENU_VIEWER_HIDDEN = new Set(['ingest', 'meta', 'detect', 'soar', 'notify', 'refset', 'ai', 'assets', 'endpoints'])
 const defaultTranslate = (key: string): string => key
 
 export function getVisibleMenuGroups(role = 'viewer', t: (key: string) => string = defaultTranslate, permissions: readonly string[] = []): MenuGroup[] {

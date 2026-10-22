@@ -57,6 +57,30 @@ class InvestigationQueuePersistenceTest {
     }
 
     @Test
+    void appendClaimOnlyBindsFinishedInvestigationVersions() {
+        TenantContext.set("audit-ai-append-state");
+        for (String status : java.util.List.of("NEW", "RUNNING", "FAILED", "COMPLETED", "PARTIAL")) {
+            Instant now = Instant.now();
+            var row = new com.socp.ai.persistence.entity.InvestigationEntity();
+            row.setId("append-state-" + status);
+            row.setTenantId("audit-ai-append-state");
+            row.setAlertId("AL-APPEND-" + status);
+            row.setStatus(status);
+            row.setResultJson("{}");
+            row.setCreatedAt(now);
+            row.setUpdatedAt(now);
+            repository.saveAndFlush(row);
+
+            boolean finished = "COMPLETED".equals(status) || "PARTIAL".equals(status);
+            assertEquals(finished ? 1 : 0, repository.claimAppend(row.getId(), row.getTenantId(),
+                    "CASE-1", "append-owner", now, now.plusSeconds(30)), status);
+            var stored = repository.findByIdAndTenantId(row.getId(), row.getTenantId()).orElseThrow();
+            assertEquals(finished ? "CASE-1" : null, stored.getIncidentId(), status);
+            assertEquals(finished ? "append-owner" : null, stored.getAppendClaimToken(), status);
+        }
+    }
+
+    @Test
     void onlyOneDifferentIncidentTargetCanOwnTheAppendSideEffect() throws Exception {
         TenantContext.set("audit-ai-append");
         var row = new com.socp.ai.persistence.entity.InvestigationEntity();

@@ -17,6 +17,7 @@ const resolvedCountLabel = computed(() => props.countLabel ?? t('common.totalPre
 <template>
   <div class="filter-toolbar">
     <div class="filter-toolbar-controls"><slot /></div>
+    <div v-if="$slots.actions" class="filter-toolbar-actions"><slot name="actions" /></div>
     <span v-if="count !== undefined" class="toolbar-count">{{ resolvedCountLabel }} {{ count }} {{ t('common.itemsSuffix') }}</span>
   </div>
 </template>

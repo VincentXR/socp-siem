@@ -43,7 +43,7 @@ test('report sources recover independently, dated archives remain reachable, and
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(path.startsWith('/auth/') ? data : { code: 0, data }) })
   })
   await page.goto('/reports')
-  await expect(page.locator('.metrics-row .num').first()).toHaveText('42')
+  await expect(page.locator('.report-metrics .metric-card-value').first()).toHaveText('42')
   const charts = page.locator('.report-charts')
   await expect(charts.getByRole('alert')).toContainText('Trend unavailable')
   await charts.getByRole('button', { name: 'Retry', exact: true }).click()

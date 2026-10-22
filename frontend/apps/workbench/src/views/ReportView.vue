@@ -21,19 +21,25 @@ import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { loadEcharts } from '../lib/echarts'
 import { useRequest } from '../composables/useRequest'
 import PageHeader from '../components/PageHeader.vue'
+import MetricCard from '../components/MetricCard.vue'
 import { archiveReport, dailyReport, downloadArchivedReport, listArchive, trend7d, type ReportSummary, type ReportTrend } from '../api'
 import { useI18n } from '../composables/useI18n'
 import { sevColor } from '../lib/ui'
 import { useWriteAccess } from '../composables/useWriteAccess'
 import { tOr } from '../utils/i18nLabel'
+import { ALARM_STATUS_ALL } from '../app/alarm-statuses'
 
 const props = defineProps<{ theme: 'light' | 'dark' }>()
-const { t, n, locale } = useI18n()
+const { t, n, d, locale } = useI18n()
+function formatTime(value: unknown): string {
+  if (!value) return '—'
+  try { return d(String(value), 'dateTime') } catch { return String(value) }
+}
 const canWrite = useWriteAccess()
 const router = useRouter()
 function openRuleAlarms(ruleId: string) {
   if (!report.value || report.value.queryWindow !== 'today') return
-  void router.push({ name: 'alarms', query: { rule: ruleId, from: report.value.date + 'T00:00:00Z', to: report.value.generatedAt } })
+  void router.push({ name: 'alarms', query: { status: ALARM_STATUS_ALL, rule: ruleId, from: report.value.date + 'T00:00:00Z', to: report.value.generatedAt } })
 }
 
 const summaryRequest = useRequest<ReportSummary>()
@@ -228,13 +234,15 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page-pad view-enter">
+  <div class="page-pad view-enter report-view">
     <PageHeader :eyebrow="t('experience.coverage')" :title="t('report.title')" :description="t('report.description')">
-      <template #actions><el-button size="small" :loading="reportLoading" @click="loadReport">{{ t('common.refresh') }}</el-button><el-button v-if="canWrite" type="primary" size="small" :loading="archiveBusy" :disabled="!report || Boolean(reportError)" @click="doArchive">{{ t('experience.saveSnapshot') }}</el-button><el-button size="small" @click="openArchive">{{ t('experience.snapshots') }}</el-button></template>
+      <template #actions><el-button :loading="reportLoading" @click="loadReport">{{ t('common.refresh') }}</el-button><el-button @click="openArchive">{{ t('experience.snapshots') }}</el-button><el-button v-if="canWrite" type="primary" :loading="archiveBusy" :disabled="!report || Boolean(reportError)" @click="doArchive">{{ t('experience.saveSnapshot') }}</el-button></template>
     </PageHeader>
-    <p>{{ t('experience.snapshotScope') }} · {{ report?.date || '—' }} · {{ sourceLabel(report?.source) }}</p>
-    <p v-if="report" class="report-snapshot-context">{{ t('common.timestamp') }}: {{ report.generatedAt || '—' }} · {{ t('experience.lastObserved') }}: {{ report.freshness || '—' }}</p>
-    <details v-if="report"><summary>{{ t('experience.snapshotPreview') }}</summary><p>{{ report.date }} · {{ report.total }} {{ t('report.todayAlarms') }}</p><ul><li v-for="level in severityKeys" :key="level">{{ severityLabel(level) }}: {{ report.bySeverity[level] || 0 }}</li></ul><pre class="snapshot-json">{{ JSON.stringify(report, null, 2) }}</pre></details>
+    <div class="report-context">
+      <div class="report-context-heading"><span class="report-context-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 3h7l4 4v14H6V3h1Z"/><path d="M14 3v5h4M9 12h6M9 16h6"/></svg></span><div><span class="report-context-label">{{ t('experience.snapshotScope') }}</span><p>{{ report?.date || '—' }} <span class="report-context-source">{{ sourceLabel(report?.source) }}</span></p></div></div>
+      <p v-if="report" class="report-snapshot-context">{{ t('common.timestamp') }}: {{ formatTime(report.generatedAt) }} · {{ t('experience.lastObserved') }}: {{ formatTime(report.freshness) }}</p>
+      <details v-if="report" class="report-preview"><summary>{{ t('experience.snapshotPreview') }}</summary><p>{{ report.date }} · {{ report.total }} {{ t('report.todayAlarms') }}</p><dl class="report-preview-severities"><div v-for="level in severityKeys" :key="level"><dt>{{ severityLabel(level) }}</dt><dd>{{ n(report.bySeverity[level] || 0, 'integer') }}</dd></div></dl><details class="report-raw-preview"><summary>{{ t('report.rawSnapshot') }}</summary><pre class="snapshot-json">{{ JSON.stringify(report, null, 2) }}</pre></details></details>
+    </div>
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('report.readOnly') }}</div>
     <el-alert v-if="archiveError" :title="archiveError.message" type="error" :closable="false" />
     <div class="report-toolbar-meta">
@@ -247,12 +255,12 @@ onUnmounted(() => {
     <div v-if="chartError" class="report-source-error" role="alert"><span>{{ chartError }}</span><el-button link @click="renderCharts">{{ t('common.retry') }}</el-button></div>
     <el-alert v-if="report?.degraded" type="warning" :title="t('report.degradedTitle', { source: sourceLabel(report.source) })"
       :description="report.degradationReason || t('report.degradedDescription')" show-icon :closable="false" style="margin-bottom:12px" />
-    <el-row class="metrics-row" :gutter="12" style="margin-bottom:14px" v-if="report">
-      <el-col :xs="24" :sm="12" :md="6"><el-card shadow="never"><div class="stat-card"><div class="num">{{ report.total }}</div><div class="label">{{ t('report.todayAlarms') }}</div></div></el-card></el-col>
-      <el-col :xs="24" :sm="12" :md="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.CRITICAL ?? 0 }}</div><div class="label">{{ severityLabel('CRITICAL') }}</div></div></el-card></el-col>
-      <el-col :xs="24" :sm="12" :md="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-danger)">{{ report.bySeverity.HIGH ?? 0 }}</div><div class="label">{{ severityLabel('HIGH') }}</div></div></el-card></el-col>
-      <el-col :xs="24" :sm="12" :md="6"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-warning)">{{ report.bySeverity.MEDIUM ?? 0 }}</div><div class="label">{{ severityLabel('MEDIUM') }}</div></div></el-card></el-col>
-    </el-row>
+    <div class="page-metrics metrics-row report-metrics" v-if="report">
+      <MetricCard :label="t('report.todayAlarms')" tone="info">{{ n(report.total, 'integer') }}</MetricCard>
+      <MetricCard :label="severityLabel('CRITICAL')" tone="danger">{{ n(report.bySeverity.CRITICAL ?? 0, 'integer') }}</MetricCard>
+      <MetricCard :label="severityLabel('HIGH')" tone="warning">{{ n(report.bySeverity.HIGH ?? 0, 'integer') }}</MetricCard>
+      <MetricCard :label="severityLabel('MEDIUM')" tone="neutral">{{ n(report.bySeverity.MEDIUM ?? 0, 'integer') }}</MetricCard>
+    </div>
     <el-row :gutter="12" class="report-charts">
       <el-col :xs="24" :md="12"><el-card shadow="never">
         <template #header>{{ t('report.alarmSeverityDistribution') }}</template>
@@ -280,13 +288,38 @@ onUnmounted(() => {
       <el-table v-if="archiveInfo?.objects.length" :data="archiveObjects" size="small" border :empty-text="t('experience.noMatches')">
         <el-table-column :label="t('report.reportFile')" min-width="240" show-overflow-tooltip><template #default="{ row }"><strong>{{ reportName(row.key) }}</strong><span class="report-file-date">{{ reportDate(row.key) }}</span><details class="report-storage-details"><summary>{{ t('report.storageDetails') }}</summary><span class="mono">{{ row.key }}</span></details></template></el-table-column>
         <el-table-column prop="size" :label="t('report.size')" width="120"><template #default="{ row }">{{ reportSize(row.size) }}</template></el-table-column>
-        <el-table-column :label="t('common.actions')" width="90" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" :loading="downloadKey === row.key" :disabled="Boolean(downloadKey)" @click="downloadArchive(row.key)">{{ t('experience.downloadJson') }}</el-button></template></el-table-column>
+        <el-table-column :label="t('common.actions')" width="144" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" :loading="downloadKey === row.key" :disabled="Boolean(downloadKey)" @click="downloadArchive(row.key)">{{ t('experience.downloadJson') }}</el-button></template></el-table-column>
       </el-table>
     </el-card>
   </div>
 </template>
 
 <style scoped>
-.snapshot-json { white-space: pre-wrap; overflow-wrap: anywhere; }
+.snapshot-json { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 12px; border-radius: var(--ns-radius-sm); background: var(--ns-bg-subtle); font-size: 12px; }
+.report-context { margin-bottom: 16px; padding: 18px 20px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: linear-gradient(110deg, color-mix(in srgb, var(--ns-accent) 5%, var(--ns-surface)), var(--ns-surface) 65%); }
+.report-context-heading { display: flex; gap: 12px; align-items: center; }
+.report-context-heading > div { min-width: 0; }
+.report-context-heading p { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 4px 0 0; font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.report-context-icon { display: grid; place-items: center; flex: 0 0 42px; height: 42px; border: 1px solid color-mix(in srgb, var(--ns-accent) 18%, var(--ns-border)); border-radius: 12px; color: var(--ns-accent-fg); background: var(--ns-surface); }
+.report-context-icon svg { width: 24px; height: 24px; }
+.report-context-label { color: var(--ns-text-2); font-size: 12px; line-height: 1.5; }
+.report-context-source { padding: 2px 8px; color: var(--ns-accent-fg); background: color-mix(in srgb, var(--ns-accent) 8%, transparent); border-radius: 6px; font-size: 12px; font-weight: 500; }
+.report-context > p { margin: 0; font-size: 14px; line-height: 1.7; }
+.report-context > p.report-snapshot-context { margin-top: 4px; font-size: 12px; }
 .report-snapshot-context { color: var(--ns-text-2); font-size: 12px; }
+.report-preview { margin-top: 12px; border-top: 1px solid var(--ns-border); padding-top: 10px; font-size: 13px; }
+.report-preview summary { cursor: pointer; color: var(--ns-accent-fg); }
+.report-preview-severities { display: flex; flex-wrap: wrap; gap: 8px 24px; margin: 12px 0; }
+.report-preview-severities > div { min-width: 72px; }
+.report-preview-severities dt { color: var(--ns-text-3); font-size: 12px; }
+.report-preview-severities dd { margin: 4px 0 0; font-weight: 650; font-variant-numeric: tabular-nums; }
+.report-raw-preview { color: var(--ns-text-2); font-size: 12px; }
+.report-raw-preview summary { color: var(--ns-text-3); }
+.report-archive-filter :deep(.el-input) { max-width: 300px; }
+.report-storage-head { align-items: baseline; flex-wrap: wrap; }
+.report-storage-head span { font-size: 12px; line-height: 1.5; }
+.report-metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 16px; }
+.report-toolbar-meta:empty { display: none; }
+.report-preview summary:focus-visible { outline: 2px solid var(--ns-accent); outline-offset: 4px; border-radius: 3px; }
+@media (max-width: 720px) { .report-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } .report-context { padding: 16px; } }
 </style>

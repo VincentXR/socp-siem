@@ -6,6 +6,7 @@ import ElConfigProvider from 'element-plus/es/components/config-provider/index.m
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import LoginView from './LoginView.vue'
 import AppShell from './components/AppShell.vue'
+import BrandMark from './components/BrandMark.vue'
 import { getVisibleMenuGroups } from './app/navigation'
 import { exportAlarms, HEALTH_TARGETS } from './api'
 import { useAlarmQuery } from './composables/useAlarmQuery'
@@ -23,6 +24,14 @@ const auth = useAuth()
 const { currentUser, currentRole, currentTenant, currentPermissions, operatorOptions, operatorLabels, isAuthed, authReady, userInitials } = auth
 const router = useRouter()
 const route = useRoute()
+const mainContent = ref<HTMLElement | null>(null)
+// This app scrolls its main region, not window. A different page starts at
+// its header; query-only changes (filters, paging, drawers) keep their position.
+watch(() => route.path, () => {
+  if (!mainContent.value) return
+  mainContent.value.scrollTop = 0
+  mainContent.value.scrollLeft = 0
+}, { flush: 'post' })
 const { activeMenu, navigate } = useWorkbenchRoute()
 const menuGroups = computed(() => getVisibleMenuGroups(currentRole.value, t, currentPermissions.value))
 const routeMenuAllowed = computed(() => menuGroups.value.some(group => group.items.some(item => item.key === activeMenu.value)))
@@ -130,7 +139,7 @@ onMounted(async () => {
       {{ t('app.offlineBanner') }}
     </div>
     <div v-if="!authReady" class="auth-bootstrap" role="status">
-      <span class="auth-bootstrap-mark" aria-hidden="true"><i /><i /><i /></span>
+      <BrandMark class="auth-bootstrap-mark" />
       <strong>SOCP</strong>
       <span>{{ t('common.loading') }}</span>
     </div>
@@ -150,7 +159,7 @@ onMounted(async () => {
       @toggle-theme="toggleTheme"
       @logout="auth.doLogout"
     >
-      <main id="main-content" class="socp-content" tabindex="-1"><RouterView v-if="routeMenuAllowed" /></main>
+      <main id="main-content" ref="mainContent" class="socp-content" tabindex="-1"><RouterView v-if="routeMenuAllowed" /></main>
     </AppShell>
   </el-config-provider>
 </template>
@@ -167,11 +176,6 @@ onMounted(async () => {
   background: var(--ns-bg-subtle);
 }
 .auth-bootstrap strong { color: var(--ns-text); font-size: 14px; letter-spacing: .12em; }
-.auth-bootstrap > span:last-child { color: var(--ns-text-3); font-size: 11px; }
-.auth-bootstrap-mark { display: flex; align-items: flex-end; gap: 3px; width: 34px; height: 34px; padding: 8px; border: 1px solid var(--ns-border); border-radius: 9px; background: var(--ns-surface); }
-.auth-bootstrap-mark i { width: 4px; border-radius: 2px; background: var(--ns-accent); animation: bootstrap-pulse 1s ease-in-out infinite alternate; }
-.auth-bootstrap-mark i:nth-child(1) { height: 8px; }
-.auth-bootstrap-mark i:nth-child(2) { height: 17px; animation-delay: .16s; }
-.auth-bootstrap-mark i:nth-child(3) { height: 12px; animation-delay: .32s; }
-@keyframes bootstrap-pulse { to { opacity: .35; transform: scaleY(.72); } }
+.auth-bootstrap > span:last-child { color: var(--ns-text-3); font-size: 12px; }
+.auth-bootstrap-mark { width: 42px; height: 42px; margin-bottom: 5px; }
 </style>

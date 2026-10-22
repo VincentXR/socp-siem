@@ -66,6 +66,42 @@ async function mockWorkbenchReads(page: Page) {
   await mockInvestigationReadiness(page)
 }
 
+test('report drilldown preserves historical closed alarms instead of applying the triage queue', async ({ page }, testInfo) => {
+  const unexpected = await installNetworkGuard(page)
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
+  await mockSession(page)
+  const reads: URL[] = []
+  await page.route('**/report-web/api/v1/reports/**', async route => {
+    const path = new URL(route.request().url()).pathname
+    const data = path.endsWith('/daily')
+      ? { date: '2026-09-23', total: 1, bySeverity: { HIGH: 1 }, byRule: [{ ruleId: 'historical-rule', rule: 'Historical closed detection', count: 1 }],
+        source: 'clickhouse', queryWindow: 'today', generatedAt: '2026-09-23T12:00:00Z', degraded: false }
+      : path.endsWith('/trend7d') ? { days: ['2026-09-23'], counts: [1], source: 'clickhouse', degraded: false }
+      : { prefix: 'reports/tenant/', count: 0, limit: 500, truncated: false, objects: [] }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(data) })
+  })
+  await page.route('**/alert-web/api/alarms?**', async route => {
+    const url = new URL(route.request().url())
+    if (url.searchParams.get('rule') !== 'historical-rule') return route.fallback()
+    reads.push(url)
+    const items = url.searchParams.has('status') ? [] : [{ id: 'closed-history', ruleId: 'historical-rule', ruleName: 'Historical closed detection',
+      entity: '203.0.113.7', severity: 'HIGH', status: 'CLOSED', occurredAt: '2026-09-23T10:00:00Z' }]
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ items, total: items.length, page: 1, size: 10, totalPages: 1 }) })
+  })
+  await page.goto('/reports')
+  await page.getByRole('button', { name: 'Historical closed detection', exact: true }).click()
+  await expect(page).toHaveURL(/status=ALL/)
+  await expect(page.locator('.el-table__body')).toContainText('Historical closed detection')
+  expect(reads.length).toBeGreaterThan(0)
+  for (const url of reads) {
+    expect(url.searchParams.has('status')).toBe(false)
+    expect(url.searchParams.get('from')).toBe('2026-09-23T00:00:00Z')
+    expect(url.searchParams.get('to')).toBe('2026-09-23T12:00:00Z')
+  }
+  await page.screenshot({ path: testInfo.outputPath('historical-alarm-drilldown.png'), fullPage: true })
+  expect(unexpected).toEqual([])
+})
+
 test('endpoint deep links page complete associations and keep unregister failures reviewable', async ({ page }, testInfo) => {
   const unexpected = await installNetworkGuard(page)
   const errors: string[] = []
@@ -133,14 +169,14 @@ test('endpoint deep links page complete associations and keep unregister failure
   const pagerBox = await history.locator('.el-pagination').boundingBox()
   expect(pagerBox).not.toBeNull(); expect(pagerBox!.x + pagerBox!.width).toBeLessThanOrEqual(390)
   await page.setViewportSize({ width: 1440, height: 1000 })
-  const management = drawer.locator('.el-drawer__footer details')
-  await expect(management).not.toHaveAttribute('open', '')
-  await management.locator('summary').filter({ hasText: 'More / management' }).click()
-  await expect(management).toHaveAttribute('open', '')
-  await drawer.getByRole('button', { name: 'Unregister', exact: true }).click()
+  const management = drawer.locator('.el-drawer__footer').getByRole('button', { name: 'More', exact: true })
+  await expect(page.getByRole('menuitem', { name: 'Unregister', exact: true })).not.toBeVisible()
+  await management.click()
+  await page.getByRole('menuitem', { name: 'Unregister', exact: true }).click()
   await expect(page.locator('.el-message-box')).toContainText('outside')
   await page.locator('.el-message-box').getByRole('button', { name: 'Confirm', exact: true }).click()
-  await expect(drawer.getByRole('button', { name: 'Unregister', exact: true })).toBeDisabled()
+  await expect(management).toBeDisabled()
+  await expect(drawer.locator('.el-drawer__footer').getByRole('button', { name: 'Close', exact: true })).toBeDisabled()
   await drawer.locator('.el-drawer__close-btn').click()
   await expect(page).toHaveURL(/endpointId=outside/)
   expect(deletes).toBe(1)
@@ -148,7 +184,8 @@ test('endpoint deep links page complete associations and keep unregister failure
   await expect(drawer.locator('[role="alert"]')).toContainText('Endpoint service unavailable')
   await expect(drawer.locator('[role="alert"]')).toBeInViewport()
   await page.screenshot({ path: testInfo.outputPath('endpoint-unregister-retry.png'), fullPage: true })
-  await drawer.getByRole('button', { name: 'Unregister', exact: true }).click()
+  await management.click()
+  await page.getByRole('menuitem', { name: 'Unregister', exact: true }).click()
   await page.locator('.el-message-box').getByRole('button', { name: 'Confirm', exact: true }).click()
   await expect(page).not.toHaveURL(/endpointId=/)
   expect(deletes).toBe(2)
@@ -577,17 +614,22 @@ test('rule revision history compares and restores the reviewed version', async (
   expect(unexpected).toEqual([])
 })
 
-test('login creates a session-backed workbench without exposing a bearer token', async ({ page }) => {
+test('login creates a session-backed workbench without exposing a bearer token', async ({ page }, testInfo) => {
   const unexpected = await installNetworkGuard(page)
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'zh-CN'))
+  await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' })
+  await page.setViewportSize({ width: 1440, height: 900 })
   await mockWorkbenchReads(page)
   await page.route(isAuthSessionUrl, route => route.fulfill({ status: 401, body: '{}' }))
   await page.route(isAuthCapabilitiesUrl, route => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ localPassword: true, oidc: false }),
   }))
+  let attempts = 0
   await page.route(isAuthLoginUrl, async route => {
     const body = route.request().postDataJSON()
     expect(body).toEqual({ username: 'analyst', password: 'secret' })
+    if (++attempts === 1) return route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ message: 'Invalid credentials. Try again.' }) })
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -596,24 +638,68 @@ test('login creates a session-backed workbench without exposing a bearer token',
     })
   })
   await page.goto('/overview')
+  await expect(page.locator('.login-form')).toBeVisible()
+  const brand = page.locator('.login-brand-mark')
+  await expect.poll(() => brand.evaluate(node => (node as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
+  const brandSource = await brand.getAttribute('src')
+  await expect(page.locator('.login-platform-state')).toHaveCount(0)
+  await page.screenshot({ path: testInfo.outputPath('login-zh-light.png'), fullPage: true, animations: 'disabled' })
+  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' })
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await page.screenshot({ path: testInfo.outputPath('login-zh-dark.png'), fullPage: true, animations: 'disabled' })
+  await page.getByRole('button', { name: 'EN', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Sign in to your workspace', exact: true })).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('login-en-dark.png'), fullPage: true, animations: 'disabled' })
+  await page.getByRole('button', { name: '中文', exact: true }).click()
+  await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.locator('button[type="submit"]')).toBeInViewport()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('login-mobile.png'), fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' })
   await page.locator('input[autocomplete="username"]').fill('analyst')
   await page.locator('input[autocomplete="current-password"]').fill('secret')
   await page.locator('form').getByRole('button').click()
+  await expect(page.locator('#login-error')).toContainText('Invalid credentials')
+  await expect(page.locator('input[autocomplete="username"]')).toHaveValue('analyst')
+  await expect(page.locator('input[autocomplete="current-password"]')).toHaveValue('secret')
+  await page.screenshot({ path: testInfo.outputPath('login-retry.png'), fullPage: true, animations: 'disabled' })
+  await page.locator('input[autocomplete="current-password"]').press('Enter')
 
   await expect(page.locator('.socp-shell')).toBeVisible()
+  expect(attempts).toBe(2)
+  await expect(page.locator('.socp-logo .socp-brand-mark')).toHaveAttribute('src', brandSource!)
+  await page.locator('.socp-sidebar-brand').screenshot({ path: testInfo.outputPath('sidebar-brand.png'), animations: 'disabled' })
   await expect(page.evaluate(() => localStorage.getItem('socp_token'))).resolves.toBeNull()
   expect(unexpected).toEqual([])
 })
 
-test('viewer cannot navigate to write-oriented configuration pages', async ({ page }) => {
+test('viewer cannot navigate to restricted inventory or export search results', async ({ page }) => {
   const unexpected = await installNetworkGuard(page)
+  await page.addInitScript(() => localStorage.setItem('socp-locale', 'en-US'))
   await mockSession(page, 'viewer')
+  await page.route('**/search-config/api/v1/search?**', route => route.fulfill({ contentType: 'application/json',
+    body: JSON.stringify({ total: 1, events: [{ eventId: 'viewer-event', timestamp: '2026-10-22T00:00:00Z',
+      source: 'auth', host: 'host-1', severity: 'LOW', msg: 'Readable event', fields: {} }] }) }))
+  await page.route('**/search-config/api/v1/meta/fields', route => route.fulfill({ contentType: 'application/json', body: '[]' }))
   await page.goto('/overview')
 
   await expect(page.locator('[data-menu-key="alarms"]')).toBeVisible()
   await expect(page.locator('[data-menu-key="detect"]')).toHaveCount(0)
   await expect(page.locator('[data-menu-key="soar"]')).toHaveCount(0)
   await expect(page.locator('[data-menu-key="notify"]')).toHaveCount(0)
+  await expect(page.locator('[data-menu-key="assets"]')).toHaveCount(0)
+  await expect(page.locator('[data-menu-key="endpoints"]')).toHaveCount(0)
+  for (const restrictedPath of ['/assets?assetId=restricted', '/endpoints?endpointId=restricted']) {
+    await page.goto(restrictedPath)
+    await expect(page).toHaveURL(/\/overview$/)
+    await expect(page.locator('.el-message')).toContainText('This page is not available for your role')
+  }
+  await page.goto('/search?q=source%3Dauth&range=all')
+  await expect(page.locator('.el-table__body')).toContainText('Readable event')
+  await expect(page.getByRole('button', { name: 'Run Search', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Export JSON', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Export CSV', exact: true })).toHaveCount(0)
   expect(unexpected).toEqual([])
 })
 
@@ -639,7 +725,7 @@ test('sidebar groups respond on first interaction and retain preferences across 
   expect(unexpected).toEqual([])
 })
 
-test('alarm filters stay within the viewport and keep a long catalogue failure readable', async ({ page }) => {
+test('alarm filters stay within the viewport and keep a long catalogue failure readable', async ({ page }, testInfo) => {
   const unexpected = await installNetworkGuard(page)
   await mockSession(page)
   await page.route('**/detect-web/api/v1/rules/options*', route => route.fulfill({ status: 503,
@@ -653,23 +739,42 @@ test('alarm filters stay within the viewport and keep a long catalogue failure r
     const hint = await page.locator('.alarm-catalog-hint').boundingBox()
     expect(hint!.width).toBeGreaterThan(180)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
-    const queue = await page.locator('.view--alarms > .alarm-toolbar-actions .el-select').boundingBox()
+    const queue = await page.locator('.alarm-query-footer .alarm-queue-context .el-select').boundingBox()
     expect(queue!.width).toBeGreaterThan(120)
+    await page.screenshot({ path: testInfo.outputPath(`alarm-filters-${width}.png`), fullPage: true, animations: 'disabled' })
   }
   expect(unexpected).toEqual([])
 })
 
 test('router preserves deep links and browser back navigation', async ({ page }) => {
   const unexpected = await installNetworkGuard(page)
+  await page.addInitScript(() => {
+    localStorage.setItem('socp-locale', 'en-US')
+    localStorage.setItem('socp.sidebar.recent-menus', '["alarms","cases"]')
+  })
   await mockSession(page)
   await page.goto('/overview')
+  await expect(page.locator('.overview-page')).toBeVisible()
+  const sidebar = page.locator('#socp-primary-navigation')
+  await expect(sidebar.getByRole('button', { name: 'Alarm Explorer', exact: true })).toHaveCount(1)
+  await expect(sidebar.getByRole('button', { name: 'Case Management', exact: true })).toHaveCount(1)
+  await expect(page.locator('.socp-recent-nav')).toHaveCount(0)
+  // Both destinations remain scrollable, so a reset cannot pass merely because
+  // the new page happens to be shorter than the viewport.
+  await page.addStyleTag({ content: '.socp-content > * { min-height: 1600px; }' })
+  const main = page.locator('#main-content')
+  await main.evaluate(element => { element.scrollTop = 420 })
+  await expect.poll(() => main.evaluate(element => element.scrollTop)).toBe(420)
   await page.locator('[data-menu-key="alarms"]').click()
   await expect(page).toHaveURL(/\/alarms$/)
   await expect(page.locator('[data-menu-key="alarms"]')).toHaveAttribute('aria-current', 'page')
+  await expect.poll(() => main.evaluate(element => element.scrollTop)).toBe(0)
 
   await page.goBack()
   await expect(page).toHaveURL(/\/overview$/)
   await expect(page.locator('[data-menu-key="overview"]')).toHaveAttribute('aria-current', 'page')
+  await expect.poll(() => main.evaluate(element => element.scrollTop)).toBe(0)
+  expect(await page.evaluate(() => localStorage.getItem('socp.sidebar.recent-menus'))).toBe('["alarms","cases"]')
   expect(unexpected).toEqual([])
 })
 
@@ -743,13 +848,44 @@ test('reduced-motion preferences stop workbench animations in both themes', asyn
   await page.emulateMedia({ reducedMotion: 'reduce', colorScheme: 'light' })
   await page.goto('/overview')
   await expect(page.locator('.socp-shell')).toBeVisible()
+  await expect(page.locator('body')).toHaveCSS('font-size', '14px')
   const card = page.locator('.el-card').first()
+  const primary = page.locator('.page-actions .el-button--primary').first()
+  async function expectActionHierarchy() {
+    // Resolve the real Element Plus + app CSS cascade, including lazy-loaded
+    // styles. A plain variant must not inherit the filled primary's ink/background.
+    const colors = await primary.evaluate(element => {
+      const filled = getComputedStyle(element)
+      const baseline = { ink: filled.color, background: filled.backgroundColor, font: filled.fontSize }
+      const plain = element.cloneNode(true) as HTMLElement
+      plain.classList.add('is-plain')
+      element.parentElement!.append(plain)
+      const resolved = getComputedStyle(plain)
+      const result = { ...baseline, plainInk: resolved.color, plainBackground: resolved.backgroundColor }
+      plain.remove()
+      return result
+    })
+    expect(colors.font).toBe('13px')
+    expect(colors.plainInk).not.toBe(colors.ink)
+    expect(colors.plainBackground).not.toBe(colors.background)
+    expect((await primary.boundingBox())?.height).toBe(32)
+  }
+  await expectActionHierarchy()
   expect(await card.evaluate(element => parseFloat(getComputedStyle(element).transitionDuration))).toBe(0.00001)
   await page.screenshot({ path: testInfo.outputPath('overview-reduced-motion-light.png'), fullPage: true })
   await page.getByRole('button', { name: 'Dark', exact: true }).click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await expectActionHierarchy()
   expect(await card.evaluate(element => parseFloat(getComputedStyle(element).transitionDuration))).toBe(0.00001)
   await page.screenshot({ path: testInfo.outputPath('overview-reduced-motion-dark.png'), fullPage: true })
+  await page.getByRole('button', { name: '中文', exact: true }).click()
+  await expect(page.getByRole('heading', { name: '安全运营概览', exact: true })).toBeVisible()
+  await expect(primary).toHaveText('刷新')
+  await page.screenshot({ path: testInfo.outputPath('overview-zh-dark.png'), fullPage: true })
+  await page.getByRole('button', { name: '浅色', exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+  await expect(page.locator('.socp-sider')).toHaveCSS('background-color', 'rgb(255, 255, 255)')
+  await page.screenshot({ path: testInfo.outputPath('overview-zh-light.png'), fullPage: true, animations: 'disabled' })
   expect(unexpected).toEqual([])
 })
 

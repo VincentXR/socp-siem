@@ -22,6 +22,7 @@ import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { watch, computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
+import RowActivate from '../components/RowActivate.vue'
 import SoarControlPlane from '../components/soar/SoarControlPlane.vue'
 import SoarCatalogPager from '../components/soar/SoarCatalogPager.vue'
 import SoarEditor from '../components/soar/SoarEditor.vue'
@@ -46,7 +47,11 @@ import { useFormDialog } from '../composables/useFormDialog'
 import { useSoarAccess } from '../composables/useSoarAccess'
 import { tOr } from '../utils/i18nLabel'
 
-const { t } = useI18n()
+const { t, d } = useI18n()
+function formatTime(value: unknown): string {
+  if (!value) return '—'
+  try { return d(String(value), 'dateTime') } catch { return String(value) }
+}
 const { confirmDanger } = useConfirm()
 const soarAccess = useSoarAccess()
 const canWrite = soarAccess.canEdit
@@ -56,6 +61,7 @@ const chooseTemplate = ref(false)
 /** Template id whose install request is in flight (guards a double submit). */
 const installingTemplateId = ref('')
 const templateError = ref('')
+const templateGuard = useFormDialog(chooseTemplate, () => null, () => Boolean(installingTemplateId.value))
 
 type SoarTab = 'playbooks' | 'rules' | 'runs' | 'approvals' | 'connections'
 const activeTab = ref<SoarTab>('playbooks')
@@ -263,18 +269,20 @@ async function refreshSoarPage(): Promise<void> {
 }
 
 async function installTemplate(id: string) {
-  if (!canWrite.value || installingTemplateId.value) return
+  if (!canWrite.value || installingTemplateId.value || disposed) return
   installingTemplateId.value = id
   templateError.value = ''
   try {
     const result = await installTemplateApi(id) as { playbook?: { id?: string } }
+    if (disposed) return
     await loadBaseData()
+    if (disposed) return
     const playbookId = String(result?.playbook?.id || '')
     chooseTemplate.value = false
     ElMessage.success(t('soar.createdDraft'))
     if (playbookId) await openEditorForPlaybook(playbookId)
   } catch (failure) {
-    templateError.value = String(failure)
+    if (!disposed) templateError.value = String(failure)
   } finally {
     installingTemplateId.value = ''
   }
@@ -310,6 +318,7 @@ async function handleOpenRunInEditor(request: RunOpenRequest): Promise<void> {
 }
 
 async function openEditorForCreate(): Promise<void> {
+  if (installingTemplateId.value) return
   if (showEditor.value && editorRef.value?.hasUnsavedChanges && !(await discardEditorChanges())) return
   selectedPlaybookId.value = ''
   chooseTemplate.value = false
@@ -395,27 +404,28 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
   <div class="page-pad view-enter soar-view">
     <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('soar.title')" :description="t('soar.description')">
       <template #actions>
-        <el-button size="small" :loading="loading || approvalsLoading" @click="refreshSoarPage">{{ t('common.refresh') }}</el-button>
-        <el-button v-if="canWrite && !showEditor" type="primary" size="small" @click="chooseTemplate = true">{{ t('soar.createPlaybook') }}</el-button>
+        <el-button :loading="loading || approvalsLoading" @click="refreshSoarPage">{{ t('common.refresh') }}</el-button>
+        <el-button v-if="canWrite && !showEditor" type="primary" @click="chooseTemplate = true">{{ t('soar.createPlaybook') }}</el-button>
       </template>
     </PageHeader>
     <div v-if="loadError" class="soar-load-error" role="alert">{{ loadError }}</div>
     <div v-if="!canWrite" class="page-readonly-hint">{{ t('soar.readOnly') }}</div>
-    <el-button v-if="returnTo" @click="router.push(returnTo)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
+    <el-button v-if="returnTo" class="soar-back" text :aria-label="t('analystJourney.returnToInvestigation')" @click="router.push(returnTo)"><span aria-hidden="true">←</span> {{ t('analystJourney.returnToInvestigation') }}</el-button>
     <div v-if="contextAlarmId || contextCaseId" class="soar-context-banner">
       <span v-if="contextAlarmId">{{ t('soar.contextFromAlarm') }} <code>{{ contextAlarmId }}</code></span>
       <span v-if="contextCaseId">{{ t('cases.caseId') }} <code>{{ contextCaseId }}</code></span>
       <small>{{ t('soar.contextFromAlarmHint') }}</small>
     </div>
 
-    <el-button v-if="showEditor" @click="router.push({ name: 'soar', query: contextQuery })">{{ t('forms.back') }}</el-button>
+    <el-button v-if="showEditor" class="soar-back" text :aria-label="t('soar.backToPlaybooks')" @click="router.push({ name: 'soar', query: contextQuery })"><span aria-hidden="true">←</span> {{ t('soar.backToPlaybooks') }}</el-button>
     <SoarEditor v-if="showEditor" ref="editorRef" :initial-playbook-id="selectedPlaybookId" :open-run="openRunRequest" :create-request="createRequestToken" :context-alarm-id="contextAlarmId" :context-case-id="contextCaseId" @open-run="openRun" @automate="versionId => router.push({ name: 'soar', query: { ...contextQuery, tab: 'rules', versionId } })" :can-write="canWrite" :can-publish="soarAccess.canPublish.value" :can-execute="soarAccess.canExecute.value" @created="id => router.replace({ name: 'playbook-edit', params: { playbookId: id }, query: contextQuery })" />
-    <el-dialog v-model="chooseTemplate" :title="t('forms.selectTemplate')" width="640px" :close-on-click-modal="false">
-      <el-button v-if="canWrite" type="primary" @click="openEditorForCreate">{{ t('forms.blank') }}</el-button>
+    <el-dialog v-model="chooseTemplate" :before-close="templateGuard.beforeClose" :title="t('forms.selectTemplate')" width="640px" :close-on-click-modal="false">
+      <p class="soar-template-intro">{{ t('soar.templateChoiceHint') }}</p>
+      <el-button v-if="canWrite" type="primary" :disabled="Boolean(installingTemplateId)" @click="openEditorForCreate">{{ t('soar.createBlankPlaybook') }}</el-button>
       <div v-for="template in templates" :key="template.id" class="template-choice"><div><b>{{ template.name }}</b><p>{{ template.description }}</p></div><el-button v-if="canWrite" :loading="installingTemplateId === String(template.id)" :disabled="Boolean(installingTemplateId)" @click="installTemplate(String(template.id))">{{ t('soar.installDraft') }}</el-button></div>
       <div v-if="templateError" class="soar-load-error" role="alert">{{ templateError }}</div>
       <template #footer>
-        <el-button @click="chooseTemplate = false">{{ t('common.cancel') }}</el-button>
+        <el-button :disabled="Boolean(installingTemplateId)" @click="templateGuard.cancel">{{ t('common.cancel') }}</el-button>
       </template>
     </el-dialog>
     <el-tabs v-if="!showEditor" v-model="activeTab" class="soar-tabs">
@@ -433,7 +443,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
             <el-table v-loading="loading" :data="playbooks" size="small" :empty-text="t(playbookLoadFailed ? 'experience.unknownData' : 'common.empty')">
               <el-table-column :label="t('common.name')" min-width="220" show-overflow-tooltip>
                 <template #default="{ row }">
-                  <div class="soar-playbook-name">{{ row.name }}</div>
+                  <RowActivate class="soar-playbook-name" :aria-label="t('soar.openPlaybook', { name: row.name })" @activate="openEditorForPlaybook(row.id)">{{ row.name }}</RowActivate>
                   <code class="soar-secondary-id">{{ row.id }}</code>
                 </template>
               </el-table-column>
@@ -452,17 +462,17 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
               <el-table-column :label="t('soar.lastRun')" min-width="190">
                 <template #default="{ row }">
                   <template v-if="row.latestRun">
-                    <el-tag size="small" :type="runTag(row.latestRun.status)">{{ statusLabel(row.latestRun.status || '') }}</el-tag>
-                    <small class="soar-version-note">{{ row.latestRun.createdAt || '—' }}</small>
+                    <RowActivate class="soar-latest-run" :aria-label="t('soar.inspectLatestRun', { name: row.name })" @activate="openRun(row.latestRun.runId)"><el-tag size="small" :type="runTag(row.latestRun.status)">{{ statusLabel(row.latestRun.status || '') }}</el-tag></RowActivate>
+                    <small class="soar-version-note"><time :datetime="row.latestRun.createdAt">{{ formatTime(row.latestRun.createdAt) }}</time></small>
                   </template>
                   <span v-else-if="row.latestRun === null" class="soar-text-muted">{{ t('soar.noRetainedRuns') }}</span>
                   <span v-else class="soar-text-muted">—</span>
                 </template>
               </el-table-column>
-              <el-table-column prop="updatedAt" :label="t('soar.updatedAt')" width="190" show-overflow-tooltip />
-              <el-table-column :label="t('common.actions')" width="100" fixed="right">
+              <el-table-column prop="updatedAt" :label="t('soar.updatedAt')" width="184" show-overflow-tooltip><template #default="{ row }">{{ formatTime(row.updatedAt) }}</template></el-table-column>
+              <el-table-column :label="t('common.actions')" width="132" fixed="right">
                 <template #default="{ row }">
-                  <el-button link type="primary" size="small" @click="openEditorForPlaybook(row.id)">{{ t('common.view') }}</el-button>
+                  <el-button link type="primary" size="small" @click="openEditorForPlaybook(row.id)">{{ t(canWrite ? 'soar.editPlaybook' : 'soar.viewPlaybook') }}</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -513,7 +523,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
                   <el-tag size="small" :type="row.status === 'APPROVED' ? 'success' : row.status === 'REJECTED' ? 'danger' : 'warning'">{{ statusLabel(row.status) }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column prop="createdAt" :label="t('soar.createdAt')" width="180" />
+              <el-table-column prop="createdAt" :label="t('soar.createdAt')" width="184"><template #default="{ row }">{{ formatTime(row.createdAt) }}</template></el-table-column>
               <el-table-column :label="t('common.actions')" width="160">
                 <template #default="{ row }">
                   <template v-if="row.status === 'PENDING'">
@@ -594,19 +604,35 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
 .soar-tab-content { display: flex; flex-direction: column; gap: 16px; margin-top: 8px; }
 .soar-card { border: 1px solid var(--ns-border); }
 .soar-card-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.soar-header-hint { color: var(--ns-text-3); font-size: 11px; margin-left: 8px; font-weight: normal; }
+.soar-header-hint { color: var(--ns-text-3); font-size: 12px; font-weight: normal; line-height: 1.5; }
 .soar-header-filter { display: flex; gap: 8px; }
 .soar-editor-toggle-bar { display: flex; justify-content: flex-end; margin-bottom: 4px; }
 .soar-editor-container { margin-bottom: 8px; border-radius: 6px; overflow: hidden; }
 .soar-action-tag, .soar-result-tag { margin-right: 4px; }
 .soar-playbook-name { color: var(--ns-text); font-weight: 650; }
-.soar-secondary-id { display: block; margin-top: 3px; color: var(--ns-text-3); font-size: 10px; }
-.soar-version-note { display: block; margin-top: 4px; color: var(--ns-text-3); font-size: 10px; }
+.soar-secondary-id { display: block; margin-top: 3px; color: var(--ns-text-3); font-size: 12px; }
+.soar-version-note { display: block; margin-top: 4px; color: var(--ns-text-3); font-size: 12px; }
 .soar-load-error { margin-top: 10px; color: var(--ns-danger); font-size: 12px; }
 .soar-summary { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .soar-approval-table { margin-top: 8px; }
 .soar-approval-dialog-body pre { max-height: 220px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .soar-approval-dialog-body p { margin-bottom: 8px; font-size: 12px; color: var(--ns-text-2); }
 .soar-approval-dialog-body p.soar-approval-hint { margin: 4px 0 0; color: var(--ns-warning); }
-.soar-text-muted { color: var(--ns-text-3); font-size: 11px; }
+.soar-text-muted { color: var(--ns-text-3); font-size: 12px; }
+.soar-back { align-self: flex-start; }
+.soar-template-intro { margin: 0 0 16px; color: var(--ns-text-2); font-size: 14px; line-height: 1.6; }
+.template-choice { gap: 20px; margin-top: 12px; padding: 16px; border: 1px solid var(--ns-border); border-radius: 10px; background: var(--ns-bg-subtle); }
+.template-choice > div { min-width: 0; }
+.template-choice p { font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.template-choice :deep(.el-button) { flex-shrink: 0; }
+.soar-context-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; padding: 14px 16px; border: 1px solid color-mix(in srgb, var(--ns-accent) 20%, var(--ns-border)); border-left: 3px solid var(--ns-accent); border-radius: 10px; background: color-mix(in srgb, var(--ns-accent) 4%, var(--ns-surface)); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.soar-context-banner small { flex-basis: 100%; color: var(--ns-text-2); font-size: 12px; }
+.soar-card-header > strong { font-size: 14px; }
+.soar-secondary-id { font-variant-numeric: tabular-nums; }
+.soar-playbook-name:hover { color: var(--ns-accent-fg); }
+.soar-approval-dialog-body pre { padding: 14px 16px; border: 1px solid var(--ns-border); border-radius: 8px; background: var(--ns-bg-subtle); font-size: 12px; line-height: 1.7; }
+@media (max-width: 720px) {
+  .soar-card-header { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .template-choice { align-items: flex-start; flex-direction: column; gap: 8px; }
+}
 </style>

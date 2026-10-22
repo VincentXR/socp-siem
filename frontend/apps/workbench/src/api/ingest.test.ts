@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-const core = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn() }))
+const core = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), requestText: vi.fn() }))
 vi.mock('./core', () => core)
 import { getSourceSetup, previewSource, renderSourceConfig, updateOutput, validateOutputConfig } from './ingest'
 beforeEach(() => vi.clearAllMocks())
@@ -11,7 +11,7 @@ describe('ingestion setup API contracts', () => {
     renderSourceConfig('a/b', options)
     expect(core.get).toHaveBeenCalledWith('/search-config/api/v1/sources/a%2Fb/setup', options)
     expect(core.post).toHaveBeenCalledExactlyOnceWith('/search-config/api/v1/sources/a%2Fb/preview', { sample: 'real sample' }, options)
-    expect(core.get).toHaveBeenCalledWith('/search-config/api/v1/sources/a%2Fb/vector-config', options)
+    expect(core.requestText).toHaveBeenCalledWith('/search-config/api/v1/sources/a%2Fb/vector-config', {}, options)
   })
   it('requires explicit credential intent and never confuses a blank read with a clear', () => {
     const body = { name: 'Destination', type: 'HTTP', uri: 'https://example.test/ingest', enabled: true, authToken: null }

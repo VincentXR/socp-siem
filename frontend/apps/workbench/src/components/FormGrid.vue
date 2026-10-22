@@ -20,7 +20,7 @@ withDefaults(defineProps<{ columns?: 1 | 2 | 3 | 4 }>(), { columns: 2 })
 <style scoped>
 .form-grid {
   display: grid;
-  gap: 10px 12px;
+  gap: 16px;
 }
 
 .form-grid.cols-1 {

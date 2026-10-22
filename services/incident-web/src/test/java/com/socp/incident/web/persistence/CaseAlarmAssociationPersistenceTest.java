@@ -106,6 +106,33 @@ class CaseAlarmAssociationPersistenceTest {
         assertThat(store.timeline(second.id(), 0, 10).getTotalElements()).isEqualTo(2);
     }
 
+    @Test void manualAttachAndMoveRaiseDestinationSeverityWithoutLoweringHistoricalPriority() {
+        when(alerts.getAlarm("alarm-1")).thenReturn(new ServiceCall(SocpService.ALERT, "http://alert", true,
+                200, "{\"code\":0,\"data\":{\"id\":\"alarm-1\",\"tenantId\":\"" + TenantContext.require()
+                + "\",\"ruleId\":\"r-1\",\"severity\":\"CRITICAL\"}}", null, 1, false, 1));
+        Case first = store.save(Case.create("Low priority", "host", "LOW", "alice"));
+        Case second = store.save(Case.create("Other case", "host", "MEDIUM", "bob"));
+        var attach = command(first, "ATTACH", null, "attach-severity");
+
+        commands.change(first.id(), "alice", attach);
+        Case raised = store.getMetadata(first.id());
+        assertThat(raised.severity()).isEqualTo("CRITICAL");
+        assertThat(raised.assignee()).isEqualTo("alice");
+        assertThat(raised.status()).isEqualTo("OPEN");
+        assertThat(commands.change(first.id(), "alice", attach)).containsEntry("duplicate", true);
+        assertThat(store.getMetadata(first.id()).rowVersion()).isEqualTo(raised.rowVersion());
+
+        commands.change(first.id(), "alice", command(raised, "MOVE", second, "move-severity"));
+        Case destination = store.getMetadata(second.id());
+        assertThat(destination.severity()).isEqualTo("CRITICAL");
+        assertThat(destination.assignee()).isEqualTo("bob");
+        assertThat(destination.status()).isEqualTo("OPEN");
+        assertThat(store.getMetadata(first.id()).severity()).isEqualTo("CRITICAL");
+
+        commands.change(second.id(), "alice", command(destination, "DETACH", null, "detach-severity"));
+        assertThat(store.getMetadata(second.id()).severity()).isEqualTo("CRITICAL");
+    }
+
     @Test void concurrentMovesHaveOneWinnerAndNeverAssociateTheAlarmTwice() throws Exception {
         Case source = create(), targetA = create(), targetB = create();
         commands.change(source.id(), "alice", command(source, "ATTACH", null, "attach"));

@@ -1,15 +1,17 @@
 import { mount, flushPromises } from '@vue/test-utils'
-import { ref } from 'vue'
-import { createRouter, createMemoryHistory } from 'vue-router'
+import { h, ref } from 'vue'
+import { createRouter, createMemoryHistory, RouterView } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SoarView from '../src/views/SoarView.vue'
 import SoarCatalogPager from '../src/components/soar/SoarCatalogPager.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
+import { formatDate } from '../src/i18n'
 
 const mocks = vi.hoisted(() => ({
   listPlaybooks: vi.fn(),
   listRuns: vi.fn(), getRun: vi.fn(), listNodes: vi.fn(), listEvents: vi.fn(), listArtifacts: vi.fn(),
   listTemplates: vi.fn(),
+  installTemplate: vi.fn(),
   listApprovalsPage: vi.fn(),
   approve: vi.fn(), getApproval: vi.fn(),
   listManualTasksPage: vi.fn(),
@@ -20,18 +22,19 @@ const approvalPage = (items: Array<Record<string, unknown>>, total = items.lengt
 
 const emptyPage = { page: 0, size: 100, total: 0, totalPages: 0, items: [] as Array<Record<string, unknown>> }
 
-async function mountSoar(path: string) {
+async function mountSoar(path: string, routed = false) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
       { path: '/soar', name: 'soar', component: SoarView },
       { path: '/soar/playbooks/new', name: 'playbook-new', component: SoarView, meta: { editor: true } },
       { path: '/soar/playbooks/:playbookId/edit', name: 'playbook-edit', component: SoarView, meta: { editor: true } },
+      { path: '/elsewhere', component: { template: '<p>Elsewhere</p>' } },
     ],
   })
   await router.push(path)
   await router.isReady()
-  const wrapper = mount(SoarView, {
+  const wrapper = mount(routed ? { render: () => h(RouterView) } : SoarView, {
     attachTo: document.body,
     global: { plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref('admin') } } },
   })
@@ -58,6 +61,51 @@ describe('soar approvals lifecycle', () => {
 
   afterEach(() => {
     document.body.textContent = ''
+  })
+
+  it('keeps template installation open and blocks navigation until the write settles', async () => {
+    let rejectInstall!: (error: Error) => void
+    mocks.installTemplate.mockImplementationOnce(() => new Promise((_, reject) => { rejectInstall = reject }))
+    const { wrapper, router } = await mountSoar('/soar', true)
+    const view = wrapper.findComponent(SoarView).vm as unknown as {
+      chooseTemplate: boolean; templateError: string; installTemplate: (id: string) => Promise<void>
+    }
+    try {
+      view.chooseTemplate = true
+      await flushPromises()
+      const pending = view.installTemplate('template-one')
+      await flushPromises()
+      const cancel = wrapper.findAll('.el-dialog__footer button').find(button => button.text() === '取消')!
+      await cancel.trigger('click')
+      expect(view.chooseTemplate).toBe(true)
+      await view.installTemplate('template-two')
+      expect(mocks.installTemplate).toHaveBeenCalledExactlyOnceWith('template-one')
+      await router.push('/elsewhere')
+      expect(router.currentRoute.value.path).toBe('/soar')
+      const unload = new Event('beforeunload', { cancelable: true })
+      window.dispatchEvent(unload)
+      expect(unload.defaultPrevented).toBe(true)
+      rejectInstall(new Error('template installation unavailable')); await pending
+      expect(view.templateError).toContain('template installation unavailable')
+      await cancel.trigger('click')
+      await router.push('/elsewhere')
+      expect(router.currentRoute.value.path).toBe('/elsewhere')
+    } finally { wrapper.unmount() }
+  })
+
+  it('does not navigate back to an editor when template installation finishes after unmount', async () => {
+    let finish!: (value: unknown) => void
+    mocks.installTemplate.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    const { wrapper, router } = await mountSoar('/soar', true)
+    const view = wrapper.findComponent(SoarView).vm as unknown as { chooseTemplate: boolean; installTemplate: (id: string) => Promise<void> }
+    view.chooseTemplate = true
+    const pending = view.installTemplate('template-one')
+    const reads = mocks.listPlaybooks.mock.calls.length
+    const navigate = vi.spyOn(router, 'push')
+    wrapper.unmount()
+    finish({ playbook: { id: 'created-playbook' } }); await pending; await flushPromises()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(mocks.listPlaybooks).toHaveBeenCalledTimes(reads)
   })
 
   it('identifies a case-only response context without an empty alarm reference', async () => {
@@ -199,6 +247,20 @@ describe('soar approvals lifecycle', () => {
     } finally { wrapper.unmount() }
   })
 
+  it('opens the latest retained run from the keyboard while keeping the investigation context', async () => {
+    mocks.listPlaybooks.mockResolvedValueOnce({ ...emptyPage, total: 1, totalPages: 1, items: [{
+      id: 'playbook-1', name: 'Reviewed response', status: 'ACTIVE', tags: [],
+      latestRun: { runId: 'run-1', status: 'SUCCEEDED', createdAt: '2026-10-22T00:00:00Z' },
+    }] })
+    const { wrapper, router } = await mountSoar('/soar?tab=playbooks&alarmId=alarm-context&caseId=case-context', true)
+    const run = wrapper.find('.soar-latest-run')
+    expect(run.attributes('role')).toBe('button')
+    await run.trigger('keydown', { key: ' ' }); await flushPromises()
+    expect(router.currentRoute.value.query).toMatchObject({ tab: 'runs', runId: 'run-1', alarmId: 'alarm-context', caseId: 'case-context' })
+    expect(wrapper.find('.soar-run-summary').text()).toContain('run-1')
+    wrapper.unmount()
+  })
+
   it('navigates beyond 100 playbooks and uses the authoritative retained-run summary', async () => {
     const catalog = Array.from({ length: 137 }, (_, index) => ({
       id: `pb-${index}`, name: `Playbook ${index}`, status: 'ACTIVE', tags: [],
@@ -215,7 +277,7 @@ describe('soar approvals lifecycle', () => {
     await flushPromises()
     expect(mocks.listPlaybooks.mock.calls.at(-1)!.slice(0, 2)).toEqual([5, 25])
     expect(wrapper.text()).toContain('Playbook 136')
-    expect(wrapper.text()).toContain('2025-01-01T00:00:00Z')
+    expect(wrapper.text()).toContain(formatDate('2025-01-01T00:00:00Z', 'dateTime'))
     expect(wrapper.findAll('.soar-playbook-name')).toHaveLength(12)
     expect(mocks.listRuns).not.toHaveBeenCalled()
     await wrapper.get('#tab-runs').trigger('click')

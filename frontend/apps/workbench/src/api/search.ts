@@ -1,4 +1,4 @@
-import { del, downloadFile, get, post, put, type ApiRequestOptions } from './core'
+import { del, downloadFile, get, post, put, requestText, type ApiRequestOptions } from './core'
 import type { DataSourceType, FieldDef, LogCategory, LogSource, ParseRule, ReferenceSet, SearchResult, SinkTarget, Paged } from './models'
 import { withQuery } from '../lib/query'
 
@@ -20,7 +20,7 @@ export interface LogSourceInput {
 export const createSource = (source: LogSourceInput) => post<LogSource>('/search-config/api/v1/sources', source)
 export const updateSource = (id: string, source: LogSourceInput) => put<{ source: LogSource }>(`/search-config/api/v1/sources/${encodeURIComponent(id)}`, source)
 export const deleteSource = (id: string) => del(`/search-config/api/v1/sources/${encodeURIComponent(id)}`)
-export const renderConfig = () => post<string>('/search-config/api/v1/render')
+export const renderConfig = () => requestText('/search-config/api/v1/render', { method: 'POST' })
 export const listParseRules = (options?: ApiRequestOptions) => get<ParseRule[]>('/search-config/api/v1/parse-rules', options)
 export const listParseRulesPage = (page: number, size: number, q = '', options?: ApiRequestOptions) =>
   get<Paged<ParseRule>>(withQuery('/search-config/api/v1/parse-rules', { page, size, q: q.trim() || undefined }), options)

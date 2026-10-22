@@ -1,4 +1,5 @@
-import { mount, flushPromises } from '@vue/test-utils'
+import { DOMWrapper, mount, flushPromises } from '@vue/test-utils'
+import { ElDropdown } from 'element-plus/es/components/dropdown/index.mjs'
 import { h, ref } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -35,7 +36,18 @@ async function open(path = '/endpoints?endpointId=outside', role = 'analyst') {
   return router
 }
 async function click(label: string, scope = '') {
-  const button = (scope ? wrapper.find(scope) : wrapper).findAll('button').find(item => item.text() === label)
+  const container = scope ? wrapper.find(scope) : wrapper
+  const button = container.findAll('button').find(item => item.text() === label)
+  if (!button && label === translate('endpoints.unregister')) {
+    const trigger = container.findComponent(ElDropdown).find('button')
+    const disabled = trigger.attributes('disabled') !== undefined
+    await trigger.trigger('click'); await flushPromises()
+    if (disabled) return
+    const menuItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === label)
+    expect(menuItem, label).toBeTruthy()
+    await new DOMWrapper(menuItem!).trigger('click'); await flushPromises()
+    return
+  }
   expect(button, label).toBeTruthy()
   await button!.trigger('click'); await flushPromises()
 }
@@ -84,7 +96,9 @@ describe('endpoint investigation', () => {
   it('does not fetch detail associations until selected and restores a closed deep link through history', async () => {
     const router = await open('/endpoints?page=2&q=before')
     expect(mocks.get).not.toHaveBeenCalled(); expect(mocks.history).not.toHaveBeenCalled()
-    await click(translate('common.details'))
+    const name = wrapper.find('.row-activate')
+    expect(name.attributes('aria-label')).toBe(translate('endpoints.openDetails', { name: 'host-listed' }))
+    await name.trigger('keydown', { key: ' ' }); await flushPromises()
     expect(router.currentRoute.value.query.endpointId).toBe('listed')
     await wrapper.find('.el-drawer__close-btn').trigger('click'); await flushPromises()
     expect(router.currentRoute.value.query).toEqual({ page: '2', q: 'before' })

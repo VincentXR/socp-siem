@@ -9,7 +9,7 @@ export default defineConfig({
     // when this suite runs alongside the backend and browser checks.
     maxWorkers: 2,
     clearMocks: true,
-    include: ['scripts/**/*.component.test.ts', 'src/components/soar/editor/**/*.test.ts', 'src/lib/**/*.test.ts', 'src/api/**/*.test.ts'],
+    include: ['scripts/**/*.component.test.ts', 'scripts/**/*.http.test.ts', 'src/components/soar/editor/**/*.test.ts', 'src/lib/**/*.test.ts', 'src/api/**/*.test.ts'],
     server: {
       deps: { inline: ['element-plus'] },
     },

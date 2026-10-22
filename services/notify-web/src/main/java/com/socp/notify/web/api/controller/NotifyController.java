@@ -91,12 +91,14 @@ public class NotifyController {
     @PostMapping("/channels/{id}/test")
     public ResponseEntity<ApiResult<Map<String, Object>>> test(@PathVariable String id) {
         Map<String, Object> result = dispatcher.test(requireChannel(id));
-        boolean failed = "failed".equals(result.get("status"));
-        // HTTP status and envelope code stay in sync: a failed test is never a
-        // code=0 envelope, otherwise clients that only read the code see success.
-        return ResponseEntity.status(failed ? HttpStatus.BAD_GATEWAY : HttpStatus.OK)
-                .body(failed ? ApiResult.of(502, "通知渠道测试未通过，请核对渠道目标地址与凭据后重试", result)
-                        : ApiResult.ok(result));
+        boolean confirmed = "sent".equals(result.get("status")) || "logged".equals(result.get("status"));
+        // A transport timeout or malformed provider receipt is not confirmation.
+        // Keep the diagnostics, but never turn an unknown outcome into code=0.
+        String message = "unknown".equals(result.get("status"))
+                ? "通知渠道测试结果尚未确认，请先核对投递历史与接收端，避免重复发送"
+                : "通知渠道测试未通过，请核对渠道目标地址与凭据后重试";
+        return ResponseEntity.status(confirmed ? HttpStatus.OK : HttpStatus.BAD_GATEWAY)
+                .body(confirmed ? ApiResult.ok(result) : ApiResult.of(502, message, result));
     }
 
     private Channel requireChannel(String id) {

@@ -20,7 +20,7 @@ async function setup() {
     filteredAlarms: [], alarmPageData: { total: 0 }, alarmPageSize: 20, loading: false, error: '',
     onSearch: vi.fn(), loadPage: vi.fn(), onSortChange: vi.fn(), exportCsv: vi.fn(), exportJson: vi.fn(),
     goCase: vi.fn(), goSearch: vi.fn(), canWrite: true, assigneeOptions: ['alice', 'bob'],
-  }, global: { plugins: [router] } })
+  }, global: { plugins: [router], stubs: { AlarmDispositionDrawer: true } } })
   await flushPromises()
   return { wrapper, view: wrapper.vm as unknown as View }
 }
@@ -32,6 +32,19 @@ beforeEach(() => {
 })
 
 describe('alarm batch confirmation', () => {
+  it('opens triage from the readable title with the keyboard and retains the message preview', async () => {
+    const { wrapper } = await setup()
+    await wrapper.setProps({ filteredAlarms: [{ ...alarm('alarm-keyboard'), title: 'Suspicious login', message: 'Repeated login failures' }], alarmPageData: { total: 1 } })
+    await flushPromises()
+    const trigger = wrapper.get('.alarm-title-cell [role="button"]')
+    expect(trigger.attributes('aria-label')).toBe('Suspicious login')
+    expect(wrapper.get('.alarm-title-cell small').text()).toBe('Repeated login failures')
+    await trigger.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect((wrapper.vm as unknown as { currentAlarm: Alarm }).currentAlarm.id).toBe('alarm-keyboard')
+    wrapper.unmount()
+  })
+
   it('confirms and writes the same selected targets and assignee, preserving a newer selection', async () => {
     const { wrapper, view } = await setup()
     view.handleSelectionChange([alarm('A')]); view.batchAssignee = 'alice'

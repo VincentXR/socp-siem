@@ -46,10 +46,18 @@ defineProps<{
 }
 
 .form-section-index {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--ns-accent-line);
+  border-radius: 7px;
+  background: var(--ns-accent-subtle);
   color: var(--ns-accent-fg);
   font-family: var(--ns-font-mono);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .form-section-head h3 {

@@ -24,6 +24,7 @@ const copyStatus = ref('')
 const event = ref<SearchEvent | null>(null)
 const eventBusy = ref(false)
 const eventStatus = ref('')
+const eventRange = ref<'24h' | 'all'>('24h')
 let generation = 0
 let sampleRevision = 0
 let controller: AbortController | null = null
@@ -41,7 +42,7 @@ async function load() {
   loading.value = canWrite.value; error.value = ''; setup.value = null
   preview.value = null; previewError.value = ''; previewBusy.value = false
   config.value = ''; configError.value = ''; configBusy.value = false; copyStatus.value = ''
-  event.value = null; eventStatus.value = ''; eventBusy.value = false
+  event.value = null; eventStatus.value = ''; eventBusy.value = false; eventRange.value = '24h'
   if (!canWrite.value) return
   try {
     const result = await getSourceSetup(props.sourceId, { signal: request.signal })
@@ -58,6 +59,7 @@ watch(sample, () => {
   sampleRevision++; previewController?.abort(); previewController = null
   preview.value = null; previewError.value = ''; previewBusy.value = false
 }, { flush: 'sync' })
+watch(eventRange, () => { event.value = null; eventStatus.value = '' }, { flush: 'sync' })
 async function runPreview() {
   if (!canWrite.value || !sample.value.trim() || previewBusy.value || !setup.value) return
   const current = generation
@@ -96,20 +98,23 @@ async function verifyEvent() {
   if (eventBusy.value || !setup.value) return
   const current = generation
   const id = props.sourceId
-  const from = new Date(Date.now() - 86400000).toISOString()
-  const to = new Date().toISOString()
+  const range = eventRange.value
+  const now = Date.now()
+  const from = new Date(now - 86400000).toISOString()
+  const to = new Date(now).toISOString()
+  const query = range === 'all' ? sourceQuery.value : `(${sourceQuery.value}) AND timestamp>=${from} AND timestamp<=${to}`
   eventBusy.value = true; eventStatus.value = ''; event.value = null
   try {
-    const result = await splSearch(`(${sourceQuery.value}) AND timestamp>=${from} AND timestamp<=${to}`, { limit: 20, signal: controller?.signal })
-    if (disposed || current !== generation) return
+    const result = await splSearch(query, { limit: 20, signal: controller?.signal })
+    if (disposed || current !== generation || range !== eventRange.value) return
     if (result.degraded || result.source !== 'opensearch') { eventStatus.value = copy.value.degraded; return }
     event.value = result.events.find(row => row.fields?.source_id === id) || null
-    eventStatus.value = event.value ? copy.value.verified : copy.value.notObserved
-  } catch (failure) { if (!disposed && current === generation) eventStatus.value = String(failure) }
+    eventStatus.value = event.value ? copy.value.verified : range === 'all' ? copy.value.notObservedHistorical : copy.value.notObserved
+  } catch (failure) { if (!disposed && current === generation && range === eventRange.value) eventStatus.value = String(failure) }
   finally { if (!disposed && current === generation) eventBusy.value = false }
 }
 function openSearch() {
-  void router.push({ name: 'search', query: { q: event.value ? `eventId=${JSON.stringify(event.value.eventId)}` : sourceQuery.value, range: event.value ? 'all' : '24h' } })
+  void router.push({ name: 'search', query: { q: event.value ? `eventId=${JSON.stringify(event.value.eventId)}` : sourceQuery.value, range: event.value ? 'all' : eventRange.value } })
 }
 onUnmounted(() => { disposed = true; generation++; controller?.abort(); previewController?.abort() })
 </script>
@@ -140,7 +145,7 @@ onUnmounted(() => { disposed = true; generation++; controller?.abort(); previewC
         <p>{{ copy.previewHint }}</p>
         <label for="source-preview-sample">{{ copy.sample }}</label>
         <textarea id="source-preview-sample" v-model="sample" rows="5" maxlength="65536" />
-        <div class="setup-actions"><button type="button" @click="sample = 'host=example-host source=example message=synthetic-preview'">{{ copy.example }}</button><button v-if="canWrite" type="button" :disabled="!sample.trim() || previewBusy" @click="runPreview">{{ previewBusy ? copy.checking : copy.runPreview }}</button></div>
+        <div class="setup-actions"><button v-if="canWrite" class="setup-primary" type="button" :disabled="!sample.trim() || previewBusy" @click="runPreview">{{ previewBusy ? copy.checking : copy.runPreview }}</button><button type="button" @click="sample = 'host=example-host source=example message=synthetic-preview'">{{ copy.example }}</button></div>
         <p v-if="previewError" role="alert" class="setup-error">{{ previewError }}</p>
         <div v-if="preview" role="status"><p>{{ preview.ok ? copy.previewSuccess : preview.error }}</p><p>{{ copy.previewVersion }}: {{ preview.parserVersion }}</p><pre v-if="preview.ok">{{ JSON.stringify({ fields: preview.fields, ecs: preview.ecs }, null, 2) }}</pre></div>
         <h4>{{ copy.pipeline }}</h4><p v-if="setup.pipelineMode === 'BUILTIN_THEN_SPARSE_FALLBACK'">{{ copy.noBindings }}</p>
@@ -159,15 +164,20 @@ onUnmounted(() => { disposed = true; generation++; controller?.abort(); previewC
       <section aria-labelledby="setup-apply">
         <h3 id="setup-apply">{{ copy.apply }}</h3>
         <p>{{ setup.nativeVector ? copy.manualApply : copy.unsupportedRender }}</p>
-        <button v-if="canWrite && setup.nativeVector" type="button" :disabled="configBusy || !setup.source.enabled" @click="render">{{ copy.render }}</button>
+        <button v-if="canWrite && setup.nativeVector" class="setup-primary" type="button" :disabled="configBusy || !setup.source.enabled" @click="render">{{ copy.render }}</button>
         <p v-if="configError" role="alert" class="setup-error">{{ configError }}</p>
         <template v-if="config"><p role="status">{{ copy.rendered }}</p><pre>{{ config }}</pre><button type="button" @click="copyConfig">{{ copy.copy }}</button><span role="status">{{ copyStatus }}</span></template>
         <details><summary>{{ copy.ack }}</summary><p>{{ copy.debugHint }}</p></details>
       </section>
       <section aria-labelledby="setup-verify">
         <h3 id="setup-verify">{{ copy.verify }}</h3>
-        <p>{{ copy.verifyHint }}</p>
-        <div class="setup-actions"><button type="button" :disabled="eventBusy" @click="verifyEvent">{{ eventBusy ? copy.checking : copy.checkEvent }}</button><button type="button" @click="openSearch">{{ event ? copy.event : copy.sourceSearch }}</button></div>
+        <p id="source-event-range-hint">{{ copy.verifyHint }}</p>
+        <label for="source-event-range">{{ copy.eventTimeRange }}</label>
+        <select id="source-event-range" v-model="eventRange" :disabled="eventBusy" aria-describedby="source-event-range-hint">
+          <option value="24h">{{ copy.recentEventTime }}</option>
+          <option value="all">{{ copy.retainedEventTime }}</option>
+        </select>
+        <div class="setup-actions"><button class="setup-primary" type="button" :disabled="eventBusy" @click="verifyEvent">{{ eventBusy ? copy.checking : copy.checkEvent }}</button><button type="button" @click="openSearch">{{ event ? copy.event : copy.sourceSearch }}</button></div>
         <p v-if="eventStatus" role="status">{{ eventStatus }}</p>
         <template v-if="event"><p>{{ event.eventId }} · {{ event.timestamp }}</p><pre>{{ event.msg }}</pre><p>{{ copy.firstEventHint }}</p></template>
       </section>
@@ -176,18 +186,22 @@ onUnmounted(() => { disposed = true; generation++; controller?.abort(); previewC
 </template>
 
 <style scoped>
-.ingest-setup { display: grid; gap: 18px; color: var(--el-text-color-primary); }
+.ingest-setup { display: grid; gap: 18px; color: var(--el-text-color-primary); font-size:14px; }
 .setup-state { display: grid; gap: 8px; padding: 16px; border: 1px solid var(--el-border-color); border-radius: 8px; }
 section { border-top: 1px solid var(--el-border-color); padding-top: 12px; }
-h3 { margin: 8px 0 12px; }
+h3 { margin: 8px 0 12px; font-size:16px; }
+small { font-size:12px; color:var(--ns-text-3); }
 p, li { line-height: 1.6; }
 code, small { overflow-wrap: anywhere; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 340px; overflow: auto; padding: 12px; background: var(--el-fill-color-light); border-radius: 6px; }
 label { display: block; margin-bottom: 6px; }
 textarea { box-sizing: border-box; width: 100%; color: inherit; background: var(--el-bg-color); border: 1px solid var(--el-border-color); border-radius: 6px; padding: 10px; font: inherit; }
-button { width: fit-content; padding: 8px 12px; color: var(--el-color-primary); background: var(--el-bg-color); border: 1px solid var(--el-border-color); border-radius: 6px; cursor: pointer; }
+select { box-sizing: border-box; max-width:100%; min-height:32px; padding:5px 10px; color:inherit; background:var(--el-bg-color); border:1px solid var(--el-border-color); border-radius:6px; font:inherit; }
+button { width: fit-content; min-height:32px; box-sizing:border-box; padding: 5px 12px; font:inherit; line-height:20px; color: var(--ns-text-2); background: var(--el-bg-color); border: 1px solid var(--el-border-color); border-radius: 6px; cursor: pointer; }
+button:hover:not(:disabled) { border-color:var(--el-color-primary); color:var(--el-color-primary); }
+.setup-primary { color:var(--el-color-primary); border-color:var(--el-color-primary-light-7); background:var(--el-color-primary-light-9); }
 button:disabled { opacity: .55; cursor: not-allowed; }
-button:focus-visible, textarea:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; }
+button:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--el-color-primary); outline-offset: 2px; }
 .setup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .setup-error { color: var(--el-color-danger); }
 .setup-warning { color: var(--el-color-warning); }

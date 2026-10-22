@@ -28,6 +28,8 @@ import 'element-plus/es/components/tabs/style/css.mjs'
 import 'element-plus/es/components/tag/style/css.mjs'
 import ElAlert from 'element-plus/es/components/alert/index.mjs'
 import ElButton from 'element-plus/es/components/button/index.mjs'
+import { ElDropdown, ElDropdownItem, ElDropdownMenu } from 'element-plus/es/components/dropdown/index.mjs'
+import 'element-plus/es/components/dropdown/style/css.mjs'
 import ElCard from 'element-plus/es/components/card/index.mjs'
 import ElCol from 'element-plus/es/components/col/index.mjs'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
@@ -46,6 +48,7 @@ import { getSource, SOURCE_TYPES, PARSE_FORMATS, type LogSource, type SinkTarget
 import { useI18n } from '../composables/useI18n'
 import { fmtBytes, fmtTime } from '../lib/ui'
 import PageHeader from '../components/PageHeader.vue'
+import FilterToolbar from '../components/FilterToolbar.vue'
 import IngestSourceSetup from '../components/IngestSourceSetup.vue'
 import { useIngestCopy } from '../composables/useIngestCopy'
 
@@ -141,13 +144,12 @@ async function editSourceById(id: string) {
     if (ownsResult()) actionError.value = String(failure)
   } finally { if (setupEditController === controller) setupEditController = null }
 }
-function sourceSearch(id: string, eventId?: string, timestamp?: string) {
-  const stamp = timestamp ? Date.parse(timestamp) : Date.now()
-  const safeStamp = Number.isFinite(stamp) ? stamp : Date.now()
+function sourceSearch(id: string, eventId?: string) {
+  // Reception time is not event time, especially for replayed historical logs.
+  // The exact event identity is already selective; do not hide it with a window
+  // that cannot be reconstructed from the persisted quarantine list.
   void router.push({ name: 'search', query: {
-    q: `${eventId ? 'eventId' : 'source_id'}=${JSON.stringify(eventId || id)}`, range: 'custom',
-    from: new Date(safeStamp - (eventId ? 3600000 : 86400000)).toISOString(),
-    to: new Date(Math.max(Date.now(), safeStamp + 3600000)).toISOString(),
+    q: `${eventId ? 'eventId' : 'source_id'}=${JSON.stringify(eventId || id)}`, range: eventId ? 'all' : '24h',
   } })
 }
 function repairFailure(row: IngestParseFailure) {
@@ -179,7 +181,7 @@ onUnmounted(cancelSetupEdit)
 </script>
 
 <template>
-  <div class="page-pad view-enter">
+  <div class="page-pad view-enter ingest-view">
     <ActionFeedback :error="loadError" />
     <el-alert v-if="summaryStale" :title="t('ingest.summaryStale')" type="warning" :closable="false" show-icon />
     <ActionFeedback :error="actionError" />
@@ -188,17 +190,16 @@ onUnmounted(cancelSetupEdit)
         <el-button size="small" :loading="refreshing" :disabled="refreshing" @click="refreshAll">{{ t('common.refresh') }}</el-button>
       </template>
     </PageHeader>
-    <section class="workflow-guide" :aria-label="t('workflow.ingestSteps')">
-      <strong>{{ t('workflow.ingestSteps') }}</strong><p>{{ t('workflow.ingestGuide') }}</p>
-      <el-button v-if="canWrite" size="small" @click="openCreateSource()">{{ t('workflow.startConfiguration') }}</el-button>
-      <el-button size="small" @click="onIngestTab('tasks')">{{ t('ingest.tasks') }}</el-button>
-      <el-button size="small" @click="onIngestTab('quarantine')">{{ t('ingest.parseFailureTab') }}</el-button>
+    <section class="workflow-guide ingest-guide" :aria-label="t('workflow.ingestSteps')">
+      <div class="ingest-guide-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="7" height="6" rx="1.5" /><rect x="14" y="14" width="7" height="6" rx="1.5" /><path d="M6.5 10v4a3 3 0 0 0 3 3H14M14 7h7m-3-3 3 3-3 3" /></svg></div>
+      <div class="ingest-guide-copy"><strong>{{ t('workflow.ingestSteps') }}</strong><p>{{ t('workflow.ingestGuide') }}</p></div>
+      <div class="ingest-guide-actions"><el-button v-if="canWrite" size="small" @click="openCreateSource()">{{ t('workflow.startConfiguration') }}</el-button><el-button size="small" @click="onIngestTab('tasks')">{{ t('ingest.tasks') }}</el-button><el-button size="small" @click="onIngestTab('quarantine')">{{ t('ingest.parseFailureTab') }}</el-button></div>
     </section>
     <el-alert v-if="lastSavedSource" :title="t('workflow.sourceSaved', { name: lastSavedSource.name })" type="success" :closable="true" @close="lastSavedSource = null" />
     <el-tabs v-model="ingestTab" @tab-change="onIngestTab">
       <el-tab-pane :label="t('ingest.tasks')" name="tasks">
         <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateSource()">{{ tasks.length ? t('ingest.addSource') : copy.firstSource }}</el-button><span class="hint">{{ copy.firstHint }}</span></div>
-        <p class="hint">{{ copy.observations }} {{ copy.debugHint }}</p>
+        <p class="hint ingest-observation-hint">{{ copy.observations }} {{ copy.debugHint }}</p>
         <el-row class="metrics-row" :gutter="12" style="margin-bottom:14px">
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary ? `${taskSummary.enabledSources}/${taskSummary.sources}` : t('time.notAvailable') }}</div><div class="label">{{ t('ingest.enabledTotal') }}</div></div></el-card></el-col>
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num" style="color:var(--ns-accent-fg)">{{ taskSummary?.eps1m ?? t('time.notAvailable') }}</div><div class="label">{{ t('ingest.eps') }}</div></div></el-card></el-col>
@@ -210,15 +211,22 @@ onUnmounted(cancelSetupEdit)
         <el-card shadow="never">
           <template #header><div style="display:flex;align-items:center;gap:10px"><span>{{ t('ingest.taskConfigMetrics') }}</span><el-tag v-for="(count, health) in (taskSummary?.byHealth ?? {})" :key="health" size="small" :type="healthMeta(String(health)).type" style="margin-left:2px">{{ healthMeta(String(health)).text }} {{ count }}</el-tag><el-button size="small" style="margin-left:auto" :loading="tasksLoading" @click="loadTasks">{{ t('common.refresh') }}</el-button></div></template>
           <el-table v-loading="tasksLoading" :data="tasks" size="small" border :empty-text="t(loadErrors.tasks ? 'experience.unknownData' : 'common.empty')">
-            <el-table-column :label="t('ingest.status')" width="150"><template #default="{ row }"><el-tag :type="healthMeta(row.runtime.health).type" size="small" effect="dark">{{ healthMeta(row.runtime.health).text }}</el-tag><div class="mono" style="margin-top:3px;font-size:10px;color:var(--ns-text-3)">{{ row.applyState === 'MANUAL_APPLY_REQUIRED' ? t('ingest.pendingManualApply') : t('ingest.configDisabled') }}</div></template></el-table-column>
-            <el-table-column :label="t('ingest.task')" min-width="150" show-overflow-tooltip><template #default="{ row }"><div style="font-weight:600">{{ row.name }}</div><div class="mono" style="font-size:11px;color:var(--ns-text-3)">{{ row.collector }}</div></template></el-table-column>
+            <el-table-column :label="t('ingest.status')" width="150"><template #default="{ row }"><el-tag :type="healthMeta(row.runtime.health).type" size="small" effect="dark">{{ healthMeta(row.runtime.health).text }}</el-tag><div class="mono" style="margin-top:3px;font-size:12px;color:var(--ns-text-3)">{{ row.applyState === 'MANUAL_APPLY_REQUIRED' ? t('ingest.pendingManualApply') : t('ingest.configDisabled') }}</div></template></el-table-column>
+            <el-table-column :label="t('ingest.task')" min-width="150" show-overflow-tooltip><template #default="{ row }"><div style="font-weight:600">{{ row.name }}</div><div class="mono" style="font-size:12px;color:var(--ns-text-3)">{{ row.collector }}</div></template></el-table-column>
             <el-table-column prop="type" :label="t('ingest.ingestMethod')" width="110" />
             <el-table-column prop="format" :label="t('ingest.parseFormat')" width="90" />
             <el-table-column :label="t('ingest.target')" min-width="180" show-overflow-tooltip><template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.target }}</span></template></el-table-column>
             <el-table-column :label="t('ingest.epsWindow')" width="110"><template #default="{ row }"><span :style="{ color: row.runtime.eps1m > 0 ? 'var(--ns-success)' : 'var(--ns-text-3)', fontWeight: 600 }">{{ row.runtime.eps1m }}</span><span style="color:var(--ns-text-3)"> / {{ row.runtime.eps5m }}</span></template></el-table-column>
             <el-table-column :label="copy.receivedDebugFailed" width="180"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ row.runtime.accepted }} / {{ row.runtime.forwarded }} / <span :style="{ color: row.runtime.parseFailed > 0 ? 'var(--ns-warning)' : 'inherit' }">{{ row.runtime.parseFailed }}</span></span></template></el-table-column>
             <el-table-column :label="t('ingest.recentData')" width="150"><template #default="{ row }"><span class="mono" style="font-size:12px">{{ fmtTime(row.runtime.lastAt) }}</span></template></el-table-column>
-            <el-table-column :label="t('ingest.actions')" width="320"><template #default="{ row }"><el-button v-if="canWrite" link :type="row.enabled ? 'warning' : 'success'" size="small" :loading="taskBusy[row.id]" :disabled="confirming || actionBusy" @click="toggleTaskRow(row)">{{ row.enabled ? t('ingest.disableConfig') : t('ingest.enableConfig') }}</el-button><el-button v-if="canWrite" link type="primary" size="small" @click="openSetup(row.id)">{{ copy.setup }}</el-button><el-button link size="small" @click="sourceSearch(row.id)">{{ copy.sourceSearch }}</el-button><el-button v-if="canWrite" link type="primary" size="small" @click="openTestRow(row)">{{ t('ingest.parsePreview') }}</el-button></template></el-table-column>
+            <el-table-column :label="t('ingest.actions')" width="230" fixed="right"><template #default="{ row }"><div class="ingest-row-actions">
+              <el-button v-if="canWrite" link type="primary" size="small" @click="openSetup(row.id)">{{ copy.setup }}</el-button>
+              <el-button link size="small" :aria-label="copy.sourceSearch" @click="sourceSearch(row.id)">{{ t('ingest.queryLogs') }}</el-button>
+              <el-dropdown v-if="canWrite" trigger="click" :disabled="confirming || actionBusy"><el-button link size="small" :disabled="confirming || actionBusy" :aria-label="t('ingest.moreSourceActions', { name: row.name })">{{ t('forms.more') }}</el-button><template #dropdown><el-dropdown-menu>
+                <el-dropdown-item @click="openTestRow(row)">{{ t('ingest.parsePreview') }}</el-dropdown-item>
+                <el-dropdown-item divided :disabled="taskBusy[row.id]" @click="toggleTaskRow(row)">{{ row.enabled ? t('ingest.disableConfig') : t('ingest.enableConfig') }}</el-dropdown-item>
+              </el-dropdown-menu></template></el-dropdown>
+            </div></template></el-table-column>
             <el-table-column type="expand"><template #default="{ row }"><div style="padding:8px 20px;font-size:12px;color:var(--ns-text-2)"><div>{{ t('ingest.environmentDetail', { value: row.env || t('time.notAvailable') }) }} · {{ t('ingest.categoryDetail', { value: row.categoryId || t('time.notAvailable') }) }} · {{ t('ingest.outputDetail', { value: outputLabel(row.sinkTargetId) }) }} · {{ t('ingest.createdDetail', { value: fmtTime(row.createdAt) }) }}</div><div style="margin-top:4px">{{ t('ingest.boundRules') }}<el-tag v-for="p in row.parseRuleIds" :key="p" size="small" style="margin-right:4px">{{ p }}</el-tag><span v-if="!row.parseRuleIds?.length" style="color:var(--ns-text-3)">{{ t('ingest.autoDetect') }}</span></div><div v-if="row.runtime.lastError" style="margin-top:4px;color:var(--ns-danger)">{{ t('ingest.recentError', { time: fmtTime(row.runtime.lastErrorAt ?? null) }) }}{{ row.runtime.lastError }}</div></div></template></el-table-column>
           </el-table>
         </el-card>
@@ -231,7 +239,7 @@ onUnmounted(cancelSetupEdit)
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.sourcesTab')" name="sources">
-        <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="openCreateSource">+ {{ t('ingest.addSource') }}</el-button><el-input v-model="sourceSearchDraft" clearable maxlength="128" :placeholder="t('ingest.sourceSearchPlaceholder')" style="width:min(280px,100%)" @keyup.enter="applySourceSearch" @clear="applySourceSearch" /><el-button @click="applySourceSearch">{{ t('common.search') }}</el-button><el-button :loading="sourcesLoading" @click="loadSources">{{ t('ingest.refresh') }}</el-button><el-button type="primary" plain @click="doRender">{{ t('ingest.renderConfig') }}</el-button><span class="hint">{{ copy.builtins }}</span></div>
+        <FilterToolbar><el-input v-model="sourceSearchDraft" clearable maxlength="128" :placeholder="t('ingest.sourceSearchPlaceholder')" :aria-label="t('ingest.sourceSearchPlaceholder')" style="width:min(280px,100%)" @keyup.enter="applySourceSearch" @clear="applySourceSearch" /><el-button @click="applySourceSearch">{{ t('common.search') }}</el-button><el-button :loading="sourcesLoading" @click="loadSources">{{ t('ingest.refresh') }}</el-button><template #actions><el-button v-if="canWrite" @click="doRender">{{ t('ingest.renderConfig') }}</el-button><el-button v-if="canWrite" type="primary" @click="openCreateSource">{{ t('ingest.addSource') }}</el-button></template></FilterToolbar><p class="ingest-list-hint">{{ copy.builtins }}</p>
         <ActionFeedback :error="renderError" />
         <el-drawer v-model="showSourceDialog" :before-close="showSourceDialogGuard.beforeClose" :title="editingSourceId ? t('ingest.editSource') : t('ingest.addSource')" size="min(760px, 96vw)" :close-on-click-modal="false"><ActionFeedback :error="sourceError" />
           <el-form label-position="top" :disabled="actionBusy">
@@ -301,7 +309,7 @@ onUnmounted(cancelSetupEdit)
                   <el-input v-model="newSource.description" type="textarea" :rows="2" :placeholder="t('ingest.sourceDescriptionPlaceholder')" />
                 </FormField>
                 <FormField :label="t('ingest.charset')"><el-select v-model="newSource.charset" :placeholder="t('ingest.charsetPlaceholder')"><el-option label="UTF-8" value="utf-8" /></el-select></FormField>
-                <FormField :label="t('ingest.timezone')"><el-select v-model="newSource.timezone" :placeholder="t('ingest.timezonePlaceholder')"><el-option label="Asia/Shanghai" value="Asia/Shanghai" /><el-option label="UTC" value="UTC" /><el-option label="Asia/Tokyo" value="Asia/Tokyo" /></el-select></FormField>
+                <FormField :label="t('ingest.timezone')"><el-select v-model="newSource.timezone" :empty-values="[null, undefined]" :placeholder="t('ingest.timezoneDefault')"><el-option :label="t('ingest.timezoneDefault')" value="" /><el-option label="Asia/Shanghai" value="Asia/Shanghai" /><el-option label="UTC" value="UTC" /><el-option label="Asia/Tokyo" value="Asia/Tokyo" /></el-select></FormField>
                 <FormField :label="t('ingest.timeField')"><el-input v-model="newSource.timeField" :placeholder="t('ingest.timeFieldPlaceholder')" /></FormField>
                 <FormField :label="t('ingest.tags')" :hint="t('ingest.tagsHint')" full><el-input v-model="newSource.tags" :placeholder="t('ingest.tagsPlaceholder')" /></FormField>
               </FormGrid>
@@ -309,7 +317,7 @@ onUnmounted(cancelSetupEdit)
           </el-form>
           <template #footer><el-button @click="showSourceDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" :disabled="actionBusy" @click="saveSource(true)">{{ copy.draft }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="saveSource()">{{ editingSourceId ? t('common.save') : t('ingest.addSource') }}</el-button></template>
         </el-drawer>
-        <el-card shadow="never"><el-table v-loading="sourcesLoading" :data="sources" size="small" border :empty-text="t(loadErrors.sources ? 'experience.unknownData' : 'common.empty')"><el-table-column prop="name" :label="t('common.name')" width="130" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="110" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="80" /><el-table-column :label="t('ingest.target')" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.path || row.address || row.topic || t('time.notAvailable') }}</template></el-table-column><el-table-column :label="t('ingest.protocol')" width="70"><template #default="{ row }">{{ row.protocol || t('time.notAvailable') }}</template></el-table-column><el-table-column prop="env" :label="t('ingest.environment')" width="65" /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="230"><template #default="{ row }"><el-button link type="primary" size="small" @click="openSetup(row.id)">{{ copy.setup }}</el-button><el-button link type="primary" size="small" @click="openEditSource(row as LogSource)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeSource(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="sourcePage" v-model:page-size="sourceSize" :total="sourceTotal" :page-sizes="[20, 50, 100]" /></el-card>
+        <el-card shadow="never"><el-table v-loading="sourcesLoading" :data="sources" size="small" border :empty-text="t(loadErrors.sources ? 'experience.unknownData' : 'common.empty')"><el-table-column prop="name" :label="t('common.name')" min-width="180" show-overflow-tooltip /><el-table-column prop="type" :label="t('common.type')" width="130" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="120" /><el-table-column :label="t('ingest.target')" min-width="160" show-overflow-tooltip><template #default="{ row }">{{ row.path || row.address || row.topic || t('time.notAvailable') }}</template></el-table-column><el-table-column :label="t('ingest.protocol')" width="95"><template #default="{ row }">{{ row.protocol || t('time.notAvailable') }}</template></el-table-column><el-table-column prop="env" :label="t('ingest.environment')" width="120" /><el-table-column :label="t('common.enabled')" width="88"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="230" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" @click="openSetup(row.id)">{{ copy.setup }}</el-button><el-button link type="primary" size="small" @click="openEditSource(row as LogSource)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeSource(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="sourcePage" v-model:page-size="sourceSize" :total="sourceTotal" :page-sizes="[20, 50, 100]" /></el-card>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.parseFailureTab')" name="quarantine">
@@ -323,7 +331,7 @@ onUnmounted(cancelSetupEdit)
             <el-table-column :label="t('ingest.failureReason')" min-width="220" show-overflow-tooltip><template #default="{ row }"><span :class="{ 'parse-replay-error': row.lastError }">{{ row.lastError || row.failureReason }}</span></template></el-table-column>
             <el-table-column prop="parserVersion" :label="t('ingest.parserVersion')" width="130" show-overflow-tooltip />
             <el-table-column prop="replayAttempts" :label="t('ingest.replayAttempts')" width="90" />
-            <el-table-column prop="replayedEventId" :label="t('ingest.replayedEventId')" min-width="180"><template #default="{ row }"><el-button v-if="row.replayedEventId" link @click="sourceSearch(row.sourceId || '', row.replayedEventId, row.eventTimestamp || row.receivedAt)">{{ row.replayedEventId }}</el-button></template></el-table-column>
+            <el-table-column prop="replayedEventId" :label="t('ingest.replayedEventId')" min-width="180"><template #default="{ row }"><el-button v-if="row.replayedEventId" link @click="sourceSearch(row.sourceId || '', row.replayedEventId)">{{ row.replayedEventId }}</el-button></template></el-table-column>
             <el-table-column prop="replayStatus" :label="t('common.status')" width="105"><template #default="{ row }"><el-tag :type="row.replayStatus === 'REPLAYED' ? 'success' : 'warning'" size="small">{{ row.replayStatus }}</el-tag></template></el-table-column>
             <el-table-column v-if="canWrite" :label="t('common.actions')" width="200"><template #default="{ row }"><el-button link size="small" @click="repairFailure(row as IngestParseFailure)">{{ copy.repair }}</el-button><el-button link type="primary" size="small" :loading="replayingFailure === row.id" :disabled="row.replayStatus === 'REPLAYED' || !!replayingFailure" @click="replayParseFailure(row as IngestParseFailure)">{{ t('ingest.replay') }}</el-button></template></el-table-column>
           </el-table>
@@ -353,12 +361,12 @@ onUnmounted(cancelSetupEdit)
               </FormField>
             </FormGrid>
           </el-form><p v-if="outputValidation" role="status">{{ outputValidation }}</p><template #footer><el-button :disabled="actionBusy" @click="checkOutput">{{ copy.validate }}</el-button><el-button @click="showOutputDialogGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addOutput">{{ editingOutputId ? t('common.save') : t('ingest.addOutput') }}</el-button></template></el-dialog>
-        <el-card shadow="never"><el-table v-loading="outputsLoading" :data="outputs" size="small" border :empty-text="t(loadErrors.outputs ? 'experience.unknownData' : 'common.empty')"><el-table-column prop="name" :label="t('common.name')" width="180" /><el-table-column prop="type" :label="t('common.type')" width="130" /><el-table-column prop="uri" :label="t('ingest.targetUrl')" min-width="280" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="70"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150"><template #default="{ row }"><el-button link type="primary" size="small" @click="openEditOutput(row as SinkTarget)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeOutput(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table></el-card>
+        <el-card shadow="never"><el-table v-loading="outputsLoading" :data="outputs" size="small" border :empty-text="t(loadErrors.outputs ? 'experience.unknownData' : 'common.empty')"><el-table-column prop="name" :label="t('common.name')" width="180" /><el-table-column prop="type" :label="t('common.type')" width="130" /><el-table-column prop="uri" :label="t('ingest.targetUrl')" min-width="280" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="70"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150" fixed="right"><template #default="{ row }"><el-button link type="primary" size="small" @click="openEditOutput(row as SinkTarget)">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeOutput(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table></el-card>
       </el-tab-pane>
 
       <el-tab-pane :label="t('ingest.rulesTab')" name="rules">
-        <div class="add-bar"><el-button v-if="canWrite" type="primary" @click="router.push({ name: 'parser-new' })">{{ t('ingest.addParseRule') }}</el-button><el-input v-model="ruleSearchDraft" clearable maxlength="128" :placeholder="t('ingest.ruleSearchPlaceholder')" style="width:min(280px,100%)" @keyup.enter="applyRuleSearch" @clear="applyRuleSearch" /><el-button @click="applyRuleSearch">{{ t('common.search') }}</el-button><el-button :loading="parseRulesLoading" @click="loadParseRules">{{ t('ingest.refresh') }}</el-button><span class="hint">{{ t('ingest.parserHint') }}</span></div>
-        <el-card shadow="never"><el-table v-loading="parseRulesLoading" :data="parseRules" size="small" border :empty-text="t(loadErrors.rules ? 'experience.unknownData' : 'common.empty')"><el-table-column prop="name" :label="t('ingest.ruleName')" width="180" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="90" /><el-table-column prop="pattern" :label="t('ingest.patternDescription')" min-width="300" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150"><template #default="{ row }"><el-button link size="small" @click="router.push({ name: 'parser-edit', params: { parserId: row.id } })">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeParseRule(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="rulePage" v-model:page-size="ruleSize" :total="ruleTotal" :page-sizes="[20, 50, 100]" /></el-card>
+        <FilterToolbar><el-input v-model="ruleSearchDraft" clearable maxlength="128" :placeholder="t('ingest.ruleSearchPlaceholder')" :aria-label="t('ingest.ruleSearchPlaceholder')" style="width:min(280px,100%)" @keyup.enter="applyRuleSearch" @clear="applyRuleSearch" /><el-button @click="applyRuleSearch">{{ t('common.search') }}</el-button><el-button :loading="parseRulesLoading" @click="loadParseRules">{{ t('ingest.refresh') }}</el-button><template #actions><el-button v-if="canWrite" type="primary" @click="router.push({ name: 'parser-new' })">{{ t('ingest.addParseRule') }}</el-button></template></FilterToolbar><p class="ingest-list-hint">{{ t('ingest.parserHint') }}</p>
+        <el-card shadow="never"><el-table v-loading="parseRulesLoading" :data="parseRules" size="small" border :empty-text="t(loadErrors.rules ? 'experience.unknownData' : 'common.empty')"><el-table-column prop="name" :label="t('ingest.ruleName')" width="180" /><el-table-column prop="format" :label="t('ingest.parseFormat')" width="90" /><el-table-column prop="pattern" :label="t('ingest.patternDescription')" min-width="300" show-overflow-tooltip /><el-table-column :label="t('common.enabled')" width="65"><template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'" size="small">{{ row.enabled ? t('common.yes') : t('common.no') }}</el-tag></template></el-table-column><el-table-column v-if="canWrite" :label="t('common.actions')" width="150" fixed="right"><template #default="{ row }"><el-button link size="small" @click="router.push({ name: 'parser-edit', params: { parserId: row.id } })">{{ t('common.edit') }}</el-button><el-button link type="danger" size="small" @click="removeParseRule(row.id)">{{ t('common.delete') }}</el-button></template></el-table-column></el-table><PagerBar v-model:current-page="rulePage" v-model:page-size="ruleSize" :total="ruleTotal" :page-sizes="[20, 50, 100]" /></el-card>
       </el-tab-pane>
     </el-tabs>
     <el-drawer :model-value="showSetup" @update:model-value="closeSetup" :title="copy.setup" size="min(820px, 96vw)"><IngestSourceSetup v-if="showSetup" :source-id="setupId" :initial-sample="setupSample" @edit="editSourceById" /></el-drawer>
@@ -366,3 +374,23 @@ onUnmounted(cancelSetupEdit)
 
   </div>
 </template>
+
+<style scoped>
+.ingest-guide { display:grid; grid-template-columns:40px minmax(0,1fr); gap:0 14px; padding:20px; background:linear-gradient(110deg,color-mix(in srgb,var(--ns-accent) 6%,var(--ns-surface)),var(--ns-surface)); border-color:color-mix(in srgb,var(--ns-accent) 18%,var(--ns-border)); }
+.ingest-guide-symbol { grid-row:1 / 3; display:grid; place-items:center; width:40px; height:40px; border:1px solid color-mix(in srgb,var(--ns-accent) 20%,var(--ns-border)); border-radius:12px; color:var(--ns-accent-fg); background:var(--ns-surface); }
+.ingest-guide-symbol svg { width:24px; height:24px; }
+.ingest-guide-copy { min-width:0; }
+.ingest-guide-copy strong { color:var(--ns-text); font-size:14px; font-weight:650; }
+.ingest-guide-copy p { max-width:960px; margin:4px 0 12px; font-size:13px; color:var(--ns-text-2); }
+.ingest-guide-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.ingest-guide-actions :deep(.el-button + .el-button) { margin-left:0; }
+.ingest-observation-hint { margin:0 0 14px; color:var(--ns-text-3); font-size:12px; line-height:1.6; }
+.metrics-row :deep(.el-card) { height:100%; background:linear-gradient(150deg,color-mix(in srgb,var(--ns-accent) 3%,var(--ns-surface)),var(--ns-surface) 80%); }
+.metrics-row .stat-card { display:flex; flex-direction:column; align-items:flex-start; gap:12px; padding:2px 0 4px; text-align:left; }
+.metrics-row .stat-card .label { order:-1; margin:0; min-height:18px; color:var(--ns-text-2); }
+.metrics-row .stat-card .num { font-size:28px; letter-spacing:-.6px; }
+.ingest-row-actions { display:flex; align-items:center; gap:12px; white-space:nowrap; }
+.ingest-row-actions :deep(.el-button + .el-button) { margin-left:0; }
+.ingest-list-hint { margin:0 0 12px; color:var(--ns-text-3); font-size:12px; line-height:1.5; }
+@media(max-width:640px) { .ingest-guide { grid-template-columns:32px minmax(0,1fr); padding:16px; gap:0 10px; }.ingest-guide-symbol { width:32px; height:32px; border-radius:9px; }.ingest-guide-symbol svg { width:20px; height:20px; }.ingest-guide-actions { grid-column:1 / -1; } }
+</style>

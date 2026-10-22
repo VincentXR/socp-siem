@@ -146,6 +146,18 @@ configuration on the collector, then check recent reception and source-scoped
 log search. Category severity and field capability flags are descriptive
 catalogue metadata, not runtime severity defaults or index-mapping changes.
 
+Guided setup's indexed-event check explicitly uses **event time**, not receipt
+time. Its default last-24-hour window can exclude a newly imported historical
+log; select **all retained history** to remove that time filter. Both modes
+keep the exact source query, authenticated tenant scope and 20-event result
+limit. Search links preserve that range, and a matched event opens by ID with
+no recent-time filter. Only a non-degraded OpenSearch response confirms an
+observed indexed event; an existing historical record does not prove the
+collector is running, that current configuration was applied, or that
+downstream actions completed. The current SPL field catalogue does not allow
+range comparisons on `fields.ingested_at`, so this check must not silently
+claim to query receipt time.
+
 For native Vector sources (`FILE`, `SOCKET`, `SYSLOG`, and `KAFKA`), the
 renderer emits a source, its transform, and a bound sink input. The other
 catalogue types (`WINDOWS_EVENT`, `AGENT`, `HTTP_API`, `DATABASE`, and `CLOUD`)
@@ -166,6 +178,15 @@ instant is written identically to the PostgreSQL event and canonical Kafka
 payload. A present but invalid configured timestamp is a parse failure rather
 than silently becoming the receipt time. Sources without a usable configured
 event time retain the explicit generated-time fallback marker.
+An unset timezone means UTC. Editing an existing source preserves that unset
+value (shown as "Default (UTC)" in the workbench); the new-source form's
+Asia/Shanghai default must not be reapplied to existing sources.
+
+Both `POST /search-config/api/v1/render` and
+`GET /search-config/api/v1/sources/{id}/vector-config` return `text/plain`
+configuration, not a JSON `ApiResult`. Clients must negotiate and read text
+while retaining normal JSON error handling, authentication and cancellation.
+Rendering does not apply the configuration to a collector.
 
 ### Future source clock skew
 

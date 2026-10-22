@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { authCapabilities, login as apiLogin } from './api'
 import { useI18n } from './composables/useI18n'
 import { normalizeLocale, setLocale } from './i18n/locale-manager'
+import BrandMark from './components/BrandMark.vue'
 
 const emit = defineEmits<{ (e: 'done', user: string, role: string, tenant: string, permissions: string[]): void }>()
 const { t, toggleLocale } = useI18n()
@@ -65,27 +66,39 @@ onMounted(loadCapabilities)
 
 <template>
   <main class="login-page">
-    <button type="button" class="login-language" @click="toggleLocale">🌐 {{ t('login.languageCode') }}</button>
-
-    <section class="login-stage">
-      <div class="login-intro">
-        <div class="login-brand">
-          <span class="brand-mark brand-mark--bars" aria-hidden="true"><i /><i /><i /></span>
-          <span><strong>SOCP</strong><small>SECURITY OPERATIONS</small></span>
-        </div>
+    <section class="login-intro" :aria-label="t('login.eyebrow')">
+      <div class="login-brand">
+        <BrandMark class="login-brand-mark" />
+        <span><strong>SOCP</strong><small>Security Operations</small></span>
+      </div>
+      <div class="login-intro-content">
         <div class="login-intro-copy">
-          <span class="login-eyebrow">{{ t('login.eyebrow') }}</span>
-          <h1>{{ t('login.heroTitle') }}</h1>
+          <span class="login-eyebrow">SIEM / SOC</span>
+          <h1>{{ t('login.heroTitle') }}<span>{{ t('login.heroAccent') }}</span></h1>
           <p>{{ t('login.heroDescription') }}</p>
         </div>
-        <div class="login-capabilities">
-          <div><span aria-hidden="true">01</span><strong>{{ t('login.capabilityTriage') }}</strong><small>{{ t('login.capabilityTriageHint') }}</small></div>
-          <div><span aria-hidden="true">02</span><strong>{{ t('login.capabilityInvestigate') }}</strong><small>{{ t('login.capabilityInvestigateHint') }}</small></div>
-          <div><span aria-hidden="true">03</span><strong>{{ t('login.capabilityRespond') }}</strong><small>{{ t('login.capabilityRespondHint') }}</small></div>
+        <div class="login-signal-art" aria-hidden="true">
+          <svg class="login-signal-lines" viewBox="0 0 520 224" fill="none">
+            <path class="signal-orbit" d="M260 22 415 112 260 202 105 112 260 22Z" />
+            <path class="signal-orbit signal-orbit--inner" d="m260 54 100 58-100 58-100-58 100-58Z" />
+            <path class="signal-path" d="M22 58h97l44 54h56M22 166h97l44-54M301 112h56l44-54h97M357 112l44 54h97" />
+            <path class="signal-path signal-path--accent" d="M119 58l44 54h56M301 112h56l44 54" />
+            <g class="signal-terminal"><rect x="12" y="48" width="20" height="20" rx="5"/><rect x="12" y="156" width="20" height="20" rx="5"/><rect x="488" y="48" width="20" height="20" rx="5"/><rect x="488" y="156" width="20" height="20" rx="5"/></g>
+            <g class="signal-dot"><circle cx="22" cy="58" r="3"/><circle cx="22" cy="166" r="3"/><circle cx="498" cy="58" r="3"/><circle cx="498" cy="166" r="3"/></g>
+          </svg>
+          <div class="login-core"><BrandMark class="login-core-mark" /></div>
         </div>
-        <div class="login-platform-state"><i aria-hidden="true" />{{ t('login.protectedWorkspace') }}</div>
+        <div class="login-capabilities">
+          <span>{{ t('login.capabilityTriage') }}</span><i aria-hidden="true" />
+          <span>{{ t('login.capabilityInvestigate') }}</span><i aria-hidden="true" />
+          <span>{{ t('login.capabilityRespond') }}</span>
+        </div>
       </div>
+      <p class="login-intro-footer">{{ t('login.protectedWorkspace') }}</p>
+    </section>
 
+    <section class="login-access">
+      <button type="button" class="login-language" @click="toggleLocale"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></svg>{{ t('login.languageCode') }}</button>
       <section class="login-panel" :aria-label="t('login.title')">
         <div class="login-head">
           <span class="login-panel-label">{{ t('login.workspaceAccess') }}</span>
@@ -99,14 +112,15 @@ onMounted(loadCapabilities)
         <div v-if="capabilitiesError" class="login-capability-error" role="alert">{{ capabilitiesError }} <button type="button" :disabled="capabilitiesLoading" @click="loadCapabilities">{{ t('common.retry') }}</button></div>
 
         <p v-if="loginError" id="login-error" class="login-capability-error" role="alert">{{ loginError }}</p>
-        <form v-if="capabilities.localPassword" :aria-describedby="loginError ? 'login-error' : undefined" class="login-form" @submit.prevent="doLogin">
-          <label class="field"><span class="field-label">{{ t('login.username') }}</span><input v-model="username" class="input" :placeholder="demoMode ? 'demo / admin' : ''" autocomplete="username" /></label>
-          <label class="field"><span class="field-label">{{ t('login.password') }}</span><input v-model="password" type="password" class="input" :placeholder="demoMode ? 'demo123 / admin123' : ''" autocomplete="current-password" /></label>
-          <button type="submit" class="submit" :disabled="busy"><span v-if="busy" class="spinner" /><span>{{ busy ? t('login.loggingIn') : t('login.loginBtn') }}</span></button>
+        <form v-if="capabilities.localPassword" :aria-describedby="loginError ? 'login-error' : undefined" :aria-busy="busy" class="login-form" @submit.prevent="doLogin">
+          <label class="field"><span class="field-label">{{ t('login.username') }}</span><span class="login-input-wrap"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="12" cy="8" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></svg><input v-model="username" name="username" class="input" :placeholder="demoMode ? 'demo / admin' : ''" autocomplete="username" /></span></label>
+          <label class="field"><span class="field-label">{{ t('login.password') }}</span><span class="login-input-wrap"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="10" width="14" height="11" rx="3"/><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3"/></svg><input v-model="password" name="password" type="password" class="input" :placeholder="demoMode ? 'demo123 / admin123' : ''" autocomplete="current-password" /></span></label>
+          <button type="submit" class="submit" :disabled="busy"><span v-if="busy" class="spinner" aria-hidden="true" /><span>{{ busy ? t('login.loggingIn') : t('login.loginBtn') }}</span><svg v-if="!busy" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M4 12h15m-6-6 6 6-6 6"/></svg></button>
         </form>
 
         <div v-if="capabilities.oidc" class="oidc-row">
-          <button type="button" class="oidc-btn" @click="oidcLogin"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><span>Keycloak {{ t('login.ssoLogin') }}</span></button>
+          <div v-if="capabilities.localPassword" class="login-divider"><span>{{ t('login.alternative') }}</span></div>
+          <button type="button" class="oidc-btn" :class="{ 'is-primary': !capabilities.localPassword }" @click="oidcLogin"><svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 7h3m2 0h3M8 11h3m2 0h3M10 21v-6h4v6"/></svg><span>{{ t('login.ssoLogin') }}</span></button>
         </div>
 
         <p v-if="!capabilitiesLoading && !capabilities.localPassword && !capabilities.oidc" class="login-capability-error">{{ t('login.noMethods') }}</p>
@@ -123,78 +137,94 @@ onMounted(loadCapabilities)
 </template>
 
 <style scoped>
-.login-page { min-height: 100dvh; display: grid; place-items: center; padding: 48px; overflow: hidden; position: relative; background: var(--ns-bg-subtle); font-family: var(--ns-font-ui); }
-.login-page::before { content: ''; position: absolute; inset: 0; pointer-events: none; background-image: linear-gradient(var(--ns-border) 1px, transparent 1px), linear-gradient(90deg, var(--ns-border) 1px, transparent 1px); background-size: 48px 48px; opacity: .24; mask-image: linear-gradient(to bottom right, black, transparent 72%); }
-.login-language { position: absolute; z-index: 2; top: 24px; right: 28px; padding: 7px 11px; border: 1px solid var(--ns-border); border-radius: 7px; background: color-mix(in srgb, var(--ns-surface) 88%, transparent); color: var(--ns-text-2); cursor: pointer; font: inherit; font-size: 12px; }
-.login-language:hover { border-color: var(--ns-accent); color: var(--ns-accent-fg); }
-.login-stage { position: relative; z-index: 1; display: grid; grid-template-columns: minmax(420px, 1.2fr) minmax(360px, .8fr); width: min(1020px, 100%); min-height: 610px; overflow: hidden; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-xl); background: var(--ns-surface); box-shadow: 0 24px 70px color-mix(in srgb, #14161a 16%, transparent); }
-.login-intro { display: flex; flex-direction: column; padding: 46px 52px 40px; color: #e8eaee; background: radial-gradient(circle at 16% 10%, rgba(143, 166, 255, .20), transparent 38%), linear-gradient(145deg, #1a1d24 0%, #12141a 62%, #0d0f13 100%); }
-.login-brand { display: flex; align-items: center; gap: 11px; }
-.brand-mark { display: grid; width: 40px; height: 40px; place-items: center; border: 1px solid rgba(255, 255, 255, .14); border-radius: 10px; background: rgba(143, 166, 255, .12); color: #8fa6ff; }
-/* 品牌标记与外壳一致：三格信号条 */
-.brand-mark--bars { display: flex; align-items: flex-end; justify-content: center; gap: 3px; padding-bottom: 10px; }
-.brand-mark--bars i { display: block; width: 5px; border-radius: 1px; background: currentColor; }
-.brand-mark--bars i:nth-child(1) { height: 10px; opacity: .5; }
-.brand-mark--bars i:nth-child(2) { height: 16px; opacity: .75; }
-.brand-mark--bars i:nth-child(3) { height: 20px; }
+.login-page { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(380px, 1fr); min-height: 100dvh; background: var(--ns-surface); font-family: var(--ns-font-ui); }
+.login-intro { position: relative; isolation: isolate; display: flex; flex-direction: column; justify-content: space-between; min-width: 0; overflow: hidden; padding: 42px clamp(32px, 4.4vw, 72px) 30px; color: #eff5ff; background: radial-gradient(ellipse at 72% 54%, #153761 0, transparent 65%), #09172d; }
+.login-intro::before { content: ''; position: absolute; inset: 0; z-index: -1; pointer-events: none; background-image: linear-gradient(#789ecc0c 1px, transparent 1px), linear-gradient(90deg, #789ecc0c 1px, transparent 1px); background-size: 52px 52px; mask-image: linear-gradient(180deg, transparent, black 30%, black 70%, transparent); }
+.login-brand { display: flex; align-items: center; gap: 12px; }
+.login-brand-mark { width: 42px; height: 42px; }
 .login-brand strong, .login-brand small { display: block; }
-.login-brand strong { font-size: 16px; letter-spacing: .08em; }
-.login-brand small { margin-top: 2px; color: rgba(218, 233, 255, .55); font-size: 9px; letter-spacing: .18em; }
-.login-intro-copy { max-width: 520px; margin: auto 0 36px; }
-.login-eyebrow, .login-panel-label { color: #8fa6ff; font-size: 12px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.login-intro-copy h1 { margin: 12px 0 14px; font-size: clamp(28px, 3vw, 36px); font-weight: 620; letter-spacing: -.03em; line-height: 1.2; }
-.login-intro-copy p { max-width: 470px; margin: 0; color: rgba(222, 235, 255, .72); font-size: 14px; line-height: 1.75; }
-.login-capabilities { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
-.login-capabilities > div { min-width: 0; padding: 13px; border: 1px solid rgba(164, 201, 255, .13); border-radius: 9px; background: rgba(255, 255, 255, .035); }
-.login-capabilities span, .login-capabilities strong, .login-capabilities small { display: block; }
-.login-capabilities span { margin-bottom: 12px; color: #8fa6ff; font-family: var(--ns-font-mono); font-size: 12px; }
-.login-capabilities strong { font-size: 12px; }
-.login-capabilities small { margin-top: 4px; color: rgba(222, 235, 255, .68); font-size: 12px; line-height: 1.5; }
-.login-platform-state { display: flex; align-items: center; gap: 8px; margin-top: 24px; color: rgba(222, 235, 255, .54); font-size: 12px; letter-spacing: .04em; }
-.login-platform-state i { width: 6px; height: 6px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 0 4px rgba(74, 222, 128, .12); }
-/* 面板撑满整列：首尾各一个 auto 外边距把表单居中，安全说明贴底 */
-.login-panel { align-self: stretch; display: flex; flex-direction: column; padding: 44px 44px 30px; }
-.login-head { margin-top: auto; }
-.login-panel-label { color: var(--ns-accent-fg); }
-.login-head h2 { margin: 10px 0 6px; color: var(--ns-text); font-size: 24px; font-weight: 650; letter-spacing: -.025em; }
-.login-head p { margin: 0 0 28px; color: var(--ns-text-3); font-size: 12px; line-height: 1.55; }
-.field { display: block; margin-bottom: 15px; }
-.field-label { display: block; margin-bottom: 7px; color: var(--ns-text-2); font-size: 12px; font-weight: 550; }
-.input { width: 100%; height: 44px; padding: 0 13px; outline: none; border: 1px solid var(--ns-border-strong); border-radius: 7px; background: var(--ns-input-bg); color: var(--ns-text); font: inherit; font-size: 14px; transition: border-color .15s, box-shadow .15s; }
+.login-brand strong { font-size: 22px; font-weight: 650; line-height: 1.1; letter-spacing: .1em; }
+.login-brand small { margin-top: 5px; color: #a7b9d3; font-size: 12px; letter-spacing: .025em; }
+.login-intro-content { width: 100%; max-width: 540px; margin: 64px auto; }
+.login-eyebrow { display: inline-block; padding: 5px 9px; border: 1px solid #9ebfe22b; border-radius: 5px; color: #9bb6db; font-family: var(--ns-font-mono); font-size: 12px; letter-spacing: .08em; }
+.login-intro-copy h1 { margin: 22px 0 20px; font-size: clamp(32px, 3.3vw, 48px); font-weight: 600; letter-spacing: -.035em; line-height: 1.35; }
+.login-intro-copy h1 span { display: block; color: #8ebcf4; }
+.login-intro-copy p { max-width: 440px; margin: 0; color: #a7b9d3; font-size: 14px; line-height: 1.9; }
+.login-signal-art { position: relative; width: 100%; margin: 32px 0 20px; }
+.login-signal-lines { display: block; width: 100%; height: auto; }
+.signal-orbit { stroke: #9fc8f329; stroke-width: 1; }
+.signal-orbit--inner { stroke: #9fc8f31c; }
+.signal-path { stroke: #729bcc55; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.signal-path--accent { stroke: #74c6e2; }
+.signal-terminal { fill: #112b4c; stroke: #527ca6; }
+.signal-dot { fill: #aacdeb; }
+.login-core { position: absolute; left: 50%; top: 50%; display: grid; place-items: center; width: 104px; height: 104px; transform: translate(-50%, -50%); border: 1px solid #83b9eb38; border-radius: 25px; background: #17345580; box-shadow: 0 0 48px #5c99e017; }
+.login-core-mark { width: 80px; height: 80px; }
+.login-capabilities { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 12px; color: #b0c5e0; font-size: 12px; }
+.login-capabilities i { width: 3px; height: 3px; border-radius: 50%; background: #607e9f; }
+.login-intro-footer { margin: 0; color: #8fa5c3; font-size: 12px; line-height: 1.6; }
+.login-access { position: relative; display: flex; align-items: center; justify-content: center; min-width: 0; padding: 100px 40px 72px; }
+.login-language { position: absolute; top: 28px; right: 32px; display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 7px 10px; border: 1px solid var(--ns-border); border-radius: 7px; background: var(--ns-surface); color: var(--ns-text-2); cursor: pointer; font: inherit; font-size: 12px; }
+.login-language svg { width: 16px; height: 16px; }
+.login-language:hover { border-color: var(--ns-accent); color: var(--ns-accent-fg); }
+.login-panel { width: 100%; max-width: 380px; }
+.login-panel-label { color: var(--ns-accent-fg); font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+.login-head h2 { margin: 12px 0 10px; color: var(--ns-text); font-size: 28px; font-weight: 650; letter-spacing: -.025em; line-height: 1.3; }
+.login-head p { margin: 0 0 32px; color: var(--ns-text-3); font-size: 13px; line-height: 1.7; }
+.field { display: block; margin-bottom: 20px; }
+.field-label { display: block; margin-bottom: 8px; color: var(--ns-text-2); font-size: 13px; font-weight: 550; }
+.login-input-wrap { position: relative; display: block; }
+.login-input-wrap > svg { position: absolute; top: 14px; left: 14px; width: 18px; height: 18px; color: var(--ns-text-3); pointer-events: none; }
+.input { width: 100%; height: 46px; padding: 0 14px 0 42px; outline: none; border: 1px solid var(--ns-border-strong); border-radius: 8px; background: var(--ns-input-bg); color: var(--ns-text); font: inherit; font-size: 14px; transition: border-color .15s, box-shadow .15s; }
 .input::placeholder { color: var(--ns-text-3); }
 .input:focus { border-color: var(--ns-accent); box-shadow: 0 0 0 3px var(--ns-accent-subtle); }
-.submit { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 44px; margin-top: 8px; border: 0; border-radius: 7px; background: var(--ns-accent); color: var(--ns-on-accent); cursor: pointer; font: inherit; font-size: 13px; font-weight: 650; }
+.submit { display: flex; align-items: center; justify-content: center; gap: 14px; width: 100%; height: 46px; margin-top: 6px; border: 1px solid transparent; border-radius: 8px; background: var(--ns-accent); color: var(--ns-on-accent); cursor: pointer; font: inherit; font-size: 14px; font-weight: 600; }
+.submit svg { width: 18px; height: 18px; }
 .submit:hover { background: var(--ns-accent-hover); }
 .submit:disabled { cursor: default; opacity: .64; }
 .spinner { width: 15px; height: 15px; border: 2px solid color-mix(in srgb, var(--ns-on-accent) 40%, transparent); border-top-color: var(--ns-on-accent); border-radius: 50%; animation: spin .7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.quick { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--ns-border); }
-.quick-label { margin-right: 8px; color: var(--ns-text-3); font-size: 12px; }
-.chip { margin: 4px 4px 0 0; padding: 5px 9px; border: 1px solid var(--ns-border); border-radius: 6px; background: var(--ns-bg-subtle); color: var(--ns-text-2); cursor: pointer; font: inherit; font-size: 12px; }
+.quick { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 26px; padding: 14px 0; border-top: 1px solid var(--ns-border); border-bottom: 1px solid var(--ns-border); }
+.quick-label { margin-right: auto; color: var(--ns-text-3); font-size: 12px; }
+.chip { min-height: 30px; padding: 5px 8px; border: 1px solid var(--ns-border); border-radius: 6px; background: var(--ns-surface-muted); color: var(--ns-text-2); cursor: pointer; font: inherit; font-size: 12px; }
 .chip:hover { border-color: var(--ns-accent); color: var(--ns-accent-fg); }
-.oidc-row { margin-top: 12px; }
-.oidc-btn { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 42px; border: 1px solid var(--ns-border-strong); border-radius: 7px; background: var(--ns-bg-subtle); color: var(--ns-text-2); cursor: pointer; font: inherit; font-size: 12px; }
+.oidc-row { margin-top: 16px; }
+.login-divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: var(--ns-text-3); font-size: 12px; }
+.login-divider::before, .login-divider::after { content: ''; height: 1px; flex: 1; background: var(--ns-border); }
+.oidc-btn { display: flex; align-items: center; justify-content: center; gap: 9px; width: 100%; min-height: 46px; padding: 10px 12px; border: 1px solid var(--ns-border-strong); border-radius: 8px; background: var(--ns-surface); color: var(--ns-text-2); cursor: pointer; font: inherit; font-size: 13px; }
+.oidc-btn svg { width: 18px; height: 18px; flex: none; }
 .oidc-btn:hover { border-color: var(--ns-accent); color: var(--ns-accent-fg); }
-.login-capability-status, .login-capability-error { margin-bottom: 14px; font-size: 12px; }
+.oidc-btn.is-primary { background: var(--ns-accent); border-color: var(--ns-accent); color: var(--ns-on-accent); }
+.oidc-btn.is-primary:hover { background: var(--ns-accent-hover); }
+.login-page button:focus-visible { outline: 2px solid var(--ns-accent); outline-offset: 3px; }
+.login-capability-status, .login-capability-error { margin-bottom: 18px; font-size: 13px; line-height: 1.6; }
 .login-capability-status { display: flex; align-items: center; gap: 8px; color: var(--ns-text-3); }
 .login-loading-bar { width: 24px; height: 2px; overflow: hidden; background: var(--ns-border); }
-.login-capability-error { padding: 9px 10px; border: 1px solid color-mix(in srgb, var(--ns-warning) 28%, var(--ns-border)); border-radius: 6px; background: color-mix(in srgb, var(--ns-warning) 6%, var(--ns-surface)); color: var(--ns-text-2); }
-.login-security-note { margin: auto 0 0; padding-top: 20px; color: var(--ns-text-3); font-size: 11.5px; text-align: center; }
-@media (max-width: 820px) {
-  .login-page { align-items: start; padding: 72px 18px 30px; overflow: auto; }
-  .login-stage { grid-template-columns: 1fr; min-height: auto; }
-  .login-panel { grid-row: 1; }
-  .login-intro { padding: 30px; }
-  .login-intro-copy { margin: 48px 0 26px; }
+.login-capability-error { padding: 12px 14px; overflow-wrap: anywhere; border: 1px solid color-mix(in srgb, var(--ns-warning) 28%, var(--ns-border)); border-radius: 8px; background: color-mix(in srgb, var(--ns-warning) 6%, var(--ns-surface)); color: var(--ns-text-2); }
+.login-capability-error button { margin: 4px 0 0; padding: 2px 0; border: 0; background: transparent; color: var(--ns-accent-fg); cursor: pointer; font: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.login-capability-error button:disabled { cursor: wait; opacity: .6; }
+.login-security-note { margin: 24px 0 0; color: var(--ns-text-3); font-size: 12px; line-height: 1.8; }
+@media (max-width: 960px) {
+  .login-page { grid-template-columns: minmax(0, 1fr) minmax(360px, 1fr); }
+  .login-intro { padding: 32px; }
   .login-intro-copy h1 { font-size: 32px; }
-  .login-panel { padding: 34px 30px; }
+  .login-core { width: 80px; height: 80px; border-radius: 21px; }
+  .login-core-mark { width: 62px; height: 62px; }
+  .login-access { padding-right: 32px; padding-left: 32px; }
 }
-@media (max-width: 520px) {
-  .login-page { padding-right: 12px; padding-left: 12px; }
-  .login-stage { border-radius: 12px; }
-  .login-capabilities { grid-template-columns: 1fr; }
-  .login-capabilities > div { display: none; }
-  .login-capabilities > div:first-child { display: block; }
-  .login-intro, .login-panel { padding: 26px 22px; }
+@media (max-width: 720px) {
+  .login-page { position: relative; display: flex; flex-direction: column; }
+  .login-intro { flex: none; padding: 26px 24px; background: #09172d; }
+  .login-brand-mark { width: 36px; height: 36px; }
+  .login-brand strong { font-size: 20px; }
+  .login-brand small { font-size: 12px; }
+  .login-intro-content, .login-intro-footer { display: none; }
+  .login-access { position: static; flex: 1; align-items: flex-start; padding: 40px 24px; }
+  .login-language { top: 30px; right: 24px; background: #142743; border-color: #39516f; color: #d2e1f6; }
+  .login-language:hover { border-color: #8ebcf4; color: #fff; }
+  .login-head h2 { font-size: 25px; }
+  .login-head p { margin-bottom: 28px; }
+  .quick { gap: 6px; }
+  .quick-label { flex-basis: 100%; }
 }
 </style>

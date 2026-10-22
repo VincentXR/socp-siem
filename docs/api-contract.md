@@ -59,6 +59,10 @@ SOAR's unversioned compatibility routes retain their historical 0-based
   or `skipped`; unknown nonblank values are rejected. Omit status for all receipts.
   `GET /notify-web/api/v1/channels/{id}` resolves an exact tenant channel.
   Enabled channels receive the tenant's default alarm fan-out, not per-rule subscriptions.
+- `POST /notify-web/api/v1/channels/{id}/test` succeeds only for `sent` or
+  `logged` receipts. Failed or unknown outcomes return HTTP 502 with the
+  diagnostic receipt retained in `data`; unknown acceptance must be checked
+  against dispatch history and the receiving system before another test.
 - `PUT /search-config/api/v1/outputs/{id}` accepts
   `{target:{name,type,uri,authToken,enabled},credentialAction:"KEEP"|"REPLACE"|"CLEAR"}`.
   KEEP preserves the stored secret; REPLACE requires a nonblank new secret; CLEAR
@@ -672,10 +676,27 @@ provenance and remain visible after an alarm moves away. The alarm list contains
 current associations only. Mutation/exclusion receipts must be retained together
 with alarm identity; independent pruning ends replay protection.
 
+ATTACH and MOVE raise the receiving case's severity to at least the verified
+alarm severity, matching automatic admission. Case priority is a historical
+high-water mark: DETACH and moving an alarm away do not silently lower it.
+Association changes preserve the case's owner and lifecycle state.
+
 `/incidents/from-alarm` is a service-identity-only admission endpoint used by the
-Alert delivery worker. Interactive clients use the association command. Service
-JWT and signed delegated-tenant headers are both required in authenticated
-profiles. Assignments on Case and Alert require a current active analyst/admin
+Alert delivery worker. Service JWT and signed delegated-tenant headers are both
+required in authenticated profiles; this endpoint does not accept user identities.
+
+Interactive admission uses `POST /incident-web/api/v1/incidents/from-alarm/{alarmId}`
+with no request body, an analyst/admin role and `case:write`. Incident Web fetches
+that exact alarm from Alert Web and verifies both its ID and authenticated tenant;
+the browser cannot supply severity, entity or other alarm facts. Missing/foreign
+alarms return 404 and unavailable/unparseable Alert responses return 503 without
+writing a case. Admission shares automatic delivery's transaction and alarm/entity
+locks, returning `caseId`, `caseNo`, `title`, `entity`, `status`, `alarmCount`,
+`created` and optional `duplicate`. Repeated admission returns the existing link.
+An explicitly detached alarm returns 409 instead of a success with no case; use
+the explicit association command from the case evidence page to reattach it.
+
+Assignments on Case and Alert require a current active analyst/admin
 from the shared tenant operator directory (or the authenticated user assigning
 themself); free-form user names and service identities are not valid owners.
 

@@ -26,12 +26,13 @@
 
   /* 字阶（唯一的正数字号档位） */
   --ns-fs-hero: 32px;
-  --ns-fs-title: 26px;
+  --ns-fs-title: 24px;
   --ns-fs-subtitle: 16px;
-  --ns-fs-body: 13px;
+  --ns-fs-body: 14px;
+  --ns-fs-data: 13px;
   --ns-fs-label: 12px;
-  --ns-fs-meta: 11px;
-  --ns-fs-badge: 10px;
+  --ns-fs-meta: 12px;
+  --ns-fs-badge: 11px;
 
   --ns-content-max: 1560px;
   --ns-sidebar-width: 232px;

@@ -25,6 +25,8 @@ import DataTableCard from '../components/DataTableCard.vue'
 import FilterToolbar from '../components/FilterToolbar.vue'
 import MetricCard from '../components/MetricCard.vue'
 import PageHeader from '../components/PageHeader.vue'
+import RowActivate from '../components/RowActivate.vue'
+import { useFocusReturn } from '../composables/useFocusReturn'
 import { useTableColumnWidths } from '../composables/useTableColumnWidths'
 import { useDebouncedWatch } from '../composables/useDebouncedWatch'
 import { useLatestRequest } from '../composables/useLatestRequest'
@@ -53,6 +55,7 @@ useUnsavedChanges(() => null, () => false, () => actionBusy.value)
 const detailEvents = ref<EndpointEvent[]>([])
 const relatedAssets = ref<Asset[]>([])
 const detailOpen = ref(false)
+const restoreDetailFocus = useFocusReturn(detailOpen)
 const detailTab = ref('events')
 const detailEndpoint = ref<Endpoint | null>(null)
 const selectedId = computed(() => typeof route.query.endpointId === 'string' ? route.query.endpointId : '')
@@ -226,7 +229,7 @@ useDebouncedWatch(keyword, () => {
 <template>
   <div class="page-pad view-enter">
     <PageHeader :eyebrow="t('menuGroup.context')" :title="t('experience.endpointAgents')" :description="t('endpoints.description')">
-      <template #actions><el-button size="small" @click="installOpen = true">{{ t('experience.installAgent') }}</el-button><el-button size="small" :loading="loading" @click="refresh">{{ t('common.refresh') }}</el-button></template>
+      <template #actions><el-button :loading="loading" @click="refresh">{{ t('common.refresh') }}</el-button><el-button type="primary" @click="installOpen = true">{{ t('experience.installAgent') }}</el-button></template>
     </PageHeader>
 
     <div v-if="endpointStat" class="page-metrics">
@@ -248,21 +251,21 @@ useDebouncedWatch(keyword, () => {
       </template>
       <template #empty-actions><el-button v-if="hasFilters" @click="clearFilters">{{ t('experience.clearFilters') }}</el-button><el-button v-else @click="installOpen = true">{{ t('experience.installAgent') }}</el-button></template>
       <el-table :data="endpoints" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openDetail">
-        <el-table-column prop="hostname" column-key="hostname" :label="t('endpoints.hostname')" :width="columnWidth('hostname')" min-width="180" show-overflow-tooltip />
-        <el-table-column prop="ip" column-key="ip" :label="t('common.ip')" :width="columnWidth('ip', 120)" />
+        <el-table-column prop="hostname" column-key="hostname" :label="t('endpoints.hostname')" :width="columnWidth('hostname')" min-width="200" show-overflow-tooltip><template #default="{ row }"><RowActivate :aria-label="t('endpoints.openDetails', { name: row.hostname })" @activate="openDetail(row as Endpoint)">{{ row.hostname }}</RowActivate></template></el-table-column>
+        <el-table-column prop="ip" column-key="ip" :label="t('common.ip')" :width="columnWidth('ip', 150)" show-overflow-tooltip />
         <el-table-column prop="os" column-key="os" :label="t('endpoints.os')" :width="columnWidth('os', 170)" show-overflow-tooltip />
         <el-table-column prop="agentVersion" column-key="agentVersion" :label="t('endpoints.agentVersion')" :width="columnWidth('agentVersion', 120)" show-overflow-tooltip />
-        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 80)">
+        <el-table-column prop="status" column-key="status" :label="t('common.status')" :width="columnWidth('status', 96)">
           <template #default="{ row }"><el-tag :type="row.status === 'ONLINE' ? 'success' : 'info'" size="small">{{ tOr(t, 'statuses.' + row.status, row.status) }}</el-tag></template>
         </el-table-column>
         <el-table-column prop="lastHeartbeat" column-key="lastHeartbeat" :label="t('endpoints.lastHeartbeat')" :width="columnWidth('lastHeartbeat', 165)">
           <template #default="{ row }"><span class="table-text">{{ formatTime(row.lastHeartbeat) }}</span></template>
         </el-table-column>
-        <el-table-column :label="t('common.actions')" width="130" :resizable="false">
+        <el-table-column :label="t('common.actions')" width="150" fixed="right" :resizable="false">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click.stop="openDetail(row as Endpoint)">{{ t('common.details') }}</el-button>
-            <el-dropdown v-if="canWrite" trigger="click" @click.stop @command="command => onEndpointCommand(String(command), row as Endpoint)">
-              <el-button link size="small" :loading="actionBusy" :disabled="actionBusy">{{ t('common.more') }}</el-button>
+            <el-dropdown v-if="canWrite" class="endpoint-row-menu" trigger="click" @click.stop @command="command => onEndpointCommand(String(command), row as Endpoint)">
+              <el-button link size="small" :loading="actionBusy" :disabled="actionBusy" :aria-label="t('endpoints.moreActions', { name: row.hostname })">{{ t('common.more') }}</el-button>
               <template #dropdown><el-dropdown-menu><el-dropdown-item command="unregister">{{ t('endpoints.unregister') }}</el-dropdown-item></el-dropdown-menu></template>
             </el-dropdown>
           </template>
@@ -274,7 +277,7 @@ useDebouncedWatch(keyword, () => {
       <p>{{ t('experience.agentGuide') }}</p>
       <a href="https://github.com/VincentXR/socp-siem/blob/main/docs/operations/endpoint-enrollment.md" target="_blank" rel="noopener noreferrer">{{ t('experience.agentDocs') }}</a>
     </el-drawer>
-    <el-drawer v-model="detailOpen" :title="detailEndpoint?.hostname || t('endpoints.endpointDetails')" size="min(720px, 96vw)" :before-close="closeDetail" :close-on-click-modal="!actionBusy" :close-on-press-escape="!actionBusy">
+    <el-drawer v-model="detailOpen" :title="detailEndpoint?.hostname || t('endpoints.endpointDetails')" size="min(720px, 96vw)" :before-close="closeDetail" :close-on-click-modal="!actionBusy" :close-on-press-escape="!actionBusy" @closed="restoreDetailFocus">
       <p v-if="detailLoading" role="status">{{ t('common.loading') }}</p>
       <ActionFeedback :error="detailError" />
       <el-button v-if="detailError" @click="loadDetail">{{ t('common.retry') }}</el-button>
@@ -327,15 +330,26 @@ useDebouncedWatch(keyword, () => {
         </el-tabs>
 
       </template>
-      <template v-if="detailEndpoint && canWrite" #footer>
+      <template #footer>
         <ActionFeedback :error="actionError" />
-        <details><summary>{{ t('experience.more') }}</summary><div class="endpoint-detail-actions"><el-button type="danger" plain :loading="actionBusy" @click="removeEndpoint(detailEndpoint.id)">{{ t('endpoints.unregister') }}</el-button></div></details>
+        <div class="endpoint-footer-actions">
+          <el-dropdown v-if="detailEndpoint && canWrite" trigger="click" @command="command => detailEndpoint && onEndpointCommand(String(command), detailEndpoint)">
+            <el-button :disabled="actionBusy">{{ t('common.more') }}</el-button>
+            <template #dropdown><el-dropdown-menu><el-dropdown-item command="unregister">{{ t('endpoints.unregister') }}</el-dropdown-item></el-dropdown-menu></template>
+          </el-dropdown>
+          <el-button :disabled="actionBusy" @click="closeDetail">{{ t('common.close') }}</el-button>
+        </div>
       </template>
     </el-drawer>
   </div>
 </template>
 
 <style scoped>
+.endpoint-footer-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.endpoint-row-menu { margin-left: 12px; vertical-align: middle; }
+.endpoint-footer-actions > :only-child { margin-left: auto; }
+.endpoint-detail-grid dt, .endpoint-detail-grid dd { font-size: 13px; }
+.endpoint-detail-muted { font-size: 12px; line-height: 1.6; }
 .endpoint-detail-pager :deep(.el-pagination) { flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .endpoint-related-asset { overflow-wrap: anywhere; margin-block: 12px; }
 .endpoint-related-asset :deep(.el-button) { max-width: 100%; white-space: normal; height: auto; text-align: left; }

@@ -78,6 +78,7 @@ public interface InvestigationRepository extends TenantScopedRepository<Investig
     @Query("update InvestigationEntity i set i.appendClaimToken = :token, i.appendClaimUntil = :claimUntil, "
             + "i.incidentId = coalesce(i.incidentId, :incidentId), i.updatedAt = :now "
             + "where i.id = :id and i.tenantId = :tenant and i.appendedAt is null "
+            + "and i.status in ('COMPLETED', 'PARTIAL') "
             + "and (i.appendClaimUntil is null or i.appendClaimUntil < :now) "
             + "and (:incidentId is null or i.incidentId is null or i.incidentId = :incidentId)")
     int claimAppend(@Param("id") String id, @Param("tenant") String tenant,

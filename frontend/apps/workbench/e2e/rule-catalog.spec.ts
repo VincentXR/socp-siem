@@ -41,7 +41,7 @@ test('rule 501 can be paged, filtered, edited by link, and selected for alarm fi
   await page.getByRole('option', { name: '50/page', exact: true }).click()
   await expect(page).toHaveURL(/size=50/)
   await expect(page).not.toHaveURL(/page=26/)
-  await page.getByRole('textbox', { name: 'Search', exact: true }).fill('Catalog rule 501')
+  await page.getByRole('textbox', { name: 'Search rule names', exact: true }).fill('Catalog rule 501')
   await page.locator('.rule-search').getByRole('button', { name: 'Search', exact: true }).click()
   const found = page.getByRole('row').filter({ hasText: 'Catalog rule 501' })
   await expect(found).toBeVisible()

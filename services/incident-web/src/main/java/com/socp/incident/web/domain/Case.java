@@ -93,6 +93,15 @@ public record Case(
                 ruleCount, alarmCount);
     }
 
+    /** Manual association follows the same historical high-water mark as automatic admission. */
+    public Case withRaisedSeverity(String incomingSeverity) {
+        String raised = maxSeverity(severity, incomingSeverity);
+        if (raised.equals(severity)) return this;
+        return new Case(id, caseNo, title, entity, raised, status,
+                ruleIds, alarmIds, timeline, assignee, createdAt, Instant.now(), rowVersion,
+                ruleCount, alarmCount);
+    }
+
     private static List<String> appendDistinct(List<String> src, String v) {
         if (v == null) return src;
         List<String> out = new java.util.ArrayList<>(src);

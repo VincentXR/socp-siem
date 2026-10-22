@@ -258,7 +258,10 @@ A scheduled dispatcher scans durable queued or expired work, with
 and no in-memory waiting queue. Each attempt uses a distinct claim token.
 `PARTIAL` and `COMPLETED` results are terminal; failed tasks are retried by an
 explicit resubmission. Browser polling may be cancelled without deleting the
-durable task. Persistent queue age and target deployment capacity remain release
+durable task. Only these two completed result states may be appended to an
+incident; `NEW`, `RUNNING`, and `FAILED` return 409 before binding a target or
+making a remote write. The database append claim enforces the same state guard.
+Persistent queue age and target deployment capacity remain release
 acceptance concerns.
 
 Journal replay is bounded to the configured retention and read in pages; the

@@ -1,4 +1,4 @@
-import { get, post, put, type ApiRequestOptions } from './core'
+import { get, post, put, requestText, type ApiRequestOptions } from './core'
 import type { IngestParseFailure, IngestSummary, IngestTask, IngestTestResult, Paged } from './models'
 import { withQuery } from '../lib/query'
 
@@ -40,4 +40,4 @@ export const getSourceSetup = (id: string, options?: ApiRequestOptions) =>
 export const previewSource = (id: string, sample: string, options?: ApiRequestOptions) =>
   post<SourcePreview>(`/search-config/api/v1/sources/${encodeURIComponent(id)}/preview`, { sample }, options)
 export const renderSourceConfig = (id: string, options?: ApiRequestOptions) =>
-  get<string>(`/search-config/api/v1/sources/${encodeURIComponent(id)}/vector-config`, options)
+  requestText(`/search-config/api/v1/sources/${encodeURIComponent(id)}/vector-config`, {}, options)

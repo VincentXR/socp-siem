@@ -234,11 +234,12 @@ watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]
 </script>
 
 <template>
-  <div class="page-pad view-enter" :class="{ 'ai-context-layout': contextAlarmId }">
-    <el-button v-if="investigationReturn" @click="router.push(investigationReturn)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
-    <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('ai.title')" :description="t('ai.description')" />
-    <el-button v-if="contextAlarmId" @click="genericVisible = !genericVisible">{{ t('analystJourney.generalQuestions') }}</el-button>
-    <el-card v-if="!contextAlarmId || genericVisible" shadow="never" class="ai-panel">
+  <div class="page-pad view-enter ai-view" :class="{ 'ai-context-layout': contextAlarmId }">
+    <el-button v-if="investigationReturn" link @click="router.push(investigationReturn)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
+    <PageHeader :eyebrow="t('menuGroup.detectAndResponse')" :title="t('ai.title')" :description="t('ai.description')">
+      <template #actions><el-button v-if="contextAlarmId" :aria-expanded="genericVisible" @click="genericVisible = !genericVisible">{{ t('analystJourney.generalQuestions') }}</el-button></template>
+    </PageHeader>
+    <el-card v-if="!contextAlarmId || genericVisible" shadow="never" class="ai-panel ai-question-panel">
       <div class="ai-ask-row">
         <el-input
           v-model="question"
@@ -289,9 +290,12 @@ watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]
 
     <el-card shadow="never" class="ai-panel ai-investigation-panel">
       <div class="ai-investigation-head">
-        <div>
-          <h3 class="ai-investigation-title">{{ t('ai.investigation.agentTitle') }}</h3>
-          <p class="ai-muted ai-investigation-description">{{ t('ai.investigation.evidenceFirstDescription') }}</p>
+        <div class="ai-investigation-heading">
+          <span class="ai-investigation-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3 4 6v6c0 4 4 7 8 9 4-2 8-5 8-9V6l-8-3Z"/><path d="m8 12 2.5 2.5L16 9"/></svg></span>
+          <div>
+            <h3 class="ai-investigation-title">{{ t('ai.investigation.agentTitle') }}</h3>
+            <p class="ai-muted ai-investigation-description">{{ t('ai.investigation.evidenceFirstDescription') }}</p>
+          </div>
         </div>
         <el-tag size="small" type="warning" effect="plain">{{ t('ai.investigation.approvalRequired') }}</el-tag>
       </div>
@@ -319,8 +323,8 @@ watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]
         <div class="ai-section">
           <div class="ai-section-title">{{ t('ai.investigation.evidenceTimeline') }}</div>
           <div v-for="item in investigation.timeline" :key="`${item.timestamp}-${item.citation}`" class="ai-timeline-item">
-            <span class="ai-muted">{{ item.timestamp }}</span> · <span class="ai-timeline-type">{{ item.type }}</span> · {{ item.message }}
-            <el-button link @click="inspectCitation(item.citation)">[{{ item.citation }}]</el-button>
+            <div class="ai-timeline-meta"><span class="ai-muted">{{ item.timestamp }}</span><span class="ai-timeline-type">{{ item.type }}</span></div>
+            <div>{{ item.message }} <el-button link @click="inspectCitation(item.citation)">[{{ item.citation }}]</el-button></div>
           </div>
         </div>
         <div class="ai-section">
@@ -344,7 +348,7 @@ watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]
           </div>
         </div>
         <div class="ai-append-row">
-          <el-button type="success" plain :loading="appendTarget === investigation.investigationId" :disabled="appendLoading || investigation.summaryAppended" @click="appendToIncident">
+          <el-button type="primary" plain :loading="appendTarget === investigation.investigationId" :disabled="appendLoading || investigation.summaryAppended" @click="appendToIncident">
             {{ investigation.summaryAppended ? t('ai.investigation.appendedToIncident') : t('ai.investigation.appendSummaryToIncident') }}
           </el-button>
           <el-button v-if="investigation.incidentId" link @click="openCase(investigation.incidentId)">{{ t('drawer.goToCase') }} · {{ investigation.incidentId }}</el-button>
@@ -360,7 +364,7 @@ watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]
         </div>
       </div>
       <section v-if="selectedCitation" class="ai-result" :aria-label="t('analystJourney.citationEvidence')"><h4>{{ selectedCitation.label || selectedCitation.description || selectedCitation.id }}</h4><p>{{ selectedCitation.source }} · {{ selectedCitation.id }}</p><p v-if="citationLoading" role="status">{{ t('analystJourney.loadingEvidence') }}</p><p v-if="citationError" role="alert">{{ citationError }}</p><pre v-if="citationEvidence">{{ JSON.stringify(citationEvidence, null, 2) }}</pre><el-button @click="closeCitation">{{ t('analystJourney.closeEvidence') }}</el-button></section>
-      <p>{{ t('analystJourney.generatedGuidance') }}</p>
+      <p class="ai-guidance">{{ t('analystJourney.generatedGuidance') }}</p>
     </el-card>
   </div>
 </template>
@@ -369,4 +373,43 @@ watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]
 .ai-context-layout { display: flex; flex-direction: column; }
 .ai-context-layout > .ai-panel { order: 2; }
 .ai-context-layout > .ai-investigation-panel { order: 1; }
+.ai-analysis, .ai-result-answer { font-size: 14px; line-height: 1.75; }
+.ai-muted, .ai-context-banner, .ai-citations { font-size: 12px; }
+.ai-investigation-meta { row-gap: 6px; }
+.ai-append-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding-top: 12px; border-top: 1px solid var(--ns-border); }
+.ai-question-panel { border-top: 2px solid color-mix(in srgb, var(--ns-accent) 45%, var(--ns-border)); background: linear-gradient(115deg, color-mix(in srgb, var(--ns-accent) 4%, var(--ns-surface)), var(--ns-surface) 55%); }
+.ai-ask-row { align-items: center; }
+.ai-quick-prompts { gap: 8px; margin-top: 16px; }
+.ai-quick-prompts .ai-quick-tag { background: var(--ns-surface); border-color: var(--ns-border); color: var(--ns-text-2); padding: 6px 10px; border-radius: 8px; }
+.ai-quick-tag:hover { border-color: var(--ns-accent); color: var(--ns-accent-fg); opacity: 1; }
+.ai-quick-tag:focus-visible { outline: 2px solid var(--ns-accent); outline-offset: 3px; }
+.ai-hint { padding: 12px 0 0; text-align: left; line-height: 1.7; }
+.ai-investigation-head { margin-bottom: 20px; gap: 16px; align-items: flex-start; }
+.ai-investigation-heading { display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
+.ai-investigation-icon { display: grid; place-items: center; flex: 0 0 38px; height: 38px; color: var(--ns-accent-fg); border: 1px solid color-mix(in srgb, var(--ns-accent) 18%, var(--ns-border)); border-radius: 10px; background: color-mix(in srgb, var(--ns-accent) 6%, transparent); }
+.ai-investigation-icon svg { width: 22px; height: 22px; }
+.ai-investigation-description { line-height: 1.6; }
+.ai-context-banner { padding: 10px 12px; border-radius: 8px; background: var(--ns-bg-subtle); border: 1px solid var(--ns-border); }
+.ai-result { background: var(--ns-surface); padding: 20px; }
+.ai-analysis { padding: 16px 18px; border-radius: 10px; border-left: 3px solid var(--ns-accent); background: color-mix(in srgb, var(--ns-accent) 5%, var(--ns-surface)); }
+.ai-section { margin-top: 24px; }
+.ai-section-title { font-size: 13px; margin-bottom: 12px; }
+.ai-timeline-item { position: relative; margin: 0 0 0 4px; padding: 0 0 16px 18px; border-left: 1px solid var(--ns-border-strong); font-size: 13px; line-height: 1.7; }
+.ai-timeline-item::before { content: ''; position: absolute; left: -4px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--ns-accent); box-shadow: 0 0 0 3px var(--ns-surface); }
+.ai-timeline-item:last-child { padding-bottom: 2px; }
+.ai-timeline-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin-bottom: 4px; font-size: 12px; }
+.ai-result-code { padding: 14px 16px; margin-bottom: 10px; line-height: 1.7; }
+.ai-list-item { margin: 0; padding: 9px 12px; border-bottom: 1px solid var(--ns-border); font-size: 13px; line-height: 1.7; }
+.ai-list-item:last-child { border-bottom: 0; }
+.ai-citations { padding-top: 16px; border-top: 1px solid var(--ns-border); line-height: 1.8; }
+.ai-citations > div { margin-top: 6px; }
+.ai-result > pre { max-height: 320px; overflow: auto; padding: 14px; border: 1px solid var(--ns-border); border-radius: 8px; background: var(--ns-bg-subtle); font-size: 12px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-guidance { margin: 16px 0 0; color: var(--ns-text-3); font-size: 12px; line-height: 1.7; }
+@media (max-width: 720px) {
+  .ai-ask-row { flex-wrap: wrap; }
+  .ai-ask-row > :deep(.el-input) { flex-basis: 100%; }
+  .ai-investigation-head { flex-wrap: wrap; }
+  .ai-result { padding: 14px; }
+  .ai-analysis { padding: 12px; }
+}
 </style>

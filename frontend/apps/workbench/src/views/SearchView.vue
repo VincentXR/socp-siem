@@ -487,7 +487,7 @@ function onQueryEnter(event: Event | KeyboardEvent): void {
 /** Exporting runs a server-side scan, so a second click must not start another. */
 const exporting = ref<'json' | 'csv' | ''>('')
 async function exportCurrent(format: 'json' | 'csv'): Promise<void> {
-  if (exporting.value) return
+  if (!canWrite.value || exporting.value) return
   exporting.value = format
   const scoped = activeQuery.value || buildScopedQuery(query.value, selectedTimeRange.value)
   try {
@@ -515,11 +515,12 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page-pad view-enter">
-    <el-button v-if="investigationReturn" @click="router.push(investigationReturn)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
+  <div class="page-pad view-enter search-page">
+    <el-button v-if="investigationReturn" link @click="router.push(investigationReturn)">{{ t('analystJourney.returnToInvestigation') }}</el-button>
     <p v-if="route.query.draft" role="status">{{ t('analystJourney.reviewSuggestedSearch') }}</p>
-    <PageHeader :eyebrow="t('menuGroup.operations')" :title="t('search.title')" :description="t('search.description')" />
-    <el-button size="small" :aria-expanded="fieldBrowserOpen" @click="fieldBrowserOpen = !fieldBrowserOpen">{{ t('experience.fields') }}</el-button>
+    <PageHeader :eyebrow="t('menuGroup.operations')" :title="t('search.title')" :description="t('search.description')">
+      <template #actions><el-button :aria-expanded="fieldBrowserOpen" @click="fieldBrowserOpen = !fieldBrowserOpen">{{ t('experience.fields') }}</el-button></template>
+    </PageHeader>
     <div v-if="route.query.sourceId || route.query.eventId" class="search-result-hint">source_id: {{ route.query.sourceId || '—' }} · eventId: {{ route.query.eventId || '—' }}</div>
     <div class="search-workspace" :class="{ 'search-workspace--compact': !fieldBrowserOpen }">
       <aside v-if="fieldBrowserOpen" class="search-field-browser" :aria-label="t('search.fieldBrowser')">
@@ -540,12 +541,12 @@ onMounted(() => {
 
       <section class="search-main-column">
         <el-card shadow="never" class="search-toolbar">
+          <div class="search-query-heading"><strong>{{ t('search.queryLabel') }}</strong><span class="search-query-help">{{ t('search.queryKeyboardHint') }}</span></div>
           <div class="search-query-row">
             <el-input ref="queryInput" v-model="query" type="textarea" :autosize="{ minRows: 2, maxRows: 6 }" resize="none" :aria-label="t('search.queryLabel')" :placeholder="t('search.queryPlaceholder')" @keydown.enter="onQueryEnter" />
             <el-tooltip :content="t('search.queryLimitHint')" placement="top"><el-button type="primary" :loading="loading" @click="() => search()">{{ t('search.runQuery') }}</el-button></el-tooltip>
 
           </div>
-          <div class="search-query-help">{{ t('search.queryKeyboardHint') }}</div>
           <div v-if="hasDraftChanges" class="search-result-hint" role="status">{{ t('search.draftHint') }}</div>
           <div class="search-time-filter" role="group" :aria-label="t('search.timeRange')">
             <span class="search-time-filter-label">{{ t('search.timeRange') }}</span>
@@ -560,7 +561,7 @@ onMounted(() => {
           </div>
           <p class="search-result-hint" data-testid="applied-bounds">{{ activeBounds }}</p>
           <div class="search-secondary-controls">
-            <details><summary>{{ t('experience.export') }}</summary>            <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :loading="exporting === 'json'" :disabled="!result || Boolean(exporting)" @click="exportCurrent('json')">{{ t('common.exportJson') }}</el-button></el-tooltip>
+            <details v-if="canWrite"><summary>{{ t('experience.export') }}</summary>            <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :loading="exporting === 'json'" :disabled="!result || Boolean(exporting)" @click="exportCurrent('json')">{{ t('common.exportJson') }}</el-button></el-tooltip>
             <el-tooltip :content="t('search.exportLimitHint')" placement="top"><el-button size="small" :loading="exporting === 'csv'" :disabled="!result || Boolean(exporting)" @click="exportCurrent('csv')">{{ t('common.exportCsv') }}</el-button></el-tooltip></details>
             <details><summary>{{ t('experience.searchTools') }}</summary>          <div class="search-saved-row">
             <el-select v-model="selectedSavedQueryId" size="small" clearable :placeholder="t('search.savedQueries')" @change="applySavedQuery">
@@ -583,21 +584,25 @@ onMounted(() => {
             <div v-if="timelineRows.length > 1" class="search-timeline">
               <div class="search-timeline-head"><span>{{ t('search.histogram') }}</span><span class="search-timeline-hint">{{ t('search.timeRangeApplied', { range: activeTimeRangeLabel }) }} · {{ result.timelineApproximate ? t('search.timelineLimited') : t('search.timelineHint') }}</span></div>
               <div class="search-timeline-chart" role="img" :aria-label="t('search.histogram')">
-                <div v-for="row in timelineRows" :key="row.key" class="search-timeline-bar"><div class="search-timeline-track"><span class="search-timeline-value">{{ row.count }}</span><i :style="{ height: `${Math.max(8, (Number(row.count) / maxTimelineCount) * 100)}%` }" /></div><span class="search-timeline-label">{{ String(row.key).slice(0, 10) }}</span></div>
+                <div v-for="row in timelineRows" :key="row.key" class="search-timeline-bar"><div class="search-timeline-track"><span class="search-timeline-value">{{ row.count }}</span><i :style="{ height: `${Math.max(0, Math.min(100, (Number(row.count) / maxTimelineCount) * 100))}%` }" /></div><span class="search-timeline-label" :title="String(row.key)">{{ String(row.key).slice(0, 10) }}</span></div>
               </div>
             </div>
             <div v-if="result.events.length" class="search-result-hint">{{ t('search.eventDetailHint') }} · {{ t('search.currentPageSortHint') }}</div>
             <EmptyState v-if="!result.events.length" :title="t('search.noResults')" :description="t('search.noResultsHint')" />
             <el-table v-else class="search-events-table" :data="visibleEvents" :default-sort="eventSortProp && eventSortOrder ? { prop: eventSortProp, order: eventSortOrder } : undefined" size="small" border allow-drag-last-column max-height="560" @header-dragend="onHeaderDragEnd" @sort-change="onEventSortChange" @row-click="openEvent">
               <el-table-column prop="timestamp" column-key="timestamp" sortable="custom" :label="t('common.timestamp')" :width="columnWidth('timestamp', 150)"><template #default="{ row }">{{ row.timestamp.slice(0, 19).replace('T', ' ') }}</template></el-table-column>
-              <el-table-column prop="source" column-key="source" sortable="custom" :label="t('common.source')" :width="columnWidth('source', 90)" />
-              <el-table-column prop="host" column-key="host" sortable="custom" :label="t('common.host')" :width="columnWidth('host', 90)" />
-              <el-table-column prop="severity" column-key="severity" sortable="custom" :label="t('common.severity')" :width="columnWidth('severity', 80)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
+              <el-table-column prop="source" column-key="source" sortable="custom" :label="t('common.source')" :width="columnWidth('source', 120)" show-overflow-tooltip />
+              <el-table-column prop="host" column-key="host" sortable="custom" :label="t('common.host')" :width="columnWidth('host', 130)" show-overflow-tooltip />
+              <el-table-column prop="severity" column-key="severity" sortable="custom" :label="t('common.severity')" :width="columnWidth('severity', 110)"><template #default="{ row }"><SevBadge :value="row.severity" /></template></el-table-column>
               <el-table-column prop="msg" column-key="msg" sortable="custom" :label="t('common.message')" :width="columnWidth('msg')" min-width="240" show-overflow-tooltip><template #default="{ row }"><RowActivate :aria-label="row.msg || t('common.message')" @activate="openEvent(row as SearchEvent)">{{ row.msg }}</RowActivate></template></el-table-column>
             </el-table>
             <div v-if="showPagination" class="search-pagination"><span class="search-page-summary">{{ t('common.pageSummary', { page: currentPage, total: pageCount }) }}</span><div class="search-page-controls"><span class="search-page-size-label">{{ t('common.pageSize') }}</span><el-select v-model="pageSize" size="small" style="width:92px" @change="changePageSize"><el-option v-for="size in pageSizes" :key="size" :label="String(size)" :value="size" /></el-select><el-button size="small" :disabled="currentPage <= 1 || loading" @click="previousPage">{{ t('common.previousPage') }}</el-button><el-button size="small" :disabled="!result.nextCursor || currentPage >= maxBrowsePages || loading" @click="nextPage">{{ t('common.nextPage') }}</el-button></div></div>
           </el-card>
-          <el-card v-if="result.stat" shadow="never"><template #header>{{ result.stat.type === 'timechart' ? t('search.timeDistributionDaily') : t('search.statsSummary', { type: result.stat.type === 'top' ? 'Top' : t('search.count') }) }}</template><el-table :data="result.stat.rows" size="small" border><el-table-column prop="key" :label="t('search.statKey')" show-overflow-tooltip /><el-table-column prop="count" :label="t('search.count')" width="220"><template #default="{ row }"><div class="search-stat-row"><span>{{ row.count }}</span><span class="search-stat-track"><i :style="{ width: `${Math.min(100, (row.count / maxStatCount) * 100)}%` }" /></span></div></template></el-table-column></el-table></el-card>
+          <el-card v-if="result.stat" shadow="never">
+            <template #header>{{ result.stat.type === 'timechart' ? t('search.timeDistributionDaily') : t('search.statsSummary', { type: result.stat.type === 'top' ? 'Top' : t('search.count') }) }}</template>
+            <el-alert v-if="result.stat.approximate" data-testid="aggregation-limited" :title="t('search.aggregationLimited', { count: result.stat.sumOtherDocCount ?? t('time.notAvailable') })" type="warning" :closable="false" show-icon class="search-error" />
+            <el-table :data="result.stat.rows" size="small" border><el-table-column prop="key" :label="t('search.statKey')" show-overflow-tooltip /><el-table-column prop="count" :label="t('search.count')" width="220"><template #default="{ row }"><div class="search-stat-row"><span>{{ row.count }}</span><span class="search-stat-track"><i :style="{ width: `${Math.min(100, (row.count / maxStatCount) * 100)}%` }" /></span></div></template></el-table-column></el-table>
+          </el-card>
         </template>
       </section>
     </div>
@@ -631,7 +636,7 @@ onMounted(() => {
           </div>
         </div>
         <el-button v-if="canWrite" type="primary" plain @click="useAsDetectionSample">{{ t('workflow.detectionSample') }}</el-button>
-        <details class="search-event-raw" open><summary>{{ t('search.rawEvent') }}</summary><pre>{{ JSON.stringify(selectedEvent, null, 2) }}</pre></details>
+        <details class="search-event-raw"><summary>{{ t('search.rawEvent') }}</summary><pre>{{ JSON.stringify(selectedEvent, null, 2) }}</pre></details>
       </template>
     </el-drawer>
   </div>
@@ -639,10 +644,54 @@ onMounted(() => {
 
 <style scoped>
 .search-workspace--compact { grid-template-columns: minmax(0, 1fr); }
+.search-field-browser { padding: 16px 12px; border-radius: var(--ns-radius-xl); background: linear-gradient(180deg, color-mix(in srgb, var(--ns-accent) 3%, var(--ns-surface)), var(--ns-surface) 150px); }
+.search-field-browser-head { margin-bottom: 16px; padding: 0 4px; }
+.search-field-list { gap: 4px; margin-top: 12px; }
+.search-field-item { min-height: 48px; padding: 9px 8px; border: 1px solid transparent; border-radius: var(--ns-radius-md); }
+.search-field-item:hover { border-color: var(--ns-border); background: var(--ns-surface); }
+.search-field-item:focus-visible { outline: 2px solid var(--ns-accent); outline-offset: -2px; }
+.search-field-type { padding: 2px 4px; border-radius: var(--ns-radius-sm); background: var(--ns-surface-muted); }
+.search-toolbar { padding: 0; overflow: hidden; border-color: color-mix(in srgb, var(--ns-accent) 20%, var(--ns-border)); border-radius: var(--ns-radius-xl); background: linear-gradient(110deg, color-mix(in srgb, var(--ns-accent) 3%, var(--ns-surface)), var(--ns-surface) 65%); }
+.search-toolbar :deep(.el-card__body) { padding: 18px 20px; }
+.search-query-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 10px; }
+.search-query-heading strong { display: inline-flex; align-items: center; gap: 8px; color: var(--ns-text); font-size: 13px; }
+.search-query-heading strong::before { content: ''; width: 3px; height: 14px; border-radius: 2px; background: var(--ns-accent); }
+.search-query-help { margin-top: 0; }
+.search-query-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
+.search-query-row :deep(.el-textarea__inner) { min-height: 72px !important; padding: 12px 14px; border-radius: var(--ns-radius-md); background: var(--ns-bg-inset); color: var(--ns-text); font-size: 13px; line-height: 1.65; }
+.search-query-row :deep(.el-button) { min-width: 96px; }
+.search-time-filter { gap: 10px; margin-top: 16px; }
+.search-time-filter-buttons { gap: 4px; }
+.search-time-filter-applied { flex-basis: 100%; line-height: 1.6; }
+.search-toolbar .search-result-hint { margin: 12px 0 0; padding: 10px 12px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: var(--ns-surface-muted); line-height: 1.5; overflow-wrap: anywhere; }
+.search-toolbar .search-result-hint[role='status'] { border-color: color-mix(in srgb, var(--ns-warning) 26%, var(--ns-border)); color: var(--ns-text-2); background: color-mix(in srgb, var(--ns-warning) 5%, var(--ns-surface)); }
 .search-custom-range, .search-secondary-controls { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
 .search-custom-range label { display: flex; flex-direction: column; gap: 4px; color: var(--ns-text-2); font-size: 12px; }
 .search-custom-range input { padding: 7px; border: 1px solid var(--ns-border); background: var(--ns-surface); color: var(--ns-text); border-radius: 5px; }
-.search-secondary-controls summary { cursor: pointer; color: var(--ns-text-2); padding: 6px 0; font-size: 12px; }
-.search-query-row { grid-template-columns: minmax(0, 1fr) auto; }
-@media (max-width: 720px) { .search-query-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; } }
+.search-secondary-controls { align-items: flex-start; gap: 10px 20px; margin-top: 14px; }
+.search-secondary-controls details { max-width: 100%; }
+.search-secondary-controls summary { cursor: pointer; color: var(--ns-text-2); padding: 6px 0; font-size: 12px; line-height: 1.5; }
+.search-secondary-controls summary:hover { color: var(--ns-accent-fg); }
+.search-secondary-controls details[open] { flex-basis: 100%; }
+.search-saved-remove { font-size: 12px; }
+.search-result-head { flex-wrap: wrap; }
+.search-result-meta { padding: 4px 8px; border: 1px solid var(--ns-border); border-radius: var(--ns-radius-md); background: var(--ns-surface-muted); color: var(--ns-text-2); font-variant-numeric: tabular-nums; }
+.search-timeline { padding: 16px 20px 12px; background: color-mix(in srgb, var(--ns-accent) 2%, var(--ns-surface)); }
+.search-timeline-chart { gap: 12px; padding-bottom: 2px; }
+.search-timeline-bar { flex-basis: 76px; }
+.search-timeline-track { border-bottom: 1px solid var(--ns-border-strong); border-radius: 0; background: transparent; }
+.search-timeline-track i { width: 48%; min-height: 0; border-radius: 4px 4px 0 0; }
+.search-timeline-value, .search-timeline-label { font-size: 12px; font-variant-numeric: tabular-nums; }
+.search-timeline-label { transform: none; }
+.search-event-message { padding: 16px; border-radius: var(--ns-radius-lg); border-left: 3px solid var(--ns-accent); font-family: var(--ns-font-mono); font-size: 13px; line-height: 1.7; }
+.search-event-field { padding: 12px 14px; border-radius: var(--ns-radius-lg); }
+.search-event-field-head small { padding: 2px 5px; border-radius: var(--ns-radius-sm); background: var(--ns-surface-muted); }
+.search-event-lineage { margin-top: 20px; padding: 16px; border-radius: var(--ns-radius-lg); }
+@media (max-width: 720px) {
+  .search-toolbar :deep(.el-card__body) { padding: 14px; }
+  .search-query-row { gap: 10px; grid-template-columns: minmax(0, 1fr); }
+  .search-query-row :deep(.el-button) { justify-self: end; }
+  .search-timeline-head { flex-wrap: wrap; gap: 4px; }
+  .search-timeline { padding: 14px; }
+}
 </style>
