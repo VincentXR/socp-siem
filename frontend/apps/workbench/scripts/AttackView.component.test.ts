@@ -14,7 +14,7 @@ const api = vi.hoisted(() => ({ alarmTechniqueCounts: vi.fn(), listTactics: vi.f
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...api }))
 vi.mock('../src/api/core', async original => ({ ...await original<typeof import('../src/api/core')>(), get: api.detailRules }))
 vi.mock('../src/api/investigation-context', () => ({ techniqueAlarms: api.detailAlarms }))
-vi.mock('vue-router', async original => ({ ...await original<typeof import('vue-router')>(), useRouter: () => ({ push: api.push }) }))
+vi.mock('vue-router', async original => ({ ...await original<typeof import('vue-router')>(), useRouter: () => ({ push: api.push, beforeEach: () => () => {} }) }))
 vi.mock('element-plus/es/components/message/index.mjs', () => ({ default: api }))
 const first = { id: 'T1', name: 'First technique', tactic: 'A', url: 'https://example.com/T1', description: '' }
 const second = { ...first, id: 'T2', name: 'Second technique', tactic: 'B' }

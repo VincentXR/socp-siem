@@ -15,6 +15,8 @@ vi.mock('../src/api', () => api)
 vi.mock('../src/composables/useConfirm', () => ({ useConfirm: () => ({ confirmDanger }) }))
 
 interface EntryActions {
+  form: { name: string; description: string; entries: string }
+  addRefSet: () => Promise<void>
   loadRefSets: () => Promise<void>
   refSets: Array<{ id: string; entries: string[] }>
   loadError: string
@@ -59,12 +61,26 @@ beforeEach(() => {
   api.listRulePage.mockResolvedValue({ items: [], total: 0, page: 1, size: 20, totalPages: 0 })
   api.deleteRefEntry.mockResolvedValue({})
   api.addRefEntry.mockResolvedValue({})
+  api.createRefSet.mockResolvedValue({})
   api.deleteRefSet.mockResolvedValue({})
   confirmDanger.mockResolvedValue(true)
 })
 afterEach(() => { wrapper?.unmount(); vi.resetAllMocks() })
 
 describe('reference set operation targets', () => {
+  it('creates entries using advertised separators without splitting multiword values', async () => {
+    const actions = await mountSets()
+    actions.form = {
+      name: 'manual reference set', description: 'preserve exact enrichment values',
+      entries: ' 192.0.2.123 ; manual acceptance host；192.0.2.123\n admin team, , ',
+    }
+    await actions.addRefSet()
+    expect(api.createRefSet).toHaveBeenCalledExactlyOnceWith({
+      name: 'manual reference set', description: 'preserve exact enrichment values',
+      entries: ['192.0.2.123', 'manual acceptance host', 'admin team'],
+    })
+  })
+
   it('imports the advertised separators as separate values while preserving spaces inside a value', async () => {
     const actions = await mountSets()
     actions.openImport()

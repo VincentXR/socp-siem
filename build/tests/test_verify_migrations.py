@@ -36,6 +36,62 @@ def git(root: Path, *args: str) -> None:
     subprocess.run([*("git", *GIT_CONFIG), *args], cwd=root, check=True, capture_output=True, text=True)
 
 
+class FlywayRuntimeDependencyTest(unittest.TestCase):
+    def pom(self, dependency: str, managed: bool = False) -> str:
+        dependencies = f"<dependencies>{dependency}</dependencies>"
+        if managed:
+            dependencies = f"<dependencyManagement>{dependencies}</dependencyManagement>"
+        return ('<project xmlns="http://maven.apache.org/POM/4.0.0">'
+                + dependencies + '</project>')
+
+    def starter(self, scope: str = "", exclusion: str = "") -> str:
+        return ("<dependency><groupId>org.springframework.boot</groupId>"
+                "<artifactId>spring-boot-starter-flyway</artifactId>"
+                + (f"<scope>{scope}</scope>" if scope else "")
+                + exclusion + "</dependency>")
+
+    def test_boot4_starter_supplies_runtime_and_auto_configuration(self):
+        for scope in ("", "compile", "runtime"):
+            with self.subTest(scope=scope):
+                self.assertIsNone(MODULE.flyway_runtime_error(self.pom(self.starter(scope))))
+
+    def test_comment_or_managed_version_does_not_supply_runtime(self):
+        for pom in (self.pom("<!-- flyway-core and spring-boot-starter-flyway -->"),
+                    self.pom(self.starter(), managed=True)):
+            with self.subTest(pom=pom):
+                self.assertIsNotNone(MODULE.flyway_runtime_error(pom))
+
+    def test_core_alone_does_not_supply_boot4_auto_configuration(self):
+        core = ("<dependency><groupId>org.flywaydb</groupId>"
+                "<artifactId>flyway-core</artifactId></dependency>")
+        self.assertIsNotNone(MODULE.flyway_runtime_error(self.pom(core)))
+
+    def test_test_or_provided_scope_does_not_supply_packaged_runtime(self):
+        for scope in ("test", "provided", "system"):
+            with self.subTest(scope=scope):
+                self.assertIsNotNone(MODULE.flyway_runtime_error(self.pom(self.starter(scope))))
+
+    def test_required_runtime_exclusions_fail(self):
+        for group, artifact in (("org.flywaydb", "flyway-core"),
+                                ("org.springframework.boot", "spring-boot-flyway"),
+                                ("*", "*")):
+            with self.subTest(group=group, artifact=artifact):
+                exclusion = (f"<exclusions><exclusion><groupId>{group}</groupId>"
+                             f"<artifactId>{artifact}</artifactId></exclusion></exclusions>")
+                self.assertIn("excludes required", MODULE.flyway_runtime_error(
+                    self.pom(self.starter(exclusion=exclusion))))
+
+    def test_unrelated_exclusion_preserves_runtime(self):
+        exclusion = ("<exclusions><exclusion><groupId>unrelated</groupId>"
+                     "<artifactId>optional-library</artifactId></exclusion></exclusions>")
+        self.assertIsNone(MODULE.flyway_runtime_error(self.pom(self.starter(exclusion=exclusion))))
+
+    def test_invalid_xml_and_wrong_coordinate_fail_closed(self):
+        self.assertIn("cannot parse", MODULE.flyway_runtime_error("<project>"))
+        self.assertIsNotNone(MODULE.flyway_runtime_error(self.pom(
+            self.starter().replace("org.springframework.boot", "unrelated"))))
+
+
 class PublishedMigrationImmutabilityTest(unittest.TestCase):
     """A published Flyway version is immutable: revert it, replay in a newer version."""
 

@@ -3,6 +3,7 @@ package com.socp.alert.api.controller;
 import com.socp.alert.service.AlarmSuppressionService;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,9 @@ class AlarmSuppressionControllerTest {
     @Test
     void httpContractPreservesExplicitScopeAndDurationWithoutInferringRuleWide() throws Exception {
         var service = mock(AlarmSuppressionService.class);
-        var mvc = MockMvcBuilders.standaloneSetup(new AlarmSuppressionController(service)).build();
+        var mvc = MockMvcBuilders.standaloneSetup(new AlarmSuppressionController(service))
+                // Standalone MockMvc does not load the application's Jackson 2 preference.
+                .setMessageConverters(new MappingJackson2HttpMessageConverter()).build();
         mvc.perform(post("/api/v1/suppressions").contentType(MediaType.APPLICATION_JSON).content("""
                 {"ruleId":"rule","entity":"host","origin":"MANUAL","reason":"evidence","alarmId":"alarm","windowSeconds":3600}
                 """)).andExpect(status().isOk());
@@ -34,7 +37,9 @@ class AlarmSuppressionControllerTest {
     @Test
     void invalidDurationNeverReachesTheService() throws Exception {
         var service = mock(AlarmSuppressionService.class);
-        var mvc = MockMvcBuilders.standaloneSetup(new AlarmSuppressionController(service)).build();
+        var mvc = MockMvcBuilders.standaloneSetup(new AlarmSuppressionController(service))
+                // Standalone MockMvc does not load the application's Jackson 2 preference.
+                .setMessageConverters(new MappingJackson2HttpMessageConverter()).build();
         mvc.perform(post("/api/v1/suppressions").contentType(MediaType.APPLICATION_JSON).content("""
                 {"ruleId":"rule","entity":"host","origin":"MANUAL","reason":"evidence","windowSeconds":0}
                 """)).andExpect(status().isBadRequest());
@@ -45,7 +50,9 @@ class AlarmSuppressionControllerTest {
     void listsWindowsAndReleasesTheExactSelectedScope() throws Exception {
         var service = mock(AlarmSuppressionService.class);
         when(service.list()).thenReturn(List.of(Map.of("ruleId", "rule", "entity", "host")));
-        var mvc = MockMvcBuilders.standaloneSetup(new AlarmSuppressionController(service)).build();
+        var mvc = MockMvcBuilders.standaloneSetup(new AlarmSuppressionController(service))
+                // Standalone MockMvc does not load the application's Jackson 2 preference.
+                .setMessageConverters(new MappingJackson2HttpMessageConverter()).build();
         mvc.perform(get("/api/v1/suppressions")).andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].entity").value("host"));
         mvc.perform(delete("/api/v1/suppressions").param("ruleId", "rule").param("entity", "host"))

@@ -135,6 +135,24 @@ class SoarRunControlCoverageTest {
         SoarTestIdentity.clear();
     }
 
+    @Test
+    void automaticAdmissionRetainsItsSourceAndDurableDispatch() {
+        given(versions.findByTenantIdAndId("tenant-a", "ver-1"))
+                .willReturn(Optional.of(version("pb-1", "ver-1", "PUBLISHED", SAFE_DEFINITION)));
+        given(playbooks.findByTenantIdAndId("tenant-a", "pb-1")).willReturn(Optional.of(playbook("pb-1", "ACTIVE")));
+        given(validator.validate(anyString())).willReturn(validation(true, 0));
+
+        Map<String, Object> queued = service.queueAutomaticRun("rule-request", "ver-1",
+                Map.of("type", "alert", "id", "alert-9"), Map.of("eventId", "event-9"));
+
+        assertThat(queued).containsEntry("triggerType", "AUTOMATION").containsEntry("status", "QUEUED");
+        ArgumentCaptor<SoarRunEntity> run = ArgumentCaptor.forClass(SoarRunEntity.class);
+        verify(runs).save(run.capture());
+        assertThat(run.getValue().getTriggerType()).isEqualTo("AUTOMATION");
+        assertThat(run.getValue().getOriginAlarmId()).isEqualTo("alert-9");
+        verify(dispatches).save(any(SoarDispatchOutboxEntity.class));
+    }
+
     // ---------------------------------------------------------------- queueManualRun
 
     @Test

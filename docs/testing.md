@@ -378,6 +378,24 @@ pull requests also use GitHub dependency review to reject newly introduced
 high-severity vulnerabilities. See [dependency audit operations](operations/dependency-audit.md)
 for cache, data freshness, report coverage, and failure handling.
 
+### SOAR human gates and worker recovery
+
+For SOAR approval persistence and startup recovery regressions, run
+`bash build/mvnw.sh -pl services/soar-web -am test -Dtest=SoarFacadeTransactionTest,SoarActivityImplCoverageTest,SoarWorkflowHumanGateTest,SoarRunControlCoverageTest,TemporalWorkerRecoveryTest -Dsurefire.failIfNoSpecifiedTests=false`.
+The persistence test creates the referenced node and approval through the real
+Spring transaction and verifies identity reuse on retry. On a disposable
+PostgreSQL/Temporal stack, also publish a START → APPROVAL → END graph, run it as
+an analyst, and approve as an operator who neither authored nor requested it.
+Verify pending-node projection, successful completion, rejection, expiry and
+self-approval denial. For dependency recovery, start SOAR while Temporal is down,
+queue a no-action run, restore Temporal and verify completion without changing
+the SOAR PID. Mock workflow tests alone do not prove these database/worker paths.
+Also expire a required-input MANUAL_TASK at zero and positive timeouts: its task
+must become EXPIRED, its node TIMED_OUT, and its event must reference the node.
+Without an explicit timeout edge the run must fail, even with an unlabeled
+completion edge. Complete a task started on the previous worker version after
+upgrading to verify replay compatibility with the new timeout version marker.
+
 ### Report archive publication
 
 `ReportControllerTest` checks one serialized daily/trend snapshot per PUT,

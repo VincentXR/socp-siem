@@ -20,7 +20,7 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
 import { watch, computed, onMounted, onUnmounted, ref } from 'vue'
-import { useRoute, useRouter, onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import PageHeader from '../components/PageHeader.vue'
 import RowActivate from '../components/RowActivate.vue'
 import SoarControlPlane from '../components/soar/SoarControlPlane.vue'
@@ -394,8 +394,11 @@ watch(activeTab, tab => {
   if (tab === 'approvals') void loadApprovals()
 })
 const canLeaveEditor = async (): Promise<boolean> => !editorRef.value?.hasUnsavedChanges || await discardEditorChanges()
-onBeforeRouteLeave(canLeaveEditor)
-onBeforeRouteUpdate((to, from) => to.path === from.path || canLeaveEditor())
+// Catalog/create/edit reuse this view across distinct lazy route records.
+// Scope the guard to this mounted editor instead of retaining a guard on a
+// previously reused record, whose component ref may already have been cleared.
+const removeEditorGuard = router.beforeEach((to, from) => to.path === from.path || canLeaveEditor())
+onUnmounted(removeEditorGuard)
 onMounted(() => { void refreshSoarPage() })
 onUnmounted(() => { disposed = true; baseController?.abort(); approvalController?.abort(); approvalContextController?.abort() })
 </script>
@@ -414,7 +417,7 @@ onUnmounted(() => { disposed = true; baseController?.abort(); approvalController
     <div v-if="contextAlarmId || contextCaseId" class="soar-context-banner">
       <span v-if="contextAlarmId">{{ t('soar.contextFromAlarm') }} <code>{{ contextAlarmId }}</code></span>
       <span v-if="contextCaseId">{{ t('cases.caseId') }} <code>{{ contextCaseId }}</code></span>
-      <small>{{ t('soar.contextFromAlarmHint') }}</small>
+      <small>{{ t(contextAlarmId ? (contextCaseId ? 'soar.contextFromAlarmAndCaseHint' : 'soar.contextFromAlarmHint') : 'soar.contextFromCaseHint') }}</small>
     </div>
 
     <el-button v-if="showEditor" class="soar-back" text :aria-label="t('soar.backToPlaybooks')" @click="router.push({ name: 'soar', query: contextQuery })"><span aria-hidden="true">←</span> {{ t('soar.backToPlaybooks') }}</el-button>

@@ -26,6 +26,16 @@ public interface SoarNodeRunRepository extends TenantScopedRepository<SoarNodeRu
     Optional<SoarNodeRunEntity> findByTenantIdAndRunIdAndNodeIdAndIterationPath(
             String tenantId, String runId, String nodeId, String iterationPath);
 
+    /** Close human waits only: RUNNING/UNKNOWN action receipts require independent reconciliation. */
+    @Modifying(flushAutomatically = true)
+    @Query("update SoarNodeRunEntity n set n.status = :status, n.completedAt = :at, n.updatedAt = :at, "
+            + "n.errorCode = :code, n.errorMessage = 'owning run terminated while awaiting human input', "
+            + "n.rowVersion = n.rowVersion + 1 where n.tenantId = :tenantId and n.runId = :runId "
+            + "and n.status in ('WAITING_INPUT', 'WAITING_APPROVAL')")
+    int closeHumanWaitsForRun(@Param("tenantId") String tenantId, @Param("runId") String runId,
+                             @Param("status") String status, @Param("code") String code,
+                             @Param("at") java.time.Instant at);
+
     /** System-scope retention helper: node ids owned by the given runs. */
     @Query("select n.id from SoarNodeRunEntity n where n.runId in :runIds")
     List<String> findIdsByRunIdIn(@Param("runIds") Collection<String> runIds);

@@ -28,6 +28,7 @@ python build/verify-soar-live.py
 
 ## 健康与告警
 
+- 初次启动时 Temporal namespace 不可达，Worker 注册可能失败；独立恢复线程每次失败后等待 5 秒重试，不占用 dispatch/signal/审批过期的共享调度线程。依赖恢复后无需重启 SOAR；已启动 Worker 的连接重试仍由 Temporal SDK 管理，停用或关闭的 Worker 不会被恢复线程重新启动。
 - `/soar-web/actuator/health` 的 `UP` 表示可接收；`DEGRADED` 表示仍可接受但 Temporal、连接器或 backlog 超阈值；`DOWN` 表示不能安全接收。
 - 重点指标：`soar_dispatch_backlog`、`soar_signal_backlog`、`soar_runs_active`、`soar_action_unknown_total`、`soar_trigger_suppressed_total`。
 - dispatch/signal backlog 连续 5 分钟增长：检查 Temporal target、worker 日志和数据库连接池；不要直接把 `DISPATCHING` 改成成功。
@@ -42,9 +43,43 @@ python build/verify-soar-live.py
 
 ## 审批、取消和重跑
 
+- 显式 `APPROVAL` 节点先在同一事务中持久化 `WAITING_APPROVAL` 节点记录，再创建引用它的审批记录。重试复用节点身份，审批结束后更新该记录；不要删除外键来规避节点缺失错误。
+- 人工任务使用独立的节点运行记录；超时事件引用节点 ID，不能引用待办 ID。新运行的零秒超时会过期，不能在未提交必填输入时成功；超时后仅可走显式 `timeout` 分支，没有该分支时失败，不回退到普通完成连线。未显式设置 dueAt 时，页面期限取节点等待时间与运行剩余时间的较小值。Temporal version marker 保留旧历史的重放语义。
+- 新自动规则执行记录的 `triggerType` 为 `AUTOMATION`，手动入队仍为 `MANUAL`；规则和事件身份保留在原 request/input/receipt 中。已有历史运行不回写类型，retry/rerun 继续使用自己的类型。
 - 高风险动作在 dispatch 前进入 `WAITING_APPROVAL`；发起人不能批准自己的请求。拒绝和过期都必须带可审计原因。
 - `cancel` 是协作信号：运行中的 Temporal workflow 先进入 `CANCELLING`，直到 workflow 产生最终状态。不要直接改数据库为 `CANCELLED`。
 - `retry` 沿用 execution series 和已确认动作的幂等键，从安全失败节点继续；`rerun` 需要显式确认并生成新的 execution series，代表新的副作用。
+
+### 终态人工任务与取消竞态
+
+运行取消或达到总执行期限时，在锁定所属 run 的同一事务内关闭所有仍为 `PENDING`
+的人工任务和审批，并结束 `WAITING_INPUT`/`WAITING_APPROVAL` 节点。取消使用
+`CANCELLED`；总期限超时（含 `FAILED + EXECUTION_TIMEOUT`）使用任务/审批 `EXPIRED`
+和节点 `TIMED_OUT`。已提交输入、已作出的审批决定及动作执行收据保留；终态不允许
+迟到的人工输入或审批重新启动工作流。所有人工决策和到期处理按 run → task/approval
+顺序加锁，避免与终态更新形成反向等待。
+
+升级前已存在的终态残留由 `SoarTerminalWorkWorker` 自动收敛：启动后默认 5 秒首次
+扫描，随后每 30 秒最多选取 100 个仍有待办/等待节点的终态运行，每条使用独立短事务，
+跳过被锁定的 run，候选查询与单条事务各设置 5 秒超时，批次预算 10 秒。
+重复扫描只更新仍待处理的记录，
+不会生成人工决定、发送信号、重试动作或声称撤销外部副作用。可通过
+`socp.soar.terminal-work-poll-ms` 和 `socp.soar.terminal-work-initial-delay-ms` 调整节奏。
+
+节点预算准入现在区分取消、预算耗尽和投影缺失：提前取消返回 `CANCELLED`，不能
+误报 `EXECUTION_LIMIT_EXCEEDED`。`soar-node-admission-outcome` Temporal version
+marker 保留旧历史的 boolean Activity 命令；新增 `reserveNodeExecutionOutcome`
+Activity 必须随本版 worker 一同发布。滚动发布应排空旧 worker 的轮询或使用 Temporal
+worker 版本路由，确保新版历史不会被不识别新 Activity 的旧 worker 接收。
+
+取消 worker 在每次受控重试中同时核实 Temporal 状态。即使已关闭的工作流拒绝取消
+信号，只要独立 Describe 权威确认 `CLOSED`/`NOT_FOUND`，且业务版本未变化、dispatch
+已退出待启动状态，就及时收敛 `CANCELLING`，无需等待普通停滞恢复阈值。信号成功、
+网络错误或不确定的 Describe 都不能单独作为结束证明；运行中的动作收据继续保留。
+
+前端复测应分别覆盖正常人工完成、等待时取消、总期限先于人工节点期限、开始后立即
+取消及审批等待时取消；检查运行、节点、人工任务/审批三处状态一致，刷新后仍一致，
+正常路径仍可提交并执行到结束。历史残留应在自动扫描后消失，不通过数据库手工改状态。
 
 ## 数据保留与恢复
 

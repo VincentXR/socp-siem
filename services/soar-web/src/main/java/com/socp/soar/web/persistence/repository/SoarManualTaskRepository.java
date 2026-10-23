@@ -25,6 +25,9 @@ public interface SoarManualTaskRepository extends TenantScopedRepository<SoarMan
     Page<SoarManualTaskEntity> findByTenantIdAndStatusOrderByDueAtAsc(String tenantId, String status,
                                                                        Pageable pageable);
     Optional<SoarManualTaskEntity> findByTenantIdAndId(String tenantId, String id);
+    /** Read immutable ownership without caching a task before acquiring the run lock. */
+    @Query("select t.runId from SoarManualTaskEntity t where t.tenantId = :tenantId and t.id = :id")
+    Optional<String> findRunIdByTenantIdAndId(@Param("tenantId") String tenantId, @Param("id") String id);
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select t from SoarManualTaskEntity t where t.tenantId = :tenantId and t.id = :id")
     Optional<SoarManualTaskEntity> findByTenantIdAndIdForUpdate(@Param("tenantId") String tenantId,
@@ -36,6 +39,14 @@ public interface SoarManualTaskRepository extends TenantScopedRepository<SoarMan
     Optional<SoarManualTaskEntity> findByTenantIdAndRunIdAndNodeIdForUpdate(
             @Param("tenantId") String tenantId, @Param("runId") String runId,
             @Param("nodeId") String nodeId);
+
+    /** Caller holds the owning run lock; completed operator input is never overwritten. */
+    @Modifying(flushAutomatically = true)
+    @Query("update SoarManualTaskEntity t set t.status = :status, t.updatedAt = :at, "
+            + "t.completedAt = :at, t.rowVersion = t.rowVersion + 1 "
+            + "where t.tenantId = :tenantId and t.runId = :runId and t.status = 'PENDING'")
+    int closePendingForRun(@Param("tenantId") String tenantId, @Param("runId") String runId,
+                          @Param("status") String status, @Param("at") java.time.Instant at);
 
     /** System-scope retention purge; call only after the owning run is selected. */
     @Modifying

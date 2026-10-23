@@ -15,11 +15,17 @@
     <description>统一响应 ApiResult + 全局异常处理（P1 横切）</description>
 
     <dependencies>
+        <!-- Shared JSON boundary: retain com.fasterxml ObjectMapper and wire
+             contracts via Boot 4's supported migration compatibility module. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-jackson2</artifactId>
+        </dependency>
         <!-- 提供 spring-web / jackson / jakarta.servlet-api / slf4j；
              @RestControllerAdvice + ResponseEntity + @JsonInclude + MDC 均依赖于此 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

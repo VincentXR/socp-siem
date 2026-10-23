@@ -3,14 +3,19 @@ package com.socp.platform.error.web;
 import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.exception.ApiException;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.util.DisconnectedClientHelper;
 
 /**
  * 全局异常处理器：把一切异常归一为 ApiResult，避免把堆栈直接吐给前端。
@@ -82,6 +87,13 @@ public class GlobalExceptionHandler {
                 "缺少必填参数: " + e.getParameterName()));
     }
 
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiResult<Void>> handleUnreadableBody(
+            org.springframework.http.converter.HttpMessageNotReadableException e) {
+        // Parser details may contain submitted values or implementation types.
+        return ResponseEntity.badRequest().body(ApiResult.fail(400, "请求体无法解析，请检查 JSON 格式和字段类型"));
+    }
+
     @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
     public ResponseEntity<ApiResult<Void>> handleParameterType(
             org.springframework.web.method.annotation.MethodArgumentTypeMismatchException e) {
@@ -103,6 +115,7 @@ public class GlobalExceptionHandler {
             case 401 -> "登录状态已失效，请重新登录";
             case 403 -> "当前账号无权执行该操作";
             case 404 -> "请求的资源不存在，请确认标识或刷新列表";
+            case 405 -> "该资源不支持此请求方法，请检查接口调用方式";
             case 409 -> "资源状态冲突，请刷新后重试";
             case 413 -> "请求的数据量过大，请缩小查询范围后重试";
             case 429 -> "请求过于频繁，请稍后重试";
@@ -110,8 +123,41 @@ public class GlobalExceptionHandler {
         };
     }
 
+    /** An ended stream cannot accept a JSON error envelope. Keep other failures observable. */
+    @ExceptionHandler({AsyncRequestNotUsableException.class, AsyncRequestTimeoutException.class})
+    public ResponseEntity<ApiResult<Void>> handleAsyncResponse(
+            Exception e, HttpServletRequest req, HttpServletResponse response) {
+        // The helper recognizes AsyncRequestNotUsableException itself as a
+        // disconnect. Inspect its cause instead, so an unrelated I/O failure
+        // does not silently become a normal client disconnect.
+        boolean disconnected = e instanceof AsyncRequestNotUsableException
+                && e.getCause() != null
+                && DisconnectedClientHelper.isClientDisconnectedException(e.getCause());
+        String contentType = response.getContentType();
+        boolean committedStreamTimeout = e instanceof AsyncRequestTimeoutException
+                && response.isCommitted()
+                && contentType != null
+                && MediaType.TEXT_EVENT_STREAM_VALUE.equalsIgnoreCase(contentType.split(";", 2)[0].trim());
+        if (disconnected || committedStreamTimeout) {
+            log.debug("异步响应已结束 path={} type={}", req.getRequestURI(), e.getClass().getName());
+            // ResponseEntity's null return marks the exception handled without
+            // changing the committed status, headers, or streaming body.
+            return null;
+        }
+        return handleOther(e, req);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResult<Void>> handleOther(Exception e, HttpServletRequest req) {
+        // Framework routing failures (404/405, etc.) already carry HTTP
+        // semantics. Keep them and headers such as Allow, without echoing the
+        // submitted path or framework exception detail into the envelope.
+        if (e instanceof org.springframework.web.ErrorResponse response
+                && response.getStatusCode().is4xxClientError()) {
+            int code = response.getStatusCode().value();
+            return ResponseEntity.status(response.getStatusCode()).headers(response.getHeaders())
+                    .body(ApiResult.fail(code, humanSentence(code)));
+        }
         log.error("未处理异常 path={} type={}", req.getRequestURI(), e.getClass().getName(), e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiResult.fail(500, INTERNAL_ERROR_MESSAGE));

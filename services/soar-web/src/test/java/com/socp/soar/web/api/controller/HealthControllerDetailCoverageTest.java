@@ -26,7 +26,7 @@ import static org.mockito.BDDMockito.given;
 class HealthControllerDetailCoverageTest {
 
     @Mock
-    private ObjectProvider<org.springframework.boot.actuate.health.HealthEndpoint> healthEndpoint;
+    private ObjectProvider<org.springframework.boot.health.actuate.endpoint.HealthEndpoint> healthEndpoint;
     @Mock
     private ObjectProvider<TemporalExecutor> temporalProvider;
     @Mock
@@ -72,7 +72,7 @@ class HealthControllerDetailCoverageTest {
                 properties, healthEndpoint, temporalProvider, soarProvider, connectorProvider).health();
 
         Map<String, Object> details = result.getBody().data();
-        assertThat(result.getStatusCodeValue()).isEqualTo(200);
+        assertThat(result.getStatusCode().value()).isEqualTo(200);
         assertThat(details.get("service")).isEqualTo("soar-web");
         assertThat(details.get("status")).isEqualTo("UP");
         assertThat(details.get("platform")).isEqualTo("UP");
@@ -97,7 +97,7 @@ class HealthControllerDetailCoverageTest {
 
         @SuppressWarnings("unchecked")
         Map<String, Object> secretDetails = (Map<String, Object>) result.getBody().data().get("secretResolver");
-        assertThat(result.getStatusCodeValue()).isEqualTo(200);
+        assertThat(result.getStatusCode().value()).isEqualTo(200);
         assertThat(secretDetails).containsEntry("status", "UP");
         assertThat(secretDetails.get("provider")).asString().startsWith("SecretResolver");
     }
@@ -112,7 +112,7 @@ class HealthControllerDetailCoverageTest {
 
         Map<String, Object> details = result.getBody().data();
         // Degraded execution health is not available; the probe must fail closed.
-        assertThat(result.getStatusCodeValue()).isEqualTo(503);
+        assertThat(result.getStatusCode().value()).isEqualTo(503);
         assertThat(details.get("status")).isEqualTo("DEGRADED");
         assertThat(details.get("platform")).isEqualTo("UP");
         assertThat(details.get("temporal")).isEqualTo(Map.of("status", "UNAVAILABLE"));

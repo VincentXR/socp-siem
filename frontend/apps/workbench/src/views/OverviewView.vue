@@ -89,7 +89,9 @@ function serviceState(name: string): 'up' | 'down' | 'unknown' {
 }
 function serviceStateLabel(name: string): string { return t(`overview.serviceState.${serviceState(name)}`) }
 const formatTime = (iso: string) => iso && Number.isFinite(Date.parse(iso)) ? d(iso, 'dateTime') : '—'
-function getStatusLabel(status: string): string { return tOr(t, `statuses.${status}`, status) }
+function getStatusLabel(status?: string | null): string {
+  return status?.trim() ? tOr(t, `statuses.${status}`, status) : t('statuses.UNKNOWN')
+}
 function severityLabel(level: string): string { return level === 'UNKNOWN' ? t('overview.unclassified') : tOr(t, `severities.${level}`, level) }
 </script>
 

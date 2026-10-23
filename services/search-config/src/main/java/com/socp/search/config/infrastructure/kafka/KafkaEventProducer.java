@@ -57,6 +57,10 @@ public class KafkaEventProducer {
                     props.put(ProducerConfig.RETRIES_CONFIG, Integer.MAX_VALUE);
                     props.put(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION, 5);
                     props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 30_000);
+                    // Kafka 4 defaults linger to 5ms; retain the prior immediate-send
+                    // policy and delivery >= request + linger within the 30s budget.
+                    props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 30_000);
+                    props.put(ProducerConfig.LINGER_MS_CONFIG, 0);
                     // 探测（partitionsFor）与发送的阻塞上限：broker 不可达时快速失败而非卡 60s
                     props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 3_000);
                     producer = new KafkaProducer<>(props);

@@ -14,6 +14,7 @@ import io.minio.http.Method;
 import io.minio.messages.Item;
 import com.socp.report.web.config.ReportObjectStorageProperties;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ContentDisposition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -129,8 +130,16 @@ public class ReportObjectStore {
     public String presignedGet(String key) {
         requireStorage();
         try {
+            String filename = key.substring(key.lastIndexOf('/') + 1)
+                    .replace('\\', '_').replace('\r', '_').replace('\n', '_');
+            String disposition = ContentDisposition.attachment()
+                    .filename(filename.isBlank() ? "report.json" : filename, StandardCharsets.UTF_8)
+                    .build().toString();
             return client.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
                     .bucket(bucket).object(key).method(Method.GET)
+                    // Sign the response override so browsers download the JSON
+                    // instead of opening the object inline in another tab.
+                    .extraQueryParams(Map.of("response-content-disposition", disposition))
                     .expiry(60 * 60 * 24 * 7).build());
         } catch (Exception e) {
             throw unavailable("sign", e);

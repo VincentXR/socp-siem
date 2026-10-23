@@ -15,9 +15,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Construction-time coverage for Temporal worker wiring and SOAR runtime
- * properties. The workflow client uses lazy service stubs, so building and
- * starting the worker factory does not require a reachable Temporal server;
- * poller threads are stopped immediately after each check.
+ * properties. Unreachable-server startup failures are tolerated here;
+ * TemporalWorkerRecoveryTest verifies retries. Poller threads are stopped
+ * immediately after each construction check.
  */
 class TemporalConfigCoverageTest {
 
@@ -89,8 +89,8 @@ class TemporalConfigCoverageTest {
         WorkerFactory factory = config.workerFactory(client(), activityStub(PlaybookActivity.class),
                 activityStub(SoarActivity.class), properties);
         try {
-            // start() must not throw when the Temporal server is unreachable:
-            // poller threads idle until the server comes back.
+            // Configuration tolerates a failed initial registration. The
+            // separate recovery lifecycle must start pollers when it returns.
             assertThat(factory).isNotNull();
         } finally {
             try {

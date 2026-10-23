@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -92,6 +92,15 @@ class SoarMaintenancePersistenceTest {
         assertFalse(state.recover(snapshot, TemporalExecutor.WorkflowState.CLOSED, CUTOFF, NOW.plusSeconds(11)));
     }
 
+    @ParameterizedTest @ValueSource(strings = {"CLOSED", "NOT_FOUND"})
+    void explicitCancellationDoesNotWaitForTheStaleProjectionThreshold(String observation) {
+        var snapshot = run("recent", "tenant-a", "CANCELLING");
+        Instant now = NOW.plusMillis(1);
+        assertTrue(state.settleCancellation(snapshot, TemporalExecutor.WorkflowState.valueOf(observation), now));
+        assertEquals("CANCELLED", row("recent").getStatus());
+        assertFalse(state.settleCancellation(snapshot, TemporalExecutor.WorkflowState.CLOSED, now.plusSeconds(1)));
+    }
+
     @ParameterizedTest @ValueSource(strings = {"RUNNING", "DISPATCHING", "WAITING_APPROVAL", "WAITING_INPUT"})
     void closedWorkflowWithoutRunningActionIsFailedRatherThanClaimingSuccess(String status) {
         var snapshot = run("one", "tenant-a", status);
@@ -165,7 +174,7 @@ class SoarMaintenancePersistenceTest {
             runs.saveAndFlush(completed);
             return null;
         }).when(temporal).cancelWorkflow("workflow-one");
-        TenantContext.runAsSystem(new SoarCancellationWorker(runs, temporal)::tick);
+        TenantContext.runAsSystem(new SoarCancellationWorker(runs, temporal, state)::tick);
         assertEquals("CANCELLED", row("one").getStatus());
         assertEquals(1L, row("one").getRowVersion());
     }

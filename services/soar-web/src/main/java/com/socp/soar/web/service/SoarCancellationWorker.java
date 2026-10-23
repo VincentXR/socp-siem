@@ -17,10 +17,12 @@ public class SoarCancellationWorker {
     private static final Logger log = LoggerFactory.getLogger(SoarCancellationWorker.class);
     private final SoarRunRepository runs;
     private final TemporalExecutor temporal;
+    private final SoarRunRecoveryState state;
 
-    public SoarCancellationWorker(SoarRunRepository runs, TemporalExecutor temporal) {
+    public SoarCancellationWorker(SoarRunRepository runs, TemporalExecutor temporal, SoarRunRecoveryState state) {
         this.runs = runs;
         this.temporal = temporal;
+        this.state = state;
     }
 
     @Scheduled(fixedDelayString = "${socp.soar.cancel-poll-ms:1000}",
@@ -37,7 +39,19 @@ public class SoarCancellationWorker {
                 Instant now = Instant.now();
                 if (runs.claimCancellation(run.getTenantId(), run.getId(), run.getRowVersion(),
                         workflowId, now, now.plusSeconds(30)) != 1) continue;
-                temporal.cancelWorkflow(workflowId);
+                try {
+                    temporal.cancelWorkflow(workflowId);
+                } catch (RuntimeException failure) {
+                    // A workflow that closed between admission and signal delivery
+                    // rejects the signal. Only a separate authoritative describe
+                    // may settle its projection; transport failure is not closure.
+                    log.debug("Cancellation signal not accepted for SOAR run {}", run.getId());
+                }
+                var observation = temporal.describeWorkflow(workflowId);
+                if (observation == TemporalExecutor.WorkflowState.CLOSED
+                        || observation == TemporalExecutor.WorkflowState.NOT_FOUND) {
+                    state.settleCancellation(run, observation, Instant.now());
+                }
                 // No run save: late signal acceptance cannot change an activity's
                 // terminal result or postpone stale-projection reconciliation.
             } catch (RuntimeException failure) {

@@ -9,8 +9,10 @@ import base64
 import hashlib
 import hmac
 import os
+import math
 import sys
 import time
+import threading
 import uuid
 import urllib.error
 import urllib.request
@@ -153,6 +155,33 @@ def check(name, cond, detail=""):
     print(("  [PASS] " if cond else "  [FAIL] ") + name + (("  -> " + detail) if detail else ""))
 
 
+def burst_allowance(elapsed, permits=10, seconds=1):
+    """Capacity plus refill over the measured request interval, including phase.
+
+    The bucket may have a fractional refill interval already accumulated when
+    the first request arrives. A ceiling accounts for that single boundary;
+    a fixed <=13 assumes the hosted runner finishes every burst within 300 ms.
+    """
+    return permits + math.ceil(elapsed * permits / seconds)
+
+
+def burst(tenant, n=20):
+    tenant_token(tenant)
+    ready = threading.Barrier(n + 1)
+
+    def request(_index):
+        ready.wait(timeout=10)
+        return call(tenant=tenant)
+
+    with ThreadPoolExecutor(max_workers=n) as executor:
+        requests = [executor.submit(request, index) for index in range(n)]
+        started = time.monotonic()
+        ready.wait(timeout=10)
+        responses = [request.result() for request in requests]
+        elapsed = time.monotonic() - started
+    return responses, elapsed
+
+
 def main(argv=None):
     """Only the explicit CLI entry point is allowed to issue fixture writes."""
     global GW, BASE
@@ -244,30 +273,28 @@ def main(argv=None):
     time.sleep(1.2)  # 桶回满
 
 
-    def burst(tenant, n=20):
-        with ThreadPoolExecutor(max_workers=n) as ex:
-            return list(ex.map(lambda _: call(tenant=tenant), range(n)))
-
-
-    res = burst("t1", 20)
+    res, elapsed = burst("t1", 20)
     ok_n = sum(1 for s, _, _ in res if s == 200)
     limited = [(s, h, b) for s, h, b in res if s == 429]
     check("突发 20 次出现 HTTP 429（不再被吞成 200）", len(limited) > 0,
           "200=%d  429=%d" % (ok_n, len(limited)))
-    check("放行数不超过桶容量+补充量（<=13）", ok_n <= 13, "放行 %d 次" % ok_n)
+    allowance = burst_allowance(elapsed)
+    check("放行数不超过桶容量+实测区间补充量", ok_n <= allowance,
+          "放行 %d 次；区间 %.6fs；上限 %d" % (ok_n, elapsed, allowance))
+    check("突发请求均得到明确的放行或限流响应", all(s in (200, 429) for s, _, _ in res))
     if limited:
         s, h, b = limited[0]
         check("429 响应带 Retry-After 头", bool(h.get("Retry-After")), "Retry-After=%s" % h.get("Retry-After"))
         check("429 body.code=429", b.get("code") == 429, "message=%s" % b.get("message"))
 
     # 租户配额独立：t1 打满后 t2 仍应可用
-    res_t2 = burst("t2", 3)
+    res_t2, _ = burst("t2", 3)
     check("t1 被限流不影响 t2（配额按租户隔离）", all(s == 200 for s, _, _ in res_t2),
           "t2 状态=%s" % [s for s, _, _ in res_t2])
 
     # 补充速率：等待 1.2 秒后应恢复约 10 个令牌。
     time.sleep(1.2)
-    res2 = burst("t1", 12)
+    res2, _ = burst("t1", 12)
     recovered = sum(1 for s, _, _ in res2 if s == 200)
     check("等待 1.2s 后配额基本回满（refill 速率正确，>=8）", recovered >= 8,
           "恢复放行 %d 次" % recovered)

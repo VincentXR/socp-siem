@@ -6,6 +6,7 @@ import SoarView from '../src/views/SoarView.vue'
 import SoarCatalogPager from '../src/components/soar/SoarCatalogPager.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import { formatDate } from '../src/i18n'
+import { setLocale } from '../src/i18n/locale-manager'
 
 const mocks = vi.hoisted(() => ({
   listPlaybooks: vi.fn(),
@@ -108,12 +109,20 @@ describe('soar approvals lifecycle', () => {
     expect(mocks.listPlaybooks).toHaveBeenCalledTimes(reads)
   })
 
-  it('identifies a case-only response context without an empty alarm reference', async () => {
-    const { wrapper } = await mountSoar('/soar?caseId=case-context')
+  it.each([
+    ['zh-CN', 'caseId=case-context', ['case-context'], '带入该案件'],
+    ['zh-CN', 'alarmId=alarm-context', ['alarm-context'], '带入该告警'],
+    ['zh-CN', 'alarmId=alarm-context&caseId=case-context', ['alarm-context', 'case-context'], '带入该告警和案件'],
+    ['en-US', 'caseId=case-context', ['case-context'], 'include this case automatically'],
+    ['en-US', 'alarmId=alarm-context', ['alarm-context'], 'include this alert automatically'],
+    ['en-US', 'alarmId=alarm-context&caseId=case-context', ['alarm-context', 'case-context'], 'include this alert and case automatically'],
+  ] as const)('describes only the actual response context in %s for %s', async (locale, query, ids, hint) => {
+    setLocale(locale, false)
+    const { wrapper } = await mountSoar(`/soar?${query}`)
     try {
-      expect(wrapper.find('.soar-context-banner').text()).toContain('case-context')
-      expect(wrapper.findAll('.soar-context-banner code')).toHaveLength(1)
-    } finally { wrapper.unmount() }
+      expect(wrapper.findAll('.soar-context-banner code').map(code => code.text())).toEqual(ids)
+      expect(wrapper.find('.soar-context-banner small').text()).toContain(hint)
+    } finally { wrapper.unmount(); setLocale('zh-CN', false) }
   })
 
   it('does not mark an empty successful playbook catalogue unavailable when templates fail', async () => {

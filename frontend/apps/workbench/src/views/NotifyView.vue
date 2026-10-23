@@ -42,7 +42,7 @@ import PageHeader from '../components/PageHeader.vue'
 import FormField from '../components/FormField.vue'
 import FormGrid from '../components/FormGrid.vue'
 import FormSection from '../components/FormSection.vue'
-import { getChannel, updateChannel, testChannel, createChannel, deleteChannel, dispatchLog, listChannels, toggleChannel, type Channel, type DispatchLogEntry } from '../api'
+import { ApiError, getChannel, updateChannel, testChannel, createChannel, deleteChannel, dispatchLog, listChannels, toggleChannel, type Channel, type DispatchLogEntry } from '../api'
 import { useI18n } from '../composables/useI18n'
 
 const { t, d } = useI18n()
@@ -172,7 +172,7 @@ const loading = ref(false)
 const loadError = ref('')
 /** Failures of the dialog's own save, so a page error cannot land in a form. */
 const dialogError = ref('')
-const testState = ref<'idle' | 'running' | 'failed'>('idle')
+const testState = ref<'idle' | 'running' | 'failed' | 'not-sent'>('idle')
 const form = ref({ name: '', type: 'SLACK', target: '', enabled: true, description: '' })
 
 /** Moves a failure out of the shared action slot into the surface that owns it. */
@@ -267,6 +267,14 @@ function showTestResult(result: { status: string }): void {
   else throw new Error(t('notify.testUnconfirmed'))
 }
 
+function definitelyNotSent(failure: unknown): boolean {
+  if (!(failure instanceof ApiError) || failure.status !== 502) return false
+  const receipt = failure.data
+  return typeof receipt === 'object' && receipt !== null
+    && 'status' in receipt && receipt.status === 'failed'
+    && 'errorCode' in receipt && receipt.errorCode === 'NOTIFY_NOT_SENT'
+}
+
 async function addChannel() {
   if (!canWrite.value || actionBusy.value) return
   if (!validateChannel()) return
@@ -296,7 +304,7 @@ async function saveAndTestChannel() {
       resetChannelForm()
       dialogVisible.value = false
     } catch (failure) {
-      testState.value = 'failed'
+      testState.value = definitelyNotSent(failure) ? 'not-sent' : 'failed'
       throw failure
     } finally { await loadNotify() }
   }))
@@ -382,8 +390,8 @@ onMounted(loadNotify)
             <div><b>{{ t('notify.alarmId') }}</b><el-button v-if="row.alarmId && !row.alarmId.startsWith('test')" link type="primary" @click="openReceipt(row)">{{ row.alarmId }}</el-button><span v-else>{{ row.alarmId || '—' }}</span></div>
             <div v-if="canWrite && row.channelId"><el-button link type="primary" :disabled="actionBusy" @click="editLogChannel(row.channelId)">{{ t('workflow.editChannel') }}</el-button></div>
             <div><b>{{ t('notify.deliveryId') }}</b><el-button v-if="row.deliveryId && row.alarmId && !row.alarmId.startsWith('test')" link type="primary" @click="openReceipt(row)">{{ row.deliveryId }}</el-button><span v-else>{{ row.deliveryId || '—' }}</span></div>
-            <div><b>{{ t('notify.httpStatus') }}</b><span>{{ row.httpStatus ?? '—' }}</span></div>
-            <div><b>{{ t('notify.retryClass') }}</b><span>{{ row.retryable === true ? t('notify.retryable') : row.retryable === false ? t('notify.notRetryable') : '—' }}</span></div>
+            <div><b>{{ t('notify.httpStatus') }}</b><span>{{ row.httpStatus >= 100 && row.httpStatus <= 599 ? row.httpStatus : '—' }}</span></div>
+            <div><b>{{ t('notify.retryClass') }}</b><span>{{ ['sent', 'logged', 'skipped'].includes(row.status) ? '—' : row.retryable === true ? t('notify.retryable') : row.retryable === false ? t('notify.notRetryable') : '—' }}</span></div>
             <div><b>{{ t('notify.errorCode') }}</b><span class="mono">{{ row.errorCode || '—' }}</span></div>
             <div class="notify-receipt-detail-full"><b>{{ t('common.details') }}</b><span>{{ row.detail || row.error || '—' }}</span></div>
           </div>
@@ -391,7 +399,7 @@ onMounted(loadNotify)
         <el-table-column prop="ts" :label="t('common.timestamp')" width="184"><template #default="{ row }">{{ d(row.ts) }}</template></el-table-column>
         <el-table-column prop="channel" :label="t('notify.channel')" min-width="150" show-overflow-tooltip />
         <el-table-column prop="type" :label="t('common.type')" width="110"><template #default="{ row }">{{ channelTypeLabel(row.type) }}</template></el-table-column>
-        <el-table-column prop="ruleId" :label="t('notify.rule')" min-width="180" show-overflow-tooltip><template #default="{ row }"><el-button v-if="row.ruleId && row.ruleId !== 'operator-recovery'" link type="primary" @click="router.push({ name: 'detect', query: { ruleId: row.ruleId } })">{{ row.ruleId }}</el-button><span v-else>{{ row.ruleId || '—' }}</span></template></el-table-column>
+        <el-table-column prop="ruleId" :label="t('notify.rule')" min-width="180" show-overflow-tooltip><template #default="{ row }"><el-button v-if="row.ruleId && !['operator-recovery', 'notification-test'].includes(row.ruleId)" link type="primary" @click="router.push({ name: 'detect', query: { ruleId: row.ruleId } })">{{ row.ruleId }}</el-button><span v-else>{{ row.ruleId || '—' }}</span></template></el-table-column>
         <el-table-column prop="errorCode" :label="t('notify.errorCode')" min-width="160" show-overflow-tooltip />
         <el-table-column :label="t('common.status')" width="116" fixed="right"><template #default="{ row }"><el-tag :type="dispatchStatusType(row.status)" size="small">{{ dispatchStatusLabel(row.status) }}</el-tag></template></el-table-column>
       </el-table>
@@ -399,7 +407,7 @@ onMounted(loadNotify)
     </el-card>
 
     <el-dialog v-model="dialogVisible" :before-close="dialogVisibleGuard.beforeClose" :title="editingId ? t('notify.editChannel') : t('notify.createChannel')" width="640px" :close-on-click-modal="false"><ActionFeedback :error="dialogError" />
-      <p v-if="testState !== 'idle'" role="status" class="dialog-hint">{{ t(testState === 'running' ? 'notify.savedTesting' : 'notify.savedTestFailed') }}</p>
+      <p v-if="testState !== 'idle'" role="status" class="dialog-hint">{{ t(testState === 'running' ? 'notify.savedTesting' : testState === 'not-sent' ? 'notify.savedTestNotSent' : 'notify.savedTestFailed') }}</p>
       <el-form :disabled="actionBusy" label-position="top">
         <FormGrid :columns="2">
           <FormField :label="t('common.name')" required :error="fieldErrors.name">
@@ -422,7 +430,7 @@ onMounted(loadNotify)
           </FormField>
         </FormGrid>
       </el-form>
-      <template #footer><el-button :disabled="actionBusy" @click="dialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" :loading="actionBusy" @click="saveAndTestChannel">{{ t(testState === 'failed' && !dialogVisibleGuard.dirty.value ? 'notify.retryTest' : 'notify.saveAndTest') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addChannel">{{ t('common.save') }}</el-button></template>
+      <template #footer><el-button :disabled="actionBusy" @click="dialogVisibleGuard.cancel">{{ t('common.cancel') }}</el-button><el-button v-if="canWrite" :loading="actionBusy" @click="saveAndTestChannel">{{ t(['failed', 'not-sent'].includes(testState) && !dialogVisibleGuard.dirty.value ? 'notify.retryTest' : 'notify.saveAndTest') }}</el-button><el-button v-if="canWrite" type="primary" :loading="actionBusy" @click="addChannel">{{ t('common.save') }}</el-button></template>
     </el-dialog>
   </div>
 </template>

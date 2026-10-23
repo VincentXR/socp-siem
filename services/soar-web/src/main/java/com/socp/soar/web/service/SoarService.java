@@ -250,6 +250,14 @@ public class SoarService {
         return runCommands.queueManualRun(requestId, versionId, subject, inputs);
     }
 
+    /** Internal automation admission; callers cannot set the trigger source through the manual API. */
+    @Transactional
+    @AuditOperation(action = "SOAR_QUEUE_RUN", target = "t_soar_run")
+    public Map<String, Object> queueAutomaticRun(String requestId, String versionId, Map<String, Object> subject,
+                                                 Map<String, Object> inputs) {
+        return runCommands.queueAutomaticRun(requestId, versionId, subject, inputs);
+    }
+
     @Transactional(readOnly = true)
     public Page<Map<String, Object>> listRuns(Pageable pageable) {
         return queries.listRuns(pageable);

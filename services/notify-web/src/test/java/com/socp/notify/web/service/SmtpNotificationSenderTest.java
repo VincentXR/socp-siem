@@ -20,7 +20,7 @@ class SmtpNotificationSenderTest {
             environment.getPropertySources().addFirst(source);
         }
         var mail = org.springframework.boot.context.properties.bind.Binder.get(environment)
-                .bind("spring.mail", org.springframework.boot.autoconfigure.mail.MailProperties.class).get();
+                .bind("spring.mail", org.springframework.boot.mail.autoconfigure.MailProperties.class).get();
         for (var protocol : java.util.List.of("smtp", "smtps")) {
             for (var timeout : java.util.List.of("connectiontimeout", "timeout", "writetimeout")) {
                 assertEquals("3000", mail.getProperties().get("mail." + protocol + "." + timeout));

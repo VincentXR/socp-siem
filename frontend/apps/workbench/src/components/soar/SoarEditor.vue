@@ -23,7 +23,7 @@ import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import { ElForm, ElFormItem } from 'element-plus/es/components/form/index.mjs'
 import ElInput from 'element-plus/es/components/input/index.mjs'
 import ElTag from 'element-plus/es/components/tag/index.mjs'
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, markRaw, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { VueFlow, useVueFlow, type NodeMouseEvent } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -115,7 +115,7 @@ const { confirmDanger, promptInput } = useConfirm()
 const flowStore = useVueFlow(FLOW_ID)
 const flow = useDefinitionFlow(flowStore, text => { errorMessage.value = text })
 
-const nodeTypes: NodeTypesObject = { 'soar-flow-node': SoarFlowNode }
+const nodeTypes: NodeTypesObject = { 'soar-flow-node': markRaw(SoarFlowNode) }
 
 const playbooks = ref<SoarPlaybook[]>([])
 const versions = ref<SoarVersion[]>([])
@@ -406,8 +406,9 @@ async function openNewPlaybookDialog(): Promise<void> {
 }
 
 async function createPlaybookAndVersion() {
-  if (!props.canWrite || newPlaybookSaving.value) return
-  if (!(await discardGuard())) return
+  if (!props.canWrite || newPlaybookSaving.value || !newPlaybookVisible.value) return
+  const previous = session.generation
+  if (!(await discardGuard()) || !currentSession(previous) || !props.canWrite || newPlaybookSaving.value || !newPlaybookVisible.value) return
   const name = newPlaybookForm.value.name.trim()
   if (!name) {
     newPlaybookError.value = t('soar.playbookNameRequired')
@@ -421,22 +422,29 @@ async function createPlaybookAndVersion() {
     const description = newPlaybookForm.value.description.trim() || undefined
     const tags = newPlaybookForm.value.tags.split(/[,，\n]/).map(tag => tag.trim()).filter(Boolean)
     const playbook = await createPlaybook({ name, description, tags })
-    const version = await createVersionApi(playbook.id)
     if (!currentSession(generation)) return
+    // Creation already persists the initial draft. Preserve the accepted identity
+    // before reading it so a failed GET can be refreshed without another POST.
     playbooks.value = [playbook, ...playbooks.value.filter(item => item.id !== playbook.id)]
     selectedPlaybookId.value = playbook.id
+    newPlaybookGuard.markSaved()
+    newPlaybookVisible.value = false
+    emit('created', playbook.id)
+    if (!playbook.draftVersion) throw new Error(t('soar.unableLoadVersion'))
+    const version = await getVersion(playbook.id, playbook.draftVersion, { signal: session.signal })
+    if (!currentSession(generation)) return
     versions.value = [version]
     selectedVersionNo.value = version.version
     rowVersion.value = version.rowVersion
     loadedIdentity.value = identity()
     flow.applyDefinition(version.definition, version.layout)
     validation.value = null
-    newPlaybookVisible.value = false
-    emit('created', playbook.id)
     message.value = t('soar.createdDraft')
   } catch (failure) {
     if (!currentSession(generation)) return
-    newPlaybookError.value = failure instanceof Error ? failure.message : t('soar.createFailed')
+    const text = failure instanceof Error ? failure.message : t('soar.createFailed')
+    if (newPlaybookVisible.value) newPlaybookError.value = text
+    else errorMessage.value = text
   } finally {
     if (!currentSession(generation)) return
     loading.value = false

@@ -19,11 +19,12 @@ import static org.mockito.Mockito.*;
 class SoarCancellationWorkerCoverageTest {
     @Mock SoarRunRepository runs;
     @Mock TemporalExecutor temporal;
+    @Mock SoarRunRecoveryState state;
     SoarCancellationWorker worker;
     SoarRunEntity run;
 
     @BeforeEach void setup() {
-        worker = new SoarCancellationWorker(runs, temporal);
+        worker = new SoarCancellationWorker(runs, temporal, state);
         run = new SoarRunEntity();
         run.setId("run-1"); run.setTenantId("tenant-a"); run.setRowVersion(7L);
         run.setStatus("CANCELLING"); run.setTemporalWorkflowId("workflow");
@@ -87,5 +88,21 @@ class SoarCancellationWorkerCoverageTest {
         when(runs.claimCancellation(eq("tenant-b"), eq("other"), eq(2L), eq("other-workflow"), any(), any())).thenReturn(1);
         worker.tick();
         verify(temporal).cancelWorkflow("other-workflow");
+    }
+
+    @Test void closedWorkflowSettlesCancellationEvenWhenTheSignalWasRejected() {
+        poll(); claim();
+        doThrow(new IllegalStateException("workflow already completed")).when(temporal).cancelWorkflow("workflow");
+        when(temporal.describeWorkflow("workflow")).thenReturn(TemporalExecutor.WorkflowState.CLOSED);
+        worker.tick();
+        verify(state).settleCancellation(eq(run), eq(TemporalExecutor.WorkflowState.CLOSED), any());
+        verify(runs, never()).save(any());
+    }
+
+    @Test void uncertainDescribeNeverFinalizesCancellation() {
+        poll(); claim();
+        when(temporal.describeWorkflow("workflow")).thenReturn(TemporalExecutor.WorkflowState.UNKNOWN);
+        worker.tick();
+        verifyNoInteractions(state);
     }
 }

@@ -53,6 +53,37 @@ The builder and runtime base-image digests, Rust toolchain, release profile,
 feature list and build concurrency are pinned in the manifest. Cache state
 under `.cache/vector-runtime/` is rebuildable and must not be committed.
 
+For a machine that cannot afford a Rust build, the Full Stack E2E workflow
+exports a `vector-runtime-verified` artifact after image verification, with a
+three-day retention period. It contains the compressed Docker image, SHA-256
+checksums, repository commit, runtime lock, image identity, executable
+provenance, SBOM, and upstream buffer-test evidence. The image itself retains
+the corresponding source, patches, and license notices. The export runs before
+integration credentials are generated and includes no environment files.
+
+Select the intended repository run and commit before downloading. From the
+matching checkout, use an empty directory outside the repository:
+
+```bash
+gh run view "$SOCP_VECTOR_RUN_ID" --repo VincentXR/socp-siem \
+  --json headSha,conclusion,url
+gh run download "$SOCP_VECTOR_RUN_ID" --repo VincentXR/socp-siem \
+  --name vector-runtime-verified --dir "$SOCP_VECTOR_EXPORT_DIR"
+(cd "$SOCP_VECTOR_EXPORT_DIR" && sha256sum --check SHA256SUMS)
+cmp agents/vector-runtime/runtime.lock.json "$SOCP_VECTOR_EXPORT_DIR/runtime.lock.json"
+gzip -dc "$SOCP_VECTOR_EXPORT_DIR/vector.tar.gz" | docker image load
+bash build/vector-runtime.sh verify-image
+```
+
+Check `workflow-head-commit.txt` against the selected run's `headSha`.
+`repository-commit.txt` records the checked-out commit, which is the synthetic
+merge commit for a pull-request run. Checksums detect download damage; the
+authenticated repository artifact, selected run, and existing runtime verifier
+provide the identity checks. The artifact's
+presence proves that image verification succeeded, even if later integration
+tests fail; retain the workflow result separately as acceptance evidence.
+Downloading and loading the image does not start a collector.
+
 For GNU/Linux source-level regression and native proof:
 
 ```bash

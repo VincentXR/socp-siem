@@ -1,5 +1,5 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { onBeforeRouteLeave, onBeforeRouteUpdate } from 'vue-router'
+import { useRouter } from 'vue-router'
 import ElMessageBox from 'element-plus/es/components/message-box/index.mjs'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import 'element-plus/es/components/message-box/style/css.mjs'
@@ -8,6 +8,7 @@ import { useI18n } from './useI18n'
 
 export function useUnsavedChanges(value: () => unknown, active: () => boolean = () => true, pending: () => boolean = () => false) {
   const { t } = useI18n()
+  const router = useRouter()
   const baseline = ref(JSON.stringify(value()))
   const dirty = computed(() => active() && JSON.stringify(value()) !== baseline.value)
   function markSaved() { baseline.value = JSON.stringify(value()) }
@@ -24,9 +25,11 @@ export function useUnsavedChanges(value: () => unknown, active: () => boolean = 
   function beforeUnload(event: BeforeUnloadEvent) {
     if (pending() || dirty.value) { event.preventDefault(); event.returnValue = '' }
   }
-  onBeforeRouteLeave(canLeave)
-  onBeforeRouteUpdate((to, from) => !pending() && to.path === from.path || canLeave())
+  // A reused route view can mount child dialogs on a new route record before
+  // the parent's record guards are transferred. Bind each live form directly
+  // to router navigation and dispose it with the form instead.
+  const removeGuard = router?.beforeEach((to, from) => !pending() && to.path === from.path || canLeave())
   onMounted(() => window.addEventListener('beforeunload', beforeUnload))
-  onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload))
+  onBeforeUnmount(() => { removeGuard?.(); window.removeEventListener('beforeunload', beforeUnload) })
   return { dirty, markSaved, canLeave }
 }

@@ -16,6 +16,9 @@ import org.apache.kafka.streams.kstream.KStream;
 import org.apache.kafka.streams.kstream.KTable;
 import org.apache.kafka.streams.kstream.Materialized;
 import org.apache.kafka.streams.kstream.Produced;
+import org.apache.kafka.streams.processor.api.Processor;
+import org.apache.kafka.streams.processor.api.ProcessorContext;
+import org.apache.kafka.streams.processor.api.Record;
 import org.apache.kafka.streams.state.KeyValueStore;
 import org.apache.kafka.streams.state.StoreBuilder;
 import org.apache.kafka.streams.state.Stores;
@@ -128,7 +131,7 @@ class KafkaStreamsDetectionComparisonTest {
                 org.apache.kafka.common.serialization.Serdes.String(),
                 org.apache.kafka.common.serialization.Serdes.String())
                 .withLoggingEnabled(Map.of());
-        // Register the store before connecting the transform node to it.
+        // Register the store before connecting the processor node to it.
         builder.addStateStore(stateStore);
 
         KStream<String, String> eventStream = builder
@@ -136,7 +139,7 @@ class KafkaStreamsDetectionComparisonTest {
                         org.apache.kafka.common.serialization.Serdes.String()))
                 .map((host, raw) -> KeyValue.pair("threshold", host + "|" + raw));
         eventStream.join(thresholds, (event, threshold) -> event + "|" + threshold)
-                .transform(() -> new ThresholdTransformer(), "threshold-state")
+                .process(ThresholdProcessor::new, "threshold-state")
                 .to(alertTopic, Produced.with(org.apache.kafka.common.serialization.Serdes.String(),
                         org.apache.kafka.common.serialization.Serdes.String()));
 
@@ -169,19 +172,19 @@ class KafkaStreamsDetectionComparisonTest {
     private record Sample(long timestamp, String id) {
     }
 
-    private static final class ThresholdTransformer
-            implements org.apache.kafka.streams.kstream.Transformer<String, String, KeyValue<String, String>> {
+    private static final class ThresholdProcessor implements Processor<String, String, String, String> {
+        private ProcessorContext<String, String> context;
         private KeyValueStore<String, String> state;
 
-        @SuppressWarnings("unchecked")
         @Override
-        public void init(org.apache.kafka.streams.processor.ProcessorContext context) {
-            state = (KeyValueStore<String, String>) context.getStateStore("threshold-state");
+        public void init(ProcessorContext<String, String> context) {
+            this.context = context;
+            state = context.getStateStore("threshold-state");
         }
 
         @Override
-        public KeyValue<String, String> transform(String ignored, String value) {
-            String[] parts = value.split("\\|", 4);
+        public void process(Record<String, String> record) {
+            String[] parts = record.value().split("\\|", 4);
             String host = parts[0];
             long timestamp = Long.parseLong(parts[1]);
             String eventId = parts[2];
@@ -194,10 +197,11 @@ class KafkaStreamsDetectionComparisonTest {
             window.add(new Sample(timestamp, eventId));
             if (window.size() < threshold) {
                 state.put(host, encode(window));
-                return null;
+                return;
             }
             state.put(host, "");
-            return KeyValue.pair(host, eventId + "|" + window.size());
+            // Preserve the input timestamp and headers, as Transformer forwarding did.
+            context.forward(record.withKey(host).withValue(eventId + "|" + window.size()));
         }
 
         @Override

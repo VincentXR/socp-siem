@@ -71,6 +71,25 @@ describe('asset investigation and reviewed writes', () => {
   })
   afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
 
+  it('opens the row menu without activating detail and stays on the list when deletion is cancelled', async () => {
+    mocks.confirm.mockRejectedValueOnce('cancel')
+    const router = await open('/assets?q=Asset')
+    await wrapper.get('.asset-row-menu button').trigger('click')
+    await flushPromises()
+    expect(router.currentRoute.value.query).toEqual({ q: 'Asset' })
+    expect(mocks.get).not.toHaveBeenCalled()
+    expect(mocks.related).not.toHaveBeenCalled()
+    const menu = new DOMWrapper(document.body)
+    const remove = menu.findAll('[role="menuitem"]').find(item => item.text() === '删除')
+    expect(remove).toBeTruthy()
+    await remove!.trigger('click')
+    await flushPromises()
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    expect(mocks.remove).not.toHaveBeenCalled()
+    expect(router.currentRoute.value.query).toEqual({ q: 'Asset' })
+    expect(mocks.get).not.toHaveBeenCalled()
+  })
+
   it('turns inventory goals into server filters and restores direct filter links', async () => {
     const router = await open('/assets?type=SERVER&owner=sec&criticality=HIGH&page=2')
     expect(mocks.list).toHaveBeenLastCalledWith(2, 10, undefined, expect.anything(), { type: 'SERVER', owner: 'sec', criticality: 'HIGH' })

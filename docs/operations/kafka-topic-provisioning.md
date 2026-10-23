@@ -88,3 +88,18 @@ Every main-chain topic and its `-dlq` should be present at the intended partitio
 count before the first application container starts. `build/verify-prod-compose.py`
 asserts the production overlay re-states the auto-create key explicitly rather
 than inheriting the demo value, so the off-by-default posture remains explicit.
+
+## Kafka client timeout compatibility
+
+The raw ingestion, Detection, Alert and shared DLQ/rule producers explicitly use
+`delivery.timeout.ms=30000`, `request.timeout.ms=30000` and `linger.ms=0`, retaining
+immediate sends, `acks=all`, idempotence and each publisher's existing blocking
+limit. Kafka 4 changed the default linger to 5 ms; leaving it implicit with a
+30-second delivery budget and request timeout prevents producer construction,
+because delivery must be at least request timeout plus linger.
+
+Constructor regressions use an unused loopback bootstrap and send no records.
+They prove configuration compatibility, not broker acknowledgement. After a
+client upgrade, verify that already-persisted outbox events progress through their
+normal retries. Keep their event and delivery identities; do not inject replacements
+or mark rows published to bypass a constructor or acknowledgement failure.

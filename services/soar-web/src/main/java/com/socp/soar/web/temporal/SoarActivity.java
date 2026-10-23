@@ -19,6 +19,10 @@ public interface SoarActivity {
     @ActivityMethod
     boolean reserveNodeExecution(String tenantId, String runId, int budgetLimit);
 
+    /** Versioned admission result; cancellation is not an exhausted execution budget. */
+    @ActivityMethod
+    String reserveNodeExecutionOutcome(String tenantId, String runId, int budgetLimit);
+
     @ActivityMethod
     void markRunWaiting(String tenantId, String runId, String nodeId);
 

@@ -401,6 +401,39 @@ describe('case selection, drafts and timeline', () => {
     expect(wrapper.find('.case-status-row').findComponent(ElSelect).props('modelValue')).toBe('CONTAINED')
   })
 
+  it('leaves a successfully claimed clean case without an unsaved-change warning', async () => {
+    mocks.get.mockResolvedValue({ ...incident('outside'), assignee: '', rowVersion: 7 })
+    mocks.claim.mockResolvedValue({ case: { ...incident('outside'), rowVersion: 8 } })
+    const router = await open()
+    await click('认领案件')
+    await router.push('/alarms')
+    await flushPromises()
+    expect(router.currentRoute.value.path).toBe('/alarms')
+    expect(mocks.confirm).not.toHaveBeenCalled()
+  })
+
+  it('rebases only the persisted claim while preserving pending status and note changes', async () => {
+    mocks.get.mockResolvedValue({ ...incident('outside'), assignee: '', rowVersion: 7 })
+    mocks.claim.mockResolvedValue({ case: { ...incident('outside'), rowVersion: 8 } })
+    const router = await open()
+    await setStatus('CONTAINED')
+    await wrapper.find('textarea[aria-label="调查备注"]').setValue('Still being investigated')
+    await click('认领案件')
+    expect(wrapper.find('.case-status-row').findComponent(ElSelect).props('modelValue')).toBe('CONTAINED')
+    expect(wrapper.find('textarea[aria-label="调查备注"]').element).toHaveProperty('value', 'Still being investigated')
+    mocks.confirm.mockRejectedValueOnce(new Error('keep draft'))
+    await router.push('/alarms')
+    expect(router.currentRoute.value.path).toBe('/cases')
+    expect(mocks.confirm).toHaveBeenCalledTimes(1)
+    // Clearing the actual drafts leaves only the already persisted claim.
+    await setStatus('OPEN')
+    await wrapper.find('textarea[aria-label="调查备注"]').setValue('')
+    mocks.confirm.mockClear()
+    await router.push('/alarms')
+    expect(router.currentRoute.value.path).toBe('/alarms')
+    expect(mocks.confirm).not.toHaveBeenCalled()
+  })
+
   it('restores my-work queue through routes and claims with authoritative version without overwriting a status draft', async () => {
     mocks.get.mockResolvedValue({ ...incident('outside'), assignee: '', rowVersion: 7 })
     mocks.claim.mockResolvedValue({ case: { ...incident('outside'), rowVersion: 8 } })

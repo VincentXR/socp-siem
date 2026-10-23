@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,36 @@ REMEDIATION = (
 
 def fail(errors: list[str], message: str) -> None:
     errors.append(message)
+
+
+def flyway_runtime_error(pom: str) -> str | None:
+    """Boot 4 separates Flyway auto-configuration from its core library.
+
+    Inspect direct runtime dependencies: a comment, managed version, or test
+    dependency cannot make migrations execute when the service starts.
+    """
+    try:
+        project = ET.fromstring(pom)
+    except ET.ParseError as exc:
+        return f"cannot parse pom.xml to verify Flyway runtime: {exc}"
+    ns = {"m": "http://maven.apache.org/POM/4.0.0"}
+    for dependency in project.findall("m:dependencies/m:dependency", ns):
+        group = dependency.findtext("m:groupId", default="", namespaces=ns).strip()
+        artifact = dependency.findtext("m:artifactId", default="", namespaces=ns).strip()
+        if (group, artifact) != ("org.springframework.boot", "spring-boot-starter-flyway"):
+            continue
+        scope = dependency.findtext("m:scope", default="compile", namespaces=ns).strip()
+        if scope not in {"compile", "runtime"}:
+            continue
+        for exclusion in dependency.findall("m:exclusions/m:exclusion", ns):
+            excluded_group = exclusion.findtext("m:groupId", default="", namespaces=ns).strip()
+            excluded_artifact = exclusion.findtext("m:artifactId", default="", namespaces=ns).strip()
+            for required in (("org.flywaydb", "flyway-core"),
+                             ("org.springframework.boot", "spring-boot-flyway")):
+                if excluded_group in {required[0], "*"} and excluded_artifact in {required[1], "*"}:
+                    return f"Flyway starter excludes required runtime module {required[0]}:{required[1]}"
+        return None
+    return "migrations require a compile/runtime org.springframework.boot:spring-boot-starter-flyway dependency"
 
 
 def git_lines(root: Path, *args: str) -> list[str]:
@@ -225,8 +256,9 @@ def main() -> int:
 
         pom = (module / "pom.xml").read_text(encoding="utf-8")
         app_yml = module / "src/main/resources/application.yml"
-        if "flyway-core" not in pom:
-            fail(errors, f"{module.name}: migrations exist but pom.xml has no flyway-core dependency")
+        runtime_error = flyway_runtime_error(pom)
+        if runtime_error:
+            fail(errors, f"{module.name}: {runtime_error}")
         if not app_yml.exists() or "flyway:" not in app_yml.read_text(encoding="utf-8"):
             fail(errors, f"{module.name}: migrations exist but application.yml does not configure Flyway")
 

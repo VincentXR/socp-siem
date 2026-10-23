@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -98,6 +100,44 @@ class VerifyOssIndexAuditTest(unittest.TestCase):
             self.clean_report(3),
         )
         self.assertNotEqual(0, result.returncode)
+
+
+class DependencyReviewFallbackTest(unittest.TestCase):
+    def run_decision(self, has_findings):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        step = workflow.split("      - name: Decide whether fallback audit is required\n")[1]
+        step = step.split("\n      - name:")[0]
+        self.assertNotIn("          VULNERABLE_CHANGES:", step)
+        self.assertIn("HAS_VULNERABLE_CHANGES: ${{", step)
+        self.assertIn("outputs['vulnerable-changes'] != '[]'", step)
+        self.assertIn("outputs['vulnerable-changes'] != '{}'", step)
+        script = textwrap.dedent(step.split("        run: |\n")[1])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            result = subprocess.run(
+                ["bash", "-e", "-c", script], capture_output=True, text=True, check=False,
+                env={**os.environ, "HAS_VULNERABLE_CHANGES": has_findings,
+                     "GITHUB_OUTPUT": str(output)},
+            )
+            return result, output.read_text() if output.exists() else ""
+
+    def test_large_findings_fail_without_passing_json_to_process_environment(self):
+        findings = json.dumps([{"advisory": "x" * 400_000}])
+        # GitHub evaluates the nonempty-output expression before spawning bash.
+        result, output = self.run_decision(str(findings not in ("", "[]", "{}")).lower())
+        self.assertEqual(1, result.returncode)
+        self.assertIn("reported vulnerable changes", result.stdout)
+        self.assertNotIn("required=true", output)
+
+    def test_empty_findings_require_fallback_audit(self):
+        result, output = self.run_decision("false")
+        self.assertEqual(0, result.returncode)
+        self.assertEqual("required=true\n", output)
+
+    def test_unexpected_boolean_fails_closed(self):
+        result, output = self.run_decision("")
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("", output)
 
 
 if __name__ == "__main__":

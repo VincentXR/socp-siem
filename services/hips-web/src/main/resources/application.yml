@@ -4,6 +4,10 @@ server:
     context-path: /hips-web
 
 spring:
+  http:
+    converters:
+      # Preserve the Jackson 2 API contract while Boot 4 also provides Jackson 3.
+      preferred-json-mapper: jackson2
   task:
     scheduling:
       pool:

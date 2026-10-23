@@ -26,6 +26,34 @@ class TiControllerTest {
     @Mock
     private IocStore store;
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "{\"SENSITIVE_UPLOAD_MARKER\": broken}",
+            "{\"objects\":[{\"type\":\"indicator\",\"pattern\":\"[process:name = 'SENSITIVE_UPLOAD_MARKER']\"}]}"
+    })
+    void stixRejectionDoesNotExposeParserOrUploadedContent(String bundle) {
+        var failure = org.junit.jupiter.api.Assertions.assertThrows(
+                org.springframework.web.server.ResponseStatusException.class,
+                () -> new TiController(store).importStix("fixture", bundle));
+        org.assertj.core.api.Assertions.assertThat(failure.getReason()).isEqualTo("Invalid STIX bundle");
+        org.assertj.core.api.Assertions.assertThat(failure.getCause()).isInstanceOf(IllegalArgumentException.class);
+        org.mockito.Mockito.verifyNoInteractions(store);
+    }
+
+    @Test
+    void invalidStixHttpEnvelopeContainsOnlyTheSafeClientMessage() throws Exception {
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(new TiController(store))
+                .setControllerAdvice(new com.socp.platform.error.web.GlobalExceptionHandler()).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post("/api/v1/iocs/import/stix")
+                        .contentType("application/stix+json").content("{\"SENSITIVE_UPLOAD_MARKER\": broken}"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isBadRequest())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.code").value(400))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.message").value("Invalid STIX bundle"))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.content().string(
+                        org.hamcrest.Matchers.not(org.hamcrest.Matchers.containsString("SENSITIVE_UPLOAD_MARKER"))));
+        org.mockito.Mockito.verifyNoInteractions(store);
+    }
+
     @Test
     void createsNormalizedIndicatorFromValidatedRequest() {
         given(store.add(any(Ioc.class))).willAnswer(invocation -> invocation.getArgument(0));
@@ -38,6 +66,56 @@ class TiControllerTest {
         org.junit.jupiter.api.Assertions.assertEquals("HIGH", created.severity());
         org.junit.jupiter.api.Assertions.assertTrue(created.tags().isEmpty());
         verify(store).add(created);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "not-an-ip", "localhost", "256.1.2.3", "127.1", "1.2.3.4/24", "01.2.3.4",
+            "2001:db8:::1", "fe80::1%eth0", "[::1]", "::ffff:127.1"
+    })
+    void rejectsMalformedIpOnCreateAndUpdateWithoutWriting(String value) {
+        TiController controller = new TiController(store);
+        IocRequest request = new IocRequest("IP", value, "HIGH", "manual", "", null);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.create(request))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("400 BAD_REQUEST");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> controller.update("existing", request))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("400 BAD_REQUEST");
+        org.mockito.Mockito.verifyNoInteractions(store);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "0.0.0.0", "255.255.255.255", " 198.18.51.10 ", "::1", "2001:db8::1", "::ffff:192.0.2.1"
+    })
+    void acceptsLiteralIpv4AndIpv6(String value) {
+        given(store.add(any(Ioc.class))).willAnswer(invocation -> invocation.getArgument(0));
+        Ioc created = new TiController(store).create(new IocRequest("IP", value, "HIGH", "manual", "", null)).data();
+        org.assertj.core.api.Assertions.assertThat(created.value()).isEqualTo(value.trim());
+    }
+
+    @Test
+    void batchImportSkipsInvalidIpAndKeepsValidRows() {
+        given(store.add(any(Ioc.class))).willAnswer(invocation -> invocation.getArgument(0));
+        var rows = List.of(new IocImportRequest(null, "not-an-ip", null, null, null, null),
+                new IocImportRequest("IP", "2001:db8::1", null, null, null, null));
+        Map<String, Object> result = new TiController(store).importIocs(rows).data();
+        org.assertj.core.api.Assertions.assertThat(result).containsEntry("imported", 1).containsEntry("skipped", 1);
+        org.assertj.core.api.Assertions.assertThat(result.get("errors").toString()).contains("第 1 行", "IPv4", "IPv6");
+        verify(store).add(any(Ioc.class));
+    }
+
+    @Test
+    void invalidStixImportIsAClientErrorAndDoesNotPartiallyWrite() {
+        String bundle = """
+                {"objects":[{"type":"indicator","pattern":"[ipv4-addr:value = '192.0.2.1']"},
+                {"type":"indicator","pattern":"[ipv4-addr:value = 'not-an-ip']"}]}
+                """;
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> new TiController(store).importStix("fixture", bundle))
+                .isInstanceOf(org.springframework.web.server.ResponseStatusException.class)
+                .hasMessageContaining("400 BAD_REQUEST");
+        org.mockito.Mockito.verifyNoInteractions(store);
     }
 
     @Test

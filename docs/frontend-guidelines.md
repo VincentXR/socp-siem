@@ -240,14 +240,17 @@ I18n's global Composition API directly.
 
 Preferences resolve in this order:
 
-1. authenticated profile locale;
-2. compatibility profile-locale keys;
-3. `socp-locale` in local storage;
+1. explicit browser choice in `socp-locale` local storage;
+2. authenticated profile locale;
+3. compatibility profile-locale keys;
 4. browser preference;
 5. `zh-CN`.
 
-Only `zh-CN` and `en-US` are accepted. Once authenticated, the gateway is the
-source of truth. Local auth can map usernames through `SOCP_AUTH_LOCALES`; OIDC
+Only `zh-CN` and `en-US` are accepted. Initial browser/profile defaults are not
+persisted as explicit choices. A user language toggle is persisted and survives
+session initialization or page refresh. The gateway supplies the trusted
+profile default; it does not overwrite that browser choice. Local auth can map
+usernames through `SOCP_AUTH_LOCALES`; OIDC
 uses the provider locale claim. The gateway validates the value, stores it in
 the signed session, forwards trusted `X-Socp-Locale`, and exposes it from
 `/auth/session`. Requests send `Accept-Language` unless explicitly overridden.

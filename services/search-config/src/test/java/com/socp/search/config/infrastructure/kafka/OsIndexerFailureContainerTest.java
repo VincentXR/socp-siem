@@ -41,6 +41,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -104,7 +105,7 @@ class OsIndexerFailureContainerTest {
                 KAFKA.getBootstrapServers(), group, topic)) {
             verifier.unsubscribe();
             verifier.assign(List.of(sourcePartition));
-            OffsetAndMetadata committed = verifier.committed(sourcePartition);
+            OffsetAndMetadata committed = verifier.committed(Set.of(sourcePartition)).get(sourcePartition);
             committedSourceOffsets = committed.offset();
         }
 
@@ -171,7 +172,7 @@ class OsIndexerFailureContainerTest {
 
             assertThat(indexer.processRecords(source, records)).isFalse();
             assertThat(source.position(partition)).isEqualTo(offset);
-            assertThat(source.committed(partition)).isNull();
+            assertThat(source.committed(Set.of(partition)).get(partition)).isNull();
         } finally {
             indexer.stop();
         }

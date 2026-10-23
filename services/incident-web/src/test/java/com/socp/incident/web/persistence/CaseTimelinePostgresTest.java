@@ -20,8 +20,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -51,8 +51,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @Import({CaseStore.class, CaseTimelinePostgresTest.ProxyConfiguration.class})
 class CaseTimelinePostgresTest {
-    @org.springframework.boot.test.mock.mockito.MockBean com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
-    @org.springframework.boot.test.mock.mockito.MockBean com.socp.incident.web.service.CaseAlarmAssociationService associationCommands;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean com.socp.incident.web.service.CaseAlarmAssociationService associationCommands;
 
 
     @Container

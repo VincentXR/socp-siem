@@ -1,13 +1,13 @@
 package com.socp.gateway.api.health;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.actuate.health.HealthComponent;
-import org.springframework.boot.actuate.health.HealthEndpoint;
+import org.springframework.boot.health.actuate.endpoint.HealthDescriptor;
+import org.springframework.boot.health.actuate.endpoint.HealthEndpoint;
 import org.springframework.cloud.gateway.route.Route;
 import org.springframework.cloud.gateway.route.RouteLocator;
+import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.util.UriComponentsBuilder;
@@ -45,6 +45,7 @@ public class HealthSnapshotService {
     private static final String GATEWAY = "api-gateway";
     private static final String UP = "up";
     private static final String DOWN = "down";
+    private static final ParameterizedTypeReference<Map<String, Object>> HEALTH_BODY = new ParameterizedTypeReference<>() { };
 
     private final RouteLocator routeLocator;
     private final WebClient webClient;
@@ -119,9 +120,8 @@ public class HealthSnapshotService {
                     if (!response.statusCode().is2xxSuccessful()) {
                         return response.releaseBody().thenReturn(DOWN);
                     }
-                    return response.bodyToMono(JsonNode.class)
-                            .map(body -> body.path("status").asText("")
-                                    .equalsIgnoreCase("UP") ? UP : DOWN)
+                    return response.bodyToMono(HEALTH_BODY)
+                            .map(body -> "UP".equalsIgnoreCase(String.valueOf(body.get("status"))) ? UP : DOWN)
                             .defaultIfEmpty(DOWN);
                 })
                 .timeout(probeTimeout)
@@ -133,7 +133,7 @@ public class HealthSnapshotService {
         if (gatewayHealth == null) return Mono.just(UP);
         return Mono.fromCallable(gatewayHealth::health)
                 .subscribeOn(Schedulers.boundedElastic())
-                .map(HealthComponent::getStatus)
+                .map(HealthDescriptor::getStatus)
                 .map(status -> status.getCode().equalsIgnoreCase("UP") ? UP : DOWN)
                 .onErrorReturn(DOWN);
     }

@@ -60,7 +60,8 @@ public final class StixIndicatorImporter {
         if (pattern == null) throw invalid("STIX indicator.pattern is required");
         Matcher matcher = STIX_PATTERN.matcher(pattern);
         if (!matcher.matches()) throw invalid("unsupported STIX indicator pattern: " + pattern);
-        String type = switch (matcher.group(1).toLowerCase(Locale.ROOT)) {
+        String observable = matcher.group(1).toLowerCase(Locale.ROOT);
+        String type = switch (observable) {
             case "ipv4-addr", "ipv6-addr" -> "IP";
             case "domain-name" -> "DOMAIN";
             case "url" -> "URL";
@@ -69,6 +70,16 @@ public final class StixIndicatorImporter {
             default -> throw invalid("unsupported STIX observable type: " + matcher.group(1));
         };
         String value = matcher.group(2).replace("\\'", "'");
+        if (!com.socp.threat.web.domain.IocValueValidator.valid(type, value)) {
+            throw invalid("IP IOC value must be a valid IPv4 or IPv6 address");
+        }
+        // Both families project to IP only after validating the declared STIX
+        // family. IPv4-mapped literals still use IPv6 syntax, even though Java
+        // may represent them as Inet4Address after parsing.
+        if (("ipv4-addr".equals(observable) && value.contains(":"))
+                || ("ipv6-addr".equals(observable) && !value.contains(":"))) {
+            throw invalid("IP IOC value does not match the declared STIX address family");
+        }
         List<String> labels = list(object.get("labels"));
         String tlp = labels.stream().filter(item -> item.toLowerCase(Locale.ROOT).startsWith("tlp:")
                 || item.toLowerCase(Locale.ROOT).startsWith("tlp-")).findFirst().orElse(null);

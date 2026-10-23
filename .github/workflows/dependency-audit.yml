@@ -6,6 +6,10 @@ on:
       - .github/workflows/dependency-audit.yml
       - build/verify-dependency-check.py
       - build/tests/test_verify_dependency_check.py
+      - build/update-dependency-check.py
+      - build/tests/test_update_dependency_check.py
+      - build/nvd-feed-cache.py
+      - build/tests/test_nvd_feed_cache.py
       - config/dependency-check-suppressions.xml
   workflow_dispatch:
   schedule:
@@ -25,7 +29,7 @@ env:
 jobs:
   java-audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 125
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -37,29 +41,48 @@ jobs:
           cache: maven
 
       - name: Test fail-closed report validation
-        run: python3 -m unittest build/tests/test_verify_dependency_check.py
+        run: python3 -m unittest build/tests/test_verify_dependency_check.py build/tests/test_update_dependency_check.py build/tests/test_nvd_feed_cache.py
 
       - name: Restore OWASP vulnerability database
         id: vulnerability_cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .cache/dependency-check
-          key: dependency-check-${{ runner.os }}-12.2.2-nvd-feed-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          key: dependency-check-${{ runner.os }}-12.2.2-nvd-feed-v2-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            dependency-check-${{ runner.os }}-12.2.2-nvd-feed-v1-
+            dependency-check-${{ runner.os }}-12.2.2-nvd-feed-v2-
+
+      - name: Restore individually verified official feed payloads
+        id: feed_payload_cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/nvd-feed-payloads/*.gz
+          key: nvd-official-payloads-v1-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            nvd-official-payloads-v1-${{ runner.os }}-
 
       - name: Update complete NVD database from official feeds
-        timeout-minutes: 45
+        timeout-minutes: 75
         run: |
           set -euo pipefail
           mkdir -p target/dependency-audit
-          # 12.2.2 supports NVD's full yearly + modified feeds without an API key.
-          # -N updates once; absolute paths keep the update and reactor scan aligned.
-          bash build/mvnw.sh -N org.owasp:dependency-check-maven:12.2.2:update-only \
-            -DfailOnError=true -DnvdValidForHours=0 \
-            '-DnvdDatafeedUrl=https://nvd.nist.gov/feeds/json/cve/2.0/nvdcve-2.0-{0}.json.gz' \
-            "-DdataDirectory=${GITHUB_WORKSPACE}/.cache/dependency-check" \
+          # Cold official feeds took over 45 minutes in CI; retain complete history
+          # and allow download + import time while keeping freshness fail-closed.
+          # Only a complete update replaces the isolated database cache.
+          python3 build/update-dependency-check.py \
+            --data-directory "${GITHUB_WORKSPACE}/.cache/dependency-check" \
+            --log-directory "${GITHUB_WORKSPACE}/target/dependency-audit" \
             2>&1 | tee target/dependency-audit/update.log
+
+      - name: Save individually verified official feed payloads
+        if: ${{ always() && hashFiles('.cache/nvd-feed-payloads/*.gz') != '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # Individual verified payloads can survive a different feed failing.
+          # Every reuse refetches official metadata and revalidates its SHA-256;
+          # this cache never authorizes a partial database or vulnerability scan.
+          path: .cache/nvd-feed-payloads/*.gz
+          key: ${{ steps.feed_payload_cache.outputs.cache-primary-key }}
 
       - name: Save successfully updated database before scanning
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

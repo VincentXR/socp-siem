@@ -330,6 +330,25 @@ describe('SOAR bounded run and published-version catalogs', () => {
 })
 
 describe('analyst response context and receipts', () => {
+  it.each([
+    ['alarm-only', { contextAlarmId: 'alarm-77' }, ['automatic-before-case', 'manual-with-case']],
+    ['alarm with a later case', { contextAlarmId: 'alarm-77', contextCaseId: 'case-88' }, ['automatic-before-case', 'manual-with-case']],
+    ['case-only', { contextCaseId: 'case-88' }, ['manual-with-case', 'other-alarm-in-case']],
+  ])('shows the relevant retained history for %s context', async (_label, context, expected) => {
+    const retained = [
+      { ...fixture('automatic-before-case'), originAlarmId: 'alarm-77', originCaseId: null },
+      { ...fixture('manual-with-case'), originAlarmId: 'alarm-77', originCaseId: 'case-88' },
+      { ...fixture('other-alarm-in-case'), originAlarmId: 'alarm-99', originCaseId: 'case-88' },
+    ]
+    mocks.listRuns.mockImplementation(async (_page, _size, _options, filter) => pageOf(retained.filter(run =>
+      (!filter.alarmId || run.originAlarmId === filter.alarmId)
+      && (!filter.caseId || run.originCaseId === filter.caseId))))
+    const wrapper = mount(SoarRunInspector, { props: context })
+    await flushPromises()
+    expect(wrapper.get('.soar-run-select select').findAll('option').map(option => option.attributes('value')).filter(Boolean)).toEqual(expected)
+    wrapper.unmount()
+  })
+
   it('prefills declared inputs and submits exactly the displayed edited values with both origin identities', async () => {
     mocks.listVersions.mockResolvedValue([{ ...version('pb-1'), definition: {
       inputSchema: { type: 'object', additionalProperties: false, required: ['alarmId', 'caseId', 'reason', 'enabled'], properties: {

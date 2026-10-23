@@ -120,7 +120,7 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' | 'viewer'
         latestPublishedVersion: null, draftVersion: 1, tags: body.tags || [], rowVersion: 1,
       }
       state.playbooks.unshift(playbook)
-      state.versions[playbook.id] = []
+      state.versions[playbook.id] = [{ id: 'ver-browser', playbookId: playbook.id, version: 1, status: 'DRAFT', schemaVersion: 'soar.playbook', definition: SIMPLE_DEFINITION, layout: {}, definitionHash: 'browser-hash', riskSummary: { actionCount: 0, highRiskActionCount: 0 }, rowVersion: 1 }]
       data = playbook
       status = 201
     } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 4 && state.playbooks.some(playbook => playbook.id === parts[3])) {
@@ -128,8 +128,14 @@ async function installSoarMocks(page: Page, role: 'analyst' | 'admin' | 'viewer'
     } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 5 && parts[4] === 'versions') {
       data = state.versions[parts[3]] || []
     } else if (method === 'POST' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 5 && parts[4] === 'versions') {
-      const version = { id: 'ver-browser', playbookId: parts[3], version: 1, status: 'DRAFT', schemaVersion: 'soar.playbook', definition: SIMPLE_DEFINITION, layout: {}, definitionHash: 'browser-hash', riskSummary: { actionCount: 0, highRiskActionCount: 0 }, rowVersion: 1 }
-      state.versions[parts[3]] = [version]
+      const versions = state.versions[parts[3]] || []
+      if (versions.some(version => version.status === 'DRAFT')) {
+        await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ code: 'SOAR_DRAFT_ALREADY_EXISTS', message: 'An editable draft already exists' }) })
+        return
+      }
+      const versionNo = Math.max(0, ...versions.map(version => Number(version.version))) + 1
+      const version = { id: `ver-browser-${versionNo}`, playbookId: parts[3], version: versionNo, status: 'DRAFT', schemaVersion: 'soar.playbook', definition: SIMPLE_DEFINITION, layout: {}, definitionHash: 'browser-hash', riskSummary: { actionCount: 0, highRiskActionCount: 0 }, rowVersion: 1 }
+      state.versions[parts[3]] = [version, ...versions]
       data = version
       status = 201
     } else if (method === 'GET' && parts[0] === 'soar-web' && parts[1] === 'api' && parts[2] === 'playbooks' && parts.length === 6 && parts[4] === 'versions') {
@@ -229,8 +235,13 @@ test('SOAR workbench covers draft lifecycle, run inspection and human controls',
   await expect(createDialog).toBeVisible()
   await createDialog.getByPlaceholder(/Account takeover response|账号接管响应/).fill('Browser response')
   await createDialog.getByRole('button', { name: /Create and open canvas|创建并打开画布/ }).click()
+  await expect(page).toHaveURL(/\/soar\/playbooks\/pb-browser\/edit$/)
+  await expect(createDialog).not.toBeVisible()
   await expect(page.locator('.soar-editor')).toBeVisible()
   await expect(page.locator('.soar-editor-message')).toBeVisible()
+  expect(state.requests.filter(request => request.method === 'POST' && request.path === '/soar-web/api/playbooks')).toHaveLength(1)
+  expect(state.requests).toContainEqual({ method: 'GET', path: '/soar-web/api/playbooks/pb-browser/versions/1' })
+  expect(state.requests).not.toContainEqual({ method: 'POST', path: '/soar-web/api/playbooks/pb-browser/versions' })
 
   await page.getByLabel('Definition JSON').fill(JSON.stringify(EDITED_DEFINITION))
   await page.getByRole('button', { name: 'Apply JSON' }).click()

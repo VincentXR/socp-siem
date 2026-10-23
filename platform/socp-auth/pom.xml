@@ -25,7 +25,7 @@
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
+            <artifactId>spring-boot-starter-webmvc</artifactId>
         </dependency>
 
         <!-- JWT 验签/解析核心：JwtValidator 只用它，不依赖 Spring Security 运行时 -->
@@ -64,6 +64,13 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- The actuator routing fixture explicitly excludes datasource
+             auto-configuration, which is a separate module in Boot 4. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-jdbc</artifactId>
             <scope>test</scope>
         </dependency>
         <dependency>

@@ -8,12 +8,13 @@ import com.socp.platform.tenant.context.AuthenticatedIdentity;
 import com.socp.platform.tenant.context.AuthenticatedIdentityContext;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.servlet.DispatcherType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
-import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.AsyncHandlerInterceptor;
 
 import java.time.Instant;
 import java.time.Duration;
@@ -27,7 +28,9 @@ import java.util.Set;
 
 /** Authenticates user JWTs, fixed ingest credentials, and signed internal service requests. */
 @Component
-public class AuthInterceptor implements HandlerInterceptor {
+public class AuthInterceptor implements AsyncHandlerInterceptor {
+    private static final String GATEWAY_PROOF = AuthInterceptor.class.getName() + ".gatewayProof";
+    private static final String SERVICE_PROOF = AuthInterceptor.class.getName() + ".serviceProof";
 
     private static final Logger log = LoggerFactory.getLogger(AuthInterceptor.class);
     private static final String BEARER = "Bearer ";
@@ -230,6 +233,14 @@ public class AuthInterceptor implements HandlerInterceptor {
         AuthenticatedIdentityContext.clear();
     }
 
+    @Override
+    public void afterConcurrentHandlingStarted(HttpServletRequest request, HttpServletResponse response,
+                                               Object handler) {
+        // Async dispatch resumes on another servlet thread. Do not leave the
+        // authenticated identity behind on the thread returned to the pool.
+        AuthenticatedIdentityContext.clear();
+    }
+
     private void requireRole(Object handler, String role, String path) {
         if (!(handler instanceof HandlerMethod method)) return;
         RequireRole requirement = method.getMethodAnnotation(RequireRole.class);
@@ -357,6 +368,11 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (secret == null || secret.isBlank()) {
             throw ApiException.unauthorized("Service identity verification is not configured");
         }
+        String tenant = request.getHeader("X-Tenant-Id");
+        if (!TenantContext.isValid(tenant)) throw ApiException.unauthorized("Invalid delegated tenant");
+        VerifiedProof proof = proof(request, service, tenant, timestamp, nonce, signature,
+                ServiceRequestSignature.gatewayBinding(request.getRequestURI(), request.getHeader(HttpHeaders.AUTHORIZATION)));
+        if (verifiedAsync(request, SERVICE_PROOF, proof)) return tenant;
         long signedAt;
         try {
             signedAt = Long.parseLong(timestamp);
@@ -367,8 +383,6 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (Math.abs(now - signedAt) > properties.getServiceMaxSkewSeconds()) {
             throw ApiException.unauthorized("Expired service identity proof");
         }
-        String tenant = request.getHeader("X-Tenant-Id");
-        if (!TenantContext.isValid(tenant)) throw ApiException.unauthorized("Invalid delegated tenant");
         if (!ServiceRequestSignature.verify(secret, signature, service, request.getMethod(),
                 request.getRequestURI(), tenant, timestamp, nonce)) {
             throw ApiException.unauthorized("Invalid service identity signature");
@@ -381,6 +395,7 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (nonceResult == ServiceNonceStore.ClaimResult.UNAVAILABLE) {
             throw ApiException.of(503, "Service identity replay guard is unavailable");
         }
+        request.setAttribute(SERVICE_PROOF, proof);
         return tenant;
     }
 
@@ -396,6 +411,9 @@ public class AuthInterceptor implements HandlerInterceptor {
                 || path.contains("\r") || nonce.length() > 128) {
             throw ApiException.unauthorized("Invalid gateway identity proof");
         }
+        VerifiedProof proof = proof(request, ServiceRequestSignature.GATEWAY_SERVICE,
+                tenant, timestamp, nonce, signature, ServiceRequestSignature.gatewayBinding(path, token));
+        if (verifiedAsync(request, GATEWAY_PROOF, proof)) return;
         long signedAt;
         try {
             signedAt = Long.parseLong(timestamp);
@@ -422,7 +440,24 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (nonceResult == ServiceNonceStore.ClaimResult.UNAVAILABLE) {
             throw ApiException.of(503, "Gateway identity replay guard is unavailable");
         }
+        request.setAttribute(GATEWAY_PROOF, proof);
     }
+
+    private static VerifiedProof proof(HttpServletRequest request, String service, String tenant,
+                                        String timestamp, String nonce, String signature, String binding) {
+        return new VerifiedProof(service, request.getMethod(), request.getRequestURI(), request.getQueryString(),
+                tenant, timestamp, nonce, signature, binding);
+    }
+
+    private static boolean verifiedAsync(HttpServletRequest request, String key, VerifiedProof proof) {
+        // This server-side attribute exists only after a successful nonce claim
+        // on this very HTTP request. A new request (even an ASYNC dispatch), or
+        // any changed target, token binding or proof, must pass the replay guard.
+        return request.getDispatcherType() == DispatcherType.ASYNC && proof.equals(request.getAttribute(key));
+    }
+
+    private record VerifiedProof(String service, String method, String uri, String query, String tenant,
+                                  String timestamp, String nonce, String signature, String binding) { }
 
     private static boolean isBlank(String value) {
         return value == null || value.isBlank();

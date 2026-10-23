@@ -121,6 +121,8 @@ class SoarApprovalResolutionCoverageTest {
         SoarDispatchOutboxEntity outbox = outbox("d-1", "run-1", "HOLD");
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-1"))
                 .willReturn(Optional.of(approval));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-1"))
+                .willReturn(Optional.of((approval).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-1")).willReturn(Optional.of(run));
         given(dispatches.findByTenantIdAndRunId("tenant-a", "run-1")).willReturn(Optional.of(outbox));
 
@@ -147,6 +149,8 @@ class SoarApprovalResolutionCoverageTest {
         SoarDispatchOutboxEntity outbox = outbox("d-1", "run-1", "HOLD");
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-1"))
                 .willReturn(Optional.of(approval));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-1"))
+                .willReturn(Optional.of((approval).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-1")).willReturn(Optional.of(run));
         given(dispatches.findByTenantIdAndRunId("tenant-a", "run-1")).willReturn(Optional.of(outbox));
 
@@ -168,6 +172,8 @@ class SoarApprovalResolutionCoverageTest {
         SoarApprovalEntity approval = approval("apr-1", "run-1", "PENDING");
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-1"))
                 .willReturn(Optional.of(approval));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-1"))
+                .willReturn(Optional.of((approval).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-1")).willReturn(Optional.of(run));
 
         assertRejected(HttpStatus.FORBIDDEN, "SOAR_SELF_APPROVAL_DENIED",
@@ -184,6 +190,8 @@ class SoarApprovalResolutionCoverageTest {
         SoarDispatchOutboxEntity outbox = outbox("d-1", "run-1", "HOLD");
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-1"))
                 .willReturn(Optional.of(approval));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-1"))
+                .willReturn(Optional.of((approval).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-1")).willReturn(Optional.of(run));
         given(dispatches.findByTenantIdAndRunId("tenant-a", "run-1")).willReturn(Optional.of(outbox));
 
@@ -201,6 +209,8 @@ class SoarApprovalResolutionCoverageTest {
         SoarApprovalEntity decided = approval("apr-1", "run-1", "APPROVED");
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-1"))
                 .willReturn(Optional.of(decided));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-1"))
+                .willReturn(Optional.of((decided).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-1"))
                 .willReturn(Optional.of(run("run-1", SoarRunStatus.WAITING_APPROVAL, "bob")));
         assertRejected(HttpStatus.CONFLICT, "SOAR_APPROVAL_ALREADY_DECIDED",
@@ -218,6 +228,8 @@ class SoarApprovalResolutionCoverageTest {
         SoarApprovalEntity approval = approval("apr-1", "run-1", "PENDING");
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-1"))
                 .willReturn(Optional.of(approval));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-1"))
+                .willReturn(Optional.of((approval).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-1")).willReturn(Optional.of(run));
 
         assertRejected(HttpStatus.BAD_REQUEST, "SOAR_INPUT_INVALID",
@@ -367,6 +379,8 @@ class SoarApprovalResolutionCoverageTest {
         given(manualTasks.findByTenantIdAndIdForUpdate("tenant-a", "task-1"))
                 .willReturn(Optional.empty());
         given(manualTasks.findByTenantIdAndId("tenant-a", "task-1")).willReturn(Optional.of(task));
+        given(manualTasks.findRunIdByTenantIdAndId("tenant-a", "task-1"))
+                .willReturn(Optional.of((task).getRunId()));
         given(runs.findByTenantIdAndId("tenant-a", "run-9")).willReturn(Optional.of(run));
         // appendEvent locks the owning run before allocating a sequence number.
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-9")).willReturn(Optional.of(run));
@@ -397,6 +411,11 @@ class SoarApprovalResolutionCoverageTest {
         given(manualTasks.findByTenantIdAndIdForUpdate("tenant-a", "task-1"))
                 .willReturn(Optional.empty());
         given(manualTasks.findByTenantIdAndId("tenant-a", "task-1")).willReturn(Optional.of(task));
+        given(manualTasks.findRunIdByTenantIdAndId("tenant-a", "task-1"))
+                .willReturn(Optional.of((task).getRunId()));
+
+        given(runs.findByTenantIdAndIdForUpdate("tenant-a", task.getRunId()))
+                .willReturn(Optional.of(run(task.getRunId(), SoarRunStatus.WAITING_INPUT, "bob")));
 
         assertRejected(HttpStatus.BAD_REQUEST, "SOAR_MANUAL_INPUT_INVALID",
                 () -> service.completeManualTask("task-1", Map.of("confirmed", "yes")));
@@ -420,6 +439,10 @@ class SoarApprovalResolutionCoverageTest {
                 .willReturn(Optional.empty());
         given(manualTasks.findByTenantIdAndId("tenant-a", "task-2"))
                 .willReturn(Optional.of(manualTask("task-2", "COMPLETED")));
+        given(manualTasks.findRunIdByTenantIdAndId("tenant-a", "task-2"))
+                .willReturn(Optional.of((manualTask("task-2", "COMPLETED")).getRunId()));
+        given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-9"))
+                .willReturn(Optional.of(run("run-9", SoarRunStatus.WAITING_INPUT, "bob")));
         assertRejected(HttpStatus.CONFLICT, "SOAR_MANUAL_TASK_ALREADY_COMPLETED",
                 () -> service.completeManualTask("task-2", Map.of("confirmed", true)));
     }
@@ -431,6 +454,8 @@ class SoarApprovalResolutionCoverageTest {
         SoarRunEntity run = run("run-terminal", SoarRunStatus.PARTIALLY_SUCCEEDED, "bob");
         given(manualTasks.findByTenantIdAndIdForUpdate("tenant-a", "task-terminal"))
                 .willReturn(Optional.of(task));
+        given(manualTasks.findRunIdByTenantIdAndId("tenant-a", "task-terminal"))
+                .willReturn(Optional.of((task).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-terminal"))
                 .willReturn(Optional.of(run));
 
@@ -461,6 +486,8 @@ class SoarApprovalResolutionCoverageTest {
         SoarRunEntity run = run("run-terminal", SoarRunStatus.PARTIALLY_SUCCEEDED, "bob");
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-terminal"))
                 .willReturn(Optional.of(approval));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-terminal"))
+                .willReturn(Optional.of((approval).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-terminal"))
                 .willReturn(Optional.of(run));
 
@@ -478,6 +505,8 @@ class SoarApprovalResolutionCoverageTest {
         SoarRunEntity run = run("run-terminal", SoarRunStatus.PARTIALLY_SUCCEEDED, "bob");
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-expired-terminal"))
                 .willReturn(Optional.of(approval));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-expired-terminal"))
+                .willReturn(Optional.of((approval).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-terminal"))
                 .willReturn(Optional.of(run));
 

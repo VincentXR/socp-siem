@@ -17,6 +17,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 public interface SoarApprovalRepository extends TenantScopedRepository<SoarApprovalEntity, String> {
     Optional<SoarApprovalEntity> findByTenantIdAndId(String tenantId, String id);
+    /** Scalar ownership avoids caching stale gate state before locking its run. */
+    @Query("select a.runId from SoarApprovalEntity a where a.tenantId = :tenantId and a.id = :id")
+    Optional<String> findRunIdByTenantIdAndId(@Param("tenantId") String tenantId, @Param("id") String id);
     /** Serialize approval decisions so two operators cannot both transition the same gate. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select a from SoarApprovalEntity a where a.tenantId = :tenantId and a.id = :id")
@@ -30,6 +33,14 @@ public interface SoarApprovalRepository extends TenantScopedRepository<SoarAppro
     Optional<SoarApprovalEntity> findByTenantIdAndApprovalKeyForUpdate(
             @Param("tenantId") String tenantId, @Param("approvalKey") String approvalKey);
     List<SoarApprovalEntity> findAllByTenantIdAndRunIdOrderByCreatedAtAsc(String tenantId, String runId);
+
+    /** Run-level termination is not an operator approval vote. */
+    @Modifying(flushAutomatically = true)
+    @Query("update SoarApprovalEntity a set a.status = :status, a.decidedAt = :at, "
+            + "a.decisionReason = 'owning run terminated' "
+            + "where a.tenantId = :tenantId and a.runId = :runId and a.status = 'PENDING'")
+    int closePendingForRun(@Param("tenantId") String tenantId, @Param("runId") String runId,
+                          @Param("status") String status, @Param("at") Instant at);
     List<SoarApprovalEntity> findByTenantIdOrderByCreatedAtDesc(String tenantId);
     @Query("select a from SoarApprovalEntity a where a.tenantId = :tenantId order by a.createdAt desc, a.id desc")
     Page<SoarApprovalEntity> findByTenantIdOrderByCreatedAtDesc(@Param("tenantId") String tenantId, Pageable pageable);

@@ -16,7 +16,7 @@ import org.springframework.context.annotation.Import;
  * It registers exactly the packages Boot would have scanned by default — the
  * annotated class' own package — plus the platform packages that must always be
  * part of the persistence unit, through
- * {@link org.springframework.boot.autoconfigure.domain.EntityScanPackages}. Boot's
+ * {@link org.springframework.boot.persistence.autoconfigure.EntityScanPackages}. Boot's
  * JPA auto-configuration then uses that list instead of the implicit
  * {@code AutoConfigurationPackages} default, so the resulting persistence unit is
  * the service's own entities plus the platform contributions.</p>

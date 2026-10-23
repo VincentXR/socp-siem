@@ -2,7 +2,7 @@ package com.socp.alert.service;
 
 import com.socp.platform.test.MiddlewareImages;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
-import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
+import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;

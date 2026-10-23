@@ -136,6 +136,16 @@ final class SoarRunCommandService {
 
     public Map<String, Object> queueManualRun(String requestId, String versionId, Map<String, Object> subject,
                                               Map<String, Object> inputs) {
+        return queueRun(requestId, versionId, subject, inputs, "MANUAL");
+    }
+
+    public Map<String, Object> queueAutomaticRun(String requestId, String versionId, Map<String, Object> subject,
+                                                 Map<String, Object> inputs) {
+        return queueRun(requestId, versionId, subject, inputs, "AUTOMATION");
+    }
+
+    private Map<String, Object> queueRun(String requestId, String versionId, Map<String, Object> subject,
+                                        Map<String, Object> inputs, String triggerType) {
         String tenant = tenant();
         requestId = required(requestId, "requestId", 128);
         SoarRunEntity existingEntity = runs.findByTenantIdAndRequestId(tenant, requestId).orElse(null);
@@ -191,7 +201,7 @@ final class SoarRunCommandService {
         run.setPlaybookVersionId(version.getId());
         run.setPlaybookVersionNo(version.getVersionNo());
         run.setDefinitionHash(version.getDefinitionHash());
-        run.setTriggerType("MANUAL");
+        run.setTriggerType(triggerType);
         run.setSubjectType(text(subject, "type"));
         run.setSubjectId(text(subject, "id"));
         for (String field : List.of("id", "alarmId", "caseId")) {
@@ -397,6 +407,24 @@ final class SoarRunCommandService {
 
     public Map<String, Object> completeManualTask(String id, Map<String, Object> input) {
         String tenant = tenant();
+        // Read only the immutable ownership link first. Every writer then
+        // locks run -> task so completion cannot deadlock with termination.
+        String ownerId = manualTasks.findRunIdByTenantIdAndId(tenant, id)
+                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_MANUAL_TASK_NOT_FOUND", "manual task not found"));
+        java.util.Optional<SoarRunEntity> lockedOwner = runs.findByTenantIdAndIdForUpdate(tenant, ownerId);
+        if (lockedOwner == null || lockedOwner.isEmpty()) lockedOwner = runs.findByTenantIdAndId(tenant, ownerId);
+        // A lock projection must belong to the requested run.  Besides being
+        // a useful integrity check, this keeps compatibility with old test
+        // doubles that return a generic lock row for every id; the ordinary
+        // tenant-scoped lookup still resolves the actual owner.
+        if (lockedOwner != null && lockedOwner.isPresent()
+                && lockedOwner.get().getId() != null
+                && !ownerId.equals(lockedOwner.get().getId())) {
+            java.util.Optional<SoarRunEntity> requestedOwner = runs.findByTenantIdAndId(tenant, ownerId);
+            if (requestedOwner != null && requestedOwner.isPresent()) lockedOwner = requestedOwner;
+        }
+        SoarRunEntity owner = (lockedOwner == null ? java.util.Optional.<SoarRunEntity>empty() : lockedOwner)
+                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "run not found"));
         java.util.Optional<SoarManualTaskEntity> lockedTask = manualTasks.findByTenantIdAndIdForUpdate(tenant, id);
         if (lockedTask == null || lockedTask.isEmpty()) lockedTask = manualTasks.findByTenantIdAndId(tenant, id);
         SoarManualTaskEntity task = (lockedTask == null ? java.util.Optional.<SoarManualTaskEntity>empty() : lockedTask)
@@ -404,25 +432,6 @@ final class SoarRunCommandService {
         if (!"PENDING".equals(task.getStatus())) {
             throw error(HttpStatus.CONFLICT, "SOAR_MANUAL_TASK_ALREADY_COMPLETED", "manual task is not pending");
         }
-        manualInputValidator.validate(task.getFormSchemaJson(), input);
-        // The task row and its owning run are independent projections. Lock
-        // the run before completing the task so a late operator submission
-        // cannot move a cancelled/suppressed/partially-successful run back to
-        // RUNNING or enqueue a signal for a closed workflow.
-        java.util.Optional<SoarRunEntity> lockedOwner = runs.findByTenantIdAndIdForUpdate(tenant, task.getRunId());
-        if (lockedOwner == null || lockedOwner.isEmpty()) lockedOwner = runs.findByTenantIdAndId(tenant, task.getRunId());
-        // A lock projection must belong to the requested run.  Besides being
-        // a useful integrity check, this keeps compatibility with old test
-        // doubles that return a generic lock row for every id; the ordinary
-        // tenant-scoped lookup still resolves the actual owner.
-        if (lockedOwner != null && lockedOwner.isPresent()
-                && lockedOwner.get().getId() != null
-                && !task.getRunId().equals(lockedOwner.get().getId())) {
-            java.util.Optional<SoarRunEntity> requestedOwner = runs.findByTenantIdAndId(tenant, task.getRunId());
-            if (requestedOwner != null && requestedOwner.isPresent()) lockedOwner = requestedOwner;
-        }
-        SoarRunEntity owner = (lockedOwner == null ? java.util.Optional.<SoarRunEntity>empty() : lockedOwner)
-                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "run not found"));
         if (terminalRunProjection(owner)) {
             throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
                     "the run is already terminal and cannot complete a manual task");
@@ -431,6 +440,7 @@ final class SoarRunCommandService {
             throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
                     "the run is cancelling and cannot complete a manual task");
         }
+        manualInputValidator.validate(task.getFormSchemaJson(), input);
         Instant now = Instant.now();
         task.setInputJson(write(redact(input)));
         task.setStatus("COMPLETED");
@@ -452,7 +462,11 @@ final class SoarRunCommandService {
 
     public Map<String, Object> cancelRun(String id, String reason) {
         String safeReason = redactFreeText(reason == null ? "operator requested cancellation" : reason, 2048);
-        SoarRunEntity run = run(id);
+        java.util.Optional<SoarRunEntity> locked = runs.findByTenantIdAndIdForUpdate(tenant(), id);
+        if (locked == null || locked.isEmpty() || !id.equals(locked.get().getId())) {
+            locked = runs.findByTenantIdAndId(tenant(), id);
+        }
+        SoarRunEntity run = locked.orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "run not found"));
         String status = run.getStatus();
         boolean hasWorkflow = run.getTemporalWorkflowId() != null
                 && !run.getTemporalWorkflowId().isBlank();
@@ -483,6 +497,7 @@ final class SoarRunCommandService {
                         }
                     });
             runs.save(run);
+            SoarPendingWork.closeForTerminalRun(run, now, manualTasks, approvals, nodes);
             appendEvent(id, "RUN_CANCELLED", actor(), "Queued run cancelled", Map.of("reason", limit(safeReason, 512)));
             return runView(run);
         }

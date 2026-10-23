@@ -16,9 +16,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -53,8 +53,8 @@ class CaseAlarmAssociationPersistenceTest {
     @Autowired CaseService automatic;
     @Autowired CaseAlarmAssociationService commands;
     @Autowired JdbcTemplate jdbc;
-    @MockBean AlertClient alerts;
-    @MockBean OperatorDirectory operators;
+    @MockitoBean AlertClient alerts;
+    @MockitoBean OperatorDirectory operators;
     @TestConfiguration static class Config { @Bean ObjectMapper json() { return new ObjectMapper(); } }
     @BeforeEach void setup() {
         TenantContext.set("associate-" + java.util.UUID.randomUUID());

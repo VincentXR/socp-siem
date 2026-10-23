@@ -43,6 +43,10 @@ public final class KafkaClientSupport {
         properties.put(ProducerConfig.ACKS_CONFIG, "all");
         properties.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, "true");
         properties.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 30_000);
+        // Kafka 4 defaults linger to 5ms; retain the prior immediate-send
+        // policy and delivery >= request + linger within the 30s budget.
+        properties.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 30_000);
+        properties.put(ProducerConfig.LINGER_MS_CONFIG, 0);
         properties.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 5_000);
         return properties;
     }
