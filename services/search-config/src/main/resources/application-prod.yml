@@ -6,6 +6,7 @@ socp:
   demo-data:
     enabled: false
   opensearch:
+    index-replicas: ${SOCP_OPENSEARCH_INDEX_REPLICAS:1}
     tls:
       insecure-skip-verify: ${SOCP_OPENSEARCH_INSECURE_SKIP_VERIFY:false}
   vector:

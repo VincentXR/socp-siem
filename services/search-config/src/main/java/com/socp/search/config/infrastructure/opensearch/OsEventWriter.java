@@ -68,7 +68,8 @@ public class OsEventWriter {
         if (!properties.isEnabled() || templateInitialized) return true;
         try {
             var response = transport.exchange("PUT", OpenSearchIndexTemplate.PATH,
-                    "application/json", OpenSearchIndexTemplate.payloadBytes());
+                    "application/json", OpenSearchIndexTemplate.payloadBytes(
+                            properties.getIndexShards(), properties.getIndexReplicas()));
             int code = response.status();
             if (code >= 200 && code < 300) {
                 log.info("OpenSearch index template initialized successfully: socp-events-template (HTTP {})", code);

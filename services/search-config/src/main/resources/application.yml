@@ -127,6 +127,8 @@ socp:
     retry-backoff-ms: ${SOCP_OS_INDEXER_RETRY_BACKOFF_MS:1000}
   opensearch:
     enabled: ${SOCP_OPENSEARCH_ENABLED:true}
+    index-shards: ${SOCP_OPENSEARCH_INDEX_SHARDS:1}
+    index-replicas: ${SOCP_OPENSEARCH_INDEX_REPLICAS:0}
     url: ${SOCP_OPENSEARCH_URL:https://localhost:9200}
     username: ${SOCP_OPENSEARCH_USERNAME:admin}
     password: ${SOCP_OPENSEARCH_PASSWORD:Socp!Sec2026xK}

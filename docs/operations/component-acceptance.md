@@ -66,6 +66,14 @@ paths. This does not establish Kubernetes scheduling, container hardening, HA, o
 retention. Production sizing, enterprise IdP policy, real endpoints and vendor delivery remain
 separate acceptance boundaries.
 
+The event-index topology must also survive writer restart. Configure
+`SOCP_OPENSEARCH_INDEX_SHARDS` and `SOCP_OPENSEARCH_INDEX_REPLICAS` through the
+deployment; confirm the installed managed template retains those counts after
+restart and a newly created index has the expected primary and replica copies.
+Production refuses zero replicas when OpenSearch is enabled. An existing index
+keeps its previous settings until an operator explicitly updates it; a green
+single-node development index with zero replicas is not production HA evidence.
+
 ## Enable the optional local observability stack
 
 The base Compose file mounts Grafana provisioning and persistent Loki/Jaeger storage.
