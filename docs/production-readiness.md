@@ -48,6 +48,19 @@ The authoritative commands and cadence live in
 [validation-matrix.md](validation-matrix.md). Evidence is commit-scoped; a
 successful workflow from an older revision is not proof for HEAD.
 
+The Search writer owns the `socp-events-template` mapping and topology settings.
+Set `SOCP_OPENSEARCH_INDEX_SHARDS` and `SOCP_OPENSEARCH_INDEX_REPLICAS` in the
+deployment configuration rather than editing its managed template directly:
+the writer reapplies the configured values on startup. Production defaults to
+one replica and refuses an enabled OpenSearch configuration with zero replicas;
+the single-node development profile defaults to zero. Shard counts are bounded
+to 1–1,024 and replica counts to 0–32. A production replica setting does not
+prove allocation, independent failure domains, or failover. Confirm every shard
+copy is allocated to the intended data nodes. Updating a template affects future
+indices only: review and update existing indices' replica settings separately;
+changing existing primary-shard counts requires an explicit reindex/rollover.
+Do not lower disk watermarks or remove data to make allocation appear healthy.
+
 The Compose MinIO fixture is built from upstream commit
 `9e49d5e7a648f00e26f2246f4dc28e6b07f8c84a` (the October 2025 security release),
 using the image catalog's Go build image and a self-contained `scratch` runtime
