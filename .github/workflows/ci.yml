@@ -98,6 +98,22 @@ jobs:
           python3 build/verify-coverage.py
           python3 build/verify-changed-coverage.py
 
+      - name: Exercise isolated PostgreSQL backup, restore and tenant roles
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          pg_bindir="$(pg_config --bindir 2>/dev/null || true)"
+          if [[ ! -x "${pg_bindir}/initdb" ]]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends postgresql
+            pg_bindir="$(pg_config --bindir)"
+          fi
+          test -x "${pg_bindir}/initdb"
+          mkdir -p .cache/evidence
+          SOCP_TEST_POSTGRES_BIN="${pg_bindir}" python3 -m unittest discover \
+            -s build/tests -p test_backup_consistency.py -v 2>&1 \
+            | tee .cache/evidence/backup-restore-live.log
+
       - name: Verify repository contracts and versioned content
         run: |
           python3 -m unittest build/tests/test_verify_ci_gate.py build/tests/test_ci_scope.py \

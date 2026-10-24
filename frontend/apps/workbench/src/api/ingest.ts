@@ -3,6 +3,8 @@ import type { IngestParseFailure, IngestSummary, IngestTask, IngestTestResult, P
 import { withQuery } from '../lib/query'
 
 export const listIngestTasks = (options?: ApiRequestOptions) => get<IngestTask[]>('/search-config/api/v1/ingest/tasks', options)
+export const listIngestTasksPage = (page: number, size: number, options?: ApiRequestOptions) =>
+  get<Paged<IngestTask>>(withQuery('/search-config/api/v1/ingest/tasks', { page, size }), options)
 export const ingestSummary = (options?: ApiRequestOptions) => get<IngestSummary>('/search-config/api/v1/ingest/tasks/summary', options)
 export const startIngestTask = (id: string) => post<{ id: string; enabled: boolean; task: IngestTask }>(`/search-config/api/v1/ingest/tasks/${encodeURIComponent(id)}/start`)
 export const stopIngestTask = (id: string) => post<{ id: string; enabled: boolean; task: IngestTask }>(`/search-config/api/v1/ingest/tasks/${encodeURIComponent(id)}/stop`)

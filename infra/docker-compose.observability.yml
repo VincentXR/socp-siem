@@ -1,0 +1,26 @@
+# Opt-in local/integration observability wiring. Requires an authorized test or
+# operational webhook URL file and a dedicated directory of application logs.
+# Use with --profile extra --profile observability; see the component runbook.
+secrets:
+  socp_monitoring_webhook_url:
+    file: ${SOCP_MONITORING_WEBHOOK_URL_FILE:?set SOCP_MONITORING_WEBHOOK_URL_FILE}
+services:
+  prometheus:
+    command: ["--config.file=/etc/prometheus/prometheus-observability.yml"]
+    volumes:
+      - ./observability/prometheus:/etc/prometheus/rules:ro
+  alertmanager:
+    secrets:
+      - socp_monitoring_webhook_url
+  log-vector:
+    image: ${SOCP_VECTOR_IMAGE:?load infra/middleware-images.env}
+    container_name: socp-log-vector
+    profiles: ["observability"]
+    user: "${SOCP_LOG_READER_UID:-1000}:${SOCP_LOG_READER_GID:-1000}"
+    command: ["--config", "/etc/vector/logs.toml"]
+    volumes:
+      - ./observability/vector/logs.toml:/etc/vector/logs.toml:ro
+      - ${SOCP_APPLICATION_LOG_DIR:?set SOCP_APPLICATION_LOG_DIR}:/logs:ro
+      - ${SOCP_LOG_VECTOR_DATA_DIR:?set SOCP_LOG_VECTOR_DATA_DIR}:/var/lib/vector
+    networks: [socp]
+    mem_limit: 256m

@@ -1,0 +1,21 @@
+groups:
+  - name: socp-service-health
+    rules:
+      - alert: SocpServiceUnavailable
+        expr: up{job="socp-services"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: SOCP application metrics endpoint is unavailable
+          description: The authenticated application endpoint could not be scraped for one minute. Check service health and metrics credentials.
+          runbook_url: docs/operations/incident-response.md
+      - alert: SocpApplicationMetricsMissing
+        expr: absent(up{job="socp-services"})
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: All SOCP application scrape targets are missing
+          description: Inspect Prometheus target discovery and deployment configuration.
+          runbook_url: docs/operations/incident-response.md

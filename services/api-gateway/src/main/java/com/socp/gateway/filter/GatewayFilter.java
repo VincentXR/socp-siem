@@ -5,6 +5,7 @@ import com.socp.gateway.api.controller.AuthController;
 import com.socp.platform.auth.security.JwtValidationException;
 import com.socp.platform.auth.security.JwtValidator;
 import com.socp.platform.auth.security.Permission;
+import com.socp.platform.obs.config.OTelSetup;
 import com.socp.platform.obs.trace.TracePropagation;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.tenant.security.ServiceRequestSignature;
@@ -19,6 +20,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
+import org.springframework.core.env.Environment;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -74,7 +76,17 @@ public class GatewayFilter implements GlobalFilter, Ordered {
     @Autowired
     public GatewayFilter(JwtValidator jwtValidator,
                          @Value("${socp.auth.allowed-origins:http://localhost:5173,http://localhost:18092}")
-                         String allowedOrigins) {
+                         String allowedOrigins, Environment environment) {
+        this(jwtValidator, allowedOrigins);
+        // WebFlux never runs the servlet TraceIdFilter that initializes the
+        // other services' SDK. Initialize before this filter touches the global
+        // tracer, so enabled gateway spans are exported instead of remaining noop.
+        OTelSetup.initIfNeeded(environment.getProperty("spring.application.name", "api-gateway"),
+                Boolean.parseBoolean(environment.getProperty("socp.obs.tracing.enabled",
+                        environment.getProperty("SOCP_TRACING_ENABLED", "false"))));
+    }
+
+    public GatewayFilter(JwtValidator jwtValidator, String allowedOrigins) {
         this.jwtValidator = jwtValidator;
         this.allowedOrigins = Arrays.stream(allowedOrigins.split(","))
                 .map(String::trim).filter(value -> !value.isBlank()).collect(Collectors.toUnmodifiableSet());

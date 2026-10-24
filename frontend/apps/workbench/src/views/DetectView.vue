@@ -332,7 +332,7 @@ watch(() => route.query.ruleId, id => { if (route.name === 'detect' && typeof id
     <section v-if="showRuleEditor" class="detect-editor-workspace" :class="{ 'detect-editor-readonly': !canManageRules }">
       <div class="workspace-section-head"><div><div class="page-eyebrow">{{ t('detect.editorEyebrow') }}</div><h2>{{ ruleEditingId ? t('detect.editor.editRule') : t('detect.createRule') }}</h2><p>{{ t('detect.editorHint') }}</p></div><div class="workspace-section-actions"><el-button v-if="canManageRules && ruleEditingId" size="small" :disabled="saving" @click="openRuleHistory()">{{ t('detect.revisionHistory') }}</el-button><el-tag v-if="ruleEditingId" :type="statusTag(ruleForm.status)" size="small">{{ lifecycleStatusLabel(ruleForm.status) }}</el-tag><el-button size="small" :disabled="saving" @click="closeRuleEditor">{{ t('common.cancel') }}</el-button></div></div>
       <section class="workspace-hint" :aria-label="t('analystJourney.publicationVerification')">
-        <p>1. Save → 2. Test the current saved revision → 3. Publisher enables → 4. Verify genuine matching alarms. Isolated tests never ingest events or create alarms.</p>
+        <p>{{ t('detect.releaseSteps') }}</p>
         <p v-if="testReceipt">{{ t('analystJourney.testReceipt', { rule: testReceipt.ruleId, revision: testReceipt.revision || t('analystJourney.unsavedDraft'), at: testReceipt.at, matched: testReceipt.result.matched }) }} <strong v-if="testReceiptStale">{{ t('analystJourney.changedSinceTest') }}</strong></p>
         <el-button v-if="canActivate && sourceRule && !sourceRule.enabled" :disabled="changes.dirty.value || saving" @click="publishSavedRule">{{ t('analystJourney.enableSavedRevision') }}</el-button>
         <p v-else-if="!canActivate && publicationLink">{{ t('analystJourney.publicationAdmin') }} <a :href="publicationLink">{{ publicationLink }}</a></p>
@@ -403,7 +403,7 @@ watch(() => route.query.ruleId, id => { if (route.name === 'detect' && typeof id
           <label>{{ t('common.severity') }}<el-select v-model="testInput.severity"><el-option v-for="severity in SEVERITIES" :key="severity" :label="tOr(t, 'severities.' + severity, severity)" :value="severity" /></el-select></label>
           <label class="full-width">{{ t('detect.testMessage') }}<el-input v-model="testInput.message" /></label><label class="full-width">{{ t('detect.testFields') }}<el-input v-model="testInput.fieldsText" type="textarea" :rows="4" spellcheck="false" /></label>
           <details class="full-width" :open="!!sampleEventsText"><summary>{{ t('detect.sampleSequence') }}</summary><el-input v-model="sampleEventsText" type="textarea" :rows="5" placeholder='[{"timestamp":"2026-01-01T00:00:00Z","source":"auth","msg":"Failed password","fields":{}}]' /></details>
-          <p v-if="showRuleEditor" class="full-width form-hint">{{ t('detect.testingDraft') }}</p>
+          <p v-if="showRuleEditor" class="full-width form-hint">{{ t(changes.dirty.value || !loadedRevisionToken ? 'detect.testingDraft' : 'detect.testingSaved') }}</p>
           <div class="detect-test-actions"><el-button v-if="canManageRules" type="primary" :loading="testing" :disabled="!rules.length && !showRuleEditor" @click="runIsolatedTest">{{ t('detect.runTest') }}</el-button><span>{{ t('detect.isolatedTestHint') }}</span></div>
         </div>
         <div class="detect-test-result">

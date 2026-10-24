@@ -42,6 +42,43 @@ class DetectionAlertOutboxPublisherTest {
     private AlarmKafkaProducer alarmProducer;
 
     @Test
+    void asynchronousHttpDeliveryRestoresTheDurableTraceAndTenant() {
+        io.opentelemetry.api.GlobalOpenTelemetry.resetForTest();
+        io.opentelemetry.api.GlobalOpenTelemetry.set(io.opentelemetry.api.OpenTelemetry.propagating(
+                io.opentelemetry.context.propagation.ContextPropagators.create(
+                        io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator.getInstance())));
+        String traceId = "0123456789abcdef0123456789abcdef";
+        String parentId = "0123456789abcdef";
+        try {
+            allowPublishedWrite();
+            var event = new DetectionAlertOutboxEntity("traced-alert", "tenant-a", "{\"id\":\"traced-alert\"}",
+                    Instant.now(), "00-" + traceId + "-" + parentId + "-01");
+            given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                    eq("PENDING"), any(Instant.class))).willReturn(List.of(event));
+            given(repository.claim(eq(event.getAlertId()), eq("PENDING"), anyInt(), anyString(),
+                    any(Instant.class), anyInt())).willReturn(1);
+            var observed = new java.util.concurrent.atomic.AtomicReference<io.opentelemetry.api.trace.SpanContext>();
+            given(alertClient.forwardAlarm(anyString())).willAnswer(invocation -> {
+                assertEquals("tenant-a", TenantContext.get());
+                observed.set(io.opentelemetry.api.trace.Span.current().getSpanContext());
+                return success();
+            });
+            given(alarmProducer.sendAndAwait(any(), eq(event.getAlertId()), eq(event.getTraceparent())))
+                    .willReturn(true);
+            var before = io.opentelemetry.api.trace.Span.current().getSpanContext();
+            publisher().publishDue();
+            assertEquals(traceId, observed.get().getTraceId(),
+                    "the HTTP client must inherit the stored detection span on the delivery executor");
+            assertEquals(parentId, observed.get().getSpanId());
+            assertEquals(before, io.opentelemetry.api.trace.Span.current().getSpanContext(),
+                    "delivery context must not leak into the scheduler/caller");
+            assertEquals("PUBLISHED", event.getStatus());
+        } finally {
+            io.opentelemetry.api.GlobalOpenTelemetry.resetForTest();
+        }
+    }
+
+    @Test
     void failedAlertWebDeliveryRemainsPendingForRetry() {
         allowFailureWrite();
         DetectionAlertOutboxEntity event = event("alert-1");

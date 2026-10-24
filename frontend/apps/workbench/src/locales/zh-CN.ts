@@ -1,5 +1,6 @@
 export const zhCN = {
   ingestion: {
+    observedCollectors: '本 API 副本已观测 {count} 个采集器；以下健康分布仅统计这些观测，不代表全部已配置任务。未观测任务请查看下表。',
     platformDefault: "平台默认（必须已配置）",
     replayWarning: "重放会写入真实事件，并可能触发检测、告警和响应动作。继续吗？",
     noSource: "此失败记录没有解析到日志源。请先在解析器目录修复规则，再重放。",
@@ -7,7 +8,7 @@ export const zhCN = {
     validated: "配置校验通过，未发送网络请求或事件。",
     firstSource: "接入第一个日志源",
     firstHint: "连接 → 样本 → 目标 → 应用 → 验证真实事件",
-    observations: "计数只描述当前 API 副本和采集器标签，不代表整个集群。",
+    observations: "任务行按已解析的日志源 ID 计数；顶部总量按鉴权采集器计数。两者仅描述当前 API 副本，不代表整个集群。",
     debugHint: "调试转发不代表 Detection 或索引已确认。",
     debugForwarded: "调试转发",
     receivedDebugFailed: "接收 / 调试转发 / 解析失败",
@@ -1567,6 +1568,8 @@ export const zhCN = {
     targetPlaceholder: 'Webhook URL / 邮箱',
   },
   detect: {
+    releaseSteps: '新建或停用规则：先保存 → 测试已保存修订 → 由有发布权限的人员启用 → 回查真实告警。已启用规则保存改动会立即更新检测，请先隔离测试草稿。隔离测试不会接入事件或生成正式告警。',
+    testingSaved: '当前测试已保存的修订。修改规则后，请重新保存并测试后再启用。',
     searchRules: '搜索规则名称',
     moreRuleActions: '规则“{name}”的更多操作',
     ownerPlaceholder: '从人员目录选择负责人',
@@ -1626,7 +1629,7 @@ export const zhCN = {
     applyRawJson: '应用 JSON',
     testAndRelease: '测试与发布',
     testAndReleaseHint: '新规则保存为草稿/测试中；启用是单独的管理员发布动作。',
-    lifecycleReadOnly: '状态由生命周期操作管理，编辑不会直接发布。',
+    lifecycleReadOnly: '启用状态由生命周期操作管理；保存已启用规则的改动会立即更新检测。',
     newRuleTesting: '保存后进入测试流程。',
     executionToggle: '执行开关',
     lifecycleHint: '状态区分草稿、测试中、已启用、已停用和已归档。',

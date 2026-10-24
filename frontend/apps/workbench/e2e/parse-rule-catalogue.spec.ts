@@ -47,7 +47,7 @@ test('rule 501 remains manageable and selectable from a source', async ({ page }
     else if (path === '/search-config/api/v1/outputs') data = []
     else if (path === '/search-config/api/v1/meta/fields') data = []
     else if (path === '/search-config/api/v1/meta/categories') data = []
-    else if (path === '/search-config/api/v1/ingest/tasks') data = []
+    else if (path === '/search-config/api/v1/ingest/tasks') data = { items: [], total: 0, page: 1, size: 20 }
     else if (path === '/search-config/api/v1/ingest/tasks/summary') data = { collectors: 0, accepted: 0,
       skipped: 0, forwarded: 0, bytes: 0, eps1m: 0, byHealth: {}, sources: 1, enabledSources: 1 }
     else if (path === '/search-config/api/v1/ingest/parse-failures') data = { items: [], total: 0,

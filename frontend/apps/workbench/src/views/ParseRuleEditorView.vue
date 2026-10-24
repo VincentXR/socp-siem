@@ -231,7 +231,7 @@ onUnmounted(() => {
         <el-form-item :label="t('common.enabled')"><el-switch v-model="form.enabled" /></el-form-item>
       </el-form>
       <aside class="parser-preview">
-        <p class="source-search-hint">{{ copy.previewHint }}</p><h3>{{ copy.sample }}</h3><el-input v-model="sample" class="parser-sample-input" type="textarea" :rows="8" />
+        <p class="source-search-hint">{{ copy.previewHint }}</p><h3>{{ copy.sample }}</h3><el-input v-model="sample" class="parser-sample-input" :aria-label="copy.sample" type="textarea" :rows="8" />
         <div class="preview-actions"><el-button type="primary" plain :loading="busy" :disabled="!sample.trim()" @click="test">{{ t('ingest.runParsePreview') }}</el-button><el-button :disabled="busy" @click="sample = 'host=example-host source=example message=synthetic-preview'">{{ copy.example }}</el-button></div><h3>{{ t('forms.preview') }} <small v-if="preview && previewStale">· {{ t('forms.stalePreview') }}</small></h3>
         <ActionFeedback :error="preview?.error" />
         <p v-if="preview && !previewStale">{{ preview.matched ? t('common.success') : t('threat.noMatch') }}</p>

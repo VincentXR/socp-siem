@@ -188,4 +188,4 @@ management:
         enabled: true
       group:
         readiness:
-          include: readinessState,db,socpDependencies,detectionRouting
+          include: readinessState,db,socpDependencies,detectionRouting,detectionWorker

@@ -10,6 +10,12 @@ public interface RuleExecutionScope {
 
     Scope open(SecurityEvent event);
 
+    /** Snapshot caller context before crossing the bounded worker queue.
+     * Implementations without thread-local context keep their existing behavior. */
+    default RuleExecutionScope capture() {
+        return this;
+    }
+
     @FunctionalInterface
     interface Scope extends AutoCloseable {
         @Override

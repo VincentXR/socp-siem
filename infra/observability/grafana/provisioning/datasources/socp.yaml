@@ -15,3 +15,21 @@ datasources:
     jsonData:
       httpMethod: POST
       timeInterval: 15s
+  - name: SOCP-Loki
+    uid: socp-loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '\[([a-f0-9]{32})\]'
+          datasourceUid: socp-jaeger
+          url: '$${__value.raw}'
+  - name: SOCP-Jaeger
+    uid: socp-jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: false

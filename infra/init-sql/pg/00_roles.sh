@@ -51,6 +51,12 @@ SELECT format(
     END,
     :'migration_user', :'migration_password');
 \gexec
+
+-- Flyway connects using this trusted DDL-owning login. FORCE RLS still
+-- applies to owners, so cross-tenant data migrations need the documented
+-- system scope. Never give this default to the application runtime role.
+SELECT format('ALTER ROLE %I SET socp.tenant_id = %L', :'migration_user', '*');
+\gexec
 SQL
 
 printf 'PostgreSQL runtime and migration roles are ready: runtime=%s migration=%s\n' \

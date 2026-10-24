@@ -14,6 +14,7 @@ import com.socp.platform.client.service.IncidentClient;
 import com.socp.platform.client.service.NotifyClient;
 import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.client.service.SoarClient;
+import com.socp.platform.obs.trace.TracePropagation;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.tenant.persistence.TenantSystemJob;
 import jakarta.annotation.PreDestroy;
@@ -202,7 +203,8 @@ public class AlarmDeliveryPublisher {
     private void deliver(AlarmDelivery delivery) {
         String token = java.util.UUID.randomUUID().toString();
         String previousTrace = MDC.get("traceId");
-        try (TenantContext.Scope ignored = TenantContext.open(delivery.getTenantId())) {
+        try (TenantContext.Scope ignored = TenantContext.open(delivery.getTenantId());
+             var traceScope = TracePropagation.contextFrom(delivery.getTraceparent()).makeCurrent()) {
             boolean claimed = false;
             try {
                 Instant now = Instant.now();

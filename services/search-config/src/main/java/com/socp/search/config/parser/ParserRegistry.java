@@ -132,8 +132,20 @@ public class ParserRegistry {
 
         if (selected == ParseFormat.JSON) {
             Map<String, String> parsed = safeParse(parser, raw);
-            return parsed == null ? formatMismatch(raw, "input does not match JSON format")
-                    : mergeEmbeddedJson(parsed);
+            if (parsed == null) return formatMismatch(raw, "input does not match JSON format");
+            // The renderer's JSON transport envelope is not the source record.
+            // Ordinary application JSON may legitimately contain plain message
+            // text, so unwrap only the explicit collector-envelope contract.
+            if (parsed.containsKey("source_id") && parsed.containsKey("collector_tag")
+                    && parsed.containsKey("parse_format")) {
+                String message = parsed.getOrDefault(CanonicalEvent.EVENT_MESSAGE, "");
+                Map<String, String> nested = safeParse(parser, message);
+                Map<String, String> merged = new LinkedHashMap<>(parsed);
+                merged.putAll(nested == null
+                        ? formatMismatch(message, "message does not match JSON format") : nested);
+                return merged;
+            }
+            return mergeEmbeddedJson(parsed);
         }
 
         if (raw.stripLeading().startsWith("{")) {

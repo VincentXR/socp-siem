@@ -76,11 +76,7 @@ final class DetectionEngineFactory {
 
         RuleEngine engine = new RuleEngine(
                 rules, List.of(sink), suppressor, processingObserver,
-                event -> {
-                    var tenantScope = com.socp.platform.tenant.context.TenantContext.open(
-                            event.requireTenantId());
-                    return tenantScope::close;
-                }, durableCommitGuard, stateCompatibilityVersions, routingDimensions);
+                new DetectionExecutionScope(), durableCommitGuard, stateCompatibilityVersions, routingDimensions);
         try {
             engine.restore(history);
         } catch (RuntimeException failure) {

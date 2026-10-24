@@ -18,14 +18,20 @@ public interface IngestionOutboxRepository extends TenantScopedRepository<Ingest
     Optional<IngestionOutboxEvent> findByIdAndTenantId(String id, String tenantId);
     List<IngestionOutboxEvent> findByTenantIdAndEventIdIn(String tenantId, Collection<String> eventIds);
 
-    @Query(value = "select current.* from t_ingestion_outbox current "
-            + "where current.status = 'PENDING' and current.next_attempt_at <= :now "
+    @org.springframework.data.jpa.repository.QueryHints(
+            @jakarta.persistence.QueryHint(name = "jakarta.persistence.query.timeout", value = "5000"))
+    @Query(value = "select queued.* from t_ingestion_outbox queued join ("
+            + "select id, row_number() over (partition by tenant_id, routing_key order by sequence_no) as key_position, "
+            + "first_value(next_attempt_at) over (partition by tenant_id, routing_key order by sequence_no) as head_due, "
+            + "first_value(sequence_no) over (partition by tenant_id, routing_key order by sequence_no) as head_sequence "
+            + "from t_ingestion_outbox where status = 'PENDING') ranked on ranked.id = queued.id "
+            + "where ranked.key_position <= 16 and ranked.head_due <= :now "
+            + "and queued.status = 'PENDING' and queued.next_attempt_at <= :now "
             + "and not exists (select 1 from t_ingestion_outbox blocker "
-            + "where blocker.tenant_id = current.tenant_id and blocker.routing_key = current.routing_key "
-            + "and (blocker.status = 'PROCESSING' or "
-            + "(blocker.status = 'PENDING' and blocker.sequence_no < current.sequence_no))) "
-            + "order by current.next_attempt_at, current.sequence_no limit 200", nativeQuery = true)
-    List<IngestionOutboxEvent> findDueKeyHeads(@Param("now") Instant now);
+            + "where blocker.tenant_id = queued.tenant_id and blocker.routing_key = queued.routing_key "
+            + "and blocker.status = 'PROCESSING') "
+            + "order by ranked.head_due, ranked.head_sequence, queued.sequence_no limit 200", nativeQuery = true)
+    List<IngestionOutboxEvent> findDueOrderedBatch(@Param("now") Instant now);
 
     long countByStatus(String status);
 
@@ -47,8 +53,10 @@ public interface IngestionOutboxRepository extends TenantScopedRepository<Ingest
             + "and e.nextAttemptAt <= :now and e.attempts < :maxAttempts and e.attempts = :expectedAttempts "
             + "and not exists (select blocker.id from IngestionOutboxEvent blocker "
             + "where blocker.tenantId = e.tenantId and blocker.routingKey = e.routingKey "
-            + "and (blocker.status = 'PROCESSING' or "
-            + "(blocker.status = 'PENDING' and blocker.sequenceNo < e.sequenceNo)))")
+            + "and blocker.status = 'PROCESSING') "
+            + "and not exists (select blocker.id from IngestionOutboxEvent blocker "
+            + "where blocker.tenantId = e.tenantId and blocker.routingKey = e.routingKey "
+            + "and blocker.status = 'PENDING' and blocker.sequenceNo < e.sequenceNo)")
     int claim(@Param("id") String id, @Param("now") Instant now, @Param("maxAttempts") int maxAttempts, @Param("expectedAttempts") int expectedAttempts, @Param("token") String token);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)

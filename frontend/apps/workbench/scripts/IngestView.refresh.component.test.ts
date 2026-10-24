@@ -11,7 +11,7 @@ import type { IngestTask, LogSource } from '../src/api'
 
 const api = vi.hoisted(() => ({
   listSourcesPage: vi.fn(), listOutputs: vi.fn(), listParseRulesPage: vi.fn(), resolveParseRules: vi.fn(),
-  listIngestTasks: vi.fn(), ingestSummary: vi.fn(), listCategories: vi.fn(), previewSource: vi.fn(),
+  listIngestTasksPage: vi.fn(), ingestSummary: vi.fn(), listCategories: vi.fn(), previewSource: vi.fn(),
   listIngestParseFailures: vi.fn(), replayIngestParseFailure: vi.fn(), updateSource: vi.fn(), createSource: vi.fn(),
   updateOutput: vi.fn(), createOutput: vi.fn(), validateOutputConfig: vi.fn(),
   renderConfig: vi.fn(), getSource: vi.fn(), getSourceSetup: vi.fn(), startIngestTask: vi.fn(), stopIngestTask: vi.fn(), confirm: vi.fn(),
@@ -59,7 +59,7 @@ beforeEach(() => {
   api.listOutputs.mockResolvedValue([])
   api.listParseRulesPage.mockResolvedValue({ items: [], total: 0, page: 1, size: 20, totalPages: 0 })
   api.resolveParseRules.mockResolvedValue([])
-  api.listIngestTasks.mockResolvedValue([])
+  api.listIngestTasksPage.mockResolvedValue({ items: [], total: 0, page: 1, size: 20 })
   api.ingestSummary.mockResolvedValue(summary)
   api.listCategories.mockResolvedValue([])
   api.previewSource.mockResolvedValue({ matched: true, fields: {} })
@@ -71,6 +71,31 @@ beforeEach(() => {
 })
 
 describe('ingest independent reads', () => {
+  it('pages the complete task catalogue and ignores a superseded page response', async () => {
+    const task = (id: string) => ({ id, name: id, enabled: false, runtime: { health: 'DISABLED' }, parseRuleIds: [] })
+    api.listIngestTasksPage.mockResolvedValue({ items: [task('first')], total: 501, page: 1, size: 20 })
+    const { root, wrapper } = await setup(); await flushPromises()
+    const view = wrapper.vm as unknown as { taskPage: number; taskSize: number; taskTotal: number; tasks: Array<{ id: string }> }
+    expect(api.listIngestTasksPage).toHaveBeenLastCalledWith(1, 20, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(view.taskTotal).toBe(501)
+    expect(wrapper.text()).toContain('共 501 条')
+    // A measured collector is not the same population as 501 configured sources.
+    expect(wrapper.text()).toContain('本 API 副本已观测 1 个采集器')
+    expect(wrapper.text()).toContain('不代表全部已配置任务')
+    const slowPage = deferred<{ items: ReturnType<typeof task>[]; total: number }>()
+    api.listIngestTasksPage.mockReturnValueOnce(slowPage.promise)
+    view.taskPage = 2; await nextTick()
+    const obsoleteSignal = api.listIngestTasksPage.mock.lastCall![2].signal
+    api.listIngestTasksPage.mockResolvedValueOnce({ items: [task('last-501')], total: 501, page: 26, size: 20 })
+    view.taskPage = 26; await flushPromises()
+    expect(obsoleteSignal.aborted).toBe(true)
+    expect(api.listIngestTasksPage).toHaveBeenLastCalledWith(26, 20, expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(view.tasks.map(item => item.id)).toEqual(['last-501'])
+    slowPage.resolve({ items: [task('obsolete')], total: 501 }); await flushPromises()
+    expect(view.tasks.map(item => item.id)).toEqual(['last-501'])
+    root.unmount()
+  })
+
   it('opens a replayed historical event without restricting it to the quarantine reception time', async () => {
     // The persisted list has receivedAt, but eventTimestamp is only returned
     // by the initial replay response and disappears on the following refresh.
@@ -88,7 +113,7 @@ describe('ingest independent reads', () => {
 
   it('deduplicates the same upstream failure without reporting an empty successful list', async () => {
     api.listSourcesPage.mockRejectedValueOnce(new Error('upstream unavailable'))
-    api.listIngestTasks.mockRejectedValueOnce(new Error('upstream unavailable'))
+    api.listIngestTasksPage.mockRejectedValueOnce(new Error('upstream unavailable'))
     api.ingestSummary.mockRejectedValueOnce(new Error('upstream unavailable'))
     const { root, wrapper } = await setup(); await flushPromises()
     try {
@@ -214,7 +239,7 @@ describe('ingest independent reads', () => {
 
   it('confirms a configuration change without claiming the collector stops, and suppresses duplicate requests', async () => {
     const task = { id: 'task-a', name: 'Source A', enabled: true, runtime: { health: 'HEALTHY' } } as IngestTask
-    api.listIngestTasks.mockResolvedValue([task])
+    api.listIngestTasksPage.mockResolvedValue({ items: [task], total: 1, page: 1, size: 20 })
     const { root, wrapper } = await setup(); await flushPromises()
     const view = wrapper.vm as unknown as View
     const confirmation = deferred<string>()
@@ -232,7 +257,7 @@ describe('ingest independent reads', () => {
 
   it('does not toggle a changed task after confirmation or execute a confirmation after leaving', async () => {
     const task = { id: 'task-a', name: 'Source A', enabled: true, runtime: { health: 'HEALTHY' } } as IngestTask
-    api.listIngestTasks.mockResolvedValue([task])
+    api.listIngestTasksPage.mockResolvedValue({ items: [task], total: 1, page: 1, size: 20 })
     const { root, wrapper } = await setup(); await flushPromises()
     const view = wrapper.vm as unknown as View
     const confirmation = deferred<string>()

@@ -29,4 +29,13 @@ public record SinkTarget(
     public static SinkTarget create(String name, String type, String uri, String authToken, boolean enabled) {
         return new SinkTarget(UUID.randomUUID().toString(), name, type, uri, authToken, enabled, Instant.now());
     }
+
+    /** The collector emits one event per line, not OpenSearch bulk action/document pairs. */
+    public static void requireNdjsonHttpPath(java.net.URI endpoint) {
+        String path = endpoint.normalize().getPath();
+        if (path != null && path.toLowerCase(java.util.Locale.ROOT).matches(".*/_bulk/?")) {
+            throw com.socp.platform.error.exception.ApiException.badRequest(
+                    "OpenSearch Bulk endpoints are not supported; use an NDJSON HTTP receiver");
+        }
+    }
 }

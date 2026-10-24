@@ -23,6 +23,7 @@ SERVICE_IMAGE_KEYS = {
     "grafana": "SOCP_GRAFANA_IMAGE",
     "loki": "SOCP_LOKI_IMAGE",
     "jaeger": "SOCP_JAEGER_IMAGE",
+    "alertmanager": "SOCP_ALERTMANAGER_IMAGE",
 }
 
 FIXTURE_IMAGE_KEYS = {

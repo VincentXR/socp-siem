@@ -1,0 +1,121 @@
+{
+  "title": "SOCP SOAR",
+  "schemaVersion": 39,
+  "version": 1,
+  "tags": [
+    "socp",
+    "soar"
+  ],
+  "timezone": "utc",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Dispatch backlog",
+      "targets": [
+        {
+          "expr": "soar_dispatch_backlog",
+          "legendFormat": "dispatch",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "socp-prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "socp-prometheus"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Signal backlog",
+      "targets": [
+        {
+          "expr": "soar_signal_backlog",
+          "legendFormat": "signal",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "socp-prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "socp-prometheus"
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Active runs",
+      "targets": [
+        {
+          "expr": "soar_runs_active",
+          "legendFormat": "active",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "socp-prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "socp-prometheus"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Unknown action results",
+      "targets": [
+        {
+          "expr": "increase(soar_action_unknown_total[15m])",
+          "legendFormat": "unknown",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "socp-prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "socp-prometheus"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Suppressed triggers",
+      "targets": [
+        {
+          "expr": "increase(soar_trigger_suppressed_total[15m])",
+          "legendFormat": "suppressed",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "socp-prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "socp-prometheus"
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Redactions",
+      "targets": [
+        {
+          "expr": "increase(soar_redactions_total[15m])",
+          "legendFormat": "redactions",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "socp-prometheus"
+          }
+        }
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "socp-prometheus"
+      }
+    }
+  ],
+  "uid": "socp-soar"
+}

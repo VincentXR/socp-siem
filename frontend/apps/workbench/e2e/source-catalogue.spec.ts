@@ -42,7 +42,7 @@ test('source 501 is reachable through management paging and parse-rule name sear
     else if (path === '/search-config/api/v1/parse-rules/rule-a') data = rule
     else if (path === '/search-config/api/v1/parse-rules/batch/resolve') data = [rule]
     else if (path === '/search-config/api/v1/meta/fields') data = []
-    else if (path === '/search-config/api/v1/ingest/tasks') data = []
+    else if (path === '/search-config/api/v1/ingest/tasks') data = { items: [], total: 0, page: 1, size: 20 }
     else if (path === '/search-config/api/v1/ingest/tasks/summary') data = { collectors: 0, accepted: 0, skipped: 0, forwarded: 0, bytes: 0,
       eps1m: 0, byHealth: {}, sources: 501, enabledSources: 501 }
     else if (path === '/search-config/api/v1/ingest/parse-failures') data = { items: [], total: 0,

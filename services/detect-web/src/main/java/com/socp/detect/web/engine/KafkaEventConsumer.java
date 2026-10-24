@@ -118,6 +118,12 @@ public class KafkaEventConsumer {
     private volatile boolean customDlqSink;
     private Thread consumerThread;
 
+    /** A dead poller must not leave a live HTTP process reporting healthy. */
+    public boolean isHealthy() {
+        Thread thread = consumerThread;
+        return !enabled || (running.get() && thread != null && thread.isAlive());
+    }
+
     @Value("${socp.detect.backpressure.partition-max-bytes:16777216}")
     private long partitionMaxPendingBytes = 16L * 1024 * 1024;
 

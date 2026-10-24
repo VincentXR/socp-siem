@@ -158,7 +158,9 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         long started = System.nanoTime();
         int rounds = 0;
         int lastBatchSize = 0;
+        long admissionDeadline = 0;
         java.util.Set<String> attempted = new java.util.HashSet<>();
+        java.util.Set<String> blockedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet();
         try {
             Instant now = Instant.now();
             int recovered = recoverStaleIfDue(now);
@@ -168,18 +170,30 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                 log.error("Ingestion outbox rows moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
             }
-            while (rounds < maxDrainRounds && System.nanoTime() - started < maxDrainDurationNanos) {
+            while (rounds < maxDrainRounds && (rounds == 0 || System.nanoTime() < admissionDeadline)) {
                 now = Instant.now();
-                List<IngestionOutboxEvent> pending = repository.findDueKeyHeads(now).stream()
+                List<IngestionOutboxEvent> pending = repository.findDueOrderedBatch(now).stream()
                         .filter(event -> attempted.add(event.getId())).toList();
                 lastBatchSize = pending.size();
                 if (pending.isEmpty()) break;
+                // Selection has its own bounded database timeout. A slow first
+                // scan must not hand an already-expired delivery deadline to
+                // the executor forever, starving every otherwise eligible row.
+                // Subsequent scans still consume this same admission budget.
+                if (rounds == 0) admissionDeadline = System.nanoTime() + maxDrainDurationNanos;
                 rounds++;
-                executor.deliverKeyed(pending, started + maxDrainDurationNanos,
+                executor.deliverKeyed(pending, admissionDeadline,
                         event -> event.getTenantId() + "\u0000" + event.getRoutingKey(),
-                        event -> TenantContext.runWith(event.getTenantId(), () -> deliver(event)));
-                // A short batch counts eligible keys, not their queued events.
-                // Requery after completion to admit the next head of a hot key.
+                        event -> {
+                            String key = event.getTenantId() + "\u0000" + event.getRoutingKey();
+                            if (!blockedKeys.contains(key)
+                                    && !TenantContext.callWith(event.getTenantId(), () -> deliver(event))) {
+                                blockedKeys.add(key);
+                            }
+                        });
+                // Each selection admits at most 16 rows per key and 200 overall.
+                // Per-row durable claims still fence every predecessor; a failed
+                // head stops the rest of that key's local batch for this drain.
                 // Never attempt the same row twice in one drain (lost claims or
                 // retries must yield instead of becoming a database busy loop).
             }
@@ -222,31 +236,34 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         return recovered;
     }
 
-    private void deliver(IngestionOutboxEvent event) {
+    private boolean deliver(IngestionOutboxEvent event) {
         String token = java.util.UUID.randomUUID().toString();
         boolean claimed = false;
         try {
             try {
                 if (repository.claim(event.getId(), Instant.now(), maxAttempts,
-                        event.getAttempts(), token) != 1) return;
+                        event.getAttempts(), token) != 1) return false;
             } catch (DataIntegrityViolationException competingKeyOwner) {
                 // A concurrent replica won the unique processing-key lease after this
                 // scan's snapshot. Leave this row pending for the next polling cycle.
-                return;
+                return false;
             }
             claimed = true;
             if (!producer.sendAndAwait(event.getRoutingKey(), event.getPayload(), event.getTraceparent())) {
                 scheduleRetry(event, token, "Kafka broker did not acknowledge the event");
-                return;
+                return false;
             }
             if (repository.markPublished(event.getId(), Instant.now(), token) != 1) {
                 log.warn("Ingestion outbox state changed after broker acknowledgement id={}", event.getId());
+                return false;
             }
+            return true;
         } catch (Exception failure) {
             if (claimed) {
                 scheduleRetry(event, token, failure.getClass().getSimpleName() + ": " + failure.getMessage());
             }
             log.warn("Ingestion outbox delivery failed id={}: {}", event.getId(), failure.getMessage());
+            return false;
         }
     }
 

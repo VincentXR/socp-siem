@@ -178,6 +178,7 @@ public class AlarmDeliveryRegistrar {
         delivery.setAttempts(0);
         delivery.setNextAttemptAt(now);
         delivery.setTraceId(MDC.get("traceId"));
+        delivery.setTraceparent(com.socp.platform.obs.web.TraceIdFilter.buildTraceparent());
         delivery.setCreatedAt(now);
         delivery.setUpdatedAt(now);
         return delivery;

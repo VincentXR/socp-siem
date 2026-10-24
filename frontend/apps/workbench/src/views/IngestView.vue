@@ -84,9 +84,9 @@ const {
 } = useIngestOutputs(workspace)
 const { parseRules, parseRulesLoading, rulePage, ruleSize, ruleTotal, ruleSearchDraft, loadParseRules, applyRuleSearch, removeParseRule } = useIngestRules(workspace)
 const {
-  tasks, taskSummary, tasksLoading, summaryStale, taskBusy, loadTasks, toggleTask, toggleTaskRow, healthMeta,
+  tasks, taskPage, taskSize, taskTotal, taskSummary, tasksLoading, summaryStale, taskBusy, loadTasks, toggleTask, toggleTaskRow, healthMeta,
   testDialog, testTarget, testSample, testResult, testLoading, openTest, openTestRow, defaultPreviewSample, runTest,
-} = useIngestTasks(workspace)
+} = useIngestTasks(workspace, ingestTab)
 const { parseFailures, parseFailuresLoading, parseFailurePage, parseFailureSize, parseFailureTotal, replayingFailure, loadParseFailures, replayParseFailure } = useIngestQuarantine(workspace, ingestTab)
 const refreshing = ref(false)
 let refreshGeneration = 0
@@ -209,7 +209,7 @@ onUnmounted(cancelSetupEdit)
           <el-col :xs="24" :sm="8" :md="4"><el-card shadow="never"><div class="stat-card"><div class="num">{{ taskSummary ? fmtBytes(taskSummary.bytes) : t('time.notAvailable') }}</div><div class="label">{{ t('ingest.cumulativeBytes') }}</div></div></el-card></el-col>
         </el-row>
         <el-card shadow="never">
-          <template #header><div style="display:flex;align-items:center;gap:10px"><span>{{ t('ingest.taskConfigMetrics') }}</span><el-tag v-for="(count, health) in (taskSummary?.byHealth ?? {})" :key="health" size="small" :type="healthMeta(String(health)).type" style="margin-left:2px">{{ healthMeta(String(health)).text }} {{ count }}</el-tag><el-button size="small" style="margin-left:auto" :loading="tasksLoading" @click="loadTasks">{{ t('common.refresh') }}</el-button></div></template>
+          <template #header><div class="ingest-task-header"><span>{{ t('ingest.taskConfigMetrics') }}</span><el-button size="small" style="margin-left:auto" :loading="tasksLoading" @click="loadTasks">{{ t('common.refresh') }}</el-button></div><p class="hint">{{ t('ingestion.observedCollectors', { count: taskSummary?.collectors ?? t('time.notAvailable') }) }}</p><div class="ingest-task-health"><el-tag v-for="(count, health) in (taskSummary?.byHealth ?? {})" :key="health" size="small" :type="healthMeta(String(health)).type">{{ healthMeta(String(health)).text }} {{ count }}</el-tag></div></template>
           <el-table v-loading="tasksLoading" :data="tasks" size="small" border :empty-text="t(loadErrors.tasks ? 'experience.unknownData' : 'common.empty')">
             <el-table-column :label="t('ingest.status')" width="150"><template #default="{ row }"><el-tag :type="healthMeta(row.runtime.health).type" size="small" effect="dark">{{ healthMeta(row.runtime.health).text }}</el-tag><div class="mono" style="margin-top:3px;font-size:12px;color:var(--ns-text-3)">{{ row.applyState === 'MANUAL_APPLY_REQUIRED' ? t('ingest.pendingManualApply') : t('ingest.configDisabled') }}</div></template></el-table-column>
             <el-table-column :label="t('ingest.task')" min-width="150" show-overflow-tooltip><template #default="{ row }"><div style="font-weight:600">{{ row.name }}</div><div class="mono" style="font-size:12px;color:var(--ns-text-3)">{{ row.collector }}</div></template></el-table-column>
@@ -229,6 +229,7 @@ onUnmounted(cancelSetupEdit)
             </div></template></el-table-column>
             <el-table-column type="expand"><template #default="{ row }"><div style="padding:8px 20px;font-size:12px;color:var(--ns-text-2)"><div>{{ t('ingest.environmentDetail', { value: row.env || t('time.notAvailable') }) }} · {{ t('ingest.categoryDetail', { value: row.categoryId || t('time.notAvailable') }) }} · {{ t('ingest.outputDetail', { value: outputLabel(row.sinkTargetId) }) }} · {{ t('ingest.createdDetail', { value: fmtTime(row.createdAt) }) }}</div><div style="margin-top:4px">{{ t('ingest.boundRules') }}<el-tag v-for="p in row.parseRuleIds" :key="p" size="small" style="margin-right:4px">{{ p }}</el-tag><span v-if="!row.parseRuleIds?.length" style="color:var(--ns-text-3)">{{ t('ingest.autoDetect') }}</span></div><div v-if="row.runtime.lastError" style="margin-top:4px;color:var(--ns-danger)">{{ t('ingest.recentError', { time: fmtTime(row.runtime.lastErrorAt ?? null) }) }}{{ row.runtime.lastError }}</div></div></template></el-table-column>
           </el-table>
+          <PagerBar v-model:current-page="taskPage" v-model:page-size="taskSize" :total="taskTotal" :page-sizes="[10, 20, 50, 100]" />
         </el-card>
         <el-dialog v-model="testDialog" :title="t('ingest.parsePreviewTitle', { name: testTarget?.name ?? '' })" width="720px">
           <div style="font-size:12px;color:var(--ns-text-3);margin-bottom:8px">{{ t('ingest.parsePreviewDescription') }}</div>
@@ -391,6 +392,8 @@ onUnmounted(cancelSetupEdit)
 .metrics-row .stat-card .num { font-size:28px; letter-spacing:-.6px; }
 .ingest-row-actions { display:flex; align-items:center; gap:12px; white-space:nowrap; }
 .ingest-row-actions :deep(.el-button + .el-button) { margin-left:0; }
+.ingest-task-header { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.ingest-task-health { display:flex; gap:8px; flex-wrap:wrap; }
 .ingest-list-hint { margin:0 0 12px; color:var(--ns-text-3); font-size:12px; line-height:1.5; }
 @media(max-width:640px) { .ingest-guide { grid-template-columns:32px minmax(0,1fr); padding:16px; gap:0 10px; }.ingest-guide-symbol { width:32px; height:32px; border-radius:9px; }.ingest-guide-symbol svg { width:20px; height:20px; }.ingest-guide-actions { grid-column:1 / -1; } }
 </style>

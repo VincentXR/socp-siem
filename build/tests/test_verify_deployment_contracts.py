@@ -22,6 +22,19 @@ compose = load("verify-prod-compose")
 
 
 class DeploymentContractsTest(unittest.TestCase):
+    def test_detection_poller_cannot_be_omitted_from_deployment_readiness(self):
+        errors = []
+        compose.check_detection_readiness(errors)
+        self.assertEqual([], errors)
+        with tempfile.TemporaryDirectory() as directory:
+            config = Path(directory) / "application.yml"
+            config.write_text(compose.DETECT_APPLICATION.read_text().replace(",detectionWorker", ""))
+            with patch.object(compose, "DETECT_APPLICATION", config):
+                errors = []
+                compose.check_detection_readiness(errors)
+            self.assertEqual(1, len(errors))
+            self.assertIn("detectionWorker", errors[0])
+
     def test_credential_and_partition_contract_accepts_repository(self):
         errors = []
         production.check_deployment_credentials(errors)

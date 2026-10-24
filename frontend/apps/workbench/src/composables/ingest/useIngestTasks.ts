@@ -1,13 +1,16 @@
-import { computed, onUnmounted, ref, watch } from 'vue'
-import { ingestSummary, listIngestTasks, previewSource, startIngestTask, stopIngestTask, type IngestTask, type IngestSummary } from '../../api'
+import { computed, onUnmounted, ref, watch, type Ref } from 'vue'
+import { ingestSummary, listIngestTasksPage, previewSource, startIngestTask, stopIngestTask, type IngestTask, type IngestSummary } from '../../api'
 import { useI18n } from '../useI18n'
 import type { IngestWorkspace } from './useIngestWorkspace'
 
-export function useIngestTasks(workspace: IngestWorkspace) {
+export function useIngestTasks(workspace: IngestWorkspace, activeTab: Ref<string>) {
   const { canWrite, actionError, loadErrors, loadStates, loadList, confirmWrite } = workspace
   const { t } = useI18n()
   const tasksLoading = computed(() => Boolean(loadStates.value.tasks) || Boolean(loadStates.value.summary))
   const tasks = ref<IngestTask[]>([])
+  const taskPage = ref(1)
+  const taskSize = ref(20)
+  const taskTotal = ref(0)
   const taskSummary = ref<IngestSummary | null>(null)
   const summaryStale = computed(() => !!loadErrors.value.summary && !!taskSummary.value)
   const taskBusy = ref<Record<string, boolean>>({})
@@ -29,10 +32,17 @@ export function useIngestTasks(workspace: IngestWorkspace) {
     const type: TagType = health === 'HEALTHY' ? 'success' : health === 'ERROR' ? 'danger' : health === 'DEGRADED' || health === 'STALE' ? 'warning' : 'info'
     return { text: HEALTH_KEYS[health] ? t(HEALTH_KEYS[health]) : health, type }
   }
+  const loadTaskPage = () => loadList('tasks', signal => listIngestTasksPage(taskPage.value, taskSize.value, { signal }), value => {
+    tasks.value = value.items
+    taskTotal.value = value.total
+    const lastPage = Math.max(1, Math.ceil(value.total / taskSize.value))
+    if (taskPage.value > lastPage) taskPage.value = lastPage
+  })
   const loadTasks = () => Promise.all([
-    loadList('tasks', signal => listIngestTasks({ signal }), value => { tasks.value = value }),
+    loadTaskPage(),
     loadList('summary', signal => ingestSummary({ signal }), value => { taskSummary.value = value }),
   ])
+  watch([taskPage, taskSize], () => { if (activeTab.value === 'tasks') void loadTaskPage() })
   async function toggleTask(task: IngestTask) {
     const { id, name, enabled } = task
     if (taskBusy.value[id]) return
@@ -92,7 +102,7 @@ export function useIngestTasks(workspace: IngestWorkspace) {
   onUnmounted(cancelPreview)
 
   return {
-    tasks, taskSummary, tasksLoading, summaryStale, taskBusy, loadTasks, toggleTask, toggleTaskRow, healthMeta,
+    tasks, taskPage, taskSize, taskTotal, taskSummary, tasksLoading, summaryStale, taskBusy, loadTasks, toggleTask, toggleTaskRow, healthMeta,
     testDialog, testTarget, testSample, testResult, testLoading, openTest, openTestRow, defaultPreviewSample,
     runTest,
   }

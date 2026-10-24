@@ -15,6 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 CHART = ROOT / "deploy/helm/socp-core"
 TEST_VALUES = CHART / "ci/test-values.yaml"
 NAMESPACE = "socp-system"
+# Render against our minimum supported cluster rather than Helm's embedded
+# default, which differs between Helm releases and can predate Chart.yaml.
+KUBERNETES_VERSION = "1.31.0"
 PROFILES = ("dev", "staging", "production")
 WORKLOADS = {
     "api-gateway": ("gateway-ui", "socp-api-gateway"),
@@ -128,6 +131,7 @@ def release_image_args(include_product: bool = False) -> list[str]:
 
 def verify_product_profile(helm: str, errors: list[str]) -> None:
     values = [
+        "--kube-version", KUBERNETES_VERSION,
         "--values", str(TEST_VALUES),
         "--values", str(CHART / "values-production.yaml"),
         "--values", str(CHART / "values-product.yaml"),
@@ -248,6 +252,7 @@ def verify_monitoring(
 def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
     profile_values = CHART / f"values-{profile}.yaml"
     values = [
+        "--kube-version", KUBERNETES_VERSION,
         "--values", str(TEST_VALUES),
         "--values", str(profile_values),
         *release_image_args(),
@@ -316,6 +321,10 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
     require(errors, hikari is not None,
             f"{profile}: runtime config must pin SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT")
     hikari_ms = int(hikari.group(1)) if hikari else 0
+    for setting in ("SPRING_DATA_REDIS_CONNECT_TIMEOUT", "SPRING_DATA_REDIS_TIMEOUT"):
+        timeout = re.search(rf'{setting}:\s*"?([0-9]+)ms', runtime_cm)
+        require(errors, timeout is not None and 0 < int(timeout.group(1)) <= 500,
+                f"{profile}: {setting} must bound a Redis health check to at most 500ms")
 
     for workload, (runtime_domain, image_name) in WORKLOADS.items():
         document = documents.get(("Deployment", workload), "")
@@ -432,6 +441,17 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
             "readinessState,db,socpDependencies" in search_worker,
             f"{profile}: Deployment/search-config-worker must expose asynchronous dependency readiness")
 
+    # These workloads override Spring's group membership. Omitting Redis would
+    # keep readiness UP while fail-closed authentication rejects user requests.
+    for workload in ("alert-web", "search-config-api", "search-config-worker",
+                     "detect-web-api", "detect-web-worker"):
+        document = documents.get(("Deployment", workload), "")
+        members = re.search(
+            r'MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE\s*\n\s*value:\s*["\']([^"\']+)',
+            document)
+        require(errors, members is not None and "redis" in members.group(1).split(","),
+                f"{profile}: Deployment/{workload} readiness must include Redis")
+
     for workload in ("detect-web-api", "detect-web-worker"):
         document = documents.get(("Deployment", workload), "")
         require(errors,
@@ -463,6 +483,7 @@ def verify_profile(helm: str, profile: str, errors: list[str]) -> None:
 
 def verify_deployment_regressions(helm: str, errors: list[str]) -> None:
     base = [helm, "template", "socp-contract", str(CHART), "--namespace", NAMESPACE,
+            "--kube-version", KUBERNETES_VERSION,
             "--values", str(TEST_VALUES), "--values", str(CHART / "values-production.yaml"),
             "--values", str(CHART / "values-product.yaml"), *release_image_args(include_product=True)]
     rendered = manifest_documents(run(base + ["--set-string", "runtime.extraConfig.SERVER_PORT=9191"]).stdout)
@@ -523,7 +544,8 @@ def main() -> int:
         return 1
 
     insecure_defaults = run(
-        [helm, "lint", str(CHART), "--values", str(CHART / "values-production.yaml")],
+        [helm, "lint", str(CHART), "--kube-version", KUBERNETES_VERSION,
+         "--values", str(CHART / "values-production.yaml")],
         expect_success=False,
     )
     if insecure_defaults.returncode == 0:

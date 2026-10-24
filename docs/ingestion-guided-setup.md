@@ -23,8 +23,9 @@ are complete.
   shows the observed event ID and event time. Degraded/local-cache results
   remain inconclusive. An indexed event does not prove application of the
   latest configuration, sustained throughput or downstream action completion.
-- Task counters are process-local observations by tenant and collector tag.
-  They are not a fleet-wide source ledger; a restart or another API replica
+- The task table uses server-side pagination and exposes the complete saved source catalogue, including sources beyond the legacy 500-row list cap. Health badges above the table explicitly cover observed collectors only, independently of the configured source total.
+- Task-row counters are process-local observations by tenant and server-resolved source ID (`telemetryScope: CURRENT_API_REPLICA_AND_SOURCE_ID`). A shared authenticated collector can feed multiple sources without leaving their rows permanently idle. The event retains its authenticated collector identity. Aggregate counters and their health distribution remain per authenticated collector and are not double-counted from source observations.
+  Neither population is a fleet-wide source ledger; a restart or another API replica
   can show different observations.
 
 ## Safe preview and parser binding
@@ -35,6 +36,14 @@ returns `writesEvent: false` and `mayTriggerDownstreamActions: false`. It has
 no persistence, event admission, telemetry or downstream dispatch step.
 Sample normalization success therefore does not mean ingestion succeeded.
 Editing a sample or changing the source invalidates an in-flight preview.
+
+For fixed JSON sources, the renderer's transport envelope (`source_id`,
+`collector_tag`, `parse_format`, `message`) is unwrapped before validating the
+source body. Both built-in JSON parsing and an explicitly bound JSON rule use
+that source body rather than the envelope. A JSON envelope cannot turn invalid source text into an accepted
+JSON record. The original envelope remains in quarantine, and a bound custom
+parser may repair its source body before an idempotent replay. Ordinary JSON
+application events with plain message text remain valid JSON records.
 
 Parser applicability scope is separate from source binding. Save a parser,
 then explicitly bind the saved parser to the intended source. With explicit
@@ -66,6 +75,11 @@ and rendering reject their unsupported types; edit them to a supported receiver.
 validation does not contact the supplied URI or write an event. Embedded URI
 credentials and fragments are rejected. An external destination does not
 necessarily return events to SOCP, so its own receipt must be verified there.
+Known `/_bulk` endpoint paths (including an index prefix, encoded endpoint name
+or trailing slash) are rejected during validation, create/update and rendering
+of an older saved target. The renderer emits event NDJSON rather than the
+action/document pairs required by OpenSearch Bulk; selecting the generic HTTP
+type does not make that receiver compatible.
 
 Output edits use `{target:{name,type,uri,authToken,enabled},credentialAction}`.
 Choose `KEEP` to preserve the saved credential, `REPLACE` with a nonblank new
@@ -76,6 +90,18 @@ source bindings and creation timestamps are retained. Read responses return only
 `authTokenConfigured`. Platform collector credentials are only used for the
 reserved platform ingest destination, never for a tenant target that merely
 claims the `GLS_INGEST` type.
+
+## Detection rule changes
+
+New or disabled rules are saved, tested in isolation and explicitly activated
+by a publisher. Saving edits to an already active rule immediately updates
+live detection; it does not keep a separate unpublished draft alongside that
+active version. Test the edited draft before saving, review its scope and use
+the revision token to protect against concurrent edits. Isolated testing does
+not ingest events or create formal alerts. Verify new real events after the
+change; old alarms and tenant-wide engine counters do not prove the revision
+matched. Deployments requiring separate review or staged rollout of active
+content must provide that release process explicitly.
 
 ## Acknowledgement semantics
 

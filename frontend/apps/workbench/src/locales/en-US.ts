@@ -2,6 +2,7 @@ import type { LocaleMessages } from './zh-CN';
 
 export const enUS: LocaleMessages = {
   ingestion: {
+    observedCollectors: 'This API replica has observed {count} collectors. Health counts below cover those observations, not all configured tasks. See the table for unobserved tasks.',
     platformDefault: "Platform default (must be configured)",
     replayWarning: "Replay writes a real event and may trigger detections, alerts and response actions. Continue?",
     noSource: "This failure has no resolved source. Repair the parser in the parser catalogue before replaying.",
@@ -9,7 +10,7 @@ export const enUS: LocaleMessages = {
     validated: "Configuration is valid. No network request or event was sent.",
     firstSource: "Connect your first source",
     firstHint: "Connect → sample → destination → apply → verify a real event",
-    observations: "Counters describe this API replica and collector tag, not the whole fleet.",
+    observations: "Task rows count resolved source IDs; aggregate totals count authenticated collectors. Both describe this API replica, not the whole fleet.",
     debugHint: "Debug forwarding is not an acknowledgement of Detection or indexing.",
     debugForwarded: "Debug forwarded",
     receivedDebugFailed: "Accepted / debug forwarded / parse failed",
@@ -1569,6 +1570,8 @@ export const enUS: LocaleMessages = {
     targetPlaceholder: 'Webhook URL / Email',
   },
   detect: {
+    releaseSteps: 'For new or disabled rules: save → test the saved revision → have a publisher enable it → verify genuine alarms. Saving changes to an active rule updates detection immediately; test its draft before saving. Isolated tests never ingest events or create alarms.',
+    testingSaved: 'Testing the saved revision. After changing the rule, save and test it again before enabling.',
     searchRules: 'Search rule names',
     moreRuleActions: 'More actions for rule {name}',
     ownerPlaceholder: 'Select an owner from the operator directory',
@@ -1626,7 +1629,7 @@ export const enUS: LocaleMessages = {
     applyRawJson: 'Apply JSON',
     testAndRelease: 'Test and release',
     testAndReleaseHint: 'New rules save as drafts/testing; activation is a separate administrator release action.',
-    lifecycleReadOnly: 'Lifecycle status is managed separately; editing never publishes directly.',
+    lifecycleReadOnly: 'Lifecycle actions control activation; saving edits to an active rule immediately updates detection.',
     newRuleTesting: 'The rule enters testing after it is saved.',
     executionToggle: 'Execution toggle',
     lifecycleHint: 'Statuses distinguish draft, testing, active, disabled, and archived rules.',
