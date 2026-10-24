@@ -1,0 +1,64 @@
+# SOCP metrics for the 13 servlet services. Gateway application metrics are
+# deliberately not exposed. Prometheus does NOT interpolate environment variables.
+# Mount the same metrics token configured on the services as a Docker secret file.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # ── 业务服务：13 个，宿主 18080~18097 ──────────────
+  # 每个服务都有 server.servlet.context-path: /{服务名}，指标路径为
+  # /{服务名}/actuator/prometheus，由下方 relabel_configs 依据 service 标签动态生成。
+  # 端口分配以 build/run-all.sh 的 BACKENDS 数组为唯一事实来源。
+  # 这些服务均暴露 prometheus 端点；服务名标签用于动态拼接 context-path。
+  - job_name: 'socp-services'
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/socp_metrics_token
+    static_configs:
+      - targets: ['host.docker.internal:18080']
+        labels: { service: alert-web }        # 告警 CRUD（H2）
+      - targets: ['host.docker.internal:18081']
+        labels: { service: search-config }     # 日志源配置 / ingest（H2）
+      - targets: ['host.docker.internal:18082']
+        labels: { service: detect-web }        # 规则引擎
+      - targets: ['host.docker.internal:18083']
+        labels: { service: soar-web }       # 剧本编排
+      - targets: ['host.docker.internal:18084']
+        labels: { service: report-web }        # 报表
+      - targets: ['host.docker.internal:18085']
+        labels: { service: asset-web }        # 资产管理
+      - targets: ['host.docker.internal:18086']
+        labels: { service: soc-base }       # 租户 / 平台概览
+      - targets: ['host.docker.internal:18087']
+        labels: { service: hips-web }       # 端点管理
+      - targets: ['host.docker.internal:18088']
+        labels: { service: ai-assistant }   # 安全问答
+      - targets: ['host.docker.internal:18094']
+        labels: { service: threat-web }         # 威胁情报（H2）
+      - targets: ['host.docker.internal:18095']
+        labels: { service: attack-web }     # ATT&CK 矩阵
+      - targets: ['host.docker.internal:18096']
+        labels: { service: notify-web }     # 通知渠道
+      - targets: ['host.docker.internal:18097']
+        labels: { service: incident-web }       # 安全案件（H2）
+    relabel_configs:
+      # 用 service 标签拼出带 context-path 的指标路径：/{服务名}/actuator/prometheus
+      - source_labels: [service]
+        regex: (.+)
+        target_label: __metrics_path__
+        replacement: /$1/actuator/prometheus
+    # Gateway application port exposes health only; no pretend metrics target.
+
+  # 中间件 exporter 未纳入默认 compose，因此不把 PostgreSQL/Kafka/Redis
+  # 原生端口伪装成 Prometheus target（这些端口不是 /metrics endpoint）。
+  # 部署 exporter 后，将对应 scrape jobs 作为独立 overlay 加入。
+
+rule_files:
+  - /etc/prometheus/rules/soar-alerts.yml
+  - /etc/prometheus/rules/service-alerts.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]

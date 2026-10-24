@@ -99,3 +99,16 @@ socp_pnpm() {
   echo "socp: 找不到 pnpm/corepack/npx。请安装 Node.js 20+（自带 corepack），或 npm i -g pnpm。" >&2
   return 1
 }
+
+# PostgreSQL/integration deployments use the shared Redis limiter and replay
+# store. A local H2-only run can keep the explicitly process-local backend.
+# Preserve operator overrides; ProdGuard validates the production contract.
+socp_ratelimit_defaults() {
+  local profiles="${1// /}" default_backend=memory default_fail_closed=false
+  case ",$profiles," in
+    *,pg,*|*,prod,*) default_backend=redis ;;
+  esac
+  export SOCP_RATELIMIT_BACKEND="${SOCP_RATELIMIT_BACKEND:-$default_backend}"
+  if [ "$SOCP_RATELIMIT_BACKEND" = redis ]; then default_fail_closed=true; fi
+  export SOCP_RATELIMIT_FAIL_CLOSED="${SOCP_RATELIMIT_FAIL_CLOSED:-$default_fail_closed}"
+}

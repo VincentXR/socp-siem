@@ -58,6 +58,7 @@ and sections needed for the current change.
 - [DLQ replay](operations/dlq-replay.md)
 - [Notification delivery and recovery](operations/notification-delivery.md)
 - [Incident response](operations/incident-response.md)
+- [Component activation and acceptance](operations/component-acceptance.md)
 - [Kafka topic provisioning runbook](operations/kafka-topic-provisioning.md)
 - [Flyway checksum drift and repair runbook](operations/database-migration-repair.md)
 

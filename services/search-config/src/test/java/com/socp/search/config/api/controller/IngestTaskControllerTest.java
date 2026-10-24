@@ -11,6 +11,7 @@ import com.socp.search.config.service.IngestTaskMonitor;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.domain.Pageable;
 
 import java.util.List;
@@ -41,7 +42,7 @@ class IngestTaskControllerTest {
         IngestPipeline pipeline = mock(IngestPipeline.class);
         when(store.page(any(Pageable.class))).thenReturn(new PageImpl<>(
                 List.of(file, socket, kafka, empty)));
-        when(monitor.runtime(anyString(), anyBoolean())).thenReturn(Map.of("health", "HEALTHY"));
+        when(monitor.sourceRuntime(anyString(), anyBoolean())).thenReturn(Map.of("health", "HEALTHY"));
 
         IngestTaskController controller = new IngestTaskController(store, monitor, pipeline);
 
@@ -62,9 +63,9 @@ class IngestTaskControllerTest {
         LogSourceStore store = mock(LogSourceStore.class);
         IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
         IngestPipeline pipeline = mock(IngestPipeline.class);
-        when(store.page(PageRequest.of(1, 1))).thenReturn(
+        when(store.page(PageRequest.of(1, 1, Sort.by("sourceId").ascending()))).thenReturn(
                 new PageImpl<>(List.of(source), PageRequest.of(1, 1), 2));
-        when(monitor.runtime(anyString(), anyBoolean())).thenReturn(Map.of());
+        when(monitor.sourceRuntime(anyString(), anyBoolean())).thenReturn(Map.of());
 
         @SuppressWarnings("unchecked")
         PageResponse<Map<String, Object>> page = (PageResponse<Map<String, Object>>)
@@ -96,7 +97,7 @@ class IngestTaskControllerTest {
         when(store.enabledCollectorTags()).thenReturn(List.of(enabled.collectorTag()));
         when(store.count()).thenReturn(7L);
         when(store.countEnabled()).thenReturn(1L);
-        when(monitor.summary(List.of(enabled.collectorTag())))
+        when(monitor.summary(null))
                 .thenReturn(Map.of("accepted", 3L));
 
         Map<String, Object> summary = new IngestTaskController(store, monitor, pipeline).summary().data();
@@ -115,7 +116,7 @@ class IngestTaskControllerTest {
         IngestTaskMonitor monitor = mock(IngestTaskMonitor.class);
         IngestPipeline pipeline = mock(IngestPipeline.class);
         when(store.get(source.id())).thenReturn(Optional.of(source));
-        when(monitor.runtime(anyString(), anyBoolean())).thenReturn(Map.of());
+        when(monitor.sourceRuntime(anyString(), anyBoolean())).thenReturn(Map.of());
         when(pipeline.process(anyString(), eq(source.collectorTag())))
                 .thenReturn(Map.of("accepted", 1, "skipped", 0));
 

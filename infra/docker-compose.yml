@@ -46,6 +46,7 @@ volumes:
   grafana-data:
   loki-data:
   jaeger-data:
+  alertmanager-data:
 
 # Compose's deploy limits are not enforced consistently by every local Docker
 # runtime, so keep explicit per-service caps below as the local-dev guardrail.
@@ -386,6 +387,8 @@ services:
     <<: *socp-runtime
     image: ${SOCP_PROMETHEUS_IMAGE:?load infra/middleware-images.env}
     container_name: socp-prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     command: ["--config.file=/etc/prometheus/prometheus.yml"]
     secrets:
       - socp_metrics_token
@@ -412,6 +415,8 @@ services:
     depends_on: [prometheus]
     volumes:
       - grafana-data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
     networks: [socp]
     deploy:
       resources:
@@ -424,23 +429,49 @@ services:
     <<: *socp-runtime
     image: ${SOCP_LOKI_IMAGE:?load infra/middleware-images.env}
     container_name: socp-loki
+    command: ["-config.file=/etc/loki/socp.yml"]
     ports:
       - "3100:3100"
     networks: [socp]
     profiles: ["extra"]
     volumes:
       - loki-data:/loki
+      - ./observability/loki/loki.yml:/etc/loki/socp.yml:ro
     mem_limit: 512m
 
   jaeger:
     <<: *socp-runtime
     image: ${SOCP_JAEGER_IMAGE:?load infra/middleware-images.env}
     container_name: socp-jaeger
+    environment:
+      SPAN_STORAGE_TYPE: badger
+      BADGER_EPHEMERAL: "false"
+      # The upstream image runs as UID 10001. Its /tmp is writable; a newly
+      # created /badger mount would be root-owned and fail on first boot.
+      BADGER_DIRECTORY_VALUE: /tmp/badger/data
+      BADGER_DIRECTORY_KEY: /tmp/badger/key
+      COLLECTOR_OTLP_ENABLED: "true"
     ports:
       - "16686:16686"
       - "4317:4317"
     networks: [socp]
     profiles: ["extra"]
     volumes:
-      - jaeger-data:/badger
+      - jaeger-data:/tmp
     mem_limit: 512m
+
+  # Opt-in monitoring notification routing. The overlay supplies the receiver
+  # URL secret and enables rule evaluation and application-log collection.
+  alertmanager:
+    <<: *socp-runtime
+    image: ${SOCP_ALERTMANAGER_IMAGE:?load infra/middleware-images.env}
+    container_name: socp-alertmanager
+    profiles: ["observability"]
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager", "--cluster.listen-address="]
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - alertmanager-data:/alertmanager
+      - ./observability/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks: [socp]
+    mem_limit: 128m

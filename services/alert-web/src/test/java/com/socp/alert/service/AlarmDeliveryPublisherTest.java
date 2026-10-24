@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -37,6 +38,36 @@ import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class AlarmDeliveryPublisherTest {
+
+    @Test
+    void persistedParentSurvivesAsynchronousDispatch() {
+        io.opentelemetry.api.GlobalOpenTelemetry.resetForTest();
+        io.opentelemetry.api.GlobalOpenTelemetry.set(io.opentelemetry.api.OpenTelemetry.propagating(
+                io.opentelemetry.context.propagation.ContextPropagators.create(
+                        io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator.getInstance())));
+        String parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        try {
+            AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
+            delivery.setTraceparent(parent);
+            given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                    eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
+            given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString()))
+                    .willReturn(1);
+            var observed = new java.util.concurrent.atomic.AtomicReference<String>();
+            given(notifyClient.notifyAlert(delivery.getPayload())).willAnswer(call -> {
+                assertEquals("tenant-b", TenantContext.get());
+                observed.set(com.socp.platform.obs.web.TraceIdFilter.buildTraceparent());
+                return ok();
+            });
+            publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient);
+            publisher.publish();
+            assertEquals(parent, observed.get(), "dispatch must use the persisted real parent, not a random MDC span id");
+            verify(repository).markDelivered(eq(delivery.getId()), any(Instant.class), anyString());
+            assertFalse(io.opentelemetry.api.trace.Span.current().getSpanContext().isValid());
+        } finally {
+            io.opentelemetry.api.GlobalOpenTelemetry.resetForTest();
+        }
+    }
 
     @Mock private AlarmDeliveryRepository repository;
     @Mock private CkReporter ckReporter;
@@ -207,10 +238,10 @@ class AlarmDeliveryPublisherTest {
     }
 
     @Test
-    void asyncTriggerRunsCrossTenantScanInsideSystemScope() {
-        AtomicBoolean systemScope = new AtomicBoolean();
+    void asyncTriggerRunsCrossTenantScanInsideSystemScope() throws Exception {
+        var systemScope = new java.util.concurrent.CompletableFuture<Boolean>();
         given(repository.markExhaustedBatch(anyInt(), anyString(), any(Instant.class), eq(100))).willAnswer(invocation -> {
-            systemScope.set(TenantContext.isSystemScope());
+            systemScope.complete(TenantContext.isSystemScope());
             return 0;
         });
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
@@ -220,8 +251,10 @@ class AlarmDeliveryPublisherTest {
         TenantContext.set("tenant-a");
         publisher.triggerAsync();
 
-        verify(repository, timeout(2_000)).markExhaustedBatch(anyInt(), anyString(), any(Instant.class), eq(100));
-        assertEquals(true, systemScope.get());
+        // Mockito records invocation before executing the answer. Wait for the
+        // observation itself so verification cannot race its scope publication.
+        assertEquals(true, systemScope.get(2, java.util.concurrent.TimeUnit.SECONDS).booleanValue());
+        verify(repository).markExhaustedBatch(anyInt(), anyString(), any(Instant.class), eq(100));
     }
 
     @Test

@@ -200,31 +200,24 @@ keep those cross-references there rather than duplicating the Temporal/connector
 
 ## Grafana / Prometheus mount points (compose baseline)
 
-The Compose baseline does not mount the assets under `infra/observability`.
-An environment that enables them must add the following read-only mounts and
-Prometheus rule registration:
+The baseline mounts the Grafana datasource and dashboard provisioning folders read-only.
+Both Event Path and SOAR dashboards are loaded from `infra/observability/grafana/dashboards`.
+Prometheus has host-gateway DNS for the native integration services. Its ordinary baseline
+scrapes metrics without sending operational notifications.
 
-```yaml
-# grafana service — add to volumes:
-- ../../infra/observability/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
-- ../../infra/observability/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
-- ../../infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
-# prometheus service — add to volumes and reference in prometheus.yml:
-- ../../infra/observability/prometheus:/etc/prometheus/soar-rules:ro
-```
-```yaml
-# infra/init-sql/prometheus/prometheus.yml — add:
-rule_files:
-  - /etc/prometheus/soar-rules/*.yml
-```
+Enable the opt-in overlay in [the component runbook](component-acceptance.md) to load the
+SOAR and service-health rules, route alerts through Alertmanager, and ship the 14 application
+log files to Loki. The collector uses filesystem identity because Spring Boot banners are
+identical. Do not share its checkpoint directory with the event collector.
 
-The Helm side carries the same rule expressions in the `PrometheusRule` (single source of
-truth for the event-path group); keep the compose SOAR rules and the chart group from diverging
-by editing one and mirroring the expressions in the other.
+The Helm side carries the same event-path expressions in `PrometheusRule`; keep the
+Compose SOAR rules and chart rules aligned. Rules require a deployed Prometheus operator
+or an explicitly configured Prometheus; rendering a rule resource is not proof of delivery.
 
 ## Alertmanager / on-call (deployment-owned)
 
-Not provided here. Configure Alertmanager receivers, routing, and an on-call rota in the
-monitoring stack; add the `runbook_url` base (if you host these docs) via the chart's
-`monitoring.prometheusRule.additionalLabels`/receiver config so the annotations above resolve
-to a browsable link. A fired alert without a configured receiver is functionally no alert.
+The optional overlay provides a digest-pinned Alertmanager and a webhook receiver configured
+from a read-only secret file. Supply an authorized destination and validate both firing and
+resolved delivery before treating monitoring as operational. The baseline supplies no external
+receiver credentials or on-call rota. Configure escalation, ownership, and a hosted runbook
+URL for the actual deployment. A fired alert without a received notification is incomplete.

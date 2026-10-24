@@ -280,10 +280,34 @@ envelope with the production registry. The separate historical-file container
 case still requires Docker.
 
 The ingestion publisher queries the next ordered head after acknowledgements,
-including when only one routing key is active. A scheduled drain remains
-bounded by its configured round and time budgets; a failed/contended head is
-not repeatedly attempted within the same drain. Durable predecessor fencing,
-claim tokens and retry backoff remain in force across worker replicas.
+including when only one routing key is active. The first nonempty head query
+has a five-second database timeout, then starts the configured delivery
+admission budget (two seconds by default). Subsequent queries share that same
+admission deadline and the round limit. This is not a two-second wall-clock
+limit for the whole invocation: database selection and in-flight acknowledged
+delivery can take longer. A failed/contended head is not repeatedly attempted
+within the same drain. Durable predecessor fencing, claim tokens and retry
+backoff remain in force across worker replicas.
+
+Selection ranks pending rows by tenant/routing key and sequence, admitting at
+most 16 candidates per key and 200 overall. A key whose oldest row is backing
+off or whose row is already processing is not admitted. Candidates for each
+key are delivered sequentially, and a failed claim, send or completion stops
+the remainder of that key's local batch for the drain. Every row still needs
+its own durable predecessor/claim check and broker acknowledgement; selecting
+a batch never owns or publishes its successors in advance.
+V17 adds `(status,tenant_id,routing_key,sequence_no)` so that ranking
+only scans the active state; claim-time predecessor probes use the same index.
+It supersedes the equivalent key-first equality-probe index added in V16.
+For an existing large PostgreSQL outbox, prebuild both V16's
+`idx_ingestion_outbox_key_state_sequence` on `(tenant_id,routing_key,status,sequence_no)`
+and V17's `idx_ingestion_outbox_state_key_sequence` on
+`(status,tenant_id,routing_key,sequence_no)` with
+`CREATE INDEX CONCURRENTLY` outside a transaction,
+verify that both are valid, then run the normal migrations. They skip the
+existing indexes and V17 removes the superseded V16 index. Otherwise plan the
+normal index builds in a maintenance window;
+do not delete outbox history or reset delivery state to accelerate the upgrade.
 
 The rendered Vector envelope contains a stable `source_id`. The request
 credential still determines the tenant and trusted collector identity; body

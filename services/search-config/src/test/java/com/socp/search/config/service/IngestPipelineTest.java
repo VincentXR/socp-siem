@@ -30,6 +30,41 @@ import static org.mockito.ArgumentMatchers.any;
 class IngestPipelineTest {
 
     @Test
+    void oneCredentialCreditsDistinctResolvedSourcesOnlyAfterCommit() {
+        var normalizer = mock(IngestEventNormalizer.class);
+        var commit = mock(IngestionCommitService.class);
+        var monitor = mock(IngestTaskMonitor.class);
+        for (String source : List.of("a", "b")) {
+            when(normalizer.sourceContext(source, "shared"))
+                    .thenReturn(new IngestSourceContext("shared", source,
+                            com.socp.search.config.domain.ParseFormat.JSON, List.of(), null, null, true));
+            when(normalizer.normalize(eq(source), eq("shared"), any(), any()))
+                    .thenReturn(new IngestEventNormalizer.NormalizedEvent(event(source), Map.of(), "shared", source));
+        }
+        when(monitor.runtime("shared", true)).thenReturn(Map.of("eps1m", 0.0));
+        var pipeline = new IngestPipeline(normalizer, commit, monitor,
+                mock(DetectClient.class), new SimpleMeterRegistry());
+        org.springframework.transaction.support.TransactionSynchronizationManager.initSynchronization();
+        try {
+            pipeline.process("a\nb", "shared");
+            org.mockito.Mockito.verify(monitor, org.mockito.Mockito.never()).recordSource(anyString(),
+                    org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt(),
+                    org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt(),
+                    org.mockito.ArgumentMatchers.anyInt(), anyLong());
+        } finally {
+            var callbacks = org.springframework.transaction.support.TransactionSynchronizationManager.getSynchronizations();
+            org.springframework.transaction.support.TransactionSynchronizationManager.clearSynchronization();
+            callbacks.forEach(org.springframework.transaction.support.TransactionSynchronization::afterCommit);
+        }
+        verify(monitor).recordSource("a", 1, 0, 0, 0, 0, 1L);
+        verify(monitor).recordSource("b", 1, 0, 0, 0, 0, 1L);
+        verify(monitor).record("shared", 2, 0, 0, 0, 0, 2L);
+        when(commit.commit(anyList())).thenThrow(new IllegalStateException("database unavailable"));
+        assertEquals(503, assertThrows(ApiException.class, () -> pipeline.process("a", "shared")).getCode());
+        verify(monitor).recordSource("a", 0, 0, 0, 0, 0, 1L);
+    }
+
+    @Test
     void falcoProducerIdentitySurvivesVendorParsingRegardlessOfTransportKey() throws Exception {
         var normalizer = new IngestEventNormalizer(null, null, null,
                 new com.socp.search.config.parser.ParserRegistry());

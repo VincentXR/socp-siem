@@ -256,7 +256,8 @@ public class IngestEventNormalizer {
         payload.put("timestamp", event.timestamp().toString());
         payload.put("fields", fields);
         if (!ecs.isEmpty()) payload.put("ecs", ecs);
-        return new NormalizedEvent(event, payload, collector(fields, collectorHint));
+        return new NormalizedEvent(event, payload, collector(fields, collectorHint),
+                sourceContext != null && sourceContext.resolved() ? sourceContext.sourceId() : null);
     }
 
     IngestSourceContext sourceContext(String line, String collectorHint) {
@@ -442,6 +443,9 @@ public class IngestEventNormalizer {
         return TenantContext.require();
     }
 
-    record NormalizedEvent(SearchEvent event, Map<String, Object> payload, String collector) {
+    record NormalizedEvent(SearchEvent event, Map<String, Object> payload, String collector, String sourceId) {
+        NormalizedEvent(SearchEvent event, Map<String, Object> payload, String collector) {
+            this(event, payload, collector, null);
+        }
     }
 }

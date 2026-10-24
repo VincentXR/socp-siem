@@ -34,6 +34,33 @@ import static org.mockito.Mockito.when;
 
 class IngestEventNormalizerTest {
 
+    @Test
+    void aBoundJsonRuleCannotRepairInvalidSourceTextByParsingItsTransportEnvelope() throws Exception {
+        TenantContext.set("tenant-a");
+        var parsers = new ParserRegistry();
+        var sources = mock(IngestSourceResolver.class);
+        when(sources.resolve(anyString(), anyString())).thenReturn(new IngestSourceContext(
+                "shared", "source-a", ParseFormat.JSON, List.of("json-rule"), null, null, true));
+        var rules = mock(com.socp.search.config.persistence.store.ParseRuleStore.class);
+        when(rules.get("json-rule")).thenReturn(com.socp.search.config.domain.ParseRule.create(
+                "JSON", "source-a", "JSON", null, List.of(), List.of(), true, 1));
+        var normalizer = new IngestEventNormalizer(null, parsers, sources,
+                new ParsePipelineResolver(rules, new ParseRuleExecutor(parsers)));
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        for (String invalid : List.of("plain text", "{broken")) {
+            String raw = mapper.writeValueAsString(Map.of("source_id", "source-a", "collector_tag", "search-source-a",
+                    "parse_format", "json", "eventId", "transport-1", "message", invalid));
+            assertThrows(IngestParseException.class, () -> normalizer.normalize(raw, "shared"));
+        }
+        String raw = mapper.writeValueAsString(Map.of("source_id", "source-a", "collector_tag", "search-source-a",
+                "parse_format", "json", "eventId", "transport-1", "message",
+                mapper.writeValueAsString(Map.of("message", "valid application text", "host", "app-host"))));
+        var event = normalizer.normalize(raw, "shared").event();
+        assertEquals("valid application text", event.msg());
+        assertEquals("app-host", event.host());
+        assertEquals("transport-1", event.eventId());
+    }
+
     @ParameterizedTest
     @CsvSource({
             "'2026-09-29T10:15:30+08:00','2026-09-29T02:15:30Z'",

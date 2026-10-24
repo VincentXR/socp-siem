@@ -33,9 +33,9 @@ test('ingest summary failure preserves measured throughput and parse preview sta
     else if (path === '/search-config/api/v1/ingest/tasks/task-a/stop' && route.request().method() === 'POST') {
       configWrites++; configEnabled = false; data = { id: 'task-a', enabled: false }
     }
-    else if (path === '/search-config/api/v1/ingest/tasks') data = [{ id: 'task-a', name: 'Source A', type: 'FILE', format: 'AUTO', enabled: configEnabled,
+    else if (path === '/search-config/api/v1/ingest/tasks') data = { items: [{ id: 'task-a', name: 'Source A', type: 'FILE', format: 'AUTO', enabled: configEnabled,
       collector: 'vector', target: '/var/log/auth.log', env: 'local', tags: [], categoryId: null, sinkTargetId: null,
-      parseRuleIds: ['R-A'], createdAt: '2026-09-23T00:00:00Z', runtime: { health: 'HEALTHY', eps1m: 25, eps5m: 22, accepted: 19, skipped: 2, forwarded: 17, bytes: 512, lastError: null } }]
+      parseRuleIds: ['R-A'], createdAt: '2026-09-23T00:00:00Z', runtime: { health: 'HEALTHY', eps1m: 25, eps5m: 22, accepted: 19, skipped: 2, forwarded: 17, bytes: 512, lastError: null } }], total: 1, page: 1, size: 20 }
     else if (path === '/search-config/api/v1/ingest/tasks/summary') data = { collectors: 1, accepted: 19, skipped: 2, forwarded: 17, bytes: 512, eps1m: 25, byHealth: {}, sources: 3, enabledSources: 2 }
     else if (path === '/search-config/api/v1/ingest/parse-failures') data = { items: [], total: 0,
       page: 1, size: Number(url.searchParams.get('size')), totalPages: 0 }

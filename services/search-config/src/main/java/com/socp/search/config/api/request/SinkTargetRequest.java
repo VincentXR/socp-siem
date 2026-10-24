@@ -24,6 +24,7 @@ public record SinkTargetRequest(
                 || parsed.getHost() == null || parsed.getUserInfo() != null || parsed.getFragment() != null) {
             throw com.socp.platform.error.exception.ApiException.badRequest("Use an HTTP(S) endpoint without embedded credentials or fragment");
         }
+        SinkTarget.requireNdjsonHttpPath(parsed);
     }
 
     public SinkTarget toDomain() {

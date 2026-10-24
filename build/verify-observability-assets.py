@@ -28,6 +28,44 @@ SOAR_RULES = ROOT / "infra/observability/prometheus/soar-alerts.yml"
 DASHBOARD = ROOT / "infra/observability/grafana/dashboards/socp-event-path.json"
 DATASOURCE = ROOT / "infra/observability/grafana/provisioning/datasources/socp.yaml"
 RUNBOOK = ROOT / "docs/operations/incident-response.md"
+COMPOSE = ROOT / "infra/docker-compose.yml"
+OBS_PROMETHEUS = ROOT / "infra/init-sql/prometheus/prometheus-observability.yml"
+LOG_VECTOR = ROOT / "infra/observability/vector/logs.toml"
+SOAR_DASHBOARD = ROOT / "infra/observability/grafana/dashboards/socp-soar.json"
+
+
+def check_runtime_wiring(errors: list[str]) -> None:
+    compose = COMPOSE.read_text(encoding="utf-8")
+    grafana = re.search(r"(?ms)^  grafana:\n(?:(?!^  \S).)*", compose)
+    block = grafana.group(0) if grafana else ""
+    for mount in (
+        "./observability/grafana/provisioning:/etc/grafana/provisioning:ro",
+        "./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro",
+    ):
+        if mount not in block:
+            errors.append("Grafana deployment does not load " + mount)
+    if not SOAR_DASHBOARD.is_file():
+        errors.append("SOAR dashboard is outside the provisioned dashboard directory")
+    if not OBS_PROMETHEUS.is_file():
+        errors.append("observability Prometheus configuration is missing")
+    else:
+        text = OBS_PROMETHEUS.read_text(encoding="utf-8")
+        for required in ("rule_files:", "/etc/prometheus/rules/soar-alerts.yml",
+                         "/etc/prometheus/rules/service-alerts.yml", "alertmanager:9093"):
+            if required not in text:
+                errors.append("Prometheus operational alert wiring omits " + required)
+    if not LOG_VECTOR.is_file():
+        errors.append("application log collector configuration is missing")
+    else:
+        text = LOG_VECTOR.read_text(encoding="utf-8")
+        # The shipped Vector binary has the generic HTTP sink, and every
+        # Spring Boot log starts with the same banner. Both conditions caused
+        # real operational gaps despite valid application health checks.
+        for required in ('fingerprint.strategy = "device_and_inode"',
+                         'type = "http"', '/loki/api/v1/push', 'batch.max_events = 1',
+                         'acknowledgements.enabled = true', 'buffer.type = "disk"'):
+            if required not in text:
+                errors.append("application log delivery contract omits " + required)
 
 
 def github_anchor(heading: str) -> str:
@@ -81,6 +119,7 @@ def check_runbook_reference(url: str) -> str | None:
 
 def main() -> int:
     errors: list[str] = []
+    check_runtime_wiring(errors)
     if not RUNBOOK.is_file():
         errors.append("docs/operations/incident-response.md is missing")
 

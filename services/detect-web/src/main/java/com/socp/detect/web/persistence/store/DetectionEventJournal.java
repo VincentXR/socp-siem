@@ -18,6 +18,10 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -27,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * PostgreSQL/H2-backed journal for Detection event claims and state recovery.
@@ -53,6 +58,14 @@ public class DetectionEventJournal implements DetectionStateStore {
     private final int cleanupBatchSize;
     private final int cleanupMaxBatches;
     private final String inputTopic;
+    private TransactionTemplate replayPageTransaction;
+
+    @Autowired
+    void configureReplayPageTransaction(PlatformTransactionManager manager) {
+        replayPageTransaction = new TransactionTemplate(manager);
+        replayPageTransaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        replayPageTransaction.setReadOnly(true);
+    }
 
     /** Spring constructor keeps replay and terminal-retention policies explicit. */
     @Autowired
@@ -301,6 +314,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     }
 
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void replayRecent(Duration window, Consumer<List<SecurityEvent>> batchConsumer) {
         if (TenantContext.isSystemScope()) {
             replayPages((page, size) -> repository
@@ -317,6 +331,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     }
 
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void replayRecentForPartitions(Set<Integer> partitions, Duration window,
                                           Consumer<List<SecurityEvent>> batchConsumer) {
         if (partitions == null || partitions.isEmpty()) return;
@@ -335,6 +350,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     }
 
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void replayRecentForTenant(String tenantId, Duration window,
                                       Consumer<List<SecurityEvent>> batchConsumer) {
         replayPages((page, size) -> repository
@@ -383,7 +399,7 @@ public class DetectionEventJournal implements DetectionStateStore {
      * offsets for redelivery, so heap use is one page, not the retention window.
      */
     @Override
-    @Transactional(readOnly = true)
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void replayPendingPages(Set<Integer> partitions, Duration window, int maxRecords,
                                    Consumer<List<PendingDetectionEvent>> batchConsumer) {
         if (partitions == null || partitions.isEmpty() || batchConsumer == null) return;
@@ -393,13 +409,13 @@ public class DetectionEventJournal implements DetectionStateStore {
         for (int page = 0; dispatched < cap; page++) {
             org.springframework.data.domain.Pageable request =
                     org.springframework.data.domain.PageRequest.of(page, replayPageSize);
-            List<DetectionEventEntity> rows = tenant == null
+            List<DetectionEventEntity> rows = readReplayPage(() -> tenant == null
                     ? repository.findByStatusAndTopicAndKafkaPartitionInAfter(
                             DetectionEventStatus.PENDING.name(), inputTopic, partitions,
                             cutoff(window), request)
                     : repository.findByTenantStatusTopicAndKafkaPartitionInAfter(
                             tenant, DetectionEventStatus.PENDING.name(), inputTopic, partitions,
-                            cutoff(window), request);
+                            cutoff(window), request));
             List<PendingDetectionEvent> batch = new ArrayList<>();
             for (DetectionEventEntity row : rows) {
                 PendingDetectionEvent pending = pendingRow(row);
@@ -442,6 +458,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     }
 
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void replayCompletedAfter(String tenantId, Instant checkpoint,
                                      Set<Integer> partitions,
                                      Consumer<List<SecurityEvent>> batchConsumer) {
@@ -449,12 +466,12 @@ public class DetectionEventJournal implements DetectionStateStore {
         for (int page = 0; ; page++) {
             org.springframework.data.domain.Pageable request =
                     org.springframework.data.domain.PageRequest.of(page, replayPageSize);
-            List<DetectionEventEntity> rows = partitions == null || partitions.isEmpty()
+            List<DetectionEventEntity> rows = readReplayPage(() -> partitions == null || partitions.isEmpty()
                     ? repository.findByTenantStatusTopicCompletedAfter(
                             tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, checkpoint, request)
                     : repository.findByTenantStatusTopicPartitionsCompletedAfter(
                             tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic,
-                            partitions, checkpoint, request);
+                            partitions, checkpoint, request));
             List<SecurityEvent> events = fromRows(rows);
             if (!events.isEmpty()) batchConsumer.accept(events);
             if (rows.size() < replayPageSize) break;
@@ -469,6 +486,7 @@ public class DetectionEventJournal implements DetectionStateStore {
      * order. The journal retention policy keeps this scan bounded.
      */
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void replayCompletedAfter(String tenantId, Instant checkpoint,
                                      Set<Integer> partitions, Map<Integer, Long> offsets,
                                      Consumer<List<SecurityEvent>> batchConsumer) {
@@ -481,11 +499,11 @@ public class DetectionEventJournal implements DetectionStateStore {
         for (int page = 0; ; page++) {
             org.springframework.data.domain.Pageable request =
                     org.springframework.data.domain.PageRequest.of(page, replayPageSize);
-            List<DetectionEventEntity> rows = owned.isEmpty()
+            List<DetectionEventEntity> rows = readReplayPage(() -> owned.isEmpty()
                     ? repository.findByTenantStatusTopicOrderByKafkaPosition(
                             tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, request)
                     : repository.findByTenantStatusTopicPartitionsOrderByKafkaPosition(
-                            tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, owned, request);
+                            tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, owned, request));
             List<DetectionEventEntity> tail = rows.stream()
                     .filter(row -> row.getKafkaPartition() != null && row.getKafkaOffset() != null)
                     .filter(row -> row.getKafkaOffset() > offsets.getOrDefault(row.getKafkaPartition(), -1L))
@@ -560,13 +578,29 @@ public class DetectionEventJournal implements DetectionStateStore {
         return out;
     }
 
+    /**
+     * Streaming replay entry points suspend any caller transaction. In particular,
+     * a rule reload has a catalogue transaction: joining it would retain every
+     * journal entity in Hibernate's first-level cache despite the bounded pages.
+     * Suspension alone still creates an empty Spring synchronization scope that
+     * can retain an EntityManager. Each page therefore has its own read-only
+     * transaction, closed before the callback, so both actual transactions and
+     * synchronization-only scopes remain bounded. Caller writes stay managed.
+     */
     private void replayPages(PageReader reader, Consumer<List<SecurityEvent>> batchConsumer) {
         for (int page = 0; ; page++) {
-            List<DetectionEventEntity> rows = reader.read(page, replayPageSize);
+            int pageNumber = page;
+            List<DetectionEventEntity> rows = readReplayPage(() -> reader.read(pageNumber, replayPageSize));
             List<SecurityEvent> events = fromRows(rows);
             if (!events.isEmpty()) batchConsumer.accept(events);
             if (rows.size() < replayPageSize) break;
         }
+    }
+
+    private List<DetectionEventEntity> readReplayPage(Supplier<List<DetectionEventEntity>> reader) {
+        // Directly constructed policy/unit-test stores have no persistence context.
+        return replayPageTransaction == null ? reader.get()
+                : replayPageTransaction.execute(ignored -> reader.get());
     }
 
     private List<SecurityEvent> fromRows(List<DetectionEventEntity> rows) {

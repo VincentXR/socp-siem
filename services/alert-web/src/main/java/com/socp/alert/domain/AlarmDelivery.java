@@ -61,6 +61,10 @@ public class AlarmDelivery {
     @Column(name = "trace_id", length = 64)
     private String traceId;
 
+    /** Full parent context for delivery after the request/consumer has ended. */
+    @Column(name = "traceparent", length = 255)
+    private String traceparent;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -91,6 +95,8 @@ public class AlarmDelivery {
     public void setLastError(String lastError) { this.lastError = lastError; }
     public String getTraceId() { return traceId; }
     public void setTraceId(String traceId) { this.traceId = traceId; }
+    public String getTraceparent() { return traceparent; }
+    public void setTraceparent(String traceparent) { this.traceparent = traceparent; }
     public Instant getCreatedAt() { return createdAt; }
     public void setCreatedAt(Instant createdAt) { this.createdAt = createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

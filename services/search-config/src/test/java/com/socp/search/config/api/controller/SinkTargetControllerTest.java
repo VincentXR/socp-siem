@@ -54,6 +54,17 @@ class SinkTargetControllerTest {
                 mvc.perform(post("/api/v1/outputs/validate").contentType(MediaType.APPLICATION_JSON).content(invalidTarget))
                         .andExpect(status().isBadRequest());
             }
+            for (String bulkUri : java.util.List.of("https://example.test/_bulk",
+                    "https://example.test/events/_bulk/", "https://example.test/events/%5fbulk?refresh=true")) {
+                String invalidTarget = target.replace("https://example.test/ingest", bulkUri);
+                mvc.perform(post("/api/v1/outputs/validate").contentType(MediaType.APPLICATION_JSON).content(invalidTarget))
+                        .andExpect(status().isBadRequest());
+                mvc.perform(post("/api/v1/outputs").contentType(MediaType.APPLICATION_JSON).content(invalidTarget))
+                        .andExpect(status().isBadRequest());
+                mvc.perform(put("/api/v1/outputs/" + saved.id()).contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"credentialAction\":\"KEEP\",\"target\":" + invalidTarget + "}"))
+                        .andExpect(status().isBadRequest());
+            }
             assertEquals("isolated-test-token", store.get(saved.id()).authToken());
             mvc.perform(post("/api/v1/outputs/validate").contentType(MediaType.APPLICATION_JSON).content(target))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.data.valid").value(true))

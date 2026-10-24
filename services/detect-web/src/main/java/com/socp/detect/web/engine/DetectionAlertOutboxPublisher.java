@@ -10,6 +10,7 @@ import com.socp.detect.web.persistence.repository.DetectionAlertOutboxRepository
 import com.socp.detect.web.metrics.DetectionPerformanceMetrics;
 import com.socp.platform.client.service.AlertClient;
 import com.socp.platform.client.http.ServiceCall;
+import com.socp.platform.obs.trace.TracePropagation;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.tenant.persistence.TenantSystemJob;
 import org.slf4j.Logger;
@@ -431,7 +432,12 @@ public class DetectionAlertOutboxPublisher {
 
     private static <T> T withTenant(DetectionAlertOutboxEntity event,
                                     java.util.function.Supplier<T> action) {
-        return TenantContext.callWith(event.getTenantId(), action);
+        // Delivery runs later on a different executor. Rejoin the durable
+        // Detection context before the HTTP client builds its traceparent;
+        // restoring only the tenant makes Alert Web start an unrelated trace.
+        try (var ignored = TracePropagation.contextFrom(event.getTraceparent()).makeCurrent()) {
+            return TenantContext.callWith(event.getTenantId(), action);
+        }
     }
 
     @PreDestroy

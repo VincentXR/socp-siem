@@ -87,6 +87,15 @@ class BackupPublicationTest(unittest.TestCase):
             backup.backup(self.destination, ['alert', 'detect'], self.fence_type, self.dump)
         self.assertEqual(protected.read_bytes(), b'preserved')
 
+    def test_restore_rejects_non_identifier_targets_before_opening_a_connection(self):
+        for target in ("drill'; DROP TABLE guard;--", 'postgresql://localhost/other', '--maintenance-db=other'):
+            with self.subTest(target=target):
+                result = subprocess.run(['bash', str(BUILD / 'restore-postgres.sh'),
+                    str(self.destination / 'missing.dump'), target], capture_output=True, text=True,
+                    env={**os.environ, 'PGHOST': '127.0.0.1', 'PGPORT': '1', 'PGUSER': 'unused'})
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('plain identifier', result.stderr)
+
 
 @unittest.skipUnless(os.environ.get('SOCP_TEST_POSTGRES_BIN'), 'set SOCP_TEST_POSTGRES_BIN for a disposable native PostgreSQL drill')
 class PostgresBackupDrill(unittest.TestCase):
@@ -101,10 +110,14 @@ class PostgresBackupDrill(unittest.TestCase):
             bind.close()
             env = {key: value for key, value in os.environ.items() if not key.startswith('PG')}
             env.update(PATH=os.environ['SOCP_TEST_POSTGRES_BIN'] + os.pathsep + os.environ['PATH'],
-                       PGHOST='127.0.0.1', PGPORT=str(port), PGUSER=getpass.getuser())
+                       PGHOST='127.0.0.1', PGPORT=str(port), PGUSER=getpass.getuser(),
+                       PGPASSWORD='isolated-trust-drill-only')
             with patch.dict(os.environ, env, clear=True):
                 def run(*args, **kwargs):
-                    return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
+                    try:
+                        return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs)
+                    except subprocess.CalledProcessError as failure:
+                        raise AssertionError(f"drill command failed: {args[0]}\n{failure.stdout}\n{failure.stderr}") from failure
                 run('initdb', '-D', str(root / 'data'), '-A', 'trust', '--no-locale')
                 run('pg_ctl', '-D', str(root / 'data'), '-l', str(root / 'postgres.log'),
                     '-o', '-h 127.0.0.1 -p ' + str(port) + ' -k ' + str(root), '-w', 'start')
@@ -128,12 +141,48 @@ class PostgresBackupDrill(unittest.TestCase):
                         return backup.dump(database, snapshot, destination, fences)
                     backup.backup(root / 'backup', ['alert_fixture', 'detect_fixture'], dump_action=checked_dump)
                     for database in ('alert_fixture', 'detect_fixture'):
-                        run('createdb', database + '_restore')
-                        run('pg_restore', '--no-owner', '--no-privileges', '-d', database + '_restore',
-                            str(root / 'backup' / (database + '.dump')))
+                        run('bash', str(BUILD / 'restore-postgres.sh'),
+                            str(root / 'backup' / (database + '.dump')), database + '_restore')
                         count = run('psql', '-At', '-d', database + '_restore', '-c', 'SELECT id FROM facts').stdout.strip()
                         self.assertEqual(count, 'before')
                         run('psql', '-d', database, '-c', "INSERT INTO facts VALUES ('released');")
+                    # A finalized recovery must be usable by the restricted
+                    # migration/runtime roles, not just readable by its admin.
+                    role_environment = {**os.environ, 'POSTGRES_USER': getpass.getuser(), 'POSTGRES_DB': 'postgres',
+                        'SOCP_PG_RUNTIME_USER': 'drill_runtime', 'SOCP_PG_RUNTIME_PASSWORD': 'isolated-runtime-only',
+                        'SOCP_PG_MIGRATION_USER': 'drill_migrator', 'SOCP_PG_MIGRATION_PASSWORD': 'isolated-migrator-only'}
+                    for _ in range(2):
+                        run('bash', str(BUILD.parent / 'infra/init-sql/pg/00_roles.sh'), env=role_environment)
+                    run('psql', '-d', 'alert_fixture', '-v', 'ON_ERROR_STOP=1', '-c',
+                        "CREATE TABLE tenant_facts (tenant_id text, id text); "
+                        "INSERT INTO tenant_facts VALUES ('a','owned'), ('b','other');")
+                    finalized_dump = root / 'finalized.dump'
+                    run('bash', str(BUILD / 'backup-postgres.sh'), str(root / 'finalized'),
+                        env={**os.environ, 'PGDATABASE': 'alert_fixture', 'PGDUMP_FILE': str(finalized_dump)})
+                    run('bash', str(BUILD / 'restore-postgres.sh'), '--finalize',
+                        str(finalized_dump), 'finalized_restore', env={**os.environ,
+                        'SOCP_PG_RUNTIME_USER': 'drill_runtime', 'SOCP_PG_MIGRATION_USER': 'drill_migrator'})
+                    owner = run('psql', '-At', '-d', 'finalized_restore', '-c',
+                        "SELECT tableowner FROM pg_tables WHERE tablename = 'tenant_facts'").stdout.strip()
+                    self.assertEqual(owner, 'drill_migrator', 'future migrations must own restored tables')
+                    visible = run('psql', '-At', '-d', 'finalized_restore', '-U', 'drill_runtime', '-c',
+                        "SET socp.tenant_id='a'; SELECT id FROM tenant_facts ORDER BY id").stdout.strip()
+                    self.assertEqual(visible.splitlines()[-1], 'owned')
+                    run('psql', '-d', 'finalized_restore', '-U', 'drill_migrator', '-v', 'ON_ERROR_STOP=1',
+                        '-c', 'ALTER TABLE tenant_facts ADD COLUMN after_recovery boolean')
+                    run('psql', '-d', 'finalized_restore', '-U', 'drill_migrator', '-v', 'ON_ERROR_STOP=1',
+                        '-c', 'UPDATE tenant_facts SET after_recovery=true')
+                    migrated = run('psql', '-At', '-d', 'finalized_restore', '-U', 'drill_migrator', '-c',
+                        'SELECT count(*) FROM tenant_facts WHERE after_recovery=true').stdout.strip()
+                    self.assertEqual(migrated, '2', 'a restricted migration login must backfill all tenants under FORCE RLS')
+                    unscoped_runtime = run('psql', '-At', '-d', 'finalized_restore', '-U', 'drill_runtime', '-c',
+                        'SELECT count(*) FROM tenant_facts').stdout.strip()
+                    self.assertEqual(unscoped_runtime, '0', 'runtime login must not inherit system tenant scope')
+                    denied = subprocess.run(['psql', '-d', 'finalized_restore', '-U', 'drill_runtime',
+                        '-v', 'ON_ERROR_STOP=1', '-c', "SET socp.tenant_id='a'; INSERT INTO tenant_facts VALUES ('b','escape',false)"],
+                        capture_output=True, text=True)
+                    self.assertNotEqual(denied.returncode, 0)
+                    self.assertIn('row-level security', denied.stderr)
                 finally:
                     run('pg_ctl', '-D', str(root / 'data'), '-m', 'immediate', '-w', 'stop')
 

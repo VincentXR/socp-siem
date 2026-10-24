@@ -61,7 +61,7 @@ export SOCP_SECURITY_SERVICE_SECRET="${SOCP_SECURITY_SERVICE_SECRET:-socp-demo-s
 export SOCP_SECURITY_METRICS_TOKEN="${SOCP_SECURITY_METRICS_TOKEN:-socp-demo-metrics-token}"
 export SOCP_AUDIT_SINK="${SOCP_AUDIT_SINK:-kafka}"
 export SOCP_AUDIT_FAIL_CLOSED="${SOCP_AUDIT_FAIL_CLOSED:-true}"
-export SOCP_RATELIMIT_BACKEND="${SOCP_RATELIMIT_BACKEND:-memory}"
+socp_ratelimit_defaults "$RUNTIME_PROFILES"
 
 mkdir -p "$LOGDIR"
 
@@ -130,6 +130,7 @@ doctor() {
   selected="$(service_names "$profile")" || return 1
   service_count="$(awk '{print NF}' <<< "$selected")"
   echo "启动配置: ${profile}（${service_count} 个后端服务）"
+  echo "限流/防重放: ${SOCP_RATELIMIT_BACKEND}; fail-closed=${SOCP_RATELIMIT_FAIL_CLOSED}"
   echo "=== 仓库根 ==="
   echo "  $ROOT"
   [ -f "$ROOT/pom.xml" ] || { echo "  ❌ 这里没有 pom.xml，脚本可能被移出仓库了"; fatal=1; }

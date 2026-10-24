@@ -72,7 +72,17 @@ public class IngestTaskMonitor {
 
     public void record(String collector, int accepted, int skipped, int parseFailed,
                        int quarantined, int forwarded, long bytes) {
-        String key = key(collector);
+        recordAt(key(collector), accepted, skipped, parseFailed, quarantined, forwarded, bytes);
+    }
+
+    /** Source observations never replace the authenticated collector identity. */
+    public void recordSource(String sourceId, int accepted, int skipped, int parseFailed,
+                             int quarantined, int forwarded, long bytes) {
+        recordAt(sourceKey(sourceId), accepted, skipped, parseFailed, quarantined, forwarded, bytes);
+    }
+
+    private void recordAt(String key, int accepted, int skipped, int parseFailed,
+                          int quarantined, int forwarded, long bytes) {
         Stat s = stats.computeIfAbsent(key, k -> new Stat());
         Instant now = Instant.now();
         synchronized (s) {
@@ -127,7 +137,15 @@ public class IngestTaskMonitor {
 
     /** 单个采集器的运行态快照；从未收到数据则返回全零快照 */
     public Map<String, Object> runtime(String collector, boolean enabled) {
-        Stat s = stats.get(key(collector));
+        return runtimeAt(key(collector), enabled);
+    }
+
+    public Map<String, Object> sourceRuntime(String sourceId, boolean enabled) {
+        return runtimeAt(sourceKey(sourceId), enabled);
+    }
+
+    private Map<String, Object> runtimeAt(String key, boolean enabled) {
+        Stat s = stats.get(key);
         Map<String, Object> m = new LinkedHashMap<>();
         if (s == null) {
             m.put("accepted", 0L);
@@ -229,6 +247,12 @@ public class IngestTaskMonitor {
 
     private static String key(String collector) {
         return tenant() + "|" + normalize(collector);
+    }
+
+    private static String sourceKey(String sourceId) {
+        // A separate namespace shares the same bounded/expiring cache while
+        // keeping source counters out of collector totals and health counts.
+        return tenant() + "\0source|" + sourceId;
     }
 
     private static String tenant() {

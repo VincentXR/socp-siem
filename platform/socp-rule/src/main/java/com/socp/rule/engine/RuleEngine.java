@@ -87,7 +87,7 @@ public final class RuleEngine implements AutoCloseable {
 
     private record WorkItem(SecurityEvent event, CompletableFuture<Void> completion,
                             boolean durable, Runnable onDurable, Runnable durableCommitGuard,
-                            DetectionResult.InputPosition inputPosition) {
+                            DetectionResult.InputPosition inputPosition, RuleExecutionScope scope) {
     }
 
     public RuleEngine(List<Rule> rules, List<AlertSink> sinks) {
@@ -217,7 +217,7 @@ public final class RuleEngine implements AutoCloseable {
             Map<StatefulRule, byte[]> before = item.durable()
                     ? snapshotMutableStates(selected) : Map.of();
             try {
-                try (RuleExecutionScope.Scope ignored = executionScope.open(event)) {
+                try (RuleExecutionScope.Scope ignored = item.scope().open(event)) {
                     processInScope(item, event, before, selected);
                 }
                 // Position bookkeeping is deliberately inside the same
@@ -594,7 +594,8 @@ public final class RuleEngine implements AutoCloseable {
                              DetectionResult.InputPosition inputPosition) {
         CompletableFuture<Void> completion = new CompletableFuture<>();
         WorkItem item = new WorkItem(event, completion, durable, onDurable, durableCommitGuard,
-                inputPosition == null ? DetectionResult.InputPosition.unknown() : inputPosition);
+                inputPosition == null ? DetectionResult.InputPosition.unknown() : inputPosition,
+                executionScope.capture());
         lifecycle.readLock().lock();
         try {
             if (!running) {
@@ -639,7 +640,7 @@ public final class RuleEngine implements AutoCloseable {
         try {
             if (!running) return true;
             WorkItem item = new WorkItem(IDLE_BARRIER_EVENT, barrier, false, null, null,
-                    DetectionResult.InputPosition.unknown());
+                    DetectionResult.InputPosition.unknown(), RuleExecutionScope.NOOP);
             if (!queue.offer(item, budget, TimeUnit.MILLISECONDS)) {
                 log.warn("Detection engine is saturated; unable to schedule an idle barrier");
                 return false;
@@ -671,7 +672,7 @@ public final class RuleEngine implements AutoCloseable {
             for (;;) {
                 try {
                     queue.put(new WorkItem(POISON_EVENT, null, false, null, null,
-                            DetectionResult.InputPosition.unknown()));
+                            DetectionResult.InputPosition.unknown(), RuleExecutionScope.NOOP));
                     break;
                 } catch (InterruptedException interruption) {
                     // Closing without the marker can strand every accepted

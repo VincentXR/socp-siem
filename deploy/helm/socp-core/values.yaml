@@ -54,6 +54,8 @@ runtime:
     SOCP_AUTH_COOKIE_SECURE: "true"
     SOCP_RATELIMIT_BACKEND: redis
     SOCP_RATELIMIT_FAIL_CLOSED: "true"
+    SPRING_DATA_REDIS_CONNECT_TIMEOUT: 500ms
+    SPRING_DATA_REDIS_TIMEOUT: 500ms
     # The readiness group includes the Spring `db` contributor, which waits for
     # a pooled connection. HikariCP's 30s default outlasts any probe budget, so
     # a saturated pool shows up as a probe timeout instead of a DOWN readiness
@@ -211,7 +213,7 @@ workloads:
     fieldEnv: {}
     env:
       SOCP_SEARCH_RUNTIME_ROLE: api
-      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db
+      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db,redis
       SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,opensearch=opensearch.socp-data.svc.cluster.local:9200,detect=detect-web-api:8080
     resources:
       requests:
@@ -250,7 +252,7 @@ workloads:
     fieldEnv: {}
     env:
       SOCP_SEARCH_RUNTIME_ROLE: worker
-      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db,socpDependencies
+      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db,socpDependencies,redis
       SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,opensearch=opensearch.socp-data.svc.cluster.local:9200
     resources:
       requests:
@@ -285,6 +287,7 @@ workloads:
       SOCP_DETECT_INSTANCE_ID: metadata.uid
     env:
       SOCP_DETECT_RUNTIME_ROLE: api
+      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db,socpDependencies,detectionRouting,detectionWorker,redis
       SOCP_DETECT_INPUT_TOPIC: socp-detection-routed-v2
       SOCP_DETECT_OUTPUT_MODE: primary
       SOCP_DETECT_ROUTING_MODE: primary
@@ -332,6 +335,7 @@ workloads:
       SOCP_DETECT_INSTANCE_ID: metadata.uid
     env:
       SOCP_DETECT_RUNTIME_ROLE: worker
+      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db,socpDependencies,detectionRouting,detectionWorker,redis
       SOCP_KAFKA_GROUP_ID: socp-detect
       SOCP_DETECT_INPUT_TOPIC: socp-detection-routed-v2
       SOCP_DETECT_OUTPUT_MODE: primary
@@ -375,7 +379,7 @@ workloads:
       SOCP_CK_PASSWORD: SOCP_CK_PASSWORD
     fieldEnv: {}
     env:
-      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db
+      MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE: readinessState,db,redis
       SOCP_HEALTH_REQUIRED_ENDPOINTS: kafka=kafka.socp-data.svc.cluster.local:9092,clickhouse=clickhouse.socp-data.svc.cluster.local:8123
       SOCP_ALARM_DELIVERY_DESTINATIONS: CLICKHOUSE
       SOCP_ALERT_ENRICHMENT_ENABLED: "false"

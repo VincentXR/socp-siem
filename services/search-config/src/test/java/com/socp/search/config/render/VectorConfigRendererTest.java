@@ -31,6 +31,12 @@ class VectorConfigRendererTest {
         SinkTarget bulk = SinkTarget.create("bulk", "OPENSEARCH", "http://localhost:9200/_bulk", null, true);
         assertThrows(com.socp.platform.error.exception.ApiException.class,
                 () -> new VectorConfigRenderer(null).render(List.of(source), ignored -> bulk));
+        for (String uri : List.of("https://search.example/_bulk", "https://search.example/events/_bulk/",
+                "https://search.example/events/%5fbulk?refresh=true")) {
+            SinkTarget disguisedBulk = SinkTarget.create("legacy HTTP bulk", "HTTP", uri, null, true);
+            assertThrows(ApiException.class,
+                    () -> new VectorConfigRenderer(null).render(List.of(source), ignored -> disguisedBulk));
+        }
         LogSource incomplete = LogSource.create("draft", SourceType.FILE, ParseFormat.JSON,
                 null, null, null, "test", true);
         assertThrows(com.socp.platform.error.exception.ApiException.class, incomplete::requireReady);

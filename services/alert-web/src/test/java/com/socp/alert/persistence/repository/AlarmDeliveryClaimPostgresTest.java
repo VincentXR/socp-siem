@@ -55,5 +55,10 @@ class AlarmDeliveryClaimPostgresTest extends AlarmDeliveryClaimPersistenceTest {
         assertEquals(3, stored.get("attempts"));
         assertEquals("tenant-a", stored.get("tenant_id"));
         assertNull(stored.get("claim_token"));
+        assertNull(stored.get("traceparent"), "legacy deliveries must remain valid without invented parents");
+        String parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        jdbc.update("update claim_upgrade.alarm_delivery set traceparent = ? where id = 'upgrade-id'", parent);
+        assertEquals(parent, jdbc.queryForObject(
+                "select traceparent from claim_upgrade.alarm_delivery where id = 'upgrade-id'", String.class));
     }
 }

@@ -38,7 +38,8 @@ test('guided setup keeps preview and authoritative first-event verification sepa
     }
     else if (path === '/search-config/api/v1/sources') data = { items: [source], total: 1, page: 1, size: 20, totalPages: 1 }
     else if (path === '/search-config/api/v1/parse-rules' || path === '/search-config/api/v1/ingest/parse-failures') data = { items: [], total: 0, page: 1, size: 50, totalPages: 0 }
-    else if (path === '/search-config/api/v1/outputs' || path === '/search-config/api/v1/meta/categories' || path === '/search-config/api/v1/ingest/tasks') data = []
+    else if (path === '/search-config/api/v1/outputs' || path === '/search-config/api/v1/meta/categories') data = []
+    else if (path === '/search-config/api/v1/ingest/tasks') data = { items: [], total: 0, page: 1, size: 20 }
     else if (path === '/search-config/api/v1/ingest/tasks/summary') data = { sources: 1, enabledSources: 1, accepted: 0, forwarded: 0, skipped: 0, bytes: 0, eps1m: 0, byHealth: {} }
     else { unexpected.push(`${route.request().method()} ${path}`); await route.abort(); return }
     await route.fulfill({ json: { code: 0, data } })

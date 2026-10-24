@@ -76,6 +76,24 @@ restore schema+data → runtime grants → tenant RLS → assert RLS present.** 
 grant-then-RLS in the other order: `FORCE ROW LEVEL SECURITY` on a table the runtime
 role cannot `SELECT` yet would lock the application out.
 
+Restore targets must be plain ASCII database identifiers (1–63 letters, digits
+or underscores, starting with a letter or underscore), never connection strings
+or command options. Finalization checks its required role/password settings
+before creating the target. It creates the database for the migration role and
+restores with `SET ROLE` to that role, so restored tables and sequences remain
+upgradable by the restricted migrator. The administrative connection must be
+allowed to create a database for and assume that role. Granting only schema
+ownership after an administrator-owned restore is insufficient for later DDL.
+
+The role bootstrap also sets `socp.tenant_id='*'` as a login default only for
+the trusted migration role. This lets Flyway backfill all tenants under
+`FORCE ROW LEVEL SECURITY` without making the role a superuser or granting
+`BYPASSRLS`. The runtime role receives no system-scope default: an unscoped
+runtime connection sees no tenant rows. Reapply `build/apply-postgres-roles.sh`
+before upgrading an existing cluster, then open new migration connections;
+`SET ROLE` alone does not apply login defaults. Protect migration credentials
+as administrative credentials and never use them for application traffic.
+
 `restore-postgres.sh --finalize` does steps "runtime grants → tenant RLS → assert"
 against the restored database and **fails closed** if any `tenant_id` table is missing
 either `relrowsecurity`/`relforcerowsecurity` or the `socp_tenant_isolation` policy:

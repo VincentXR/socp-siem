@@ -25,6 +25,27 @@ import static org.mockito.Mockito.verify;
 @ExtendWith(MockitoExtension.class)
 class AlarmDeliveryRegistrarTest {
 
+    @Test
+    void durableIntentsCaptureTheRealParentBeforeTheRequestEnds() {
+        io.opentelemetry.api.GlobalOpenTelemetry.resetForTest();
+        io.opentelemetry.api.GlobalOpenTelemetry.set(io.opentelemetry.api.OpenTelemetry.propagating(
+                io.opentelemetry.context.propagation.ContextPropagators.create(
+                        io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator.getInstance())));
+        String parent = "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+        try (var ignored = com.socp.platform.obs.trace.TracePropagation.contextFrom(parent).makeCurrent()) {
+            given(repository.findByTenantIdAndIdIn(org.mockito.ArgumentMatchers.eq("tenant-a"), anyList()))
+                    .willReturn(List.of());
+            new AlarmDeliveryRegistrar(repository).register("tenant-a", "traced-alarm", "{\"id\":\"traced-alarm\"}");
+            ArgumentCaptor<Iterable<AlarmDelivery>> captor = ArgumentCaptor.forClass(Iterable.class);
+            verify(repository).saveAll(captor.capture());
+            var deliveries = StreamSupport.stream(captor.getValue().spliterator(), false).toList();
+            assertEquals(5, deliveries.size());
+            assertTrue(deliveries.stream().allMatch(row -> parent.equals(row.getTraceparent())));
+        } finally {
+            io.opentelemetry.api.GlobalOpenTelemetry.resetForTest();
+        }
+    }
+
     @Mock
     private AlarmDeliveryRepository repository;
 

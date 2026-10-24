@@ -14,6 +14,7 @@ import javax.sql.DataSource;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -117,14 +118,18 @@ class IngestionOutboxClaimPersistenceTest {
         String second = insert(0, "tenant-a|host|same");
         String other = insert(0, "tenant-a|host|other");
 
-        var heads = repository.findDueKeyHeads(BASE);
-        assertEquals(2, heads.size());
+        var heads = repository.findDueOrderedBatch(BASE);
+        assertEquals(3, heads.size());
         assertTrue(heads.stream().anyMatch(row -> first.equals(row.getId())));
+        assertTrue(heads.stream().anyMatch(row -> second.equals(row.getId())));
         assertTrue(heads.stream().anyMatch(row -> other.equals(row.getId())));
+        assertTrue(heads.stream().map(row -> row.getId()).toList().indexOf(first)
+                < heads.stream().map(row -> row.getId()).toList().indexOf(second));
         assertEquals(0, repository.claim(second, BASE, 12, 0, "later-owner"));
 
         assertEquals(1, repository.claim(first, BASE, 12, 0, "first-owner"));
         assertEquals(1, repository.scheduleRetry(first, BASE.plusSeconds(60), "retry", BASE, "first-owner"));
+        assertEquals(List.of(other), repository.findDueOrderedBatch(BASE).stream().map(row -> row.getId()).toList());
         assertEquals(0, repository.claim(second, BASE, 12, 0, "later-owner"));
         assertEquals(1, repository.claim(first, BASE.plusSeconds(60), 12, 1, "retry-owner"));
         assertEquals(1, repository.markDead(first, "confirmed failure", BASE.plusSeconds(60), "retry-owner"));
@@ -142,7 +147,7 @@ class IngestionOutboxClaimPersistenceTest {
                 inFlightSequence - 1, newlyVisibleOlder);
 
         assertEquals(0, repository.claim(newlyVisibleOlder, BASE, 12, 0, "must-wait"));
-        assertTrue(repository.findDueKeyHeads(BASE).stream()
+        assertTrue(repository.findDueOrderedBatch(BASE).stream()
                 .noneMatch(row -> newlyVisibleOlder.equals(row.getId())));
         assertEquals(1, repository.markPublished(inFlight, BASE, "visible-first"));
         assertEquals(1, repository.claim(newlyVisibleOlder, BASE, 12, 0, "after-owner"));

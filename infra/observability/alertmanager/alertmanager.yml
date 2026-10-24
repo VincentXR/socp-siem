@@ -1,0 +1,13 @@
+global:
+  resolve_timeout: 5m
+route:
+  receiver: monitoring-webhook
+  group_by: [alertname, service]
+  group_wait: 30s
+  group_interval: 1m
+  repeat_interval: 4h
+receivers:
+  - name: monitoring-webhook
+    webhook_configs:
+      - url_file: /run/secrets/socp_monitoring_webhook_url
+        send_resolved: true

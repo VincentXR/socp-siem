@@ -1,9 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 const core = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), requestText: vi.fn() }))
 vi.mock('./core', () => core)
-import { getSourceSetup, previewSource, renderSourceConfig, updateOutput, validateOutputConfig } from './ingest'
+import { getSourceSetup, listIngestTasksPage, previewSource, renderSourceConfig, updateOutput, validateOutputConfig } from './ingest'
 beforeEach(() => vi.clearAllMocks())
 describe('ingestion setup API contracts', () => {
+  it('requests a server page instead of silently accepting the legacy 500-task cap', () => {
+    const options = { signal: new AbortController().signal }
+    listIngestTasksPage(26, 20, options)
+    expect(core.get).toHaveBeenCalledExactlyOnceWith('/search-config/api/v1/ingest/tasks?page=26&size=20', options)
+  })
   it('encodes source identity and previews without using the event injection endpoint', () => {
     const options = { signal: new AbortController().signal }
     getSourceSetup('a/b', options)

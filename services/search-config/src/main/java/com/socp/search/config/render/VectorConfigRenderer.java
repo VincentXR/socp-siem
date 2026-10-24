@@ -151,6 +151,7 @@ public class VectorConfigRenderer {
                 || uri.getHost() == null || uri.getUserInfo() != null || uri.getFragment() != null) {
             throw ApiException.badRequest("Output requires an HTTP(S) URI without embedded credentials or fragment");
         }
+        SinkTarget.requireNdjsonHttpPath(uri);
         return target;
     }
 

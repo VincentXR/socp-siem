@@ -46,6 +46,7 @@ PROD_COMPOSE = ROOT / "infra" / "docker-compose.prod.yml"
 IMAGE_CATALOG = ROOT / "infra" / "middleware-images.env"
 HELM_VALUES = ROOT / "deploy" / "helm" / "socp-core" / "values.yaml"
 HELM_DEPLOYMENTS = ROOT / "deploy" / "helm" / "socp-core" / "templates" / "deployments.yaml"
+DETECT_APPLICATION = ROOT / "services" / "detect-web" / "src" / "main" / "resources" / "application.yml"
 CREATE_TOPICS = ROOT / "infra" / "init-sql" / "kafka" / "create-topics.sh"
 
 # Topic names the running code actually produces to or consumes from, taken from
@@ -344,7 +345,18 @@ def check_redis(errors: list[str], base: dict, overlay: dict, effective: dict) -
         errors.append("docker-compose.prod.yml: the redis healthcheck must authenticate, or it fails closed on an instance that is up")
 
 
+def check_detection_readiness(errors: list[str]) -> None:
+    config = DETECT_APPLICATION.read_text(encoding="utf-8")
+    group = re.search(r"(?m)^\s{8}readiness:\s*\n\s{10}include:\s*([^\n]+)", config)
+    members = {item.strip() for item in group.group(1).strip("\"' ").split(",")} if group else set()
+    required = {"readinessState", "db", "socpDependencies", "detectionRouting", "detectionWorker"}
+    missing = required - members
+    if missing:
+        errors.append("Detect readiness omits required health contributors: " + ", ".join(sorted(missing)))
+
+
 def check_helm_parity(errors: list[str]) -> None:
+    check_detection_readiness(errors)
     if not HELM_VALUES.is_file() or not HELM_DEPLOYMENTS.is_file():
         errors.append("missing the Helm baseline that this overlay rehearses")
         return

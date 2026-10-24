@@ -20,7 +20,15 @@ offset vector does not cover its predecessor is rejected.
 Startup and partition assignment rebuild state from the configured retention
 window in partition/offset order. Reads are paginated and PENDING prefetch is
 bounded; records beyond that prefix remain behind uncommitted Kafka offsets and
-return through normal delivery. Flyway migration
+return through normal delivery. Streaming journal replay suspends enclosing
+transactions, including the rule catalogue transaction used during a hot reload.
+Each repository page runs in a separate read-only transaction that closes its
+persistence context before the callback. Suspending a transaction alone is not
+enough: Spring's synchronization-only scope can also retain an EntityManager.
+Hibernate therefore does not retain every journal entity across the recovery
+window. Callbacks receive
+event values without detaching or clearing unrelated caller writes; checkpoint
+offsets, tenant scope, replay order, and PENDING caps are unchanged. Flyway migration
 `V23__detection_checkpoint_replay_index.sql` supplies the
 `(tenant_id, status, kafka_partition, kafka_offset)` access path. It uses plain
 `CREATE INDEX` because the in-process Flyway runner wraps migrations in a
@@ -72,3 +80,11 @@ engines remain live until the replacement has replayed durable state and can be
 swapped under the lifecycle lock. A failed reload keeps the previous engines
 serving and leaves the affected keys for scheduled recovery; process-wide
 recovery is reserved for startup and full assignment rebuilds.
+
+Actuator's `detectionWorker` contributor also checks recovery readiness and the
+Kafka polling thread. A terminated poller reports DOWN even while the HTTP
+server is still running. API-only processes do not require a local consumer.
+The deployment readiness group includes `detectionWorker`, so this failure
+also makes `/actuator/health/readiness` return 503 and removes the process from
+ready endpoints. Deployment contract checks reject a configuration that omits
+this contributor.

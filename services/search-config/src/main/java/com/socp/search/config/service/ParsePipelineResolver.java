@@ -1,5 +1,7 @@
 package com.socp.search.config.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.search.config.config.ConfigCacheProperties;
 import com.socp.search.config.config.SearchRuntimeRole;
@@ -30,6 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ParsePipelineResolver {
 
     private static final Logger log = LoggerFactory.getLogger(ParsePipelineResolver.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
     private static final int MAX_CACHE_ENTRIES = 2048;
     private final ParseRuleStore rules;
     private final ParseRuleExecutor executor;
@@ -73,6 +76,20 @@ public class ParsePipelineResolver {
     }
 
     private static String jsonInput(String original, String rawLog) {
+        if (original != null && original.stripLeading().startsWith("{")) {
+            try {
+                var envelope = MAPPER.readTree(original);
+                if (envelope != null && envelope.isObject() && envelope.hasNonNull("source_id")
+                        && envelope.hasNonNull("collector_tag") && envelope.hasNonNull("parse_format")) {
+                    // Explicit JSON rules operate on the source record as well.
+                    // Falling back to the valid transport envelope would erase
+                    // the fixed-format error and falsely "repair" invalid text.
+                    return envelope.path("message").asText("");
+                }
+            } catch (JsonProcessingException malformed) {
+                // Preserve the executor's ordinary malformed-input diagnostics.
+            }
+        }
         if (rawLog != null && rawLog.stripLeading().startsWith("{")) return rawLog;
         return original;
     }

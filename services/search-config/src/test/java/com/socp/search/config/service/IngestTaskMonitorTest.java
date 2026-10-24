@@ -27,6 +27,22 @@ class IngestTaskMonitorTest {
     }
 
     @Test
+    void sourceObservationsAreTenantIsolatedAndDoNotDoubleCollectorTotals() {
+        var monitor = new IngestTaskMonitor();
+        monitor.record("shared-credential", 3, 0, 0, 0, 0, 120);
+        monitor.recordSource("file-a", 1, 0, 0, 0, 0, 40);
+        monitor.recordSource("file-b", 2, 0, 0, 0, 0, 80);
+        assertEquals(1L, monitor.sourceRuntime("file-a", true).get("accepted"));
+        assertEquals(2L, monitor.sourceRuntime("file-b", true).get("accepted"));
+        assertEquals("DISABLED", monitor.sourceRuntime("file-b", false).get("health"));
+        assertEquals(1, monitor.summary(null).get("collectors"));
+        assertEquals(3L, monitor.summary(null).get("accepted"));
+        TenantContext.set("other-tenant");
+        assertEquals(0L, monitor.sourceRuntime("file-a", true).get("accepted"));
+        assertEquals(0, monitor.summary(null).get("collectors"));
+    }
+
+    @Test
     void boundsCollectorStatistics() {
         IngestTaskMonitor monitor = new IngestTaskMonitor();
         ReflectionTestUtils.setField(monitor, "maxEntries", 1);

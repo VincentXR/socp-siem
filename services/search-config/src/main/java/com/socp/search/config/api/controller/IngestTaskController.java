@@ -10,6 +10,7 @@ import com.socp.platform.error.api.ApiResult;
 import com.socp.platform.error.api.PageResponse;
 import com.socp.platform.error.exception.ApiException;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -62,20 +63,20 @@ public class IngestTaskController {
                               @RequestParam(required = false) Integer size) {
         int safeSize = size == null || size <= 0 ? 500 : Math.min(500, size);
         if (page == null) {
-            return ApiResult.ok(store.page(PageRequest.of(0, safeSize)).getContent()
+            return ApiResult.ok(store.page(PageRequest.of(0, safeSize, Sort.by("sourceId").ascending())).getContent()
                     .stream().map(this::toTask).toList());
         }
         if (page < 1 || size != null && (size < 1 || size > 500)) {
             throw ApiException.badRequest("page must be >= 1 and size must be between 1 and 500");
         }
-        var result = store.page(PageRequest.of(page - 1, safeSize));
+        var result = store.page(PageRequest.of(page - 1, safeSize, Sort.by("sourceId").ascending()));
         return ApiResult.ok(PageResponse.of(result.getContent().stream().map(this::toTask).toList(),
                 result.getTotalElements(), page, safeSize, result.getTotalPages()));
     }
 
     @GetMapping("/ingest/tasks/summary")
     public ApiResult<Map<String, Object>> summary() {
-        Map<String, Object> m = new LinkedHashMap<>(monitor.summary(store.enabledCollectorTags()));
+        Map<String, Object> m = new LinkedHashMap<>(monitor.summary(null));
         m.put("sources", store.count());
         m.put("enabledSources", store.countEnabled());
         return ApiResult.ok(m);
@@ -166,7 +167,7 @@ public class IngestTaskController {
         m.put("desiredState", s.enabled() ? "ENABLED" : "DISABLED");
         m.put("applyState", s.enabled() ? "MANUAL_APPLY_REQUIRED" : "DISABLED");
         m.put("appliedState", "UNKNOWN");
-        m.put("telemetryScope", "CURRENT_API_REPLICA_AND_COLLECTOR_TAG");
+        m.put("telemetryScope", "CURRENT_API_REPLICA_AND_SOURCE_ID");
         m.put("collector", s.collectorTag());
         m.put("target", target(s));
         m.put("env", s.env());
@@ -175,7 +176,7 @@ public class IngestTaskController {
         m.put("sinkTargetId", s.sinkTargetId());
         m.put("parseRuleIds", s.parseRuleIds());
         m.put("createdAt", s.createdAt() == null ? null : s.createdAt().toString());
-        Map<String, Object> runtime = monitor.runtime(s.collectorTag(), s.enabled());
+        Map<String, Object> runtime = monitor.sourceRuntime(s.id(), s.enabled());
         m.put("collectionState", collectionState(runtime, s.enabled()));
         m.put("runtime", runtime);
         return m;

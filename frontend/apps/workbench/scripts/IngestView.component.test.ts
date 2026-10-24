@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   listOutputs: vi.fn().mockResolvedValue([]),
   listParseRulesPage: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, size: 20, totalPages: 0 }),
   resolveParseRules: vi.fn().mockResolvedValue([]),
-  listIngestTasks: vi.fn().mockResolvedValue([]),
+  listIngestTasksPage: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, size: 20 }),
   ingestSummary: vi.fn().mockResolvedValue({}),
   listCategories: vi.fn().mockResolvedValue([]),
   renderConfig: vi.fn(),
@@ -45,7 +45,7 @@ describe('IngestView vector.toml render failures', () => {
     mocks.listOutputs.mockResolvedValue([])
     mocks.listParseRulesPage.mockResolvedValue({ items: [], total: 0, page: 1, size: 20, totalPages: 0 })
     mocks.resolveParseRules.mockResolvedValue([])
-    mocks.listIngestTasks.mockResolvedValue([])
+    mocks.listIngestTasksPage.mockResolvedValue({ items: [], total: 0, page: 1, size: 20 })
     mocks.ingestSummary.mockResolvedValue({})
     mocks.listCategories.mockResolvedValue([])
   })

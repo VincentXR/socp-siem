@@ -162,6 +162,29 @@ class ParserCoverageTest {
     }
 
     @Test
+    void fixedJsonValidatesTheVectorBodyWithoutRejectingOrdinaryApplicationMessages() throws Exception {
+        var registry = new ParserRegistry();
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        for (String message : java.util.List.of("plain text", "{broken", "")) {
+            String raw = mapper.writeValueAsString(Map.of("source_id", "source-1", "collector_tag", "search-source-1",
+                    "parse_format", "json", "eventId", "transport-1", "message", message));
+            var parsed = registry.parse(raw, ParseFormat.JSON, null);
+            assertTrue(parsed.containsKey("parse.error"), "transport JSON must not hide an invalid source body: " + message);
+            assertEquals(message, parsed.get(CanonicalEvent.EVENT_MESSAGE));
+            assertEquals("transport-1", parsed.get("eventId"));
+        }
+        String inner = mapper.writeValueAsString(Map.of("message", "ordinary application text", "event.id", "producer-1"));
+        assertFalse(registry.parse(inner, ParseFormat.JSON, null).containsKey("parse.error"));
+        var validEnvelope = registry.parse(mapper.writeValueAsString(Map.of("source_id", "source-1",
+                "collector_tag", "search-source-1", "parse_format", "json", "eventId", "transport-1", "message", inner)),
+                ParseFormat.JSON, null);
+        assertFalse(validEnvelope.containsKey("parse.error"));
+        assertEquals("ordinary application text", validEnvelope.get(CanonicalEvent.EVENT_MESSAGE));
+        assertEquals("transport-1", validEnvelope.get("eventId"));
+        assertEquals("producer-1", validEnvelope.get("event.id"));
+    }
+
+    @Test
     void parserRegistryHandlesFixedFormatsAndJsonEnvelopes() {
         ParserRegistry registry = new ParserRegistry();
 

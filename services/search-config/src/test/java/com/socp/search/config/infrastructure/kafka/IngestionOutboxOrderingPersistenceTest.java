@@ -150,6 +150,29 @@ class IngestionOutboxOrderingPersistenceTest {
         for (String id : ids) assertThat(status(id)).isEqualTo("PUBLISHED");
     }
 
+    @Test
+    void oneSelectionRoundAdmitsABoundedOrderedHotKeyBatch() {
+        var ids = new java.util.ArrayList<String>();
+        for (int i = 0; i < 20; i++) ids.add(insert("batch-" + i, "tenant-a|host|batch", "batch-" + i));
+        var delivered = new CopyOnWriteArrayList<String>();
+        KafkaEventProducer producer = mock(KafkaEventProducer.class);
+        when(producer.isEnabled()).thenReturn(true);
+        when(producer.sendAndAwait(any(), any(), any())).thenAnswer(invocation -> {
+            delivered.add(invocation.getArgument(1));
+            return true;
+        });
+        firstPublisher = new IngestionOutboxPublisher(repository, producer, null,
+                4, 12, Duration.ofDays(30).toMillis(), 100, 2, 1, 5_000);
+
+        firstPublisher.publish();
+
+        assertThat(delivered).containsExactlyElementsOf(
+                java.util.stream.IntStream.range(0, 16).mapToObj(i -> "batch-" + i).toList());
+        for (int i = 0; i < 20; i++) {
+            assertThat(status(ids.get(i))).isEqualTo(i < 16 ? "PUBLISHED" : "PENDING");
+        }
+    }
+
     private IngestionOutboxPublisher publisher(KafkaEventProducer producer) {
         return new IngestionOutboxPublisher(repository, producer, null,
                 4, 12, Duration.ofDays(30).toMillis(), 100, 2, 8, 5_000);

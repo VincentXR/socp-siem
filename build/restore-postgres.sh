@@ -35,6 +35,25 @@ TARGET_DB="$2"
 : "${PGPORT:=5432}"
 : "${PGUSER:?set PGUSER}"
 
+# This operational helper accepts a plain database identifier, never a libpq
+# connection string, a CLI option, or SQL. Validate before any server command.
+if [[ ! "${TARGET_DB}" =~ ^[a-zA-Z_][a-zA-Z0-9_]{0,62}$ ]]; then
+  echo "target database must be a plain identifier (1-63 ASCII letters, digits or underscores; no leading digit)" >&2
+  exit 2
+fi
+
+# Keep arrays nonempty for Bash versions whose nounset treats an empty
+# array as unset. The plain integrity drill retains its administrative owner.
+create_args=(--owner="${PGUSER}")
+restore_args=(--role="${PGUSER}")
+if [[ "${FINALIZE}" -eq 1 ]]; then
+  : "${SOCP_PG_RUNTIME_USER:?--finalize requires SOCP_PG_RUNTIME_USER (the runtime role must already exist cluster-wide)}"
+  : "${SOCP_PG_MIGRATION_USER:?--finalize requires SOCP_PG_MIGRATION_USER (schema owner for the restored objects)}"
+  : "${PGPASSWORD:?--finalize requires PGPASSWORD for the tenant RLS helper}"
+  create_args=(--owner="${SOCP_PG_MIGRATION_USER}")
+  restore_args=(--role="${SOCP_PG_MIGRATION_USER}")
+fi
+
 # Databases that must never be overwritten by a restore. PGDATABASE is included
 # because restoring a dump over its own source is a destructive no-op at best.
 PROTECTED="postgres template0 template1 ${PGDATABASE:-}"
@@ -62,20 +81,24 @@ fi
 
 # Create rather than reuse: pg_restore into an existing database appends to
 # whatever is already there, and a partial restore would look like success.
-if psql --host="${PGHOST}" --port="${PGPORT}" --username="${PGUSER}" \
+target_exists="$(psql -X --set=ON_ERROR_STOP=1 \
+      --host="${PGHOST}" --port="${PGPORT}" --username="${PGUSER}" \
       --dbname=postgres --tuples-only --no-align \
-      --command="select 1 from pg_database where datname='${TARGET_DB}'" | grep -q 1; then
+      --command="select 1 from pg_database where datname='${TARGET_DB}'")"
+if [[ "${target_exists}" == "1" ]]; then
   echo "target database already exists: ${TARGET_DB}" >&2
   echo "drop it explicitly or choose another name" >&2
   exit 2
 fi
 
-createdb --host="${PGHOST}" --port="${PGPORT}" --username="${PGUSER}" "${TARGET_DB}"
+createdb --host="${PGHOST}" --port="${PGPORT}" --username="${PGUSER}" \
+  "${create_args[@]}" -- "${TARGET_DB}"
 
 umask 077
 pg_restore \
   --host="${PGHOST}" --port="${PGPORT}" --username="${PGUSER}" \
   --dbname="${TARGET_DB}" \
+  "${restore_args[@]}" \
   --no-owner --no-privileges \
   "${DUMP_FILE}"
 
@@ -99,8 +122,6 @@ fi
 # exist (post-restore), the runtime role must exist cluster-wide (created by
 # 00_roles.sh, not by this dump), grants must precede RLS because FORCE ROW LEVEL
 # SECURITY on an ownerless table with no SELECT grant would lock the app out.
-: "${SOCP_PG_RUNTIME_USER:?--finalize requires SOCP_PG_RUNTIME_USER (the runtime role must already exist cluster-wide)}"
-: "${SOCP_PG_MIGRATION_USER:?--finalize requires SOCP_PG_MIGRATION_USER (schema owner for the restored objects)}"
 
 psql --set=ON_ERROR_STOP=1 \
   --host="${PGHOST}" --port="${PGPORT}" --username="${PGUSER}" --dbname="${TARGET_DB}" \

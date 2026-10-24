@@ -1,0 +1,40 @@
+# The verified SOCP Vector build includes the generic HTTP sink. Loki's JSON
+# push contract needs one complete streams document per request, not NDJSON
+# containing several documents. Application stdout files are mounted read-only.
+data_dir = "/var/lib/vector"
+
+[sources.application_logs]
+type = "file"
+include = ["/logs/*.log"]
+read_from = "beginning"
+# Spring Boot banners are identical across services. Content fingerprints
+# collapse different files; filesystem identity keeps each service independent.
+fingerprint.strategy = "device_and_inode"
+
+[transforms.loki_stream]
+type = "remap"
+inputs = ["application_logs"]
+drop_on_abort = true
+source = '''
+line = to_string(.message) ?? encode_json(.)
+path = to_string(.file) ?? "unknown"
+service = replace(path, r'^.*/|\.log$', "")
+if !includes(["api-gateway", "alert-web", "search-config", "detect-web", "soar-web", "report-web", "asset-web", "soc-base", "hips-web", "ai-assistant", "threat-web", "attack-web", "notify-web", "incident-web"], service) {
+  abort
+}
+ns = to_string(to_unix_timestamp(now(), unit: "nanoseconds"))
+. = {"streams": [{"stream": {"service": service, "deployment": "socp"}, "values": [[ns, line]]}]}
+'''
+
+[sinks.loki]
+type = "http"
+inputs = ["loki_stream"]
+uri = "http://loki:3100/loki/api/v1/push"
+encoding.codec = "json"
+framing.method = "newline_delimited"
+batch.max_events = 1
+request.headers.Content-Type = "application/json"
+acknowledgements.enabled = true
+buffer.type = "disk"
+buffer.max_size = 268435488
+buffer.when_full = "block"
