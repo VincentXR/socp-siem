@@ -8,7 +8,7 @@ const { query } = vi.hoisted(() => ({ query: {} as Record<string, string> }))
 vi.mock('vue-router', () => ({
   onBeforeRouteLeave: vi.fn(), onBeforeRouteUpdate: vi.fn(),
   useRoute: () => ({ query: reactive(query) }),
-  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn(), beforeEach: () => () => {} }),
 }))
 vi.mock('../src/api/domains', () => ({ caseApi: {
   list: vi.fn(async () => ({ items: [], total: 0 })), stats: vi.fn(async () => ({ total: 0, open: 0, resolved: 0 })),

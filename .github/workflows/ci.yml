@@ -214,7 +214,7 @@ jobs:
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       contents: read
     env:
@@ -229,20 +229,25 @@ jobs:
 
       - name: Review dependency changes with GitHub Dependency Graph
         id: github_review
+        # Bound Dependency Graph outages so the full fail-closed fallback can run.
+        timeout-minutes: 5
         continue-on-error: true
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
         with:
           fail-on-severity: high
+          # Scorecard is informational; v5 fetches it serially for every added
+          # manifest entry, delaying CVE checks for this multi-module graph.
+          show-openssf-scorecard: false
 
       - name: Decide whether fallback audit is required
         id: fallback
-        if: steps.github_review.outcome == 'failure'
+        if: steps.github_review.outcome != 'success'
         env:
-          VULNERABLE_CHANGES: ${{ steps.github_review.outputs['vulnerable-changes'] }}
+          # Keep the potentially multi-megabyte advisory JSON out of process env/argv.
+          HAS_VULNERABLE_CHANGES: ${{ steps.github_review.outputs['vulnerable-changes'] != '' && steps.github_review.outputs['vulnerable-changes'] != '[]' && steps.github_review.outputs['vulnerable-changes'] != '{}' }}
         run: |
-          if [[ -n "${VULNERABLE_CHANGES}" && "${VULNERABLE_CHANGES}" != "[]" && "${VULNERABLE_CHANGES}" != "{}" ]]; then
-            echo "GitHub Dependency Review reported vulnerable dependency changes:"
-            printf '%s\n' "${VULNERABLE_CHANGES}"
+          if [[ "${HAS_VULNERABLE_CHANGES}" != "false" ]]; then
+            echo "::error::GitHub Dependency Review reported vulnerable changes; see its advisory output above."
             exit 1
           fi
           echo "::notice::GitHub Dependency Graph unavailable; running lightweight repository-native dependency audits."

@@ -1,4 +1,4 @@
-import { flushPromises, shallowMount } from '@vue/test-utils'
+import { flushPromises, mount, shallowMount } from '@vue/test-utils'
 import { defineComponent, h, ref } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -6,6 +6,7 @@ import OverviewView from '../src/views/OverviewView.vue'
 import ElButton from 'element-plus/es/components/button/index.mjs'
 import PageHeader from '../src/components/PageHeader.vue'
 import MetricCard from '../src/components/MetricCard.vue'
+import type { Alarm } from '../src/api'
 import { useOverview } from '../src/composables/useOverview'
 
 const mocks = vi.hoisted(() => ({ alarmStats: vi.fn(), caseStats: vi.fn(), getHealthSnapshot: vi.fn(), listAlarmsPaged: vi.fn() }))
@@ -20,6 +21,23 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('overview successful refresh time', () => {
+  it('renders missing alarm dispositions as unknown without requesting an undefined translation key', async () => {
+    const warning = vi.spyOn(console, 'warn')
+    const wrapper = mount(OverviewView, { props: {
+      stat: { total: 2, critical: 0, high: 2, activeCases: 0, online: 0 }, healths: {},
+      filteredAlarms: [
+        { id: 'missing-status', ruleName: 'Missing disposition', severity: 'HIGH' },
+        { id: 'open-status', ruleName: 'Known disposition', severity: 'HIGH', status: 'OPEN' },
+      ] as unknown as Alarm[],
+      availability: { alarms: true, stats: true, cases: true },
+    }, global: { stubs: { TrendChart: true, AnimatedNumber: true } } })
+    try {
+      await flushPromises()
+      expect(wrapper.findAll('.ov-alert-status').map(status => status.text())).toEqual(['未知', '待处理'])
+      expect(warning.mock.calls.flat().join(' ')).not.toContain('statuses.undefined')
+    } finally { wrapper.unmount() }
+  })
+
   it('keeps zero severity bars empty, includes unclassified alarms and counts only observed target services', () => {
     const wrapper = shallowMount(OverviewView, { props: {
       stat: { total: 10, critical: 0, high: 6, activeCases: 0, online: 99 },

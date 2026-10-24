@@ -16,7 +16,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -110,6 +110,10 @@ class SoarCatalogQueryPersistenceTest {
         jdbc.update("update t_soar_playbook set latest_published_version=1 where id in ('high','medium')");
         resetEvidence();
 
+        // Risk-only navigation also binds the optional locate argument as null
+        // on its first execution, before any typed non-null tag is supplied.
+        assertThat(queries.listPlaybooks(PageRequest.of(0, 1), null, null, null, "HIGH")
+                .getTotalElements()).isEqualTo(2);
         assertRisk(" high ", "high");
         assertRisk("CRITICAL", "high");
         assertRisk("MEDIUM", "medium");
@@ -231,6 +235,17 @@ class SoarCatalogQueryPersistenceTest {
         run("catalog-query-b", "private-run", "private-investigation", NOW, "alarm-1", "case-1");
         resetEvidence();
 
+        // A case opens this query with no keyword. Exercise null on the first
+        // execution: a previous non-null bind can hide PostgreSQL type errors.
+        var casePage = runs.searchInvestigation(TENANT, null, "case-1", null, null,
+                PageRequest.of(0, 1));
+        assertThat(casePage.getTotalElements()).isEqualTo(2);
+        assertThat(casePage).extracting(SoarRunEntity::getId).containsExactly("investigation-match");
+        assertThat(runs.searchInvestigation(TENANT, null, "case-1", null, null,
+                PageRequest.of(1, 1))).extracting(SoarRunEntity::getId).containsExactly("unrelated");
+        assertThat(runs.searchInvestigation(TENANT, null, null, null, null,
+                PageRequest.of(0, 1)).getTotalElements()).isEqualTo(3);
+
         SoarRunEntity loaded = runs.findByTenantIdAndId(TENANT, "investigation-match").orElseThrow();
         assertThat(loaded.getOriginAlarmId()).isEqualTo("alarm-1");
         assertThat(loaded.getOriginCaseId()).isEqualTo("case-1");
@@ -241,6 +256,18 @@ class SoarCatalogQueryPersistenceTest {
                 PageRequest.of(0, 1)).getTotalElements()).isEqualTo(2);
         assertThat(runs.searchInvestigation(TENANT, null, null, null, "%_", PageRequest.of(0, 20))).isEmpty();
         assertThat(runs.searchInvestigation(TENANT, "alarm-1", "case-1", "FAILED", null,
+                PageRequest.of(0, 20))).isEmpty();
+
+        playbook(TENANT, "literal%_book", "[]", "ACTIVE", "Alice");
+        version(TENANT, "literal%_book", 1, "PUBLISHED", 0, 1);
+        run(TENANT, "literal-run", "literal%_book", NOW, null, "case-literal");
+        playbook("catalog-query-b", "private%_book", "[]", "ACTIVE", "Alice");
+        version("catalog-query-b", "private%_book", 1, "PUBLISHED", 0, 1);
+        run("catalog-query-b", "private-literal-run", "private%_book", NOW, null, "case-literal");
+        resetEvidence();
+        assertThat(runs.searchInvestigation(TENANT, null, null, null, "%_",
+                PageRequest.of(0, 20))).extracting(SoarRunEntity::getId).containsExactly("literal-run");
+        assertThat(runs.searchInvestigation(TENANT, null, "case-1", null, "%_",
                 PageRequest.of(0, 20))).isEmpty();
     }
 

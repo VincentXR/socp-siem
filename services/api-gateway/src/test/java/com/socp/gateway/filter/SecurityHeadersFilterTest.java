@@ -26,6 +26,6 @@ class SecurityHeadersFilterTest {
 
         MockServerWebExchange http = MockServerWebExchange.from(MockServerHttpRequest.get("/health").build());
         filter.filter(http, ignored -> Mono.empty()).block();
-        assertThat(http.getResponse().getHeaders()).doesNotContainKey("Strict-Transport-Security");
+        assertThat(http.getResponse().getHeaders().containsHeader("Strict-Transport-Security")).isFalse();
     }
 }

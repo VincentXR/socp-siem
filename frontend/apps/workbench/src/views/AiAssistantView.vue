@@ -247,7 +247,7 @@ watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]
           :placeholder="t('ai.placeholder')" :aria-label="t('ai.placeholder')"
           @keyup.enter="() => ask()"
         />
-        <el-button type="primary" :loading="loading" @click="() => ask()">{{ t('ai.askBtn') }}</el-button>
+        <el-button type="primary" :loading="loading" :disabled="!question.trim()" @click="() => ask()">{{ t('ai.askBtn') }}</el-button>
         <el-button v-if="result || question" @click="clear">{{ t('ai.resetBtn') }}</el-button>
       </div>
 
@@ -305,7 +305,7 @@ watch([contextAlarmId, () => route.query.jobId], ([id, routeJobId], [previousId]
       </div>
       <div class="ai-ask-row">
         <el-input v-model="alertId" clearable :placeholder="t('ai.investigation.alertId')" :aria-label="t('ai.investigation.alertId')" @keyup.enter="investigate" />
-        <el-button type="primary" :loading="investigationLoading" @click="investigate">{{ t('ai.investigation.investigate') }}</el-button>
+        <el-button type="primary" :loading="investigationLoading" :disabled="!alertId.trim()" @click="investigate">{{ t('ai.investigation.investigate') }}</el-button>
         <el-button v-if="investigation" :disabled="investigationLoading" @click="reanalyze">{{ t('ai.investigation.reanalyze') }}</el-button>
       </div>
       <div v-if="appendLoading && appendTarget !== investigation?.investigationId" role="status" class="ai-muted">{{ t('ai.investigation.previousAppendPending') }}</div>

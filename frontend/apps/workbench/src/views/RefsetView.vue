@@ -128,13 +128,17 @@ async function removeSelected(): Promise<void> {
     ElMessage.success(t('refset.itemsDeleted', { count: values.length }))
   }))
 }
+function parseEntries(text: string): string[] {
+  return [...new Set(text.split(/[\r\n,，;；]+/).map(value => value.trim()).filter(Boolean))]
+}
+
 async function importEntries() {
   if (!canWrite.value) return
   const id = selectedId.value
   if (!id) return
   importError.value = ''
   isolateError(importError, await mutation.run(async () => {
-    const values = [...new Set(importText.value.split(/[\r\n,，;；]+/).map(value => value.trim()).filter(Boolean))]
+    const values = parseEntries(importText.value)
     if (!values.length) throw new Error(t('forms.fieldRequired', { field: t('refset.initialEntries') }))
     const failedValues: string[] = []
     for (const value of values) {
@@ -166,7 +170,7 @@ async function addRefSet() {
   if (!canWrite.value || !validateSetForm()) return
   createError.value = ''
   isolateError(createError, await mutation.run(async () => {
-  const entries = form.value.entries.split(/[\n,，\s]+/).filter(Boolean)
+  const entries = parseEntries(form.value.entries)
   await createRefSet({ name: form.value.name.trim(), description: form.value.description || undefined, entries })
   form.value = { name: '', description: '', entries: '' }
   dialogVisible.value = false

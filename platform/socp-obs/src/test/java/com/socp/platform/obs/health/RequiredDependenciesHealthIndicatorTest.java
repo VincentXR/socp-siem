@@ -1,7 +1,7 @@
 package com.socp.platform.obs.health;
 
 import org.junit.jupiter.api.Test;
-import org.springframework.boot.actuate.health.Status;
+import org.springframework.boot.health.contributor.Status;
 
 import java.net.ServerSocket;
 

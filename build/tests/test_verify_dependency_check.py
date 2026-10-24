@@ -228,11 +228,17 @@ class DependencyCheckRuntimeGraphTest(unittest.TestCase):
     def test_workflow_preserves_failure_and_cache_boundaries(self):
         workflow = (ROOT / ".github/workflows/dependency-audit.yml").read_text(encoding="utf-8")
         java = workflow.split("  frontend-audit:")[0]
+        updater = (ROOT / "build/update-dependency-check.py").read_text(encoding="utf-8")
+        feeds = (ROOT / "build/nvd-feed-cache.py").read_text(encoding="utf-8")
         for required in ("-DfailBuildOnCVSS=8", "-DfailOnError=true", "-DskipRuntimeScope=false",
                          "-DautoUpdate=false", "-DnvdValidForHours=0", "-Dformats=HTML,JSON",
                          "if-no-files-found: error", "set -euo pipefail"):
-            self.assertIn(required, java)
-        self.assertLess(java.index(":update-only"), java.index("actions/cache/save@"))
+            self.assertIn(required, java + updater)
+        self.assertIn(":update-only", updater)
+        self.assertIn("build/nvd-feed-cache.py", updater)
+        self.assertIn("https://nvd.nist.gov/feeds/json/cve/2.0", feeds)
+        self.assertIn("-DnvdDatafeedUrl={feeds.as_uri()}/nvdcve-2.0-{{0}}.json.gz", updater)
+        self.assertLess(java.index("python3 build/update-dependency-check.py"), java.index("actions/cache/save@"))
         self.assertLess(java.index("actions/cache/save@"), java.index("-DskipTests"))
         self.assertLess(java.index("actions/cache/save@"), java.index(":aggregate"))
         self.assertNotIn("continue-on-error", java)

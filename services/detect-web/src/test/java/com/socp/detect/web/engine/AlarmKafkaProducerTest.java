@@ -38,6 +38,15 @@ class AlarmKafkaProducerTest {
     }
 
     @Test
+    void productionProducerConfigurationPassesRealKafka4Construction() {
+        AlarmKafkaProducer transport = new AlarmKafkaProducer();
+        ReflectionTestUtils.setField(transport, "bootstrap", "127.0.0.1:1");
+        KafkaProducer<String, String> actual = ReflectionTestUtils.invokeMethod(transport, "producer");
+        assertThat(actual).isNotNull();
+        actual.close(java.time.Duration.ZERO);
+    }
+
+    @Test
     void disabledProducerMustNotReportSuccessfulDelivery() {
         AlarmKafkaProducer producer = new AlarmKafkaProducer();
         ReflectionTestUtils.setField(producer, "enabled", false);

@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { useQueryClient } from '@tanstack/vue-query'
 import ElMessage from 'element-plus/es/components/message/index.mjs'
 import { currentSession, listOperators, logout, setUnauthorizedHandler } from '../api'
-import { normalizeLocale, setLocale } from '../i18n/locale-manager'
+import { initializeLocale } from '../i18n/locale-manager'
 import { useI18n } from './useI18n'
 
 export function useAuth() {
@@ -76,8 +76,7 @@ export function useAuth() {
     })
     try {
       const session = await currentSession()
-      const profileLocale = normalizeLocale(session.locale)
-      if (profileLocale) setLocale(profileLocale)
+      initializeLocale(session.locale)
       await onLoginDone(session.username, session.role, session.tenant, session.permissions ?? [])
       return true
     } catch {

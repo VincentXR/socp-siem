@@ -3,7 +3,7 @@ package com.socp.detect.web.api.controller;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.support.DefaultListableBeanFactory;
-import org.springframework.boot.actuate.health.HealthEndpoint;
+import org.springframework.boot.health.actuate.endpoint.HealthEndpoint;
 
 import java.util.Map;
 
@@ -19,7 +19,7 @@ class HealthControllerTest {
 
         var result = new HealthController(health).health();
 
-        assertThat(result.getStatusCodeValue()).isEqualTo(200);
+        assertThat(result.getStatusCode().value()).isEqualTo(200);
         assertThat(result.getBody().data()).containsExactlyInAnyOrderEntriesOf(
                 Map.of("service", "detect-web", "status", "UP"));
     }
@@ -35,7 +35,7 @@ class HealthControllerTest {
         var result = new HealthController(health, detection).health();
 
         // Degraded detection is not available traffic, so the probe must fail closed.
-        assertThat(result.getStatusCodeValue()).isEqualTo(503);
+        assertThat(result.getStatusCode().value()).isEqualTo(503);
         assertThat(result.getBody().data()).containsEntry("status", "DEGRADED")
                 .containsEntry("detectionRecovery", "DEGRADED")
                 .containsEntry("detectionReady", false);

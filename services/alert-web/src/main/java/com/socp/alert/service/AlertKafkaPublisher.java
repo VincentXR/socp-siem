@@ -48,6 +48,10 @@ public class AlertKafkaPublisher {
                     props.put(ProducerConfig.RETRIES_CONFIG, Integer.MAX_VALUE);
                     props.put(ProducerConfig.MAX_BLOCK_MS_CONFIG, 3_000);
                     props.put(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG, 30_000);
+                    // Kafka 4 defaults linger to 5ms; retain the prior immediate-send
+                    // policy and delivery >= request + linger within the 30s budget.
+                    props.put(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG, 30_000);
+                    props.put(ProducerConfig.LINGER_MS_CONFIG, 0);
                     producer = new KafkaProducer<>(props);
                 }
                 p = producer;

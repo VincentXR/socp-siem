@@ -36,10 +36,38 @@ deployment units; preserve the context path and response envelope.
 - Pagination uses the shared `page`, `size`, `total`, and `items` shape where a
   list contract supports pagination.
 
+### Gateway authentication and read retries
+
+The gateway validates the browser session before forwarding trusted identity.
+Every upstream attempt receives a fresh timestamp, one-use nonce and signature,
+including the single pre-response retry allowed for a bodyless report-archive
+list GET. The signature retains the original public path across compatibility
+rewrites. The owning service still verifies the signature and consumes the nonce;
+replays remain rejected. Writes and responses whose headers/body have started
+are never retried by that recovery filter.
+
+Servlet ASYNC redispatch of the same already authenticated HTTP request reuses
+its request-scoped proof verification. The cached proof binds the target,
+method, query, tenant, credential binding and signed headers; it is not shared
+with another HTTP request. This prevents SSE completion from consuming a nonce
+twice while retaining replay rejection for new requests. Async hand-off also
+clears thread-local identity before returning the servlet thread to its pool.
+
+On HTTP 401 the gateway overwrites `X-Socp-Session-Status`: `invalid` means the
+gateway rejected the browser session; `valid` means its session check succeeded
+and the upstream rejected its own authentication. The workbench retains the
+session and pending edits in the latter case and reports an upstream error.
+It still handles an unmarked 401 as a session rejection for compatibility with
+older gateways. Non-401 responses do not carry this classification header.
+
 SOAR's unversioned compatibility routes retain their historical 0-based
 `page` request parameter. Every paged SOAR response includes the complete
 `page`, `size`, `total`, `totalPages`, and `items` metadata; callers must use
 `totalPages` rather than inferring continuation from the returned item count.
+
+SOAR version mutation responses include the persisted optimistic `rowVersion`
+after flushing the write. An editor can submit that returned revision with its
+next save; an older revision still returns HTTP 409 without changing the draft.
 
 ### Workbench workflow query and edit contracts
 
@@ -738,6 +766,14 @@ the authority for actual before/after state and no-op/replay results. Existing
 audit records remain readable with null metadata (soc-base migration V5).
 
 ### IOC source identity and TAXII pagination
+
+An `IP` IOC value must be a literal IPv4 or IPv6 address. DNS names, CIDR ranges,
+IPv4 shorthand/leading-zero octets, bracketed addresses and interface scopes are
+rejected without DNS resolution. Manual create/update returns HTTP 400 for an
+invalid IP. JSON batch import skips invalid IP rows and reports their 1-based row
+numbers while importing valid rows. STIX/TAXII parsing rejects malformed IP
+indicators before writing the parsed batch; a malformed STIX upload returns 400.
+Existing indicator identities and historical rows are not rewritten by this check.
 
 IOC public IDs are opaque. New rows use UUIDs; V7 preserves existing IDs so saved
 links and evidence remain valid. The database business key is tenant plus a

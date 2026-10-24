@@ -405,6 +405,8 @@ class SoarServiceEdgeBranchesCoverageTest {
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-wf")).willReturn(Optional.of(wfRun));
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-wf"))
                 .willReturn(Optional.of(approval));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-wf"))
+                .willReturn(Optional.of((approval).getRunId()));
         given(decisions.findByTenantIdAndApprovalIdOrderByCreatedAtAsc("tenant-a", "apr-wf"))
                 .willReturn(List.of(vote("v-1", "apr-wf", "APPROVE"), vote("v-2", "apr-wf", "APPROVE")));
 
@@ -435,6 +437,8 @@ class SoarServiceEdgeBranchesCoverageTest {
         SoarApprovalEntity future = approval("apr-exp", "run-lock", "PENDING");
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-exp"))
                 .willReturn(Optional.of(future));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-exp"))
+                .willReturn(Optional.of((future).getRunId()));
         assertThat(service.expireApproval("apr-exp", Instant.now())).isFalse();
 
         // missing owner run -> false
@@ -442,6 +446,8 @@ class SoarServiceEdgeBranchesCoverageTest {
         expired.setExpiresAt(Instant.now().minusSeconds(60));
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-exp"))
                 .willReturn(Optional.of(expired));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-exp"))
+                .willReturn(Optional.of((expired).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-gone")).willReturn(Optional.empty());
         given(runs.findByTenantIdAndId("tenant-a", "run-gone")).willReturn(Optional.empty());
         assertThat(service.expireApproval("apr-exp", null)).isFalse();
@@ -454,6 +460,8 @@ class SoarServiceEdgeBranchesCoverageTest {
         pending.setExpiresAt(Instant.now().minusSeconds(60));
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", "apr-exp"))
                 .willReturn(Optional.of(pending));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", "apr-exp"))
+                .willReturn(Optional.of((pending).getRunId()));
         given(runs.findByTenantIdAndIdForUpdate("tenant-a", "run-wf")).willReturn(Optional.of(wfRun));
 
         assertThat(service.expireApproval("apr-exp", Instant.now())).isTrue();
@@ -641,11 +649,15 @@ class SoarServiceEdgeBranchesCoverageTest {
     private void stubApprovalLookup(SoarApprovalEntity approval) {
         given(approvals.findByTenantIdAndIdForUpdate("tenant-a", approval.getId()))
                 .willReturn(Optional.of(approval));
+        given(approvals.findRunIdByTenantIdAndId("tenant-a", approval.getId()))
+                .willReturn(Optional.of((approval).getRunId()));
     }
 
     private void stubTask(SoarManualTaskEntity task) {
         given(manualTasks.findByTenantIdAndIdForUpdate("tenant-a", task.getId()))
                 .willReturn(Optional.of(task));
+        given(manualTasks.findRunIdByTenantIdAndId("tenant-a", task.getId()))
+                .willReturn(Optional.of((task).getRunId()));
     }
 
     private static void assertRejected(HttpStatus status, String code, ThrowingCallable call) {

@@ -7,6 +7,7 @@ import com.socp.rule.engine.Watchlists;
 import jakarta.validation.Validation;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.beanvalidation.SpringValidatorAdapter;
@@ -20,6 +21,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class RuleDryRunControllerTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final MockMvc mvc = MockMvcBuilders.standaloneSetup(new RuleDryRunController(new RuleDryRunService()))
+            // Match the application's Jackson 2 preference instead of standalone Jackson 3 defaults.
+            .setMessageConverters(new MappingJackson2HttpMessageConverter())
             .setValidator(new SpringValidatorAdapter(Validation.buildDefaultValidatorFactory().getValidator())).build();
 
     private Map<String, Object> rule(String type, String op, String value) {

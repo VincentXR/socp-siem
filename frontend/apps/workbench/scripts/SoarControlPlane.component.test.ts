@@ -1,7 +1,10 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { toRaw } from 'vue'
 import SoarControlPlane from '../src/components/soar/SoarControlPlane.vue'
 import SoarCatalogPager from '../src/components/soar/SoarCatalogPager.vue'
+import SchemaInputForm from '../src/components/SchemaInputForm.vue'
+import FieldConditionBuilder from '../src/components/FieldConditionBuilder.vue'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import type { SoarPage, SoarPlaybook, SoarVersion } from '../src/api'
@@ -19,6 +22,7 @@ const mocks = vi.hoisted(() => ({
   listVersions: vi.fn(),
   createAutomationRule: vi.fn(),
   patchAutomationRule: vi.fn(),
+  completeManualTask: vi.fn(),
 }))
 vi.mock('../src/api', async importOriginal => ({ ...await importOriginal<object>(), ...mocks }))
 vi.mock('../src/composables/useConfirm', () => ({ useConfirm: () => ({ confirmDanger: mocks.confirmDanger }) }))
@@ -39,6 +43,7 @@ beforeEach(() => {
   mocks.listVersions.mockResolvedValue([])
   mocks.createAutomationRule.mockResolvedValue({})
   mocks.patchAutomationRule.mockResolvedValue({})
+  mocks.completeManualTask.mockResolvedValue({})
 })
 
 async function mountPlane(props: { section: 'rules' | 'tasks' | 'connections-and-ops'; hideTabs?: boolean }) {
@@ -48,6 +53,36 @@ async function mountPlane(props: { section: 'rules' | 'tasks' | 'connections-and
 }
 
 describe('soar control plane data scoping', () => {
+  it.each([{}, { reason: 'draft', context: { owner: 'alice' }, selected: ['one'] }])('opens reactive manual-task input %j as an independent editable copy', async input => {
+    const original = structuredClone(input)
+    mocks.listManualTasksPage.mockResolvedValue({ ...emptyPage, total: 1, totalPages: 1, items: [{
+      id: 'task-input', status: 'PENDING', runId: 'waiting-input-run', nodeId: 'manual', input,
+      formSchema: { type: 'object', properties: { reason: { type: 'string' } } },
+    }] })
+    const wrapper = await mountPlane({ section: 'tasks', hideTabs: true })
+    await wrapper.get('tbody tr button').trigger('click')
+    await flushPromises()
+    const drawer = wrapper.findAllComponents(ElDrawer).find(candidate => candidate.props('modelValue'))!
+    expect(drawer).toBeTruthy()
+    const form = wrapper.getComponent(SchemaInputForm)
+    const value = form.props('modelValue') as Record<string, unknown>
+    expect(value).toEqual(original)
+    expect(toRaw(value)).not.toBe(input)
+    if (value.context) {
+      expect(toRaw(value.context)).not.toBe((input as { context: object }).context)
+      ;(value.context as { owner: string }).owner = 'reviewer'
+      ;(value.selected as string[]).push('two')
+    }
+    form.vm.$emit('update:modelValue', { ...value, reason: 'reviewed' })
+    await flushPromises()
+    await drawer.get('.el-drawer__footer .el-button--primary').trigger('click')
+    await flushPromises()
+    expect(mocks.completeManualTask).toHaveBeenCalledExactlyOnceWith('task-input', expect.objectContaining({ reason: 'reviewed' }))
+    expect(input).toEqual(original)
+    expect(drawer.props('modelValue')).toBe(false)
+    wrapper.unmount()
+  })
+
   it('prefills a published-version handoff for review without creating or enabling a rule', async () => {
     const wrapper = mount(SoarControlPlane, { props: { section: 'rules', initialVersionId: 'published-version', canWrite: true } })
     await flushPromises()
@@ -500,5 +535,135 @@ describe('paged rule playbook selection', () => {
     versions.reject(new Error('late version failure'))
     books.reject(new Error('late playbook failure'))
     await flushPromises()
+  })
+})
+
+
+describe('automation condition wire contract', () => {
+  async function editConditions(conditions: Record<string, unknown>, enabled = true) {
+    mocks.listAutomationRules.mockResolvedValue(catalogPage([{
+      ...catalogRows[0], name: 'Entity response', enabled, rowVersion: 4, conditions,
+      actions: [{ playbookVersionId: 'published-version' }],
+    }]))
+    const wrapper = await mountPlane({ section: 'rules', hideTabs: true })
+    await wrapper.findAll('tbody button')[1].trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+  async function saveConditions(wrapper: Plane) {
+    await wrapper.findAllComponents(ElDrawer)[0].findAll('.el-drawer__footer button').at(-1)!.trigger('click')
+    await flushPromises()
+  }
+
+  it('saves each simple predicate with its backend operator and envelope field, including repeated fields', async () => {
+    const wrapper = await editConditions({})
+    const builder = wrapper.getComponent(FieldConditionBuilder)
+    expect(builder.props('operators')).toEqual(['eq', 'ne', 'contains'])
+    expect(builder.props('fields').map(field => field.fieldName)).toEqual(expect.arrayContaining(['type', 'data.entity', 'data.ruleId', 'data.severity']))
+    expect(builder.props('fields').map(field => field.fieldName)).not.toContain('entity')
+    builder.vm.$emit('update:modelValue', [
+      { field: 'data.entity', op: 'eq', value: '192.0.2.126' },
+      { field: 'data.entity', op: 'ne', value: '192.0.2.127' },
+      { field: 'data.ruleId', op: 'contains', value: 'acceptance-' },
+    ])
+    await flushPromises()
+    await saveConditions(wrapper)
+    expect(mocks.patchAutomationRule).toHaveBeenCalledExactlyOnceWith('catalog-1', expect.objectContaining({
+      conditions: { all: [
+        { field: 'data.entity', operator: 'equals', value: '192.0.2.126' },
+        { field: 'data.entity', operator: 'not_equals', value: '192.0.2.127' },
+        { field: 'data.ruleId', operator: 'contains', value: 'acceptance-' },
+      ] }, enabled: true,
+    }))
+    wrapper.unmount()
+  })
+
+  it('creates a disabled rule using the same canonical condition contract', async () => {
+    const wrapper = mount(SoarControlPlane, { props: { section: 'rules', initialVersionId: 'published-version', canWrite: true } })
+    await flushPromises()
+    const drawer = wrapper.findAllComponents(ElDrawer)[0]
+    await drawer.get('input').setValue('New entity response')
+    wrapper.getComponent(FieldConditionBuilder).vm.$emit('update:modelValue', [{ field: 'data.entity', op: 'eq', value: '192.0.2.126' }])
+    await flushPromises()
+    await saveConditions(wrapper)
+    expect(mocks.createAutomationRule).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      name: 'New entity response', enabled: false,
+      conditions: { all: [{ field: 'data.entity', operator: 'equals', value: '192.0.2.126' }] },
+      actions: [{ playbookVersionId: 'published-version' }],
+    }))
+    wrapper.unmount()
+  })
+
+  it('refuses to save an unfinished row instead of broadening the rule to match every event', async () => {
+    const wrapper = await editConditions({})
+    wrapper.getComponent(FieldConditionBuilder).vm.$emit('update:modelValue', [{ field: 'data.entity', op: 'eq', value: '' }])
+    await flushPromises()
+    await saveConditions(wrapper)
+    expect(mocks.patchAutomationRule).not.toHaveBeenCalled()
+    expect(wrapper.findAllComponents(ElDrawer)[0].props('modelValue')).toBe(true)
+    expect(wrapper.findAllComponents(ElDrawer)[0].find('[role="alert"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it.each([
+    { any: [{ field: 'data.entity', operator: 'equals', value: '192.0.2.126' }, { expression: "data.severity == 'HIGH'" }] },
+    { all: [{ field: 'data.riskScore', operator: 'in', value: [80, 90] }, { any: [{ field: 'data.entity', operator: 'exists' }] }] },
+  ])('preserves advanced conditions without allowing a simple edit to overwrite them: %j', async conditions => {
+    const wrapper = await editConditions(conditions)
+    const builder = wrapper.getComponent(FieldConditionBuilder)
+    expect(builder.props('readOnly')).toBe(true)
+    expect(builder.props('modelValue')).toEqual([])
+    builder.vm.$emit('update:modelValue', [{ field: 'data.entity', op: 'eq', value: 'overwrite' }])
+    await flushPromises()
+    await saveConditions(wrapper)
+    expect(mocks.patchAutomationRule).toHaveBeenCalledExactlyOnceWith('catalog-1', expect.objectContaining({ conditions }))
+    wrapper.unmount()
+  })
+
+  it('requires explicit legacy conversion and saves the converted rule disabled', async () => {
+    const wrapper = await editConditions({ entity: '192.0.2.126', severity: 'HIGH' })
+    expect(wrapper.getComponent(FieldConditionBuilder).props('readOnly')).toBe(true)
+    await saveConditions(wrapper)
+    expect(mocks.patchAutomationRule).not.toHaveBeenCalled()
+    await wrapper.findAllComponents(ElDrawer)[0].get('.soar-convert-legacy-conditions').trigger('click')
+    await flushPromises()
+    expect(wrapper.getComponent(FieldConditionBuilder).props('modelValue')).toEqual([
+      { field: 'data.entity', op: 'eq', value: '192.0.2.126' }, { field: 'data.severity', op: 'eq', value: 'HIGH' },
+    ])
+    await saveConditions(wrapper)
+    expect(mocks.patchAutomationRule).toHaveBeenCalledExactlyOnceWith('catalog-1', expect.objectContaining({
+      enabled: false, conditions: { all: [
+        { field: 'data.entity', operator: 'equals', value: '192.0.2.126' },
+        { field: 'data.severity', operator: 'equals', value: 'HIGH' },
+      ] },
+    }))
+    expect(mocks.setAutomationRuleEnabled).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('also keeps legacy rules disabled when their JSON is explicitly corrected by hand', async () => {
+    const wrapper = await editConditions({ entity: '192.0.2.126' })
+    const drawer = wrapper.findAllComponents(ElDrawer)[0]
+    const conditions = { field: 'data.entity', operator: 'equals', value: '192.0.2.126' }
+    await drawer.get('.soar-condition-json textarea').setValue(JSON.stringify(conditions))
+    await flushPromises()
+    await saveConditions(wrapper)
+    expect(mocks.patchAutomationRule).toHaveBeenCalledExactlyOnceWith('catalog-1', expect.objectContaining({ enabled: false, conditions }))
+    wrapper.unmount()
+  })
+
+  it('blocks enabling an unconverted legacy rule while still allowing it to be disabled', async () => {
+    const wrapper = await editConditions({ entity: '192.0.2.126' }, false)
+    await closeRuleDrawer(wrapper)
+    await wrapper.findAll('tbody button')[0].trigger('click')
+    await flushPromises()
+    expect(mocks.setAutomationRuleEnabled).not.toHaveBeenCalled()
+    wrapper.unmount()
+    const enabled = await editConditions({ entity: '192.0.2.126' }, true)
+    await closeRuleDrawer(enabled)
+    await enabled.findAll('tbody button')[0].trigger('click')
+    await flushPromises()
+    expect(mocks.setAutomationRuleEnabled).toHaveBeenCalledExactlyOnceWith('catalog-1', false)
+    enabled.unmount()
   })
 })

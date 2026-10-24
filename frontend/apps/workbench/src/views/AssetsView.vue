@@ -412,8 +412,8 @@ watch([() => route.query.q, () => route.query.page, () => route.query.type, () =
           <template #default="{ row }">
             <el-button v-if="canWrite" link type="primary" size="small" :disabled="actionBusy" @click.stop="openEditAsset(row as Asset)">{{ t('common.edit') }}</el-button>
             <el-button v-else link type="primary" size="small" @click.stop="openAssetDetail(row as Asset)">{{ t('common.details') }}</el-button>
-            <el-dropdown v-if="canWrite" class="asset-row-menu" trigger="click" @click.stop @command="command => assetCommand(String(command), row as Asset)">
-              <el-button link size="small" :disabled="actionBusy" :aria-label="t('assets.moreActions', { name: row.name })">{{ t('common.more') }}</el-button>
+            <el-dropdown v-if="canWrite" class="asset-row-menu" trigger="click" @command="command => assetCommand(String(command), row as Asset)">
+              <el-button link size="small" :disabled="actionBusy" :aria-label="t('assets.moreActions', { name: row.name })" @click.stop>{{ t('common.more') }}</el-button>
               <template #dropdown><el-dropdown-menu><el-dropdown-item command="delete" class="asset-delete-action">{{ t('common.delete') }}</el-dropdown-item></el-dropdown-menu></template>
             </el-dropdown>
           </template>

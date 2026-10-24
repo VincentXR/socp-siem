@@ -374,7 +374,9 @@ async function loadRuns(refreshSelected = true) {
   runsLoading.value = true
   runsError.value = ''
   try {
-    const result = await listRuns(runsPage.value, catalogPageSize, { signal: controller.signal }, { alarmId: props.contextAlarmId || undefined, caseId: props.contextCaseId || undefined, q: runKeyword.value.trim() || undefined, status: runStatusFilter.value || undefined })
+    // An alarm may gain its case after an automatic run starts. Its response
+    // history must include those earlier runs; keep both origins for new runs.
+    const result = await listRuns(runsPage.value, catalogPageSize, { signal: controller.signal }, { alarmId: props.contextAlarmId || undefined, caseId: props.contextAlarmId ? undefined : props.contextCaseId || undefined, q: runKeyword.value.trim() || undefined, status: runStatusFilter.value || undefined })
     if (disposed || !props.active || controller.signal.aborted || runsController !== controller) return
     runsTotal.value = result.total
     runsTotalPages.value = result.totalPages ?? Math.ceil(result.total / catalogPageSize)

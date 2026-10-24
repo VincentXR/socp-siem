@@ -14,6 +14,7 @@ import 'element-plus/es/components/form/style/css.mjs'
 import 'element-plus/es/components/input/style/css.mjs'
 import SchemaInputForm from '../SchemaInputForm.vue'
 import SoarCatalogPager from './SoarCatalogPager.vue'
+import { AUTOMATION_OPERATORS, compileAutomationConditions, convertLegacyAutomationConditions, inspectAutomationConditions } from './automationConditions'
 const showRuleTest = ref(false)
 const editingRule = ref<SoarAutomationRule | null>(null)
 const selectedTask = ref<SoarManualTask | null>(null)
@@ -33,7 +34,7 @@ import FormField from '../FormField.vue'
 import FormGrid from '../FormGrid.vue'
 import FormSection from '../FormSection.vue'
 import { useI18n } from '../../composables/useI18n'
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, toRaw, watch } from 'vue'
 import { useConfirm } from '../../composables/useConfirm'
 import { tOr } from '../../utils/i18nLabel'
 import {
@@ -130,15 +131,15 @@ const deadLetters = ref<SoarDeadLetter[]>([])
 const stats = ref<SoarStats | null>(null)
 const showRuleForm = ref(false)
 const showConnectionForm = ref(false)
-const ruleEventText = ref('{\n  "eventId": "sample-alert-1",\n  "type": "alert.created",\n  "severity": "HIGH"\n}')
+const ruleEventText = ref('{\n  "eventId": "sample-alert-1",\n  "type": "alert.created",\n  "data": { "severity": "HIGH", "entity": "192.0.2.1" }\n}')
 const ruleTestResult = ref<Record<string, unknown>[] | null>(null)
 const ruleConditionRows = ref<RuleCondition[]>([])
 const automationFields: FieldDef[] = [
   { id: 'automation-event-type', fieldName: 'type', fieldLabel: 'Event type', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'alert.created, alert.enriched, case.updated, or another event type' },
-  { id: 'automation-severity', fieldName: 'severity', fieldLabel: 'Severity', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'INFO through CRITICAL' },
-  { id: 'automation-source', fieldName: 'source', fieldLabel: 'Source', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'Event source or collector' },
-  { id: 'automation-host', fieldName: 'host', fieldLabel: 'Host', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'Host associated with the event' },
-  { id: 'automation-entity', fieldName: 'entity', fieldLabel: 'Entity', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'User, host, IP, or other entity' },
+  { id: 'automation-severity', fieldName: 'data.severity', fieldLabel: 'Severity', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'INFO through CRITICAL' },
+  { id: 'automation-entity', fieldName: 'data.entity', fieldLabel: 'Entity', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'User, host, IP, or other entity' },
+  { id: 'automation-rule-id', fieldName: 'data.ruleId', fieldLabel: 'Detection rule ID', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'ID of the detection rule that generated the alert' },
+  { id: 'automation-risk-level', fieldName: 'data.riskLevel', fieldLabel: 'Risk level', fieldType: 'string', source: 'automation event', searchable: true, aggregatable: false, stored: true, description: 'Alert risk level after enrichment' },
 ]
 const rulePlaybooks = ref<SoarPlaybook[]>([])
 const rulePlaybookPage = reactive({ page: 0, total: 0, totalPages: 0 })
@@ -364,61 +365,50 @@ async function selectRulePlaybook(id: string) {
 }
 
 const conditionJsonError = ref('')
-/** True while the builder itself writes the JSON textarea; that edit must not round-trip back. */
+const legacyConditionsConverted = ref(false)
+/** Builder edits must not discard incomplete rows through a JSON round trip. */
 let builderAuthoredConditions = false
-
-function syncRuleConditionRows(): void {
-  let parsed: unknown
-  try { parsed = parseJson(ruleForm.conditions, {}) }
-  catch { conditionJsonError.value = t('soar.invalidJson', { label: t('soar.advancedConditionsJson') }); return }
-  conditionJsonError.value = ''
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { ruleConditionRows.value = []; return }
-  // Only non-string values are out of the builder's reach; dropping every row
-  // because one key is advanced made the two views fight each other.
-  ruleConditionRows.value = Object.entries(parsed as Record<string, unknown>)
-    .filter(([, value]) => typeof value === 'string')
-    .map(([field, value]) => ({ field, op: 'eq', value: String(value) }))
-}
-
-/** Advanced (non-string) keys the JSON textarea keeps across builder commits. */
-const advancedConditionKeys = computed<string[]>(() => {
-  try {
-    const parsed = parseJson(ruleForm.conditions, {}) as unknown
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
-    return Object.entries(parsed as Record<string, unknown>)
-      .filter(([, value]) => typeof value !== 'string')
-      .map(([key]) => key)
-  } catch { return [] }
+const conditionView = computed(() => {
+  try { return inspectAutomationConditions(parseJson(ruleForm.conditions, {})) }
+  catch { return { kind: 'invalid' as const, rows: [] } }
 })
 
-// The textarea and the builder are two views of the same object: re-parse a hand
-// edit into rows instead of letting the next builder commit silently overwrite it.
+function syncRuleConditionRows(): void {
+  conditionJsonError.value = ''
+  ruleConditionRows.value = conditionView.value.rows
+}
+
 watch(() => ruleForm.conditions, () => {
-  if (builderAuthoredConditions) return
-  syncRuleConditionRows()
+  if (!builderAuthoredConditions) syncRuleConditionRows()
 })
 
 function commitRuleConditionRows(rows: RuleCondition[]): void {
-  if (!props.canWrite) return
-  let existing: unknown
-  try { existing = parseJson(ruleForm.conditions, {}) }
-  catch {
-    conditionJsonError.value = t('soar.invalidJson', { label: t('soar.advancedConditionsJson') })
-    return
-  }
-  const advanced = existing && typeof existing === 'object' && !Array.isArray(existing)
-    ? Object.fromEntries(Object.entries(existing as Record<string, unknown>).filter(([, value]) => typeof value !== 'string'))
-    : {}
+  if (!props.canWrite || conditionView.value.kind !== 'simple') return
   ruleConditionRows.value = rows.map(row => ({ ...row }))
-  const conditions = Object.fromEntries(ruleConditionRows.value.filter(row => row.field.trim() && row.value.trim()).map(row => [row.field.trim(), row.value.trim()]))
-  builderAuthoredConditions = true
-  ruleForm.conditions = JSON.stringify({ ...advanced, ...conditions }, null, 2)
-  void nextTick(() => { builderAuthoredConditions = false })
+  try {
+    const conditions = compileAutomationConditions(ruleConditionRows.value)
+    conditionJsonError.value = ''
+    builderAuthoredConditions = true
+    ruleForm.conditions = JSON.stringify(conditions, null, 2)
+    void nextTick(() => { builderAuthoredConditions = false })
+  } catch {
+    conditionJsonError.value = t('soar.incompleteAutomationCondition')
+  }
+}
+
+function convertLegacyConditions(): void {
+  if (!props.canWrite || conditionView.value.kind !== 'legacy') return
+  try {
+    ruleForm.conditions = JSON.stringify(convertLegacyAutomationConditions(parseJson(ruleForm.conditions)), null, 2)
+    legacyConditionsConverted.value = true
+    syncRuleConditionRows()
+  } catch { conditionJsonError.value = t('soar.invalidAutomationConditions') }
 }
 
 function openRuleForm(): void {
   if (!props.canWrite) return
   editingRule.value = null
+  legacyConditionsConverted.value = false
   formError.value = ''
   conditionJsonError.value = ''
   Object.assign(ruleForm, { name: '', triggerType: 'alert.created', priority: 100, playbookVersionIds: [], conditions: '{}', suppression: defaultSuppressionJson })
@@ -440,6 +430,13 @@ async function createRule() {
   try {
     const ids = ruleForm.playbookVersionIds.map(value => value.trim()).filter(Boolean)
     if (!ruleForm.name.trim() || !ids.length) throw new Error(t('soar.ruleNameRequired'))
+    const conditionKind = conditionView.value.kind
+    if (conditionKind === 'legacy') throw new Error(t('soar.legacyConditionsUnsupported'))
+    if (conditionKind === 'invalid') throw new Error(t('soar.invalidAutomationConditions'))
+    if (conditionKind === 'simple') {
+      try { compileAutomationConditions(ruleConditionRows.value) }
+      catch { throw new Error(t('soar.incompleteAutomationCondition')) }
+    }
     const payload = {
       name: ruleForm.name.trim(), triggerType: ruleForm.triggerType.trim() || 'ANY',
       priority: Number(ruleForm.priority) || 0, enabled: false,
@@ -450,7 +447,10 @@ async function createRule() {
       suppression: parseJson(ruleForm.suppression),
     }
     const updating = Boolean(editingRule.value)
-    if (updating) await patchAutomationRule(editingRule.value!.id, { ...payload, enabled: editingRule.value!.enabled, rowVersion: editingRule.value!.rowVersion })
+    if (updating) {
+      const wasLegacy = inspectAutomationConditions(editingRule.value!.conditions ?? {}).kind === 'legacy'
+      await patchAutomationRule(editingRule.value!.id, { ...payload, enabled: wasLegacy || legacyConditionsConverted.value ? false : editingRule.value!.enabled, rowVersion: editingRule.value!.rowVersion })
+    }
     else await createAutomationRule(payload)
     showRuleForm.value = false
     ruleForm.name = ''
@@ -465,6 +465,11 @@ async function toggleRule(rule: SoarAutomationRule) {
   if (!props.canPublish || ruleAction.value[rule.id]) return
   const id = rule.id
   const enabled = !rule.enabled
+  const conditionKind = inspectAutomationConditions(rule.conditions ?? {}).kind
+  if (enabled && (conditionKind === 'legacy' || conditionKind === 'invalid')) {
+    rowError.value = t(conditionKind === 'legacy' ? 'soar.legacyConditionsUnsupported' : 'soar.invalidAutomationConditions')
+    return
+  }
   ruleAction.value = { ...ruleAction.value, [id]: 'toggle' }
   rowError.value = ''
   try {
@@ -481,6 +486,7 @@ function editRule(rule: SoarAutomationRule) {
   formError.value = ''
   conditionJsonError.value = ''
   editingRule.value = rule
+  legacyConditionsConverted.value = false
   Object.assign(ruleForm, { name: rule.name, triggerType: rule.triggerType, priority: rule.priority,
     conditions: JSON.stringify(rule.conditions ?? {}, null, 2), suppression: JSON.stringify(rule.suppression ?? {}, null, 2),
     playbookVersionIds: Array.isArray(rule.actions) ? rule.actions.map(action => String((action as Record<string, unknown>).playbookVersionId || '')).filter(Boolean) : [],
@@ -492,7 +498,7 @@ function editRule(rule: SoarAutomationRule) {
 function openTask(task: SoarManualTask) {
   formError.value = ''
   selectedTask.value = task
-  taskValue.value = task.input && typeof task.input === 'object' ? structuredClone(task.input) as Record<string, unknown> : {}
+  taskValue.value = task.input && typeof task.input === 'object' ? structuredClone(toRaw(task.input)) as Record<string, unknown> : {}
   taskValid.value = true
   taskOpen.value = true
 }
@@ -751,11 +757,15 @@ function controlSubtitle(): string {
         </FormSection>
         <FormSection index="02" :title="t('soar.matchConditions')" :hint="t('soar.matchConditionsHint')">
         <div class="soar-condition-builder">
-          <FieldConditionBuilder :model-value="ruleConditionRows" :read-only="!props.canWrite" :fields="automationFields" :title="t('soar.simpleConditions')" :add-label="t('common.add')" :empty-hint="t('soar.simpleConditionsHint')" :field-placeholder="t('search.fieldSearchPlaceholder')" :value-placeholder="t('common.value')" @update:model-value="commitRuleConditionRows" />
+          <FieldConditionBuilder :model-value="ruleConditionRows" :read-only="!props.canWrite || conditionView.kind !== 'simple'" :operators="AUTOMATION_OPERATORS" :fields="automationFields" :title="t('soar.simpleConditions')" :add-label="t('common.add')" :empty-hint="t('soar.simpleConditionsHint')" :field-placeholder="t('search.fieldSearchPlaceholder')" :value-placeholder="t('common.value')" @update:model-value="commitRuleConditionRows" />
           <div class="soar-condition-json">
             <details class="soar-inline-details"><summary>{{ t('soar.advancedConditionsJson') }}</summary><el-input type="textarea" v-model="ruleForm.conditions" :readonly="!props.canWrite" :rows="3" spellcheck="false"  /></details>
             <p v-if="conditionJsonError" role="alert" class="soar-field-error">{{ conditionJsonError }}</p>
-            <p v-else-if="advancedConditionKeys.length" class="soar-field-warning">{{ t('forms.advancedHint') }}</p>
+            <p v-else-if="conditionView.kind === 'invalid'" role="alert" class="soar-field-error">{{ t('soar.invalidAutomationConditions') }}</p>
+            <p v-if="conditionView.kind === 'advanced'" class="soar-field-warning">{{ t('soar.advancedConditionsPreserved') }}</p>
+            <p v-if="conditionView.kind === 'legacy'" role="alert" class="soar-field-warning">{{ t('soar.legacyConditionsUnsupported') }}</p>
+            <el-button v-if="props.canWrite && conditionView.kind === 'legacy'" class="soar-convert-legacy-conditions" @click="convertLegacyConditions">{{ t('soar.convertLegacyConditions') }}</el-button>
+            <p v-if="legacyConditionsConverted" role="status" class="soar-field-warning">{{ t('soar.legacyConditionsConverted') }}</p>
           </div>
         </div>
         </FormSection>

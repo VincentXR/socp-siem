@@ -180,6 +180,12 @@ public final class SoarWorkflowSupport {
         private final Map<String, SoarNodeResult> nodeOverrides = new ConcurrentHashMap<>();
         private final Map<String, String> definitionOverrides = new ConcurrentHashMap<>();
         private final List<SoarRunUpdate> completions = new CopyOnWriteArrayList<>();
+        private volatile String admissionOutcome = "RESERVED";
+
+        public ActivityFake admissionOutcome(String outcome) {
+            this.admissionOutcome = outcome;
+            return this;
+        }
 
         public ActivityFake overrideNode(String nodeId, SoarNodeResult result) {
             nodeOverrides.put(nodeId, result);
@@ -231,7 +237,12 @@ public final class SoarWorkflowSupport {
 
         @Override public boolean reserveNodeExecution(String tenantId, String runId, int budgetLimit) {
             record("reserveNodeExecution", tenantId, runId, budgetLimit);
-            return true;
+            return "RESERVED".equals(admissionOutcome);
+        }
+
+        @Override public String reserveNodeExecutionOutcome(String tenantId, String runId, int budgetLimit) {
+            record("reserveNodeExecutionOutcome", tenantId, runId, budgetLimit);
+            return admissionOutcome;
         }
 
         @Override public void markRunWaiting(String tenantId, String runId, String nodeId) {
@@ -337,12 +348,17 @@ public final class SoarWorkflowSupport {
         }
 
         public void startWorkflow(String definitionJson, String inputJson, String versionId) {
+            startWorkflow(definitionJson, inputJson, versionId, 0);
+        }
+
+        public void startWorkflow(String definitionJson, String inputJson, String versionId, int budget) {
             if (started) throw new IllegalStateException("workflow already started");
             started = true;
             runId = UUID.randomUUID().toString();
             String workflowId = "soar-test-" + runId;
             SoarWorkflowRequest request = new SoarWorkflowRequest(
-                    TENANT_ID, runId, versionId, definitionJson, inputJson == null ? "{}" : inputJson);
+                    TENANT_ID, runId, versionId, definitionJson, inputJson == null ? "{}" : inputJson,
+                    runId, null, true, "", null, budget, 0);
             WorkflowOptions options = WorkflowOptions.newBuilder()
                     .setTaskQueue(SoarWorkflow.TASK_QUEUE)
                     .setWorkflowId(workflowId)

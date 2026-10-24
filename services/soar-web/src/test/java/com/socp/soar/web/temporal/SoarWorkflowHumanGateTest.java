@@ -3,6 +3,8 @@ package com.socp.soar.web.temporal;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.time.Duration;
 import java.util.List;
@@ -185,6 +187,18 @@ class SoarWorkflowHumanGateTest {
         assertThat(taskRow.get("errorCode")).isEqualTo("MANUAL_TASK_EXPIRED");
         assertThat(output(taskRow).get("expired")).isEqualTo(true);
         assertThat(rowById(rows, "endFail").get("status")).isEqualTo("FAILED");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {0, 1})
+    void manualTaskTimeoutCannotFollowNormalCompletionEdge(int timeoutSeconds) {
+        harness.startWorkflow(manualDefinition(timeoutSeconds, false), "{}");
+        SoarWorkflowResult result = harness.result();
+        assertThat(result.status()).isEqualTo("FAILED");
+        assertThat(result.errorCode()).isEqualTo("MANUAL_TASK_EXPIRED");
+        assertThat(fake().countOf("markManualTaskExpired")).isEqualTo(1);
+        assertThat(rowById(nodeRows(result), "task").get("status")).isEqualTo("TIMED_OUT");
+        assertThat(rowById(nodeRows(result), "endOk")).isNull();
     }
 
     // -------------------------------------------------------------- (g) UNKNOWN

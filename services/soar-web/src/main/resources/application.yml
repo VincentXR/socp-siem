@@ -6,6 +6,9 @@ server:
 spring:
   application:
     name: soar-web
+  http:
+    converters:
+      preferred-json-mapper: jackson2
   # 剧本持久化（2026-08-10）：H2 文件库 + Flyway，重启不丢；生产可切 PostgreSQL
   datasource:
     url: jdbc:h2:file:${user.home}/.socp/soar;MODE=PostgreSQL;DB_CLOSE_DELAY=-1
@@ -18,7 +21,7 @@ spring:
     open-in-view: false
   flyway:
     enabled: true
-  # soar-web carries eight @Scheduled workers; Spring Boot's default scheduler
+  # soar-web runs several @Scheduled workers; Spring Boot's default scheduler
   # is a single thread, so one slow tick (Temporal RPC, retention scans, legacy
   # playbook HTTP) head-of-line-blocks every 1s poller. Give them a real pool.
   task:

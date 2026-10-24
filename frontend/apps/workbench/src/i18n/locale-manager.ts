@@ -41,11 +41,11 @@ function browserLocale(): SupportedLocale | null {
   return null
 }
 
-/** Resolve profile preference first, then persisted and browser preferences. */
+/** An explicit browser choice overrides profile defaults, including after session refresh. */
 export function resolveInitialLocale(profileLocale?: unknown): SupportedLocale {
   const profile = normalizeLocale(profileLocale)
     ?? PROFILE_LOCALE_KEYS.map(storageValue).map(normalizeLocale).find(Boolean)
-  return profile ?? normalizeLocale(storageValue(STORAGE_KEY)) ?? browserLocale() ?? 'zh-CN'
+  return normalizeLocale(storageValue(STORAGE_KEY)) ?? profile ?? browserLocale() ?? 'zh-CN'
 }
 
 function syncDocument(target: SupportedLocale): void {
@@ -69,7 +69,8 @@ export function setLocale(target: SupportedLocale, persist = true): void {
 
 export function initializeLocale(profileLocale?: unknown): SupportedLocale {
   const target = resolveInitialLocale(profileLocale)
-  setLocale(target)
+  // Defaults must not become an explicit choice before the session profile loads.
+  setLocale(target, false)
   return target
 }
 

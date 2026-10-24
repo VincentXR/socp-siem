@@ -6,6 +6,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.QueryHints;
+import jakarta.persistence.QueryHint;
 import org.springframework.data.repository.query.Param;
 
 import java.util.Collection;
@@ -56,8 +58,10 @@ public interface SoarRunRepository extends TenantScopedRepository<SoarRunEntity,
             + "and (:alarmId is null or r.originAlarmId = :alarmId) "
             + "and (:caseId is null or r.originCaseId = :caseId) "
             + "and (:status is null or r.status = :status) "
-            + "and (:q is null or locate(:q, lower(r.id)) > 0 or exists "
-            + "(select p.id from SoarPlaybookEntity p where p.tenantId = :tenant and p.id = r.playbookId and locate(:q, lower(p.name)) > 0)) "
+            // A first null keyword otherwise binds as bytea on PostgreSQL;
+            // keep locate's literal substring semantics while fixing its type.
+            + "and (cast(:q as string) is null or locate(cast(:q as string), lower(r.id)) > 0 or exists "
+            + "(select p.id from SoarPlaybookEntity p where p.tenantId = :tenant and p.id = r.playbookId and locate(cast(:q as string), lower(p.name)) > 0)) "
             + "order by r.createdAt desc, r.id desc")
     Page<SoarRunEntity> searchInvestigation(@Param("tenant") String tenant,
             @Param("alarmId") String alarmId, @Param("caseId") String caseId,
@@ -95,6 +99,19 @@ public interface SoarRunRepository extends TenantScopedRepository<SoarRunEntity,
             + "and (r.cancelNextAttemptAt is null or r.cancelNextAttemptAt <= :now) "
             + "order by r.cancelNextAttemptAt asc nulls first, r.id")
     List<SoarRunEntity> findCancellationCandidates(@Param("now") Instant now, Pageable page);
+
+    /** Bounded repair scan for pre-upgrade terminal projections with unfinished human work. */
+    @QueryHints(@QueryHint(name = "jakarta.persistence.query.timeout", value = "5000"))
+    @Query("select r from SoarRunEntity r where r.status in :statuses and ("
+            + "exists (select t.id from SoarManualTaskEntity t where t.tenantId = r.tenantId "
+            + "and t.runId = r.id and t.status = 'PENDING') or "
+            + "exists (select a.id from SoarApprovalEntity a where a.tenantId = r.tenantId "
+            + "and a.runId = r.id and a.status = 'PENDING') or "
+            + "exists (select n.id from SoarNodeRunEntity n where n.tenantId = r.tenantId "
+            + "and n.runId = r.id and n.status in ('WAITING_INPUT', 'WAITING_APPROVAL'))) "
+            + "order by r.updatedAt, r.id")
+    List<SoarRunEntity> findTerminalHumanWorkCandidates(@Param("statuses") Collection<String> statuses,
+                                                       Pageable page);
 
     @Query("select r from SoarRunEntity r where r.status in :statuses and r.updatedAt < :cutoff "
             + "and (r.status in ('DISPATCHING', 'RUNNING', 'CANCELLING') "

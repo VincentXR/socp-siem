@@ -35,9 +35,11 @@ class Response:
 
 
 class SliceFixture:
-    def __init__(self, reject_second_tenant, reject_first_tenant_list=False):
+    def __init__(self, reject_second_tenant, reject_first_tenant_list=False,
+                 force_unthrottled=False):
         self.reject_second_tenant = reject_second_tenant
         self.reject_first_tenant_list = reject_first_tenant_list
+        self.force_unthrottled = force_unthrottled
         self.t1_reads = 0
         self.t2_rule = None
         self.t2_alarm = None
@@ -73,7 +75,7 @@ class SliceFixture:
         self.t1_reads += 1
         if self.reject_first_tenant_list and self.t1_reads == 2:
             return Response(503, {"code": 503, "message": "read unavailable"})
-        if 4 <= self.t1_reads <= 23 and self.t1_reads > 13:
+        if not self.force_unthrottled and 4 <= self.t1_reads <= 23 and self.t1_reads > 13:
             return Response(429, {"code": 429, "message": "limited"},
                             {"X-Trace-Id": "trace-1", "Retry-After": "1"})
         return Response(200, {"code": 0, "data": {"items": [
@@ -83,9 +85,17 @@ class SliceFixture:
 
 
 class VerifySliceTest(unittest.TestCase):
+    def test_refill_bound_uses_elapsed_time_without_accepting_overadmission(self):
+        allowance = runpy.run_path(str(SCRIPT), run_name="slice_bound")["burst_allowance"]
+        self.assertEqual(11, allowance(0.01))
+        self.assertLess(allowance(0.01), 14)
+        self.assertEqual(14, allowance(0.31))
+        self.assertLess(allowance(0.31), 15)
+
     def run_fixture(self, reject_second_tenant, reject_first_tenant_list=False,
-                    signing_jwk=""):
-        fixture = SliceFixture(reject_second_tenant, reject_first_tenant_list)
+                    signing_jwk="", force_unthrottled=False):
+        fixture = SliceFixture(reject_second_tenant, reject_first_tenant_list,
+                               force_unthrottled)
         output = io.StringIO()
         fake_auth = types.SimpleNamespace(login_token=lambda *_args, **_kwargs: "fixture-token")
         with mock.patch.dict(sys.modules, {"auth_client": fake_auth}), \
@@ -117,6 +127,12 @@ class VerifySliceTest(unittest.TestCase):
         code, output, _ = self.run_fixture(False)
         self.assertEqual(0, code, output)
         self.assertIn("t2 能看到本次独有告警", output)
+
+    def test_missing_rate_limiting_still_fails_with_measured_refill(self):
+        code, output, _ = self.run_fixture(False, force_unthrottled=True)
+        self.assertEqual(1, code)
+        self.assertIn("[FAIL] 突发 20 次出现 HTTP 429", output)
+        self.assertIn("[FAIL] 放行数不超过桶容量+实测区间补充量", output)
 
     def test_disposable_rsa_jwk_mints_verifiable_rs256_tenant_token(self):
         generator = runpy.run_path(

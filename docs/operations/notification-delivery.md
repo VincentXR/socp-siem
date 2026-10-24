@@ -17,7 +17,9 @@ receipt returns its cached result with `duplicate: true`.
 Connector I/O runs outside the database transaction. Completion checks tenant,
 receipt ID and claim token before recording its result. A callback from a
 reclaimed attempt cannot replace the current attempt or its completed receipt.
-Failed attempts have no `delivered_at` and become eligible after five seconds.
+Retryable failed attempts have no `delivered_at` and become eligible after five seconds.
+Permanent failures and unknown outcomes are cached terminal receipts; they require
+explicit operator recovery before another delivery attempt.
 An abandoned claim becomes eligible after its 120-second lease. There is no
 independent background resend in Notify: a subsequent Alert outbox request
 performs the retry. Alert's retry budget and explicit DEAD/requeue workflow still
@@ -29,6 +31,15 @@ local receipt writes; it does not undo or deduplicate an external side effect.
 SMTP acceptance is not proof that a recipient read or received the message.
 Operators should inspect destination records before manually replaying an
 uncertain delivery. Do not delete receipts or turn unconfirmed rows into success.
+
+A failed external HTTP result with zero transport attempts is a known non-delivery:
+Notify records `failed / NOTIFY_NOT_SENT`, retaining the client's retry policy and
+rejection detail. This includes endpoint allowlist and request-size rejection before
+sending. A negative HTTP status after an attempt, a missing client result, or an
+unexpected connector exception remains `unknown / NOTIFY_RESULT_UNKNOWN`; error
+wording and `retryable: false` do not prove that nothing was sent. Channel tests use
+the same classification in their response and dispatch history. Fix the endpoint
+configuration before testing a policy rejection again; do not relax outbound policy.
 
 ## Capacity and configuration
 

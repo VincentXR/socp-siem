@@ -335,7 +335,7 @@ class SoarAutomationRuleCoverageTest {
         given(receipts.findByTenantIdAndEventIdAndAutomationRuleIdAndRuleRevision(
                 "tenant-a", "evt-1", "r-1", 1)).willReturn(Optional.empty());
         given(soar.getVersionById("pv-1")).willReturn(Map.of("status", "PUBLISHED"));
-        given(soar.queueManualRun(any(), any(), any(), any()))
+        given(soar.queueAutomaticRun(any(), any(), any(), any()))
                 .willReturn(Map.of("runId", "run-1", "status", "QUEUED"));
 
         Map<String, Object> envelope = event("evt-1", Map.of("riskLevel", "HIGH"));
@@ -359,7 +359,7 @@ class SoarAutomationRuleCoverageTest {
         ArgumentCaptor<String> requestId = ArgumentCaptor.forClass(String.class);
         @SuppressWarnings("unchecked")
         ArgumentCaptor<Map<String, Object>> inputs = ArgumentCaptor.forClass(Map.class);
-        verify(soar).queueManualRun(requestId.capture(), eq("pv-1"), eq(subject), inputs.capture());
+        verify(soar).queueAutomaticRun(requestId.capture(), eq("pv-1"), eq(subject), inputs.capture());
         assertThat(requestId.getValue()).startsWith("rule-r-1-r1-");
         assertThat(inputs.getValue()).containsEntry("eventId", "evt-1").containsEntry("automationDepth", 1);
 
@@ -379,7 +379,7 @@ class SoarAutomationRuleCoverageTest {
         assertThatThrownBy(() -> service.evaluate(envelope)).isInstanceOf(ResponseStatusException.class)
                 .satisfies(failure -> assertThat(((ResponseStatusException) failure).getStatusCode())
                         .isEqualTo(HttpStatus.FORBIDDEN));
-        verify(soar, never()).queueManualRun(any(), any(), any(), any());
+        verify(soar, never()).queueAutomaticRun(any(), any(), any(), any());
     }
 
     @Test
@@ -397,7 +397,7 @@ class SoarAutomationRuleCoverageTest {
         assertThat(result).containsEntry("matchedRuns", 0);
         assertThat((List<?>) result.get("receipts")).isEmpty();
         assertThat((List<?>) result.get("runs")).isEmpty();
-        verify(soar, never()).queueManualRun(any(), any(), any(), any());
+        verify(soar, never()).queueAutomaticRun(any(), any(), any(), any());
         verify(receipts, never()).save(any(SoarTriggerReceiptEntity.class));
     }
 
@@ -422,7 +422,7 @@ class SoarAutomationRuleCoverageTest {
                 .containsEntry("status", "ACCEPTED")
                 .containsEntry("runId", "run-old");
         assertThat(result).containsEntry("matchedRuns", 0);
-        verify(soar, never()).queueManualRun(any(), any(), any(), any());
+        verify(soar, never()).queueAutomaticRun(any(), any(), any(), any());
         verify(receipts, never()).save(any(SoarTriggerReceiptEntity.class));
     }
 
@@ -450,7 +450,7 @@ class SoarAutomationRuleCoverageTest {
         verify(receipts).save(saved.capture());
         assertThat(saved.getValue().getStatus()).isEqualTo("SUPPRESSED");
         assertThat(saved.getValue().getReason()).isEqualTo("DEDUP_WINDOW");
-        verify(soar, never()).queueManualRun(any(), any(), any(), any());
+        verify(soar, never()).queueAutomaticRun(any(), any(), any(), any());
     }
 
     @Test
@@ -477,7 +477,7 @@ class SoarAutomationRuleCoverageTest {
                 .containsEntry("status", "SUPPRESSED")
                 .containsEntry("reason", "COOLDOWN")
                 .containsEntry("groupKey", "host-1");
-        verify(soar, never()).queueManualRun(any(), any(), any(), any());
+        verify(soar, never()).queueAutomaticRun(any(), any(), any(), any());
     }
 
     @Test
@@ -500,7 +500,7 @@ class SoarAutomationRuleCoverageTest {
         assertThat(receiptsView.get(0))
                 .containsEntry("status", "SUPPRESSED")
                 .containsEntry("reason", "CAPACITY");
-        verify(soar, never()).queueManualRun(any(), any(), any(), any());
+        verify(soar, never()).queueAutomaticRun(any(), any(), any(), any());
     }
 
     @Test
@@ -520,7 +520,7 @@ class SoarAutomationRuleCoverageTest {
                 .containsEntry("status", "SUPPRESSED")
                 .containsEntry("reason", "AUTOMATION_DEPTH_EXCEEDED");
         verify(rules, never()).findByTenantIdAndEnabledTrueOrderByPriorityAsc(anyString());
-        verify(soar, never()).queueManualRun(any(), any(), any(), any());
+        verify(soar, never()).queueAutomaticRun(any(), any(), any(), any());
     }
 
     @Test
@@ -553,15 +553,15 @@ class SoarAutomationRuleCoverageTest {
         given(receipts.findByTenantIdAndEventIdAndAutomationRuleIdAndRuleRevision(
                 anyString(), anyString(), anyString(), anyInt())).willReturn(Optional.empty());
         given(soar.getVersionById(anyString())).willReturn(Map.of("status", "PUBLISHED"));
-        given(soar.queueManualRun(any(), any(), any(), any()))
+        given(soar.queueAutomaticRun(any(), any(), any(), any()))
                 .willAnswer(invocation -> Map.of("runId", "run-" + invocation.getArgument(1)));
 
         Map<String, Object> result = service.evaluate(event("evt-1", Map.of("riskLevel", "HIGH")));
 
         assertThat(result).containsEntry("matchedRuns", 2);
         InOrder inOrder = inOrder(soar);
-        inOrder.verify(soar).queueManualRun(anyString(), eq("pv-high"), any(), any());
-        inOrder.verify(soar).queueManualRun(anyString(), eq("pv-low"), any(), any());
+        inOrder.verify(soar).queueAutomaticRun(anyString(), eq("pv-high"), any(), any());
+        inOrder.verify(soar).queueAutomaticRun(anyString(), eq("pv-low"), any(), any());
     }
 
     // ---------- explain ----------
@@ -605,7 +605,7 @@ class SoarAutomationRuleCoverageTest {
                 .containsEntry("ruleId", "r-5")
                 .containsEntry("enabled", false)
                 .containsEntry("matched", false);
-        verify(soar, never()).queueManualRun(any(), any(), any(), any());
+        verify(soar, never()).queueAutomaticRun(any(), any(), any(), any());
         verify(receipts, never()).save(any(SoarTriggerReceiptEntity.class));
     }
 

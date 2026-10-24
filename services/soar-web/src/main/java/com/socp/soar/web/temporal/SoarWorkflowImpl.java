@@ -175,11 +175,28 @@ public class SoarWorkflowImpl implements SoarWorkflow {
             // branch/child workflow spends from one database-serialized pool.
             // A zero value is retained for old histories and isolated tests
             // whose payloads predate the budget field.
-            if (currentRequest.executionBudgetLimit() > 0
-                    && !activity.reserveNodeExecution(requestTenant(), requestRun(),
-                    currentRequest.executionBudgetLimit())) {
-                fail("EXECUTION_LIMIT_EXCEEDED", "run exceeded its shared node execution budget");
-                break;
+            if (currentRequest.executionBudgetLimit() > 0) {
+                int admissionVersion = Workflow.getVersion("soar-node-admission-outcome", Workflow.DEFAULT_VERSION, 1);
+                if (admissionVersion == Workflow.DEFAULT_VERSION) {
+                    // Keep the old Activity and command sequence when replaying existing histories.
+                    if (!activity.reserveNodeExecution(requestTenant(), requestRun(), currentRequest.executionBudgetLimit())) {
+                        fail("EXECUTION_LIMIT_EXCEEDED", "run exceeded its shared node execution budget");
+                        break;
+                    }
+                } else {
+                    String admission = activity.reserveNodeExecutionOutcome(requestTenant(), requestRun(),
+                            currentRequest.executionBudgetLimit());
+                    if ("CANCELLED".equals(admission)) {
+                        cancelled = true; terminalStatus = "CANCELLED"; errorCode = "RUN_CANCELLED";
+                        break;
+                    }
+                    if (!"RESERVED".equals(admission)) {
+                        fail("LIMIT_EXCEEDED".equals(admission) ? "EXECUTION_LIMIT_EXCEEDED" : "SOAR_NODE_ADMISSION_FAILED",
+                                "LIMIT_EXCEEDED".equals(admission) ? "run exceeded its shared node execution budget"
+                                        : "run projection no longer permits node execution");
+                        break;
+                    }
+                }
             }
             steps++;
             String nodeId = node.path("id").asText(current);
@@ -506,10 +523,19 @@ public class SoarWorkflowImpl implements SoarWorkflow {
                 String form = node.has("formSchema") ? node.get("formSchema").toString() : "{\"type\":\"object\"}";
                 manualInputJson = null;
                 waitingManualNodeId = nodeId;
-                activity.markManualTaskWaiting(requestTenant(), requestRun(), nodeId, form, node.path("assignee").asText(""), node.path("dueAt").asText(""));
                 long taskTimeoutSeconds = nodeTimeoutSeconds(node);
                 long taskWaitSeconds = Math.min(taskTimeoutSeconds, remainingSeconds());
-                boolean completed = taskTimeoutSeconds <= 0
+                // Preserve recorded histories while new executions project
+                // their effective deadline and treat zero time as expiry,
+                // never as successful completion without required input.
+                int timeoutVersion = Workflow.getVersion("soar-manual-task-timeout", Workflow.DEFAULT_VERSION, 1);
+                String dueAt = node.path("dueAt").asText("");
+                if (timeoutVersion != Workflow.DEFAULT_VERSION && dueAt.isBlank()) {
+                    dueAt = java.time.Instant.ofEpochMilli(Workflow.currentTimeMillis())
+                            .plusSeconds(Math.max(0, taskWaitSeconds)).toString();
+                }
+                activity.markManualTaskWaiting(requestTenant(), requestRun(), nodeId, form, node.path("assignee").asText(""), dueAt);
+                boolean completed = (timeoutVersion == Workflow.DEFAULT_VERSION && taskTimeoutSeconds <= 0)
                         || (taskWaitSeconds > 0 && Workflow.await(Duration.ofSeconds(taskWaitSeconds),
                         () -> cancelled || manualInputJson != null));
                 if (cancelled) { terminalStatus = "CANCELLED"; errorCode = "RUN_CANCELLED"; break; }
@@ -519,7 +545,11 @@ public class SoarWorkflowImpl implements SoarWorkflow {
                         break;
                     }
                     activity.markManualTaskExpired(requestTenant(), requestRun(), nodeId);
-                    String timeoutNext = nextNode(nodeId, "timeout");
+                    String timeoutNext = timeoutVersion == Workflow.DEFAULT_VERSION
+                            ? nextNode(nodeId, "timeout")
+                            : outgoing(node).stream()
+                                    .filter(edge -> "timeout".equalsIgnoreCase(edgeText(edge, "port", "when")))
+                                    .map(this::edgeTo).findFirst().orElse(null);
                     output.put("expired", true);
                     addNodeResult(nodeId, type, path, "TIMED_OUT", output, "MANUAL_TASK_EXPIRED", "manual task was not completed in time");
                     if (timeoutNext == null) { fail("MANUAL_TASK_EXPIRED", "manual task was not completed in time"); break; }

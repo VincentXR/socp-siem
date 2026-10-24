@@ -15,12 +15,15 @@ export class ApiError extends Error {
   readonly status: number
   /** Backend copy, kept for logs and diagnostics only; `message` is the renderable text. */
   readonly rawMessage: string
+  /** Structured failure details, when the server includes them in its API envelope. */
+  readonly data: unknown
 
-  constructor(status: number, message: string, rawMessage: string = message) {
+  constructor(status: number, message: string, rawMessage: string = message, data?: unknown) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.rawMessage = rawMessage
+    this.data = data
   }
 
   /** Renderable form: `String(error)` must show the localized copy, not `ApiError: HTTP 502`. */
@@ -38,14 +41,20 @@ export function setUnauthorizedHandler(fn: (() => void) | null): void { unauthor
 
 async function assertOk(res: Response, notifyUnauthorized = true): Promise<void> {
   if (res.ok) return
-  if (res.status === 401 && notifyUnauthorized) unauthorizedHandler?.()
+  const upstreamAuthenticationFailure = res.status === 401 && res.headers.get('X-Socp-Session-Status') === 'valid'
+  if (res.status === 401 && !upstreamAuthenticationFailure && notifyUnauthorized) unauthorizedHandler?.()
   let rawMessage = `HTTP ${res.status}`
+  let data: unknown
   try {
     const body = await res.clone().json()
+    data = body?.data
     if (typeof body?.message === 'string' && body.message) rawMessage = body.message
     else if (typeof body?.error === 'string' && body.error) rawMessage = body.error
   } catch { /* retain the HTTP status for non-JSON errors */ }
-  throw new ApiError(res.status, localizedErrorMessage(res.status, rawMessage), rawMessage)
+  // The gateway already validated this session. A downstream proof/JWKS failure
+  // is an upstream fault, not a reason to discard the browser's login or drafts.
+  const status = upstreamAuthenticationFailure ? 502 : res.status
+  throw new ApiError(status, localizedErrorMessage(status, upstreamAuthenticationFailure ? 'HTTP 502' : rawMessage), rawMessage, data)
 }
 
 function createRequestSignal(options: ApiRequestOptions): { signal: AbortSignal; cleanup: () => void } {

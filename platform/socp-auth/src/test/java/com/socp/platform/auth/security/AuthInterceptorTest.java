@@ -25,6 +25,66 @@ class AuthInterceptorTest {
     private final SocpSecurityProperties properties = new SocpSecurityProperties();
     private final AuthInterceptor interceptor = new AuthInterceptor(validator, properties);
 
+    @Test
+    void gatewayProofIsConsumedOncePerHttpRequestAcrossAsyncRedispatch() throws Exception {
+        configureGatewayUser();
+        var request = request("signed-token", null, "tenant-a");
+        request.setRequestURI("/api/v1/events/stream");
+        signGateway(request, "tenant-a", "async-gateway-proof");
+        assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+        interceptor.afterConcurrentHandlingStarted(request, new MockHttpServletResponse(), protectedHandler());
+        assertTrue(AuthenticatedIdentityContext.current().isEmpty());
+        request.setDispatcherType(jakarta.servlet.DispatcherType.ASYNC);
+        assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+        assertEquals("user-1", AuthenticatedIdentityContext.require().subject());
+
+        var replay = request("signed-token", null, "tenant-a");
+        replay.setRequestURI(request.getRequestURI());
+        replay.setDispatcherType(jakarta.servlet.DispatcherType.ASYNC);
+        var names = request.getHeaderNames();
+        while (names.hasMoreElements()) {
+            String name = names.nextElement();
+            if (!"Authorization".equalsIgnoreCase(name) && !"X-Tenant-Id".equalsIgnoreCase(name)) {
+                replay.addHeader(name, request.getHeader(name));
+            }
+        }
+        ApiException rejected = assertThrows(ApiException.class,
+                () -> interceptor.preHandle(replay, new MockHttpServletResponse(), protectedHandler()));
+        assertEquals(401, rejected.getCode());
+    }
+
+    @Test
+    void cachedAsyncProofCannotAuthorizeAnotherRequestTarget() throws Exception {
+        configureGatewayUser();
+        var request = request("signed-token", null, "tenant-a");
+        request.setRequestURI("/api/v1/events/stream");
+        signGateway(request, "tenant-a", "async-path-proof");
+        interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler());
+        request.setDispatcherType(jakarta.servlet.DispatcherType.ASYNC);
+        request.setRequestURI("/api/v1/another-target");
+        assertEquals(401, assertThrows(ApiException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler())).getCode());
+    }
+
+    @Test
+    void serviceProofSupportsOnlyItsOwnAuthenticatedAsyncRedispatch() throws Exception {
+        properties.setServiceSecret("a-long-shared-secret");
+        JWTClaimsSet claims = new JWTClaimsSet.Builder().subject("service:alert-web")
+                .claim("role", "analyst").claim("tenant", "default").build();
+        org.mockito.BDDMockito.given(validator.validate("service-token")).willReturn(claims);
+        org.mockito.BDDMockito.given(validator.extractTenant(claims)).willReturn("default");
+        var request = request("service-token", "analyst", "tenant-b");
+        request.setRequestURI("/api/v1/events/stream");
+        signService(request, "alert-web", "tenant-b", "async-service-proof");
+        interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler());
+        request.setDispatcherType(jakarta.servlet.DispatcherType.ASYNC);
+        assertTrue(interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler()));
+        assertEquals("tenant-b", AuthenticatedIdentityContext.require().tenantId());
+        request.setDispatcherType(jakarta.servlet.DispatcherType.REQUEST);
+        assertEquals(401, assertThrows(ApiException.class,
+                () -> interceptor.preHandle(request, new MockHttpServletResponse(), protectedHandler())).getCode());
+    }
+
     @AfterEach
     void clearTenant() {
         TenantContext.clear();

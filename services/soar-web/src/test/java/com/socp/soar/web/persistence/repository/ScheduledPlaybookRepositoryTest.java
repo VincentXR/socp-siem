@@ -4,7 +4,7 @@ import com.socp.soar.web.persistence.entity.PlaybookEntity;
 import com.socp.soar.web.persistence.entity.ScheduledPlaybookRunEntity;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.dao.DataIntegrityViolationException;
 
 import java.time.Instant;

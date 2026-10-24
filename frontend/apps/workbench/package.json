@@ -34,8 +34,8 @@
     "jsdom": "26.1.0",
     "typescript": "5.9.3",
     "typescript-eslint": "8.71.0",
-    "vite": "6.4.3",
-    "vitest": "4.1.11",
+    "vite": "6.4.4",
+    "vitest": "4.1.12",
     "vue-tsc": "3.3.9"
   }
 }

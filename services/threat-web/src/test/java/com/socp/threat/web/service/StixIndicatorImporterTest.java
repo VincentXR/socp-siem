@@ -9,6 +9,38 @@ class StixIndicatorImporterTest {
 
     private final StixIndicatorImporter importer = new StixIndicatorImporter();
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "ipv4-addr,2001:db8::1", "ipv6-addr,192.0.2.1", "ipv4-addr,::ffff:192.0.2.1"
+    })
+    void rejectsDeclaredAddressFamilyMismatchForStixAndTaxii(String family, String value) {
+        String bundle = "{\"objects\":[{\"type\":\"indicator\",\"pattern\":\"[" + family
+                + ":value = '" + value + "']\"}]}";
+        assertThrows(IllegalArgumentException.class, () -> importer.parse(bundle, "feed"));
+        assertThrows(IllegalArgumentException.class, () -> importer.parseTaxiiEnvelope(bundle, "feed"));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            "ipv4-addr,192.0.2.1", "ipv6-addr,2001:db8::1", "ipv6-addr,::ffff:192.0.2.1"
+    })
+    void acceptsMatchingLiteralFamiliesIncludingIpv4MappedIpv6(String family, String value) {
+        String bundle = "{\"objects\":[{\"type\":\"indicator\",\"pattern\":\"[" + family
+                + ":value = '" + value + "']\"}]}";
+        assertEquals(value, importer.parse(bundle, "feed").indicators().getFirst().value());
+        assertEquals(value, importer.parseTaxiiEnvelope(bundle, "feed").indicators().getFirst().value());
+    }
+
+    @Test
+    void stixAndTaxiiRejectNonLiteralIpIndicators() {
+        String bundle = """
+                {"objects":[{"type":"indicator","id":"indicator--invalid-ip",
+                  "pattern":"[ipv4-addr:value = 'not-an-ip']"}]}
+                """;
+        assertThrows(IllegalArgumentException.class, () -> importer.parse(bundle, "feed"));
+        assertThrows(IllegalArgumentException.class, () -> importer.parseTaxiiEnvelope(bundle, "feed"));
+    }
+
     @Test
     void emptyTaxiiEnvelopeIsLegalButMalformedObjectsAndEmptyStixBundleRemainInvalid() {
         assertEquals(0, importer.parseTaxiiEnvelope("{}", "feed").indicators().size());

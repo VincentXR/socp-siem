@@ -296,6 +296,15 @@ public class NotificationDispatcher {
     private static ProviderReceipt parseReceipt(String channelType, ServiceCall call) {
         if (!call.ok()) {
             if (call.status() < 0) {
+                // The HTTP client reports zero attempts only when no transport
+                // attempt started (for example, endpoint policy or body limits).
+                // A missing HTTP status after an attempt is still ambiguous;
+                // neither exception wording nor retryable=false proves non-delivery.
+                if (call.attempts() == 0) {
+                    return new ProviderReceipt("failed", call.retryable(), "NOTIFY_NOT_SENT",
+                            "Request was not sent: " + (call.failureReason() == null
+                                    ? "rejected before transport" : call.failureReason()));
+                }
                 return new ProviderReceipt("unknown", false, "NOTIFY_RESULT_UNKNOWN",
                         call.failureReason() == null ? "Remote acceptance is unknown" : call.failureReason());
             }

@@ -4,6 +4,9 @@ import com.socp.soar.web.persistence.entity.SoarRunEntity;
 import com.socp.soar.web.persistence.repository.SoarActionAttemptRepository;
 import com.socp.soar.web.persistence.repository.SoarDispatchOutboxRepository;
 import com.socp.soar.web.persistence.repository.SoarRunRepository;
+import com.socp.soar.web.persistence.repository.SoarManualTaskRepository;
+import com.socp.soar.web.persistence.repository.SoarApprovalRepository;
+import com.socp.soar.web.persistence.repository.SoarNodeRunRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,12 +21,27 @@ public class SoarRunRecoveryState {
     private final SoarRunRepository runs;
     private final SoarActionAttemptRepository attempts;
     private final SoarDispatchOutboxRepository dispatches;
+    private final SoarManualTaskRepository tasks;
+    private final SoarApprovalRepository approvals;
+    private final SoarNodeRunRepository nodes;
 
     public SoarRunRecoveryState(SoarRunRepository runs, SoarActionAttemptRepository attempts,
-                                SoarDispatchOutboxRepository dispatches) {
+                                SoarDispatchOutboxRepository dispatches, SoarManualTaskRepository tasks,
+                                SoarApprovalRepository approvals, SoarNodeRunRepository nodes) {
         this.runs = runs;
         this.attempts = attempts;
         this.dispatches = dispatches;
+        this.tasks = tasks;
+        this.approvals = approvals;
+        this.nodes = nodes;
+    }
+
+    /** A closed workflow settles an explicit cancellation without waiting for stale-run expiry. */
+    @Transactional
+    public boolean settleCancellation(SoarRunEntity snapshot, TemporalExecutor.WorkflowState observation,
+                                      Instant now) {
+        if (!"CANCELLING".equals(snapshot.getStatus())) return false;
+        return recover(snapshot, observation, now.plusNanos(1), now);
     }
 
     @Transactional
@@ -63,6 +81,7 @@ public class SoarRunRecoveryState {
         }
         run.setCompletedAt(now);
         run.setUpdatedAt(now);
+        SoarPendingWork.closeForTerminalRun(run, now, tasks, approvals, nodes);
         return true;
     }
 }

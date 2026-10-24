@@ -101,12 +101,15 @@ final class SoarApprovalCommandService {
 
     Map<String, Object> decideApproval(String id, boolean approve, String decisionReason) {
         String tenant = tenant();
+        String ownerId = approvals.findRunIdByTenantIdAndId(tenant, id)
+                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_APPROVAL_NOT_FOUND", "approval not found"));
+        // Match expiry/terminal projection's lock order: run before human work.
+        SoarRunEntity run = runs.findByTenantIdAndIdForUpdate(tenant, ownerId)
+                .or(() -> runs.findByTenantIdAndId(tenant, ownerId))
+                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "approval run not found"));
         SoarApprovalEntity approval = approvals.findByTenantIdAndIdForUpdate(tenant, id)
                 .or(() -> approvals.findByTenantIdAndId(tenant, id))
                 .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_APPROVAL_NOT_FOUND", "approval not found"));
-        SoarRunEntity run = runs.findByTenantIdAndIdForUpdate(tenant, approval.getRunId())
-                .or(() -> runs.findByTenantIdAndId(tenant, approval.getRunId()))
-                .orElseThrow(() -> error(HttpStatus.NOT_FOUND, "SOAR_RUN_NOT_FOUND", "approval run not found"));
         if (terminalRunProjection(run)) {
             throw error(HttpStatus.CONFLICT, "SOAR_RUN_NOT_RESUMABLE",
                     "the approval run is already terminal");
@@ -231,18 +234,17 @@ final class SoarApprovalCommandService {
     boolean expireApproval(String id, Instant now) {
         String tenant = tenant();
         Instant at = now == null ? Instant.now() : now;
+        Optional<String> ownerId = approvals.findRunIdByTenantIdAndId(tenant, id);
+        if (ownerId == null || ownerId.isEmpty()) return false;
+        Optional<SoarRunEntity> run = runs.findByTenantIdAndIdForUpdate(tenant, ownerId.get());
+        if (run == null) run = runs.findByTenantIdAndId(tenant, ownerId.get());
+        if (run == null || run.isEmpty()) return false;
+        if (terminalRunProjection(run.get()) || SoarRunStatus.CANCELLING.name().equals(run.get().getStatus())) return false;
         Optional<SoarApprovalEntity> locked = approvals.findByTenantIdAndIdForUpdate(tenant, id);
         if (locked == null) locked = approvals.findByTenantIdAndId(tenant, id);
         if (locked == null || locked.isEmpty()) return false;
         SoarApprovalEntity row = locked.get();
-        if (!"PENDING".equals(row.getStatus()) || row.getExpiresAt() == null
-                || row.getExpiresAt().isAfter(at)) return false;
-        Optional<SoarRunEntity> run = runs.findByTenantIdAndIdForUpdate(tenant, row.getRunId());
-        if (run == null) run = runs.findByTenantIdAndId(tenant, row.getRunId());
-        if (run == null || run.isEmpty()) return false;
-        if (terminalRunProjection(run.get()) || SoarRunStatus.CANCELLING.name().equals(run.get().getStatus())) {
-            return false;
-        }
+        if (!"PENDING".equals(row.getStatus()) || row.getExpiresAt() == null || row.getExpiresAt().isAfter(at)) return false;
         expireApprovalLocked(row, run.get(), at);
         return true;
     }

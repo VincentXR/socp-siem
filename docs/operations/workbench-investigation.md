@@ -29,12 +29,27 @@ builder. Daily ClickHouse queries and archive day names use UTC. Archives suppor
 date and file-name filters; existing capped-list warnings and independent source
 retry states remain visible. Generated snapshot download links remain available
 independently of the archive's capped first listing.
+Signed download URLs request an attachment response with the archive's UTF-8
+file name, so the browser saves JSON instead of opening it inline.
+
+The gateway retires upstream connections after ten seconds idle, with a
+five-second background eviction interval. Deployments with shorter upstream
+keep-alive limits must set `SOCP_GATEWAY_HTTP_POOL_MAX_IDLE_TIME` below that
+limit; `SOCP_GATEWAY_HTTP_POOL_EVICTION_INTERVAL` controls background cleanup.
+For the archive listing GET only, a connection closed before upstream response
+headers is retried once. The retry preserves the verified request identity and
+does not replay archive creation, other methods, response bodies already in
+flight, HTTP error responses, or unrelated transport failures. A second failure
+remains visible to the browser. This bounds recovery from an idle-close race;
+it does not prove every upstream disconnect has that cause.
 
 Notification delivery receipts use real server pagination (default 20 rows),
 exact status/alarm/channel filters and deterministic timestamp/ID ordering.
 Page, page size and filters survive URL navigation. Alarm, delivery and detection
 rule links open the corresponding investigation surfaces. A logged receipt is not
 proof of external delivery.
+Successful and skipped receipts do not prompt operator recovery; synthetic test
+and recovery markers remain plain text because they are not detection rules.
 
 Published response execution confirms the exact immutable version, investigation
 origin and submitted inputs. Permission changes, a different input draft, or

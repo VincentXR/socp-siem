@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
   addAlarmNote: vi.fn().mockResolvedValue({ status: 'OPEN', assignee: null, notes: [] }),
 }))
 const routeState = vi.hoisted(() => ({ query: {} as Record<string, string>, fullPath: '/alarms?alarmId=alarm-1' }))
-vi.mock('vue-router', () => ({ onBeforeRouteUpdate: vi.fn(), onBeforeRouteLeave: vi.fn(), useRoute: () => routeState, useRouter: () => ({ push: vi.fn(), replace: vi.fn() }) }))
+vi.mock('vue-router', () => ({ onBeforeRouteUpdate: vi.fn(), onBeforeRouteLeave: vi.fn(), useRoute: () => routeState, useRouter: () => ({ push: vi.fn(), replace: vi.fn(), beforeEach: () => () => {} }) }))
 const confirmation = vi.hoisted(() => ({
   discard: vi.fn().mockRejectedValue(new Error('keep editing')),
   confirmDanger: vi.fn().mockResolvedValue(true),

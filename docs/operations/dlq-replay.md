@@ -75,8 +75,9 @@ re-driven as its embedded `originalPayload`, a raw record is re-driven as-is.
 
 ## How to run it
 
-Live capture/replay requires Python 3, Java 21 and Kafka client jars (tested with
-the repository's Kafka 3.9.2 client). `--kafka-bin /opt/kafka/bin` discovers the
+Live capture/replay requires Python 3, Java 21 and Kafka client jars. Use the
+`kafka-clients.version` pinned in the [parent POM](../../pom.xml) to match the
+application's client APIs. `--kafka-bin /opt/kafka/bin` discovers the
 installation's sibling `libs` directory. Alternatively set
 `--kafka-classpath '/opt/kafka/libs/*'` or `SOCP_KAFKA_CLASSPATH`; Java uses the
 platform classpath separator for multiple entries. `--java` selects the executable.

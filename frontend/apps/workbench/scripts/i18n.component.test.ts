@@ -28,28 +28,37 @@ describe('workbench i18n', () => {
 
   afterEach(() => vi.unstubAllGlobals())
 
-  it('resolves profile, storage, browser and default preferences in order', () => {
+  it('keeps an explicit local choice ahead of profile defaults', () => {
     localStorage.setItem('socp-locale', 'en-US')
     localStorage.setItem('socp-profile-locale', 'zh-CN')
+    expect(resolveInitialLocale()).toBe('en-US')
+    expect(resolveInitialLocale('zh-CN')).toBe('en-US')
+    localStorage.removeItem('socp-locale')
     expect(resolveInitialLocale()).toBe('zh-CN')
     expect(resolveInitialLocale('en-US')).toBe('en-US')
     expect(normalizeLocale('EN_us')).toBe('en-US')
     expect(normalizeLocale('fr-FR')).toBeNull()
   })
 
-  it('synchronizes the Vue, document and persisted locale state', () => {
+  it('persists explicit changes without storing initial defaults as a user choice', () => {
     expect(initializeLocale('en-US')).toBe('en-US')
     expect(document.documentElement.lang).toBe('en-US')
     expect(document.title).toBe('SOCP Workbench')
-    expect(localStorage.getItem('socp-locale')).toBe('en-US')
+    expect(localStorage.getItem('socp-locale')).toBeNull()
 
     expect(toggleLocale()).toBe('zh-CN')
     expect(document.documentElement.lang).toBe('zh-CN')
     expect(document.title).toBe('SOCP 控制台')
+    expect(localStorage.getItem('socp-locale')).toBe('zh-CN')
+    expect(initializeLocale('en-US')).toBe('zh-CN')
+    expect(document.documentElement.lang).toBe('zh-CN')
   })
 
   it('supports interpolation, fallback and locale-aware formatting', () => {
     setLocale('zh-CN', false)
+    expect(translate('soar.status.PUBLISHED')).toBe('已发布')
+    expect(translate('soar.status.WAITING_INPUT')).toBe('等待输入')
+    expect(translate('statuses.UNKNOWN')).toBe('未知')
     expect(translate('assets.importSkipped', { imported: 2, skipped: 1 })).toContain('2')
     expect(translate('assets.importSkipped', { imported: 2, skipped: 1 })).toContain('1')
     expect(formatNumber(1234, 'integer')).toContain('1')
@@ -61,6 +70,9 @@ describe('workbench i18n', () => {
     expect(translate('soar.createBlankTitle')).toBe('Create blank playbook')
     expect(translate('soar.queueRun')).toBe('Queue run')
     expect(translate('soar.rerunRun')).toBe('Rerun')
+    expect(translate('soar.status.PUBLISHED')).toBe('Published')
+    expect(translate('soar.status.WAITING_INPUT')).toBe('Waiting for input')
+    expect(translate('statuses.UNKNOWN')).toBe('Unknown')
   })
 
   it('describes detection rule deletion as an asynchronous drain, not an instant hot reload', () => {

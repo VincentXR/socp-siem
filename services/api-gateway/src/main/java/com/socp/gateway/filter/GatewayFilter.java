@@ -44,6 +44,8 @@ public class GatewayFilter implements GlobalFilter, Ordered {
 
     private static final Logger log = LoggerFactory.getLogger(GatewayFilter.class);
     private static final String BEARER = "Bearer ";
+    static final String TRUSTED_GATEWAY_PATH = GatewayFilter.class.getName() + ".trustedPath";
+    static final String SESSION_STATUS_HEADER = "X-Socp-Session-Status";
     /**
      * Roles a session may carry. Sourced from the shared permission vocabulary so
      * the gateway can never forward a role the platform grants no defaults for
@@ -55,7 +57,7 @@ public class GatewayFilter implements GlobalFilter, Ordered {
     private static final TextMapGetter<HttpHeaders> HTTP_GETTER = new TextMapGetter<>() {
         @Override
         public Iterable<String> keys(HttpHeaders headers) {
-            return headers.keySet();
+            return headers.headerNames();
         }
 
         @Override
@@ -68,21 +70,18 @@ public class GatewayFilter implements GlobalFilter, Ordered {
 
     private final JwtValidator jwtValidator;
     private final Set<String> allowedOrigins;
-    private final String serviceSecret;
 
     @Autowired
     public GatewayFilter(JwtValidator jwtValidator,
                          @Value("${socp.auth.allowed-origins:http://localhost:5173,http://localhost:18092}")
-                         String allowedOrigins,
-                         @Value("${socp.security.service-secret:}") String serviceSecret) {
+                         String allowedOrigins) {
         this.jwtValidator = jwtValidator;
         this.allowedOrigins = Arrays.stream(allowedOrigins.split(","))
                 .map(String::trim).filter(value -> !value.isBlank()).collect(Collectors.toUnmodifiableSet());
-        this.serviceSecret = serviceSecret == null ? "" : serviceSecret.trim();
     }
 
     GatewayFilter(JwtValidator jwtValidator) {
-        this(jwtValidator, "http://localhost:5173,http://localhost:18092", "");
+        this(jwtValidator, "http://localhost:5173,http://localhost:18092");
     }
 
     @Override
@@ -107,6 +106,15 @@ public class GatewayFilter implements GlobalFilter, Ordered {
                     : UUID.randomUUID().toString().replace("-", ""));
         exchange.getResponse().beforeCommit(() -> {
             exchange.getResponse().getHeaders().set("X-Trace-Id", traceId);
+            // Only this gateway can classify a session rejection. An owning
+            // service's proof/JWKS failure must not log a valid browser out.
+            var headers = exchange.getResponse().getHeaders();
+            if (HttpStatus.UNAUTHORIZED.equals(exchange.getResponse().getStatusCode())) {
+                headers.set(SESSION_STATUS_HEADER,
+                        exchange.getAttribute(TRUSTED_GATEWAY_PATH) == null ? "invalid" : "valid");
+            } else {
+                headers.remove(SESSION_STATUS_HEADER);
+            }
             return Mono.empty();
         });
 
@@ -218,21 +226,10 @@ public class GatewayFilter implements GlobalFilter, Ordered {
             headers.set("X-Socp-User", resolvedSubject);
             headers.set("X-Socp-Locale", resolvedLocale);
             headers.set("X-Socp-Permissions", String.join(",", effectivePermissions.stream().sorted().toList()));
-            if (!serviceSecret.isBlank()) {
-                String gatewayPath = exchange.getRequest().getURI().getRawPath();
-                String timestamp = String.valueOf(java.time.Instant.now().getEpochSecond());
-                String nonce = UUID.randomUUID().toString();
-                String token = resolvedAuth.substring(BEARER.length()).trim();
-                headers.set(ServiceRequestSignature.GATEWAY_PATH_HEADER, gatewayPath);
-                headers.set(ServiceRequestSignature.GATEWAY_TIMESTAMP_HEADER, timestamp);
-                headers.set(ServiceRequestSignature.GATEWAY_NONCE_HEADER, nonce);
-                headers.set(ServiceRequestSignature.GATEWAY_SIGNATURE_HEADER,
-                        ServiceRequestSignature.sign(serviceSecret,
-                                ServiceRequestSignature.GATEWAY_SERVICE, method,
-                                ServiceRequestSignature.gatewayBinding(gatewayPath, token),
-                                resolvedTenant, timestamp, nonce));
-            }
         })).build();
+        // Attributes cannot be supplied by an HTTP caller. Keep the original
+        // public path across compatibility rewrites; sign inside the retry scope.
+        trusted.getAttributes().put(TRUSTED_GATEWAY_PATH, exchange.getRequest().getURI().getRawPath());
         return traced(span, exchange, chain.filter(trusted));
     }
 

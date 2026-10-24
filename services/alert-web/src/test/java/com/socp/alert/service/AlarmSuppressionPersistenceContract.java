@@ -8,7 +8,7 @@ import com.socp.platform.error.exception.ApiException;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Propagation;
@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
         AlarmService.class, AlarmQueryService.class, AlarmStatisticsService.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 abstract class AlarmSuppressionPersistenceContract {
-    @org.springframework.boot.test.mock.mockito.MockBean com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean com.socp.platform.auth.security.OperatorDirectory operatorDirectory;
 
     @Autowired AlarmSuppressionService suppression;
     @Autowired AlarmDispositionService disposition;
@@ -41,9 +41,9 @@ abstract class AlarmSuppressionPersistenceContract {
     @Autowired AlarmDeliveryRegistrar registrar;
     @Autowired AlarmRepository alarms;
     @Autowired AlarmService alarmService;
-    @org.springframework.boot.test.mock.mockito.MockBean AlarmEnrichmentService enrichment;
-    @org.springframework.boot.test.mock.mockito.MockBean OutboxPublisher outbox;
-    @org.springframework.boot.test.mock.mockito.MockBean AlarmDeliveryPublisher deliveries;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean AlarmEnrichmentService enrichment;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean OutboxPublisher outbox;
+    @org.springframework.test.context.bean.override.mockito.MockitoBean AlarmDeliveryPublisher deliveries;
     @Autowired AlarmSuppressionRepository windows;
     @Autowired PlatformTransactionManager transactions;
     @Autowired JdbcTemplate jdbc;

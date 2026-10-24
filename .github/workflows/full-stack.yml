@@ -92,6 +92,21 @@ jobs:
       # exceed 128 MiB after routed recovery. A wrapped Metaspace OOM otherwise
       # looks like a Redis outage and can stall durable alarm deliveries.
       SOCP_INCIDENT_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      # Boot 4's soc-base audit consumer and runtime OpenAPI generation exhaust
+      # the 128 MiB Metaspace cap together. Add 64 MiB only to this service;
+      # keep its heap bounded and retain the job's strict JVM OOM gate.
+      SOCP_SOC_BASE_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      # Threat enrichment lazily loads Kafka producer classes while IOC match
+      # requests are active. Boot 4 exceeds 128 MiB Metaspace on that path;
+      # retain the bounded heap and strict OOM check with service-local headroom.
+      SOCP_THREAT_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      # Real AI assistant user flows with the Boot 4 retrieval/tool stack use
+      # more than 128 MiB of class metadata. Keep its extra headroom local too.
+      SOCP_AI_ASSISTANT_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      # Notify's Redis nonce recovery path exceeded 128 MiB Metaspace during
+      # routed multi-instance chaos, leaving durable notifications pending.
+      # Add only service-local metadata headroom; retain heap and OOM gates.
+      SOCP_NOTIFY_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
       # The PostgreSQL container defaults to 100 connections. Hikari otherwise
       # reserves up to ten per JVM and exhausts the shared database during the
       # 15-service startup burst.
@@ -140,6 +155,33 @@ jobs:
           source infra/middleware-images.env
           mkdir -p .cache/vector-image
           docker image save "$SOCP_VECTOR_IMAGE" | gzip -1 > .cache/vector-image/vector.tar.gz
+
+      - name: Package verified Vector runtime for local collection
+        env:
+          SOCP_VECTOR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p target/vector-runtime-verified
+          cp .cache/vector-image/vector.tar.gz target/vector-runtime-verified/
+          cp target/vector-delivery-evidence/runtime/{provenance.json,sbom.cdx.json,image-inspect.json,buffer-tests.passed.json} target/vector-runtime-verified/
+          cp agents/vector-runtime/runtime.lock.json target/vector-runtime-verified/
+          cp target/vector-delivery-evidence/runtime-image.log target/vector-runtime-verified/verify-image.log
+          printf '%s\n' "$GITHUB_SHA" > target/vector-runtime-verified/repository-commit.txt
+          printf '%s\n' "$SOCP_VECTOR_HEAD_SHA" > target/vector-runtime-verified/workflow-head-commit.txt
+          cd target/vector-runtime-verified
+          sha256sum vector.tar.gz provenance.json sbom.cdx.json image-inspect.json buffer-tests.passed.json runtime.lock.json verify-image.log repository-commit.txt workflow-head-commit.txt > SHA256SUMS
+
+      # Publish only the verified image and explicit provenance files, before
+      # integration credentials are generated or later acceptance checks run.
+      # This artifact verifies runtime identity, not the overall job outcome.
+      - name: Upload verified Vector runtime
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vector-runtime-verified
+          path: target/vector-runtime-verified/
+          compression-level: 0
+          retention-days: 3
+          if-no-files-found: error
 
       - name: Save verified Vector image
         if: steps.vector_cache.outputs.cache-hit != 'true'

@@ -666,6 +666,20 @@ class SoarActivityImplCoverageTest {
     }
 
     @Test
+    void admissionReportsCancellationWithoutConsumingBudgetAndPreservesIntegrityFailures() {
+        SoarRunEntity cancelling = run("CANCELLING");
+        cancelling.setExecutionNodeCount(3);
+        givenRunLocked(cancelling);
+        assertThat(activity.reserveNodeExecutionOutcome(TENANT, RUN_ID, 10)).isEqualTo("CANCELLED");
+        assertThat(cancelling.getExecutionNodeCount()).isEqualTo(3);
+        verify(runs, never()).save(any(SoarRunEntity.class));
+        givenRunLocked(run("SUCCEEDED"));
+        assertThat(activity.reserveNodeExecutionOutcome(TENANT, RUN_ID, 10)).isEqualTo("TERMINAL");
+        assertThat(activity.reserveNodeExecutionOutcome(TENANT, "missing", 10)).isEqualTo("MISSING");
+        assertThat(activity.reserveNodeExecutionOutcome(TENANT, "legacy", 0)).isEqualTo("RESERVED");
+    }
+
+    @Test
     void markRunWaitingWithContextCreatesANodeScopedPendingApproval() {
         SoarRunEntity run = run("RUNNING");
         givenRunLocked(run);
@@ -678,6 +692,13 @@ class SoarActivityImplCoverageTest {
         ArgumentCaptor<SoarApprovalEntity> captor = ArgumentCaptor.forClass(SoarApprovalEntity.class);
         verify(approvals).save(captor.capture());
         SoarApprovalEntity approval = captor.getValue();
+        ArgumentCaptor<SoarNodeRunEntity> nodeCaptor = ArgumentCaptor.forClass(SoarNodeRunEntity.class);
+        var ordering = org.mockito.Mockito.inOrder(nodeRuns, approvals);
+        ordering.verify(nodeRuns).saveAndFlush(nodeCaptor.capture());
+        ordering.verify(approvals).save(any(SoarApprovalEntity.class));
+        assertThat(nodeCaptor.getValue().getId()).isEqualTo(approval.getNodeRunId());
+        assertThat(nodeCaptor.getValue().getStatus()).isEqualTo("WAITING_APPROVAL");
+        assertThat(nodeCaptor.getValue().getCompletedAt()).isNull();
         assertThat(approval.getTenantId()).isEqualTo(TENANT);
         assertThat(approval.getApprovalKey()).isEqualTo(APPROVAL_KEY);
         assertThat(approval.getStatus()).isEqualTo("PENDING");
@@ -784,17 +805,10 @@ class SoarActivityImplCoverageTest {
     @Test
     void markApprovalExpiredDoesNotMutateAPartiallySucceededRun() {
         givenRunLocked(run("PARTIALLY_SUCCEEDED"));
-        SoarApprovalEntity pending = new SoarApprovalEntity();
-        pending.setId("appr-partial");
-        pending.setStatus("PENDING");
-        given(approvals.findByTenantIdAndApprovalKeyForUpdate(TENANT, APPROVAL_KEY))
-                .willReturn(Optional.of(pending));
 
         activity.markApprovalExpired(TENANT, RUN_ID, NODE_ID);
 
-        assertThat(pending.getStatus()).isEqualTo("PENDING");
-        verify(approvals, never()).save(any(SoarApprovalEntity.class));
-        verify(approvalDecisions, never()).save(any(SoarApprovalDecisionEntity.class));
+        org.mockito.Mockito.verifyNoInteractions(approvals, approvalDecisions);
         verify(events, never()).save(any(SoarRunEventEntity.class));
     }
 
@@ -899,22 +913,18 @@ class SoarActivityImplCoverageTest {
         ArgumentCaptor<SoarRunEventEntity> captor = ArgumentCaptor.forClass(SoarRunEventEntity.class);
         verify(events).save(captor.capture());
         assertThat(captor.getValue().getEventType()).isEqualTo("MANUAL_TASK_EXPIRED");
-        assertThat(captor.getValue().getNodeRunId()).isEqualTo("task-1");
+        ArgumentCaptor<SoarNodeRunEntity> node = ArgumentCaptor.forClass(SoarNodeRunEntity.class);
+        verify(nodeRuns).saveAndFlush(node.capture());
+        assertThat(captor.getValue().getNodeRunId()).isEqualTo(node.getValue().getId()).isNotEqualTo("task-1");
     }
 
     @Test
     void markManualTaskExpiredDoesNotMutateAPartiallySucceededRun() {
         givenRunLocked(run("PARTIALLY_SUCCEEDED"));
-        SoarManualTaskEntity task = new SoarManualTaskEntity();
-        task.setId("task-partial");
-        task.setStatus("PENDING");
-        given(manualTasks.findByTenantIdAndRunIdAndNodeIdForUpdate(TENANT, RUN_ID, NODE_ID))
-                .willReturn(Optional.of(task));
 
         activity.markManualTaskExpired(TENANT, RUN_ID, NODE_ID);
 
-        assertThat(task.getStatus()).isEqualTo("PENDING");
-        verify(manualTasks, never()).save(any(SoarManualTaskEntity.class));
+        org.mockito.Mockito.verifyNoInteractions(manualTasks);
         verify(events, never()).save(any(SoarRunEventEntity.class));
     }
 

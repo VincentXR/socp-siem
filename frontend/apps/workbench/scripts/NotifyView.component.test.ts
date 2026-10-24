@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import PagerBar from '../src/components/PagerBar.vue'
 import NotifyView from '../src/views/NotifyView.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
+import { ApiError, requestJson } from '../src/api/core'
 
 const mocks = vi.hoisted(() => ({
   listChannels: vi.fn(), getChannel: vi.fn(), dispatchLog: vi.fn(), createChannel: vi.fn(), updateChannel: vi.fn(), testChannel: vi.fn(),
@@ -304,6 +305,33 @@ describe('notification configuration and test delivery', () => {
     expect(mocks.createChannel).toHaveBeenCalledTimes(1)
   })
 
+  it('preserves structured failure details without turning an HTTP failure into success', async () => {
+    const receipt = { status: 'failed', errorCode: 'NOTIFY_NOT_SENT' }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ code: 502, message: 'Delivery blocked', data: receipt }), { status: 502 },
+    )))
+    try {
+      await expect(requestJson('/notify-web/api/v1/channels/fixture/test', { method: 'POST' }))
+        .rejects.toMatchObject({ status: 502, message: 'Delivery blocked', data: receipt })
+    } finally { vi.unstubAllGlobals() }
+  })
+
+  it('distinguishes a confirmed pre-send block from an uncertain test result', async () => {
+    mocks.testChannel
+      .mockRejectedValueOnce(new ApiError(502, 'Delivery blocked', 'Delivery blocked',
+        { status: 'failed', errorCode: 'NOTIFY_NOT_SENT' }))
+      .mockRejectedValueOnce(new ApiError(502, 'Outcome unknown', 'Outcome unknown',
+        { status: 'unknown', errorCode: 'NOTIFY_RESULT_UNKNOWN' }))
+    await open()
+    await click('保存并测试')
+    expect(wrapper.find('.el-dialog [role="status"]').text()).toContain('未发出通知')
+    expect(wrapper.find('.el-dialog [role="status"]').text()).not.toContain('可能已经到达')
+    await click('重新测试')
+    expect(wrapper.find('.el-dialog [role="status"]').text()).toContain('可能已经到达')
+    expect(mocks.createChannel).toHaveBeenCalledTimes(1)
+    expect(mocks.success).not.toHaveBeenCalled()
+  })
+
   it('exposes provider receipt diagnostics in dispatch history', async () => {
     mocks.dispatchLog.mockResolvedValue({ items: [{
       ts: '2026-09-29T00:00:00Z', channel: 'Ops', type: 'WECOM', ruleId: 'rule-a', alarmId: 'alarm-a',
@@ -318,5 +346,24 @@ describe('notification configuration and test delivery', () => {
     expect(wrapper.text()).toContain('Provider errcode=40014')
     expect(wrapper.text()).toContain('delivery-a')
     expect(wrapper.text()).toContain('需人工处理')
+    expect(logTable.findAll('button').some(button => button.text() === 'rule-a')).toBe(true)
+  })
+
+  it.each(['logged', 'sent', 'skipped'])('does not suggest recovery or link a synthetic rule for a %s receipt', async status => {
+    mocks.dispatchLog.mockResolvedValue({ items: [{
+      ts: '2026-10-23T10:53:44Z', channel: 'Local acceptance', type: 'LOG', ruleId: 'notification-test',
+      alarmId: 'test-acceptance', status, deliveryId: 'delivery-test', retryable: false, httpStatus: -1,
+      detail: 'Acceptance receipt',
+    }], total: 1 })
+    await open()
+    await click('取消')
+    const logTable = wrapper.findAll('.el-table')[1]
+    await logTable.find('.el-table__expand-icon').trigger('click')
+    await flushPromises()
+    expect(logTable.text()).toContain('notification-test')
+    expect(logTable.findAll('button').some(button => button.text() === 'notification-test')).toBe(false)
+    expect(logTable.text()).not.toContain('需人工处理')
+    expect(logTable.find('.notify-receipt-detail').text()).not.toContain('-1')
+    expect(logTable.text()).toContain('delivery-test')
   })
 })

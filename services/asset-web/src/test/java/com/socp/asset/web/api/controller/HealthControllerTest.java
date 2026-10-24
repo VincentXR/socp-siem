@@ -3,14 +3,15 @@ package com.socp.asset.web.api.controller;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.actuate.health.HealthEndpoint;
-import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
-import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.health.actuate.endpoint.HealthEndpoint;
+import org.springframework.boot.health.actuate.endpoint.IndicatedHealthDescriptor;
+import org.springframework.boot.health.contributor.Health;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.RETURNS_DEEP_STUBS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -42,8 +43,10 @@ class HealthControllerTest {
 
     @Test
     void reportsServiceUnavailableWhenHealthIsNotUp() {
-        HealthEndpoint endpoint = mock(HealthEndpoint.class, RETURNS_DEEP_STUBS);
-        when(endpoint.health().getStatus().getCode()).thenReturn("DOWN");
+        HealthEndpoint endpoint = mock(HealthEndpoint.class);
+        IndicatedHealthDescriptor descriptor = mock(IndicatedHealthDescriptor.class);
+        when(descriptor.getStatus()).thenReturn(Health.down().build().getStatus());
+        when(endpoint.health()).thenReturn(descriptor);
         @SuppressWarnings("unchecked")
         ObjectProvider<HealthEndpoint> health = mock(ObjectProvider.class);
         when(health.getIfAvailable()).thenReturn(endpoint);
@@ -51,7 +54,7 @@ class HealthControllerTest {
         var result = new HealthController(health).health();
 
         // A non-UP status must not be reported as HTTP 200.
-        assertThat(result.getStatusCodeValue()).isEqualTo(503);
+        assertThat(result.getStatusCode().value()).isEqualTo(503);
         assertThat(result.getBody().data()).containsEntry("status", "DOWN");
     }
 }

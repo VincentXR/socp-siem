@@ -53,6 +53,17 @@ class KafkaEventProducerTest {
     }
 
     @Test
+    void productionProducerConfigurationPassesRealKafka4Construction() {
+        KafkaProperties properties = new KafkaProperties();
+        properties.setBootstrap("127.0.0.1:1");
+        KafkaEventProducer transport = new KafkaEventProducer(properties);
+        // Only construct and close: never publish test records to a live broker.
+        KafkaProducer<String, String> actual = ReflectionTestUtils.invokeMethod(transport, "producer");
+        assertThat(actual).isNotNull();
+        actual.close(java.time.Duration.ZERO);
+    }
+
+    @Test
     void publishInjectsAChildSpanOfTheStoredContext() throws Exception {
         KafkaEventProducer producer = producerWith(true);
 

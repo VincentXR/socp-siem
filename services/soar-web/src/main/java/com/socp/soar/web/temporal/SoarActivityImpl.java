@@ -1,6 +1,7 @@
 package com.socp.soar.web.temporal;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.socp.soar.web.service.SoarPendingWork;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.soar.web.persistence.entity.SoarNodeRunEntity;
 import com.socp.soar.web.persistence.entity.SoarApprovalEntity;
@@ -140,23 +141,30 @@ public class SoarActivityImpl implements SoarActivity {
     @Override
     @Transactional
     public boolean reserveNodeExecution(String tenantId, String runId, int budgetLimit) {
-        if (budgetLimit <= 0) return true;
+        return "RESERVED".equals(reserveNodeExecutionOutcome(tenantId, runId, budgetLimit));
+    }
+
+    @Override
+    @Transactional
+    public String reserveNodeExecutionOutcome(String tenantId, String runId, int budgetLimit) {
+        if (budgetLimit <= 0) return "RESERVED";
         return TenantContext.callWith(tenantId, () -> {
             java.util.Optional<SoarRunEntity> locked = runs.findByTenantIdAndIdForUpdate(tenantId, runId);
             if (locked == null || locked.isEmpty()) {
                 locked = runs.findByTenantIdAndId(tenantId, runId);
             }
             if (locked == null || locked.isEmpty()) {
-                return false;
+                return "MISSING";
             }
             SoarRunEntity run = locked.get();
-            if (terminalProjection(run) || "CANCELLING".equals(run.getStatus())) return false;
+            if ("CANCELLING".equals(run.getStatus()) || "CANCELLED".equals(run.getStatus())) return "CANCELLED";
+            if (terminalProjection(run)) return "TERMINAL";
             int used = run.getExecutionNodeCount() == null ? 0 : run.getExecutionNodeCount();
-            if (used >= budgetLimit) return false;
+            if (used >= budgetLimit) return "LIMIT_EXCEEDED";
             run.setExecutionNodeCount(used + 1);
             run.setUpdatedAt(Instant.now());
             runs.save(run);
-            return true;
+            return "RESERVED";
         });
     }
 
@@ -211,13 +219,16 @@ public class SoarActivityImpl implements SoarActivity {
                 existing = approvals.findByTenantIdAndApprovalKey(tenantId, approvalKey);
             }
             if (existing == null || existing.isEmpty()) {
+                // The approval FK is immediate in PostgreSQL. Materialize the
+                // waiting node before its approval, under the same run lock;
+                // recordNode will update this identity when the gate completes.
+                SoarNodeRunEntity node = waitingNode(tenantId, runId, nodeId, "APPROVAL", "WAITING_APPROVAL");
                 SoarApprovalEntity approval = new SoarApprovalEntity();
                 approval.setId(UUID.randomUUID().toString());
                 approval.setTenantId(tenantId);
                 approval.setRunId(runId);
                 approval.setApprovalKey(approvalKey);
-                approval.setNodeRunId(UUID.nameUUIDFromBytes((runId + "\u0000" + nodeId + "\u0000")
-                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString().replace("-", ""));
+                approval.setNodeRunId(node.getId());
                 approval.setStatus("PENDING");
                 approval.setRequestedBy(run.getRequestedBy() == null || run.getRequestedBy().isBlank()
                         ? "workflow" : limit(run.getRequestedBy(), 128));
@@ -268,10 +279,31 @@ public class SoarActivityImpl implements SoarActivity {
         });
     }
 
+    private SoarNodeRunEntity waitingNode(String tenantId, String runId, String nodeId, String type, String status) {
+        SoarNodeRunEntity node = nodeRuns.findByTenantIdAndRunIdAndNodeIdAndIterationPath(
+                tenantId, runId, nodeId, "").orElseGet(SoarNodeRunEntity::new);
+        if (node.getId() == null) {
+            node.setId(UUID.nameUUIDFromBytes((runId + "\u0000" + nodeId + "\u0000")
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString().replace("-", ""));
+            node.setTenantId(tenantId);
+            node.setRunId(runId);
+            node.setNodeId(nodeId);
+            node.setIterationPath("");
+            node.setNodeType(type);
+            node.setStatus(status);
+            node.setStartedAt(Instant.now());
+            node.setUpdatedAt(Instant.now());
+            nodeRuns.saveAndFlush(node);
+        }
+        return node;
+    }
+
     @Override
     @Transactional
     public void markApprovalExpired(String tenantId, String runId, String nodeId) {
         TenantContext.callWith(tenantId, () -> {
+            // Use the same run -> human-work lock order as terminal cleanup and decisions.
+            if (runTerminalOrCancelling(tenantId, runId)) return null;
             String approvalKey = runId + ":node:" + nodeId;
             java.util.Optional<SoarApprovalEntity> found = approvals
                     .findByTenantIdAndApprovalKeyForUpdate(tenantId, approvalKey);
@@ -282,7 +314,6 @@ public class SoarActivityImpl implements SoarActivity {
                     // Temporal may deliver the expiry timer after an operator
                     // decision or terminal run projection has already won the
                     // race. Never mutate the gate in that late-delivery case.
-                    if (runTerminalOrCancelling(tenantId, runId)) return null;
                     approval.setStatus("EXPIRED");
                     approval.setDecidedAt(Instant.now());
                     approval.setDecisionReason("approval expired by workflow timer");
@@ -329,6 +360,7 @@ public class SoarActivityImpl implements SoarActivity {
                     .orElseThrow(() -> new IllegalStateException("SOAR run not found: " + runId));
             if (terminalProjection(run) || "CANCELLING".equals(run.getStatus())) return null;
             run.setStatus("WAITING_INPUT"); run.setUpdatedAt(Instant.now()); runs.save(run);
+            waitingNode(tenantId, runId, nodeId, "MANUAL_TASK", "WAITING_INPUT");
             java.util.Optional<SoarManualTaskEntity> existingTask = manualTasks
                     .findByTenantIdAndRunIdAndNodeIdForUpdate(tenantId, runId, nodeId);
             if (existingTask == null) {
@@ -356,17 +388,18 @@ public class SoarActivityImpl implements SoarActivity {
     @Transactional
     public void markManualTaskExpired(String tenantId, String runId, String nodeId) {
         TenantContext.callWith(tenantId, () -> {
+            if (runTerminalOrCancelling(tenantId, runId)) return null;
             java.util.Optional<SoarManualTaskEntity> locked = manualTasks
                     .findByTenantIdAndRunIdAndNodeIdForUpdate(tenantId, runId, nodeId);
             if (locked == null) locked = manualTasks.findByTenantIdAndRunIdAndNodeId(tenantId, runId, nodeId);
             if (locked != null) locked.ifPresent(task -> {
                 if ("PENDING".equals(task.getStatus())) {
-                    if (runTerminalOrCancelling(tenantId, runId)) return;
+                    SoarNodeRunEntity node = waitingNode(tenantId, runId, nodeId, "MANUAL_TASK", "WAITING_INPUT");
                     task.setStatus("EXPIRED");
                     task.setUpdatedAt(Instant.now());
                     manualTasks.save(task);
                     appendEvent(tenantId, runId, "MANUAL_TASK_EXPIRED",
-                            "Manual task expired without completion: " + nodeId, task.getId());
+                            "Manual task expired without completion: " + nodeId, node.getId());
                 }
             });
             return null;
@@ -443,6 +476,7 @@ public class SoarActivityImpl implements SoarActivity {
             run.setCompletedAt(Instant.now());
             run.setUpdatedAt(Instant.now());
             runs.save(run);
+            SoarPendingWork.closeForTerminalRun(run, Instant.now(), manualTasks, approvals, nodeRuns);
             appendEvent(update.tenantId(), update.runId(), "RUN_" + projectedStatus,
                     "Temporal workflow completed", null);
             return null;

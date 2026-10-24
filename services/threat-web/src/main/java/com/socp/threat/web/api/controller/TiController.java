@@ -3,6 +3,7 @@ package com.socp.threat.web.api.controller;
 import com.socp.threat.web.api.request.IocImportRequest;
 import com.socp.threat.web.api.request.IocLifecycleRequest;
 import com.socp.threat.web.api.request.IocRequest;
+import com.socp.threat.web.domain.IocValueValidator;
 import com.socp.platform.audit.api.AuditOperation;
 import com.socp.platform.auth.security.RequireRole;
 import com.socp.platform.error.api.ApiResult;
@@ -69,6 +70,7 @@ public class TiController {
     @AuditOperation(action = "CREATE_IOC", target = "threat")
     @PostMapping("/iocs")
     public ApiResult<Ioc> create(@Valid @RequestBody IocRequest body) {
+        requireValidValue(body.type(), body.value());
         Ioc ioc = Ioc.of(
                 body.type(), body.value(), body.severity(), body.source(), body.description(), body.tags());
         return ApiResult.ok(store.add(ioc));
@@ -78,6 +80,7 @@ public class TiController {
     @AuditOperation(action = "UPDATE_IOC", target = "threat")
     @PutMapping("/iocs/{id}")
     public ApiResult<Ioc> update(@PathVariable String id, @Valid @RequestBody IocRequest body) {
+        requireValidValue(body.type(), body.value());
         Ioc existing = store.get(id);
         if (existing == null) throw new org.springframework.web.server.ResponseStatusException(
                 org.springframework.http.HttpStatus.NOT_FOUND, "IOC not found");
@@ -116,6 +119,10 @@ public class TiController {
                 errors.add("第 " + (index + 1) + " 行缺少情报值");
                 continue;
             }
+            if (!IocValueValidator.valid(valueOr(row.type(), "IP"), row.value())) {
+                errors.add("第 " + (index + 1) + " 行 IP 情报值必须是有效的 IPv4 或 IPv6 地址");
+                continue;
+            }
             Ioc ioc = Ioc.of(
                     valueOr(row.type(), "IP"), row.value(), valueOr(row.severity(), "MEDIUM"),
                     valueOr(row.source(), "import"), valueOr(row.description(), ""), row.tags() == null ? List.of() : row.tags());
@@ -133,7 +140,13 @@ public class TiController {
     })
     public ApiResult<Map<String, Object>> importStix(@RequestParam(defaultValue = "taxii") String feed,
                                                      @RequestBody String bundle) {
-        StixIndicatorImporter.ImportResult parsed = new StixIndicatorImporter().parse(bundle, feed);
+        StixIndicatorImporter.ImportResult parsed;
+        try {
+            parsed = new StixIndicatorImporter().parse(bundle, feed);
+        } catch (IllegalArgumentException invalid) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "Invalid STIX bundle", invalid);
+        }
         int imported = 0;
         for (Ioc indicator : parsed.indicators()) {
             store.add(indicator);
@@ -207,6 +220,13 @@ public class TiController {
         }
         m.put("byType", byType);
         return ApiResult.ok(m);
+    }
+
+    private static void requireValidValue(String type, String value) {
+        if (!IocValueValidator.valid(type, value)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.BAD_REQUEST, "IP IOC value must be a valid IPv4 or IPv6 address");
+        }
     }
 
     private PageResponse<Ioc> toPageResponse(org.springframework.data.domain.Page<Ioc> page) {

@@ -46,7 +46,9 @@ public interface SoarPlaybookRepository extends TenantScopedRepository<SoarPlayb
     @Query("select p from SoarPlaybookEntity p where p.tenantId = :tenantId "
             + "and (:status is null or upper(p.status) = :status) "
             + "and (:owner is null or lower(coalesce(p.owner, '')) = :owner) "
-            + "and (:tag is null or locate(:tag, coalesce(p.tagTokens, '')) > 0) "
+            // Risk-only searches start with a null tag; PostgreSQL must not
+            // infer locate's first bind as bytea before a non-null query runs.
+            + "and (cast(:tag as string) is null or locate(cast(:tag as string), coalesce(p.tagTokens, '')) > 0) "
             + "and (:risk is null or (:risk = 'NONE' and not exists (select v.id from PlaybookVersionEntity v "
             + "where v.tenantId = :tenantId and v.playbookId = p.id and v.status = 'PUBLISHED')) "
             + "or exists (select v.id from PlaybookVersionEntity v where v.tenantId = :tenantId "

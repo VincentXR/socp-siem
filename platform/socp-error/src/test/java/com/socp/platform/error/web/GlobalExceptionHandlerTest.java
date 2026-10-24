@@ -10,11 +10,18 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.mock.web.MockHttpServletResponse;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.IOException;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -28,6 +35,127 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class GlobalExceptionHandlerTest {
 
     private final GlobalExceptionHandler handler = new GlobalExceptionHandler();
+
+    @Test
+    void actualClientDisconnectDoesNotWriteAnotherBodyOrLogAServerError() {
+        var request = new MockHttpServletRequest("GET", "/runs/example/stream");
+        var response = new MockHttpServletResponse();
+        var failure = new AsyncRequestNotUsableException("flush failed", new IOException("Broken pipe"));
+
+        assertNull(handler.handleAsyncResponse(failure, request, response));
+        assertEquals(0, response.getContentAsByteArray().length);
+        assertTrue(eventsAt(Level.ERROR).isEmpty());
+    }
+
+    @Test
+    void unrecognizedAsyncIoFailuresKeepTheOriginalServerErrorPath() {
+        var request = new MockHttpServletRequest("GET", "/runs/example/stream");
+        for (var failure : List.of(
+                new AsyncRequestNotUsableException("unavailable for an unknown reason"),
+                new AsyncRequestNotUsableException("flush failed", new IOException("unexpected storage failure")))) {
+            var result = handler.handleAsyncResponse(failure, request, new MockHttpServletResponse());
+            assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, result.getStatusCode());
+            assertEquals(500, result.getBody().code());
+            assertEquals(GlobalExceptionHandler.INTERNAL_ERROR_MESSAGE, result.getBody().message());
+        }
+        assertEquals(2, eventsAt(Level.ERROR).size());
+        assertTrue(eventsAt(Level.ERROR).stream().allMatch(event -> event.getThrowableProxy() != null));
+    }
+
+    @Test
+    void anUncommittedSseTimeoutIsStillAServerFailure() {
+        var response = new MockHttpServletResponse();
+        response.setContentType(MediaType.TEXT_EVENT_STREAM_VALUE);
+        var result = handler.handleAsyncResponse(new AsyncRequestTimeoutException(),
+                new MockHttpServletRequest("GET", "/runs/example/stream"), response);
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, result.getStatusCode());
+        assertEquals(500, result.getBody().code());
+        assertEquals(1, eventsAt(Level.ERROR).size());
+    }
+
+    @Test
+    void aCommittedNonSseTimeoutIsStillReportedAsAServerFailure() throws IOException {
+        var response = new MockHttpServletResponse();
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.flushBuffer();
+        var result = handler.handleAsyncResponse(new AsyncRequestTimeoutException(),
+                new MockHttpServletRequest("GET", "/async-report"), response);
+
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, result.getStatusCode());
+        assertEquals(1, eventsAt(Level.ERROR).size());
+    }
+
+    @Test
+    void mvcDispatchPreservesTheCommittedStreamOnTimeoutAndDisconnect() throws Exception {
+        var mvc = MockMvcBuilders.standaloneSetup(new EndedStreamController())
+                .setControllerAdvice(handler)
+                .addFilters((request, response, chain) -> chain.doFilter(request,
+                        new jakarta.servlet.http.HttpServletResponseWrapper(
+                                (jakarta.servlet.http.HttpServletResponse) response) {
+                            @Override
+                            public void setHeader(String name, String value) {
+                                // A servlet container cannot clear Content-Type
+                                // after commitment. MockHttpServletResponse can;
+                                // preserve the real container contract when MVC
+                                // tries to reset headers before error dispatch.
+                                if (isCommitted() && "Content-Type".equalsIgnoreCase(name)) return;
+                                super.setHeader(name, value);
+                            }
+                        }))
+                .build();
+        for (String path : List.of("/timeout", "/disconnect")) {
+            var result = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(path))
+                    .andReturn();
+            assertEquals(200, result.getResponse().getStatus());
+            assertEquals("data: accepted\n\n", result.getResponse().getContentAsString());
+            assertTrue(result.getResponse().getContentType().startsWith(MediaType.TEXT_EVENT_STREAM_VALUE));
+            assertNotNull(result.getResolvedException());
+        }
+        assertTrue(eventsAt(Level.ERROR).isEmpty());
+    }
+
+    @org.springframework.web.bind.annotation.RestController
+    static class EndedStreamController {
+        @org.springframework.web.bind.annotation.GetMapping({"/timeout", "/disconnect"})
+        void stream(jakarta.servlet.http.HttpServletRequest request,
+                    jakarta.servlet.http.HttpServletResponse response) throws IOException {
+            response.setContentType("text/event-stream;charset=UTF-8");
+            response.getWriter().write("data: accepted\n\n");
+            response.flushBuffer();
+            if (request.getRequestURI().equals("/disconnect")) {
+                throw new AsyncRequestNotUsableException("flush failed", new IOException("Broken pipe"));
+            }
+            throw new AsyncRequestTimeoutException();
+        }
+    }
+
+    @Test
+    void malformedBodiesAreClientErrorsWithoutParserDetails() {
+        var response = handler.handleUnreadableBody(new org.springframework.http.converter.HttpMessageNotReadableException(
+                "secret submitted value and parser class", new org.springframework.mock.http.MockHttpInputMessage(new byte[0])));
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertEquals(400, response.getBody().code());
+        assertFalse(response.getBody().message().contains("secret"));
+        assertTrue(eventsAt(Level.ERROR).isEmpty());
+    }
+
+    @Test
+    void routingErrorsKeepClientStatusAndAllowHeaderWithoutEchoingThePath() {
+        var missing = handler.handleOther(new org.springframework.web.servlet.resource.NoResourceFoundException(
+                org.springframework.http.HttpMethod.GET, "/private-request-uri", "private-path"), null);
+        assertEquals(HttpStatus.NOT_FOUND, missing.getStatusCode());
+        assertEquals(404, missing.getBody().code());
+        assertFalse(missing.getBody().message().contains("private-path"));
+        assertFalse(missing.getBody().message().contains("private-request-uri"));
+
+        var method = handler.handleOther(new org.springframework.web.HttpRequestMethodNotSupportedException(
+                "DELETE", List.of("GET", "POST")), null);
+        assertEquals(HttpStatus.METHOD_NOT_ALLOWED, method.getStatusCode());
+        assertEquals(405, method.getBody().code());
+        assertTrue(method.getHeaders().getAllow().contains(org.springframework.http.HttpMethod.GET));
+        assertTrue(eventsAt(Level.ERROR).isEmpty());
+    }
     private ListAppender<ILoggingEvent> logEvents;
     private Level originalLevel;
 
@@ -143,10 +271,10 @@ class GlobalExceptionHandlerTest {
      */
     @Test
     void givesStandardCodesWithoutADedicatedSentenceAFallbackLine() {
-        var response = handler.handleApi(new ApiException(405, null));
+        var response = handler.handleApi(new ApiException(406, null));
 
-        assertEquals(HttpStatus.METHOD_NOT_ALLOWED, response.getStatusCode());
-        assertEquals(405, response.getBody().code());
+        assertEquals(HttpStatus.NOT_ACCEPTABLE, response.getStatusCode());
+        assertEquals(406, response.getBody().code());
         assertEquals("请求未成功，请稍后重试或联系运维", response.getBody().message());
         assertFalse(logEvents.list.stream().anyMatch(event -> event.getLevel() == Level.ERROR),
                 "4xx 兜底句不得进入 5xx 日志路径");

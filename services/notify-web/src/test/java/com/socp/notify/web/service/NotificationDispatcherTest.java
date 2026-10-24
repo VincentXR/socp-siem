@@ -10,6 +10,8 @@ import com.socp.platform.client.service.SocpService;
 import com.socp.platform.tenant.context.TenantContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
@@ -240,6 +242,75 @@ class NotificationDispatcherTest {
         assertEquals(0, channelResult.get("httpStatus"));
         verify(deliveries).finish(eq("AL-NULL"), eq("CH-NULL"), eq("token"),
                 org.mockito.ArgumentMatchers.contains("NOTIFY_RESULT_UNKNOWN"), eq(true));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "External endpoint blocked: external endpoint host is not allowlisted: 127.0.0.1",
+            "Request body exceeds byte limit", "Interrupted"})
+    void zeroTransportAttemptsProduceAKnownNotSentReceipt(String reason) {
+        TenantContext.set("tenant-a");
+        Channel channel = new Channel("CH-BLOCKED", "Blocked", "WEBHOOK", "https://127.0.0.1/hook", true, "");
+        given(channels.enabled()).willReturn(List.of(channel));
+        given(http.postExternalOnce(eq(channel.target()), any(), eq(SocpHttpClient.JSON), eq(3000),
+                org.mockito.ArgumentMatchers.anyMap()))
+                .willReturn(new ServiceCall(null, channel.target(), false, -1, "", reason, 0, false, 0));
+
+        Map<String, Object> result = dispatcher().dispatch(Map.of("id", "AL-BLOCKED"));
+
+        Map<?, ?> receipt = (Map<?, ?>) ((List<?>) result.get("results")).getFirst();
+        assertEquals(1, result.get("failed"));
+        assertEquals("failed", receipt.get("status"));
+        assertEquals("NOTIFY_NOT_SENT", receipt.get("errorCode"));
+        assertEquals(false, receipt.get("retryable"));
+        assertEquals("Request was not sent: " + reason, receipt.get("detail"));
+        verify(deliveries).finish(eq("AL-BLOCKED"), eq(channel.id()), eq("token"),
+                org.mockito.ArgumentMatchers.contains("NOTIFY_NOT_SENT"), eq(true));
+        ArgumentCaptor<NotificationDispatchLogEntity> history = ArgumentCaptor.forClass(NotificationDispatchLogEntity.class);
+        verify(dispatchLogs).save(history.capture());
+        assertEquals("failed", history.getValue().getStatus());
+        assertTrue(history.getValue().getResultJson().contains("NOTIFY_NOT_SENT"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"Timed out awaiting response", "External endpoint blocked: policy failure"})
+    void anAttemptWithoutAResponseRemainsUnknownRegardlessOfErrorText(String reason) {
+        TenantContext.set("tenant-a");
+        Channel channel = new Channel("CH-UNCERTAIN", "Uncertain", "WEBHOOK", "https://ops.example/hook", true, "");
+        given(channels.enabled()).willReturn(List.of(channel));
+        given(http.postExternalOnce(eq(channel.target()), any(), eq(SocpHttpClient.JSON), eq(3000),
+                org.mockito.ArgumentMatchers.anyMap()))
+                .willReturn(new ServiceCall(null, channel.target(), false, -1, "", reason, 10, false, 1));
+
+        Map<String, Object> result = dispatcher().dispatch(Map.of("id", "AL-UNCERTAIN"));
+
+        Map<?, ?> receipt = (Map<?, ?>) ((List<?>) result.get("results")).getFirst();
+        assertEquals("unknown", receipt.get("status"));
+        assertEquals("NOTIFY_RESULT_UNKNOWN", receipt.get("errorCode"));
+        assertEquals(false, receipt.get("retryable"));
+        verify(deliveries).finish(eq("AL-UNCERTAIN"), eq(channel.id()), eq("token"),
+                org.mockito.ArgumentMatchers.contains("NOTIFY_RESULT_UNKNOWN"), eq(true));
+    }
+
+    @Test
+    void disabledChannelOperatorTestRecordsPolicyRejectionAsNotSent() {
+        TenantContext.set("tenant-a");
+        Channel channel = new Channel("CH-TEST", "Blocked test", "WEBHOOK", "https://127.0.0.1/hook", false, "");
+        given(http.postExternalOnce(eq(channel.target()), any(), eq(SocpHttpClient.JSON), eq(3000),
+                org.mockito.ArgumentMatchers.anyMap()))
+                .willReturn(new ServiceCall(null, channel.target(), false, -1, "",
+                        "External endpoint blocked: host is not allowlisted", 0, false, 0));
+
+        Map<String, Object> receipt = dispatcher().test(channel);
+
+        assertEquals("failed", receipt.get("status"));
+        assertEquals("NOTIFY_NOT_SENT", receipt.get("errorCode"));
+        assertEquals(false, receipt.get("retryable"));
+        ArgumentCaptor<NotificationDispatchLogEntity> history = ArgumentCaptor.forClass(NotificationDispatchLogEntity.class);
+        verify(dispatchLogs).save(history.capture());
+        assertEquals("failed", history.getValue().getStatus());
+        assertTrue(history.getValue().getAlarmId().startsWith("test-"));
+        verify(deliveries, never()).claim(any(), any());
     }
 
     @Test

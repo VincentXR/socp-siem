@@ -391,8 +391,13 @@ async function claim(value: unknown) {
     const result = await caseApi.claim(row.id, row.rowVersion ?? 0, claimAttempt.key)
     claimAttempt = { signature: '', key: '' }
     if (detail.value?.id === row.id) {
-      // Preserve an unsaved status/note while updating the authoritative owner.
-      detail.value = result.case; detailAssignee.value = result.case.assignee ?? ''
+      // Rebase the persisted owner without treating it as an unsaved edit.
+      // Status, closure and note drafts still belong to the analyst.
+      const statusDraft = newStatus.value !== detail.value.status ? newStatus.value : null
+      const closureDraft = { ...closure.value }
+      applyDetail(result.case)
+      if (statusDraft !== null) newStatus.value = statusDraft
+      closure.value = closureDraft
     }
     cases.value = cases.value.map(item => item.id === row.id ? result.case : item)
     ElMessage.success(t('cases.claimed'))

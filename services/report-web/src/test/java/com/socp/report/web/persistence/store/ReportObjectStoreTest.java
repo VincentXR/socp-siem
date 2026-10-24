@@ -9,6 +9,8 @@ import io.minio.RemoveObjectArgs;
 import io.minio.Result;
 import io.minio.messages.Item;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import org.springframework.http.ContentDisposition;
 
 import java.io.IOException;
 import java.util.Iterator;
@@ -20,6 +22,28 @@ import static org.mockito.Mockito.*;
 
 class ReportObjectStoreTest {
     private static final String KEY = "reports/tenant-a/20260923/daily.json";
+
+    @Test
+    void presignedDownloadsRequestAnAttachmentWithASafeUtf8Basename() throws Exception {
+        MinioClient client = mock(MinioClient.class);
+        ReportObjectStore store = new ReportObjectStore(client, "reports");
+        String key = "reports/tenant-a/20261023/日报 \"sample\"\r\n.json";
+        when(client.getPresignedObjectUrl(any(GetPresignedObjectUrlArgs.class)))
+                .thenReturn("https://storage.example/signed");
+
+        assertThat(store.presignedGet(key)).isEqualTo("https://storage.example/signed");
+
+        var args = ArgumentCaptor.forClass(GetPresignedObjectUrlArgs.class);
+        verify(client).getPresignedObjectUrl(args.capture());
+        assertThat(args.getValue().bucket()).isEqualTo("reports");
+        assertThat(args.getValue().object()).isEqualTo(key);
+        assertThat(args.getValue().method()).isEqualTo(io.minio.http.Method.GET);
+        assertThat(args.getValue().expiry()).isEqualTo(60 * 60 * 24 * 7);
+        String header = args.getValue().extraQueryParams().get("response-content-disposition").iterator().next();
+        assertThat(header).doesNotContain("\r", "\n");
+        assertThat(ContentDisposition.parse(header).isAttachment()).isTrue();
+        assertThat(ContentDisposition.parse(header).getFilename()).isEqualTo("日报 \"sample\"__.json");
+    }
 
     @Test
     void disabledStorageFailsAllArchiveOperationsExplicitly() {

@@ -43,7 +43,25 @@ class GatewayFilterTest {
         filter.filter(exchange, chain).block(Duration.ofSeconds(1));
 
         assertEquals(HttpStatus.UNAUTHORIZED, exchange.getResponse().getStatusCode());
+        assertEquals("invalid", exchange.getResponse().getHeaders().getFirst(GatewayFilter.SESSION_STATUS_HEADER));
         verifyNoInteractions(chain);
+    }
+
+    @Test
+    void upstreamAuthenticationFailureCannotMasqueradeAsAnExpiredBrowserSession() {
+        var claims = new JWTClaimsSet.Builder().subject("reader").claim("role", "analyst")
+                .claim("tenant", "tenant-a").build();
+        given(jwtValidator.validate("valid-session")).willReturn(claims);
+        given(jwtValidator.extractTenant(claims)).willReturn("tenant-a");
+        var exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/report-web/api/v1/reports/archive")
+                .header("Authorization", "Bearer valid-session"));
+        new GatewayFilter(jwtValidator).filter(exchange, upstream -> {
+            upstream.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+            upstream.getResponse().getHeaders().set(GatewayFilter.SESSION_STATUS_HEADER, "invalid");
+            return upstream.getResponse().setComplete();
+        }).block(Duration.ofSeconds(1));
+        assertEquals(HttpStatus.UNAUTHORIZED, exchange.getResponse().getStatusCode());
+        assertEquals("valid", exchange.getResponse().getHeaders().getFirst(GatewayFilter.SESSION_STATUS_HEADER));
     }
 
     @Test

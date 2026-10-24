@@ -18,8 +18,8 @@ import org.springframework.context.annotation.Configuration;
 /**
  * Temporal Worker 装配（持久运行模式）。
  *
- * <p>WorkflowClient 懒连接（连不上不抛错）；WorkerFactory.start() 即使服务端不可达
- * 也只是轮询线程空转，不阻塞 Spring 启动。真正的可用性判定在 {@link TemporalExecutor#isAvailable()}。
+ * <p>WorkflowClient 懒连接；WorkerFactory.start() 会查询 namespace，依赖不可达时可能失败。
+ * 初次失败由 {@link TemporalWorkerRecovery} 定时重试，启动后的连接重试由 SDK 管理。
  * 开关：socp.temporal.enabled=false 时不启动 Worker； 运行仍保持持久化 QUEUED，不走进程内降级。
  */
 @Configuration
@@ -57,7 +57,8 @@ public class TemporalWorkerConfig {
             factory.start();
             log.info("Temporal Worker 已启动（taskQueue={}）", com.socp.soar.web.temporal.PlaybookWorkflow.TASK_QUEUE);
         } catch (Exception e) {
-            // Keep the worker bean alive so the durable dispatcher can retry later.
+            // TemporalWorkerRecovery retries the factory itself; dispatch
+            // retries alone cannot start the missing task-queue pollers.
             log.warn("Temporal Worker start failed; SOAR runs remain queued: {}", e.getMessage());
         }
         return factory;

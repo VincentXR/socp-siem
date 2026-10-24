@@ -4,6 +4,25 @@ This document describes the implemented event pipeline, storage boundaries,
 delivery semantics, and local deployment limits. Source code, migrations, and
 the executable verification scripts remain the final source of truth.
 
+## Runtime dependency baseline
+
+The parent POM pairs Spring Boot 4.0.9 with Spring Cloud 2025.1.4 and
+springdoc 3.0.x. This uses the maintained Spring Framework 7.0 line;
+do not override Framework 7 into a Boot 3 application. The Boot BOM also
+coordinates Tomcat 11 / Servlet 6.1, Hibernate 7, Kafka clients, and Netty.
+See the [Cloud compatibility table](https://github.com/spring-cloud/spring-cloud-release/wiki/Supported-Versions)
+and [springdoc compatibility table](https://springdoc.org/#what-is-the-compatibility-matrix-of-springdoc-openapi-with-spring-boot).
+
+Application JSON currently retains Jackson 2 through Boot's official
+`spring-boot-jackson2` migration module, with patched versions managed centrally.
+This compatibility module is deprecated by Boot and must be replaced when the
+application's JSON contracts are migrated to Jackson 3. Keep MVC and WebFlux
+mapper selection explicit when both libraries are present; see
+[Boot JSON support](https://docs.spring.io/spring-boot/4.0/reference/features/json.html).
+Flyway, Kafka auto-configuration, and MVC/JPA/WebFlux test support are explicit
+module dependencies under Boot 4. Existing Testcontainers 1.x coordinates stay
+on one BOM to avoid mixing them with the renamed 2.x modules.
+
 ## Event pipeline
 
 ```mermaid

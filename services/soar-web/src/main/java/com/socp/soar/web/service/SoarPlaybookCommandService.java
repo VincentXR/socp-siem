@@ -383,6 +383,10 @@ final class SoarPlaybookCommandService {
         return readModels.playbookView(value, draft == null ? null : draft.getVersionNo());
     }
     private Map<String, Object> versionView(PlaybookVersionEntity value) {
+        // Build the write acknowledgement after Hibernate advances @Version.
+        // Mapping before the surrounding transaction commits returns the old
+        // revision, making the same editor's next save look like a stale write.
+        versions.flush();
         return readModels.versionView(value, records.playbook(value.getPlaybookId()).getStatus());
     }
 }

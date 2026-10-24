@@ -33,6 +33,18 @@ class KafkaClientSupportTest {
     }
 
     @Test
+    void boundedReliableProducerCanActuallyBeConstructedWithKafka4() {
+        var config = KafkaClientSupport.reliableProducer("127.0.0.1:1");
+        assertEquals(30_000, config.get(ProducerConfig.DELIVERY_TIMEOUT_MS_CONFIG));
+        assertEquals(30_000, config.get(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG));
+        assertEquals(0, config.get(ProducerConfig.LINGER_MS_CONFIG));
+        assertEquals(5_000, config.get(ProducerConfig.MAX_BLOCK_MS_CONFIG));
+        // Exercise KafkaProducer's constructor validation; no records are sent.
+        var producer = new KafkaProducer<String, String>(config);
+        producer.close(Duration.ZERO);
+    }
+
+    @Test
     void sendsARecordThatAlreadyCarriesItsHeaders() {
         KafkaProducer<String, String> producer = mock(KafkaProducer.class);
         ProducerRecord<String, String> record = new ProducerRecord<>("topic-dlq", "key-1", "{}");

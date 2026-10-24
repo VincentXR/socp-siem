@@ -4,12 +4,22 @@ server:
 spring:
   application:
     name: api-gateway
+  http:
+    codecs:
+      # Match the shared Jackson 2 API contracts during the Boot 4 upgrade.
+      preferred-json-mapper: jackson2
   cloud:
     gateway:
       # Spring Cloud Gateway 2025.0 起配置键迁移到 spring.cloud.gateway.server.webflux.*
       # 旧键（spring.cloud.gateway.routes）仍被临时兼容，但会打 migration 警告。
       server:
         webflux:
+          httpclient:
+            pool:
+              # Retire idle upstream sockets before the servlet keep-alive
+              # timeout; otherwise a read can race a peer's idle close.
+              max-idle-time: ${SOCP_GATEWAY_HTTP_POOL_MAX_IDLE_TIME:10s}
+              eviction-interval: ${SOCP_GATEWAY_HTTP_POOL_EVICTION_INTERVAL:5s}
           # 统一北向入口：按 context-path 路由到各业务服务。
           # 下游服务本身配了 server.servlet.context-path，所以这里不做 StripPrefix，
           # /alert-web/api/xx 原样转发到 http://host:18080/alert-web/api/xx。
@@ -43,6 +53,8 @@ spring:
               uri: ${SOCP_SFM_URI:http://localhost:18084}
               predicates:
                 - Path=/report-web/**
+              filters:
+                - ReportArchiveReadRetry
             - id: asset-web
               uri: ${SOCP_SAM_WEB_URI:http://localhost:18085}
               predicates:

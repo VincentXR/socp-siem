@@ -324,7 +324,7 @@ class SoarAutomationRuleBranchCoverageTest {
         assertThat(receiptViews(result).get(0))
                 .containsEntry("status", "SUPPRESSED")
                 .containsEntry("reason", "CAPACITY");
-        verify(soar, never()).queueManualRun(anyString(), anyString(), any(), any());
+        verify(soar, never()).queueAutomaticRun(anyString(), anyString(), any(), any());
     }
 
     @Test
@@ -352,7 +352,7 @@ class SoarAutomationRuleBranchCoverageTest {
         given(receipts.findByTenantIdAndEventIdAndAutomationRuleIdAndRuleRevision(
                 any(), any(), any(), anyInt())).willReturn(Optional.empty());
         given(soar.getVersionById("version-one")).willReturn(Map.of("status", "PUBLISHED"));
-        given(soar.queueManualRun(anyString(), eq("version-one"), any(), any()))
+        given(soar.queueAutomaticRun(anyString(), eq("version-one"), any(), any()))
                 .willReturn(Map.of("runId", "RUN-1", "status", "QUEUED"));
 
         Map<String, Object> result = service.evaluate(event("E-3"));
