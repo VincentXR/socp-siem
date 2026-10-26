@@ -1,21 +1,22 @@
 package com.socp.search.config.infrastructure.opensearch;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 
 /** Single production mapping contract shared by the writer and real OpenSearch tests. */
 public final class OpenSearchIndexTemplate {
     public static final String NAME = "socp-events-template";
     public static final String PATH = "/_index_template/" + NAME;
 
-    private static final String PAYLOAD = """
+    private static final String PAYLOAD_FORMAT = """
             {
               "index_patterns": ["socp-events-*"],
               "priority": 200,
               "_meta": { "fieldRegistryVersion": "1.0" },
               "template": {
                 "settings": {
-                  "number_of_shards": 1,
-                  "number_of_replicas": 0,
+                  "number_of_shards": %d,
+                  "number_of_replicas": %d,
                   "analysis": {
                     "normalizer": {
                       "socp_lowercase": {
@@ -102,10 +103,21 @@ public final class OpenSearchIndexTemplate {
     }
 
     public static String payload() {
-        return PAYLOAD;
+        return payload(1, 0);
+    }
+
+    public static String payload(int shards, int replicas) {
+        if (shards < 1 || shards > 1024 || replicas < 0 || replicas > 32) {
+            throw new IllegalArgumentException("invalid OpenSearch index shard/replica counts");
+        }
+        return String.format(Locale.ROOT, PAYLOAD_FORMAT, shards, replicas);
     }
 
     public static byte[] payloadBytes() {
-        return PAYLOAD.getBytes(StandardCharsets.UTF_8);
+        return payload().getBytes(StandardCharsets.UTF_8);
+    }
+
+    public static byte[] payloadBytes(int shards, int replicas) {
+        return payload(shards, replicas).getBytes(StandardCharsets.UTF_8);
     }
 }

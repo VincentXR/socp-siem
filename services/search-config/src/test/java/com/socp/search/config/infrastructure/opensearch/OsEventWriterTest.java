@@ -5,12 +5,16 @@ import com.socp.search.config.config.OpenSearchProperties;
 import com.socp.search.config.domain.SearchEvent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.mock.env.MockEnvironment;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -25,6 +29,35 @@ class OsEventWriterTest {
     @AfterEach
     void stopServer() {
         if (server != null) server.stop(0);
+    }
+
+    @Test
+    void preservesConfiguredShardAndReplicaCountsAcrossWriterRestarts() throws Exception {
+        List<String> templates = new ArrayList<>();
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext(OpenSearchIndexTemplate.PATH, exchange -> {
+            templates.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("socp.opensearch.url", "http://localhost:" + server.getAddress().getPort())
+                .withProperty("socp.opensearch.index-shards", "3")
+                .withProperty("socp.opensearch.index-replicas", "2");
+        OpenSearchProperties properties = Binder.get(environment)
+                .bind("socp.opensearch", Bindable.of(OpenSearchProperties.class)).get();
+
+        assertTrue(new OsEventWriter(properties).ensureIndexTemplate());
+        assertTrue(new OsEventWriter(properties).ensureIndexTemplate());
+
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+        assertThat(templates).hasSize(2);
+        for (String template : templates) {
+            var settings = mapper.readTree(template).path("template").path("settings");
+            assertThat(settings.path("number_of_shards").asInt()).isEqualTo(3);
+            assertThat(settings.path("number_of_replicas").asInt()).isEqualTo(2);
+        }
     }
 
     @Test

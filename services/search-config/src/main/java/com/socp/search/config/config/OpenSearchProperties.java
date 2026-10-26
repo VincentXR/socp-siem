@@ -11,6 +11,8 @@ public class OpenSearchProperties {
     private String password = "Socp!Sec2026xK";
     private boolean enabled = true;
     private String searchIndex = "socp-events-*";
+    private int indexShards = 1;
+    private int indexReplicas = 0;
     private Tls tls = new Tls();
 
     public String getUrl() { return url; }
@@ -23,6 +25,20 @@ public class OpenSearchProperties {
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public String getSearchIndex() { return searchIndex; }
     public void setSearchIndex(String searchIndex) { this.searchIndex = searchIndex; }
+    public int getIndexShards() { return indexShards; }
+    public void setIndexShards(int indexShards) {
+        if (indexShards < 1 || indexShards > 1024) {
+            throw new IllegalArgumentException("socp.opensearch.index-shards must be between 1 and 1024");
+        }
+        this.indexShards = indexShards;
+    }
+    public int getIndexReplicas() { return indexReplicas; }
+    public void setIndexReplicas(int indexReplicas) {
+        if (indexReplicas < 0 || indexReplicas > 32) {
+            throw new IllegalArgumentException("socp.opensearch.index-replicas must be between 0 and 32");
+        }
+        this.indexReplicas = indexReplicas;
+    }
 
     public Tls getTls() { return tls; }
     public void setTls(Tls tls) { this.tls = tls == null ? new Tls() : tls; }
