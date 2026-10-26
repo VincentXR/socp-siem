@@ -1,6 +1,7 @@
 package com.socp.search.config.infrastructure.opensearch;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 
 /** Single production mapping contract shared by the writer and real OpenSearch tests. */
 public final class OpenSearchIndexTemplate {
@@ -109,7 +110,7 @@ public final class OpenSearchIndexTemplate {
         if (shards < 1 || shards > 1024 || replicas < 0 || replicas > 32) {
             throw new IllegalArgumentException("invalid OpenSearch index shard/replica counts");
         }
-        return PAYLOAD_FORMAT.formatted(shards, replicas);
+        return String.format(Locale.ROOT, PAYLOAD_FORMAT, shards, replicas);
     }
 
     public static byte[] payloadBytes() {

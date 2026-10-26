@@ -5,7 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.search.config.query.FieldCatalog;
 import com.socp.search.config.query.FieldDescriptor;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.ResourceLock;
+import org.junit.jupiter.api.parallel.Resources;
 
+import java.util.Locale;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,6 +25,23 @@ class OpenSearchFieldContractTest {
         for (FieldDescriptor field : FieldCatalog.standard().descriptors()) {
             assertMappedType(properties, field.searchPath(), searchTypes(field), field.name());
             assertMappedType(properties, field.exactPath(), exactTypes(field), field.name());
+        }
+    }
+
+    @Test
+    @ResourceLock(Resources.LOCALE)
+    void templateNumbersRemainValidJsonUnderNonAsciiFormattingLocale() throws Exception {
+        Locale original = Locale.getDefault(Locale.Category.FORMAT);
+        try {
+            Locale.setDefault(Locale.Category.FORMAT, Locale.forLanguageTag("ar-EG"));
+            JsonNode settings = MAPPER.readTree(OpenSearchIndexTemplate.payloadBytes(3, 2))
+                    .path("template").path("settings");
+            assertThat(settings.path("number_of_shards").isIntegralNumber()).isTrue();
+            assertThat(settings.path("number_of_shards").intValue()).isEqualTo(3);
+            assertThat(settings.path("number_of_replicas").isIntegralNumber()).isTrue();
+            assertThat(settings.path("number_of_replicas").intValue()).isEqualTo(2);
+        } finally {
+            Locale.setDefault(Locale.Category.FORMAT, original);
         }
     }
 

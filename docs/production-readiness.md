@@ -51,7 +51,9 @@ successful workflow from an older revision is not proof for HEAD.
 The Search writer owns the `socp-events-template` mapping and topology settings.
 Set `SOCP_OPENSEARCH_INDEX_SHARDS` and `SOCP_OPENSEARCH_INDEX_REPLICAS` in the
 deployment configuration rather than editing its managed template directly:
-the writer reapplies the configured values on startup. Production defaults to
+the writer reapplies the configured values on startup. Template JSON numbers
+use locale-independent formatting, including when the JVM formatting locale
+uses non-ASCII digits. Production defaults to
 one replica and refuses an enabled OpenSearch configuration with zero replicas;
 the single-node development profile defaults to zero. Shard counts are bounded
 to 1–1,024 and replica counts to 0–32. A production replica setting does not
