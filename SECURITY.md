@@ -14,6 +14,15 @@
 - Treat tenant IDs as logical authorization boundaries; use database or
   network isolation when a deployment requires stronger separation.
 
+JWKS verification uses `socp.security.jwks-connect-timeout-ms` (default 1000) and
+`socp.security.jwks-read-timeout-ms` (default 2000), each bounded to 1–5000 ms.
+The source retries a failed retrieval once and retains the existing five-minute
+cache and refresh rate limit. The cache's refresh wait is not the HTTP timeout.
+An unavailable key source returns 503, without authenticating the request;
+an invalid signature, expired token or invalid claims still returns 401.
+No stale-key fallback or signature bypass is enabled. Observe key-service
+latency and validate key rotation before changing the network budgets.
+
 ## Reporting a vulnerability
 
 Do not open a public issue containing exploit details or credentials. Contact

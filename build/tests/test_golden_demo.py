@@ -19,6 +19,32 @@ SPEC.loader.exec_module(DEMO)
 
 
 class GoldenDemoTest(unittest.TestCase):
+    def test_disabled_log_channel_is_reenabled_with_the_post_contract(self):
+        disabled = {"id": "log-fixture", "name": DEMO.DEMO_CHANNEL,
+                    "type": "LOG", "enabled": False}
+        enabled = {**disabled, "enabled": True}
+        responses = [(200, {"code": 0, "data": {"items": [disabled]}}, {}),
+                     (200, {"code": 0, "data": {"channel": enabled}}, {})]
+        with patch.object(DEMO, "request", side_effect=responses) as request:
+            self.assertEqual(enabled, DEMO.ensure_channel("fixture"))
+            request.assert_called_with("notify", "/api/v1/channels/log-fixture/toggle",
+                                       token="fixture", method="POST")
+
+    def test_channel_preparation_cannot_report_failed_activation_as_ready(self):
+        disabled = {"id": "log-fixture", "name": DEMO.DEMO_CHANNEL,
+                    "type": "LOG", "enabled": False}
+        for status, response in (
+            (405, {"code": 405}),
+            (200, {"code": 503, "data": None}),
+            (200, {"code": 0, "data": {"channel": disabled}}),
+            (200, {"code": 0, "data": {"channel": {**disabled, "id": "other", "enabled": True}}}),
+        ):
+            with self.subTest(status=status, response=response), \
+                    patch.object(DEMO, "request", side_effect=[
+                        (200, {"code": 0, "data": {"items": [disabled]}}, {}),
+                        (status, response, {})]), self.assertRaises(RuntimeError):
+                DEMO.ensure_channel("fixture")
+
     def test_fixture_preserves_the_collector_protocol_and_disk_buffer(self):
         text = DEMO.fixture_config("http://127.0.0.1:18081/search-config/api/v1/ingest",
                                    'ci-collector', 'quote"slash\\token')

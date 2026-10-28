@@ -6,6 +6,7 @@ import com.socp.gateway.security.AuthAttemptLimiter;
 import com.socp.gateway.security.PlatformTokenIssuer;
 import com.socp.gateway.security.TokenRevocationStore;
 import com.socp.platform.auth.security.JwtValidationException;
+import com.socp.platform.auth.security.JwtKeySourceUnavailableException;
 import com.socp.platform.auth.security.JwtValidator;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -250,6 +251,8 @@ public class AuthController {
                     .then(Mono.<ResponseEntity<?>>just(noContent(expired)))
                     .onErrorResume(failure -> Mono.<ResponseEntity<?>>just(authFailure(expired,
                             HttpStatus.SERVICE_UNAVAILABLE, "Unable to revoke session")));
+        } catch (JwtKeySourceUnavailableException unavailable) {
+            return Mono.just(authFailure(expired, HttpStatus.SERVICE_UNAVAILABLE, unavailable.getMessage()));
         } catch (JwtValidationException failure) {
             return Mono.just(authFailure(expired, HttpStatus.UNAUTHORIZED, "Invalid or expired session"));
         }

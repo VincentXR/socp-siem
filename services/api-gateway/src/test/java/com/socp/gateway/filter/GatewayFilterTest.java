@@ -35,6 +35,20 @@ class GatewayFilterTest {
     private GatewayFilterChain chain;
 
     @Test
+    void keyDependencyOutageDoesNotReturnAnInvalidSessionOrForwardTheRequest() {
+        given(jwtValidator.validate("valid-session")).willThrow(
+                new com.socp.platform.auth.security.JwtKeySourceUnavailableException(new java.net.SocketTimeoutException()));
+        var exchange = MockServerWebExchange.from(MockServerHttpRequest.get("/api/v1/alarms")
+                .header("Authorization", "Bearer valid-session"));
+        new GatewayFilter(jwtValidator).filter(exchange, chain).block(Duration.ofSeconds(1));
+        assertEquals(HttpStatus.SERVICE_UNAVAILABLE, exchange.getResponse().getStatusCode());
+        assertEquals("1", exchange.getResponse().getHeaders().getFirst("Retry-After"));
+        org.junit.jupiter.api.Assertions.assertNotEquals("invalid",
+                exchange.getResponse().getHeaders().getFirst(GatewayFilter.SESSION_STATUS_HEADER));
+        verifyNoInteractions(chain);
+    }
+
+    @Test
     void rejectsRequestsWithoutBearerToken() {
         GatewayFilter filter = new GatewayFilter(jwtValidator);
         MockServerWebExchange exchange = MockServerWebExchange.from(

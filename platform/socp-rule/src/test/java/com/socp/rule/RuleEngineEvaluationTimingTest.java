@@ -27,6 +27,42 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * still hogs the worker thread becomes an observable slow-rule series.
  */
 class RuleEngineEvaluationTimingTest {
+    private static final Object PINNING_CONTROL = new Object();
+
+    @Test
+    void blockingRuleDependenciesDoNotPinTheVirtualWorker(
+            @org.junit.jupiter.api.io.TempDir java.nio.file.Path temporary) throws Exception {
+        var recordingPath = temporary.resolve("rule-worker.jfr");
+        try (var recording = new jdk.jfr.Recording()) {
+            recording.enable("jdk.VirtualThreadPinned").withStackTrace()
+                    .withThreshold(java.time.Duration.ZERO);
+            recording.start();
+            // Positive control: prove this runtime reports monitor pinning.
+            Thread.ofVirtual().name("pinning-control").start(() -> {
+                synchronized (PINNING_CONTROL) {
+                    java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(150));
+                }
+            }).join();
+            Rule rule = new PatternRule("BLOCKING-DEPENDENCY", "blocking", event -> {
+                java.util.concurrent.locks.LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(150));
+                return false;
+            }, Severity.HIGH, "dependency read");
+            try (RuleEngine engine = new RuleEngine(List.of(rule), List.of(), null)) {
+                engine.start();
+                engine.ingestAndAwait(new SecurityEvent("blocking-event", Instant.now(),
+                        "auth", "host", "raw", Map.of("tenant_id", "timing-tenant"), Severity.HIGH))
+                        .get(10, TimeUnit.SECONDS);
+            }
+            recording.stop();
+            recording.dump(recordingPath);
+        }
+        var pins = jdk.jfr.consumer.RecordingFile.readAllEvents(recordingPath);
+        assertTrue(pins.stream().anyMatch(event -> "pinning-control".equals(event.getThread().getJavaName())));
+        assertFalse(pins.stream().anyMatch(event -> event.getStackTrace() != null
+                && event.getStackTrace().getFrames().stream().anyMatch(frame ->
+                RuleEngine.class.getName().equals(frame.getMethod().getType().getName()))),
+                "Blocking durable evaluation must release the Java 21 carrier");
+    }
 
     @Test
     void reportsPerRuleEvaluationTimingToObserver() throws Exception {

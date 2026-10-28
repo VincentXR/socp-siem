@@ -286,6 +286,16 @@ def check_kafka(errors: list[str], base: dict, overlay: dict, effective: dict) -
     base_env = environment_of(base, "kafka")
     overlay_env = environment_of(overlay, "kafka")
     effective_env = environment_of(effective, "kafka")
+    for source, document in (("base", base), ("effective", effective)):
+        log_dir = environment_of(document, "kafka").get("KAFKA_LOG_DIRS")
+        volumes = document.get("services", {}).get("kafka", {}).get("volumes", [])
+        if log_dir != "/var/lib/kafka/data" or not any(
+            isinstance(volume, str) and volume.split(":")[:2] == ["kafka-data", log_dir]
+            or isinstance(volume, dict) and volume.get("type") == "volume"
+            and volume.get("source") == "kafka-data" and volume.get("target") == log_dir
+            for volume in volumes
+        ):
+            errors.append(f"{source} kafka KAFKA_LOG_DIRS must target the kafka-data volume")
     for key in KAFKA_DECLARED_KEYS:
         if key not in overlay_env:
             errors.append(f"docker-compose.prod.yml: kafka must declare {key} instead of inheriting {base_env.get(key, '')!r}")

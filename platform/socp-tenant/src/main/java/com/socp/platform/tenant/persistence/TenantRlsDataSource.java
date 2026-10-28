@@ -88,21 +88,33 @@ public final class TenantRlsDataSource extends DelegatingDataSource {
     private static final class ConnectionHandler implements InvocationHandler {
         private final Connection delegate;
         private String appliedScope;
+        private final java.util.concurrent.locks.ReentrantLock scopeLock =
+                new java.util.concurrent.locks.ReentrantLock();
 
         private ConnectionHandler(Connection delegate, String appliedScope) {
             this.delegate = delegate;
             this.appliedScope = appliedScope;
         }
 
-        private synchronized void ensureScope() throws SQLException {
-            String required = scopeValue();
-            if (required.equals(appliedScope)) return;
-            setScope(delegate);
-            appliedScope = required;
+        private void ensureScope() throws SQLException {
+            scopeLock.lock();
+            try {
+                String required = scopeValue();
+                if (required.equals(appliedScope)) return;
+                setScope(delegate);
+                appliedScope = required;
+            } finally {
+                scopeLock.unlock();
+            }
         }
 
-        private synchronized void invalidateScope() {
-            appliedScope = null;
+        private void invalidateScope() {
+            scopeLock.lock();
+            try {
+                appliedScope = null;
+            } finally {
+                scopeLock.unlock();
+            }
         }
 
         @Override

@@ -127,7 +127,9 @@ public class SoarDispatchState {
         row.setStatus(status);
         row.setClaimedBy(null);
         row.setClaimedAt(null);
-        row.setLastError(error);
+        // Preserve the last failed attempt after eventual success. Status remains
+        // authoritative; clearing this field made slow recovery impossible to diagnose.
+        if (error != null) row.setLastError(error);
         row.setNextAttemptAt(now);
         row.setUpdatedAt(now);
     }

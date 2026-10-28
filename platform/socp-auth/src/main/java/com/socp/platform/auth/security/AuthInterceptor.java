@@ -142,6 +142,10 @@ public class AuthInterceptor implements AsyncHandlerInterceptor {
             JWTClaimsSet claims;
             try {
                 claims = jwtValidator.validate(token);
+            } catch (JwtKeySourceUnavailableException unavailable) {
+                log.warn("JWT key source unavailable path={} reason={}", request.getRequestURI(),
+                        unavailable.getCause() == null ? "unavailable" : unavailable.getCause().getClass().getSimpleName());
+                throw new ApiException(503, unavailable.getMessage(), 1L);
             } catch (JwtValidationException invalid) {
                 log.warn("JWT rejected path={} reason={}", request.getRequestURI(), invalid.getMessage());
                 throw ApiException.unauthorized(invalid.getMessage());

@@ -224,6 +224,12 @@ start_cluster() {
   done
   if [ "$healthy" -ne 1 ]; then
     echo "Detection cluster did not become healthy" >&2
+    local diagnostic_args=()
+    for port in $(csv_ports); do
+      diagnostic_args+=(--instance "$port:$(managed_pid "$port" "$LOGDIR/detect-$port.pid" || true)")
+    done
+    python3 "$SCRIPT_DIR/capture-detection-startup.py" --java "$java" \
+      --log-dir "$LOGDIR" "${diagnostic_args[@]}" || true
     stop_cluster
     return 1
   fi

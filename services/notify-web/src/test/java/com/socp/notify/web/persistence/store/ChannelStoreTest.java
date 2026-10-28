@@ -65,6 +65,32 @@ class ChannelStoreTest {
     }
 
     @Test
+    void wrappedStartupTransactionTimeoutRetriesWithoutDuplicatingExistingChannels() {
+        when(repository.countByTenantId("default"))
+                .thenThrow(new IllegalStateException("query creation failed",
+                        new org.springframework.transaction.TransactionTimedOutException("deadline")))
+                .thenReturn(1L);
+        new ChannelStore(repository, coordinator, true).seed();
+        verify(coordinator, times(2)).mutate(any());
+        verify(repository, times(0)).saveAndFlush(any());
+        assertNull(TenantContext.get());
+    }
+
+    @Test
+    void persistentTimeoutStopsAfterThreeAttemptsAndOtherFailuresAreNotRetried() {
+        var timeout = new org.springframework.transaction.TransactionTimedOutException("deadline");
+        when(repository.countByTenantId("default")).thenThrow(timeout);
+        var store = new ChannelStore(repository, coordinator, true);
+        assertSame(timeout, org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class, store::seed));
+        verify(coordinator, times(3)).mutate(any());
+        org.mockito.Mockito.clearInvocations(coordinator);
+        var grammar = new IllegalArgumentException("invalid query");
+        org.mockito.Mockito.doThrow(grammar).when(repository).countByTenantId("default");
+        assertSame(grammar, org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class, store::seed));
+        verify(coordinator).mutate(any());
+    }
+
+    @Test
     void existingDefaultChannelsAreNotSeededTwice() {
         when(repository.countByTenantId("default")).thenReturn(1L);
         ChannelStore store = new ChannelStore(repository, coordinator, true);

@@ -79,6 +79,27 @@ class TemporalExecutorCoverageTest {
     }
 
     @Test
+    void namespaceRpcFailureIsCachedAndRecoveryRequiresAnActualRegisteredNamespace() {
+        var service = mock(WorkflowServiceStubs.class);
+        given(workflowClient.getWorkflowServiceStubs()).willReturn(service);
+        given(workflowClient.getOptions()).willReturn(WorkflowClientOptions.newBuilder().setNamespace("ready-test").build());
+        given(service.blockingStub()).willReturn(rpc);
+        given(rpc.withDeadlineAfter(2, java.util.concurrent.TimeUnit.SECONDS)).willReturn(rpc);
+        given(rpc.describeNamespace(any())).willThrow(Status.UNAVAILABLE.asRuntimeException())
+                .willReturn(io.temporal.api.workflowservice.v1.DescribeNamespaceResponse.newBuilder()
+                        .setNamespaceInfo(io.temporal.api.namespace.v1.NamespaceInfo.newBuilder().setName("ready-test")
+                                .setState(io.temporal.api.enums.v1.NamespaceState.NAMESPACE_STATE_REGISTERED)).build());
+        var executor = new TemporalExecutor(workflowClient, true, "127.0.0.1:7233");
+        assertThat(executor.isAvailable()).isFalse();
+        assertThat(executor.isAvailable()).isFalse();
+        verify(rpc).describeNamespace(any());
+        ReflectionTestUtils.setField(executor, "cachedAt", 0L);
+        assertThat(executor.isAvailable()).isTrue();
+        verify(rpc, org.mockito.Mockito.times(2)).describeNamespace(
+                org.mockito.ArgumentMatchers.argThat(request -> request.getNamespace().equals("ready-test")));
+    }
+
+    @Test
     void startWorkflowShortCircuitsWhenTemporalIsUnavailable() {
         TemporalExecutor executor = new TemporalExecutor(workflowClient, false, "localhost:7233");
         SoarWorkflowRequest request = new SoarWorkflowRequest(

@@ -267,7 +267,33 @@ public class LogSourceController {
         // The annotation guarantees one of these identities for real HTTP
         // requests. Idempotency-Key only stabilizes event IDs for safe client
         // retries; it is never used as the trusted collector identity.
-        return ApiResult.ok(pipeline.process(body, trustedCollector, idempotencyKey));
+        // Each call crosses the pipeline transaction proxy. A concurrent retry can
+        // lose the insert race after both requests read an absent identity; retry
+        // only after that whole transaction has rolled back, so the winner's
+        // durable event/outbox and payload fingerprint are checked again.
+        for (int attempt = 0; ; attempt++) {
+            try {
+                return ApiResult.ok(pipeline.process(body, trustedCollector, idempotencyKey));
+            } catch (RuntimeException failure) {
+                if (!isIdentityInsertRace(failure)) throw failure;
+                if (attempt >= 2) {
+                    throw new ApiException(503,
+                            "Concurrent ingest is busy; retry the uncommitted batch", failure);
+                }
+            }
+        }
+    }
+
+    private static boolean isIdentityInsertRace(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof org.hibernate.exception.ConstraintViolationException constraint
+                    && "23505".equals(constraint.getSQLState())) {
+                String name = constraint.getConstraintName();
+                return "uk_search_event_tenant_event".equals(name)
+                        || "uk_ingestion_outbox_tenant_event".equals(name);
+            }
+        }
+        return false;
     }
 
     /** Keeps direct Java integrations source-compatible with the pre-key ingress signature. */
