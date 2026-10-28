@@ -22,6 +22,26 @@ compose = load("verify-prod-compose")
 
 
 class DeploymentContractsTest(unittest.TestCase):
+    def test_kafka_log_directory_must_match_the_retained_volume(self):
+        base = compose.parse_compose(compose.BASE_COMPOSE.read_text())
+        overlay = compose.parse_compose(compose.PROD_COMPOSE.read_text())
+        errors = []
+        compose.check_kafka(errors, base, overlay, compose.merge_compose(base, overlay))
+        self.assertEqual([], errors)
+
+        base["services"]["kafka"]["environment"].pop("KAFKA_LOG_DIRS")
+        errors = []
+        compose.check_kafka(errors, base, overlay, compose.merge_compose(base, overlay))
+        self.assertEqual(2, len(errors))
+        self.assertTrue(all("kafka-data" in error for error in errors))
+
+        base["services"]["kafka"]["environment"]["KAFKA_LOG_DIRS"] = "/tmp/kraft-combined-logs"
+        base["services"]["kafka"]["volumes"] = ["kafka-data:/wrong-directory"]
+        errors = []
+        compose.check_kafka(errors, base, overlay, compose.merge_compose(base, overlay))
+        self.assertEqual(2, len(errors))
+        self.assertTrue(all("kafka-data" in error for error in errors))
+
     def test_detection_poller_cannot_be_omitted_from_deployment_readiness(self):
         errors = []
         compose.check_detection_readiness(errors)
