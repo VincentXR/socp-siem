@@ -20,3 +20,11 @@ spring:
     baseline-on-migrate: true
     baseline-version: 0
     locations: classpath:db/migration
+
+# The PostgreSQL launcher uses Redis for shared rate limits and replay guards.
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: ${MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE:readinessState,db,redis}

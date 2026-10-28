@@ -4,6 +4,10 @@ server:
     context-path: /search-config
 
 spring:
+  data:
+    redis:
+      connect-timeout: ${SOCP_REDIS_CONNECT_TIMEOUT:1s}
+      timeout: ${SOCP_REDIS_COMMAND_TIMEOUT:1s}
   http:
     converters:
       # Preserve the Jackson 2 API contract while Boot 4 also provides Jackson 3.

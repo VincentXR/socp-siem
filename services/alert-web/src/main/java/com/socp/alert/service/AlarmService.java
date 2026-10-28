@@ -324,6 +324,17 @@ public class AlarmService {
         return queryService.count(severity, rule, status, text, sort, order, assignee, from, to);
     }
 
+    /** Resolve a detection identity within the authenticated tenant only. */
+    @Transactional(readOnly = true)
+    public Alarm bySourceAlert(String sourceAlertId) {
+        if (sourceAlertId == null || sourceAlertId.isBlank() || sourceAlertId.length() > 255) {
+            throw com.socp.platform.error.exception.ApiException.badRequest("invalid sourceAlertId");
+        }
+        return repository.findByTenantIdAndSourceAlertId(AlarmQueryService.tenant(), sourceAlertId)
+                .orElseThrow(() -> com.socp.platform.error.exception.ApiException.notFound(
+                        "Alarm has not been materialized for this detection"));
+    }
+
     public Alarm get(String id) {
         Alarm alarm = queryService.get(id);
         if (alarm == null) {

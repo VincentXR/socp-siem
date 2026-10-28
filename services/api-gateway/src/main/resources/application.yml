@@ -2,6 +2,10 @@ server:
   port: ${SOCP_GATEWAY_PORT:18092}
 
 spring:
+  data:
+    redis:
+      connect-timeout: ${SOCP_REDIS_CONNECT_TIMEOUT:1s}
+      timeout: ${SOCP_REDIS_COMMAND_TIMEOUT:1s}
   application:
     name: api-gateway
   http:

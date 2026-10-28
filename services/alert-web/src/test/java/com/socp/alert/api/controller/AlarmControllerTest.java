@@ -288,6 +288,19 @@ class AlarmControllerTest {
     }
 
     @Test
+    void detectionIdentityLookupReturnsMaterializedAlarmOnBothRoutes() throws Exception {
+        Alarm alarm = new Alarm(); alarm.setId("alarm-1"); alarm.setSourceAlertId("source-1");
+        given(service.bySourceAlert("source-1")).willReturn(alarm);
+        for (String base : List.of("/api/alarms", "/api/v1/alarms")) {
+            mvc.perform(get(base + "/by-source").param("sourceAlertId", "source-1"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.id").value("alarm-1"))
+                    .andExpect(jsonPath("$.data.sourceAlertId").value("source-1"));
+            mvc.perform(get(base + "/by-source")).andExpect(status().isBadRequest());
+        }
+    }
+
+    @Test
     void eventLineageEndpointReturnsAlertsForAnEvent() throws Exception {
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", "203.0.113.10");

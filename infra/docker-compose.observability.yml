@@ -8,7 +8,7 @@ services:
   prometheus:
     command: ["--config.file=/etc/prometheus/prometheus-observability.yml"]
     volumes:
-      - ./observability/prometheus:/etc/prometheus/rules:ro
+      - ./observability/prometheus:/etc/prometheus-rules:ro
   alertmanager:
     secrets:
       - socp_monitoring_webhook_url

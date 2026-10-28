@@ -397,7 +397,7 @@ watch([() => route.query.q, () => route.query.page, () => route.query.type, () =
         </FilterToolbar>
       </template>
       <template #empty-actions><el-button v-if="hasFilters" @click="clearFilters">{{ t('experience.clearFilters') }}</el-button><el-button v-else-if="canWrite" type="primary" @click="openCreateAsset">{{ t('assets.createAsset') }}</el-button></template>
-      <el-table :data="assets" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="row => openAssetDetail(row as Asset)">
+      <el-table row-key="id" :data="assets" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="row => openAssetDetail(row as Asset)">
         <el-table-column prop="name" column-key="name" :label="t('common.name')" :width="columnWidth('name')" min-width="200" show-overflow-tooltip><template #default="{ row }"><RowActivate :aria-label="t('assets.openDetails', { name: row.name })" @activate="openAssetDetail(row as Asset)">{{ row.name }}</RowActivate></template></el-table-column>
         <el-table-column prop="type" column-key="type" :label="t('common.type')" :width="columnWidth('type', 100)">
           <template #default="{ row }">{{ assetTypes.find(item => item.value === row.type)?.label ?? row.type }}</template>

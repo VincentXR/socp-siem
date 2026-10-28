@@ -23,8 +23,9 @@ import TrendChart from '../components/TrendChart.vue'
 import SevBadge from '../components/SevBadge.vue'
 import PageHeader from '../components/PageHeader.vue'
 import RowActivate from '../components/RowActivate.vue'
+import ActionFeedback from '../components/ActionFeedback.vue'
 import {
-  alarmStats, ApiError, currentSession, gasEngineStats, gasRecentAlerts, ingestSummary, SEVERITIES,
+  alarmStats, ApiError, currentSession, gasEngineStats, gasRecentAlerts, getAlarmBySource, ingestSummary, SEVERITIES,
   type ApiRequestOptions,
   type AlarmStats, type GasAlert, type GasStats, type IngestSummary,
 } from '../api'
@@ -132,6 +133,25 @@ const queuePct = computed(() => Math.round((sitEngine.value?.queueLoad ?? 0) * 1
 const queueColor = computed(() => queuePct.value > 70
   ? cssToken('--ns-danger', '#dc2626')
   : queuePct.value > 30 ? cssToken('--ns-warning', '#a16207') : cssToken('--ns-success', '#15803d'))
+
+const feedError = ref('')
+let feedLookup: AbortController | null = null
+async function openDetection(sourceAlertId: string): Promise<void> {
+  feedLookup?.abort()
+  const request = new AbortController()
+  feedLookup = request
+  feedError.value = ''
+  try {
+    const alarm = await getAlarmBySource(sourceAlertId, { signal: request.signal })
+    if (!request.signal.aborted) openAlarm(alarm.id)
+  } catch (error) {
+    if (request.signal.aborted) return
+    if (error instanceof ApiError && error.status === 401) emit('session-expired')
+    else feedError.value = error instanceof ApiError && error.status === 404
+      ? t('situation.alarmPending') : String(error)
+  }
+}
+onUnmounted(() => feedLookup?.abort())
 
 function openAlarm(id: unknown): void {
   const value = String(id ?? '').trim()
@@ -304,6 +324,7 @@ onUnmounted(() => {
       class="situation-data-warning"
     />
 
+    <ActionFeedback :error="feedError" />
     <p class="situation-feed-observation" role="status">{{ t('experience.lastObserved') }}: {{ lastEventObservation ? d(new Date(lastEventObservation), 'dateTime') : t('experience.state.unknown') }} · {{ t(alertStreamState === 'connected' ? 'experience.liveFeed' : 'experience.pollingFeed') }}</p>
     <div class="sit-kpis">
             <div class="sit-kpi">
@@ -382,7 +403,7 @@ onUnmounted(() => {
                 </template>
                 <div class="feed">
                   <div v-if="!feedView.length" class="feed-empty">{{ recentAvailable ? t('situation.noLiveAlarmsHint') : t('situation.dataUnavailable') }}</div>
-                  <div v-for="a in feedView" :key="a.id" class="feed-item situation-clickable" :class="{ fresh: a._new }" role="button" tabindex="0" @click="openAlarm(a.id)" @keydown.enter.space.prevent="openAlarm(a.id)">
+                  <div v-for="a in feedView" :key="a.id" class="feed-item situation-clickable" :class="{ fresh: a._new }" role="button" tabindex="0" @click="openDetection(a.id)" @keydown.enter.space.prevent="openDetection(a.id)">
                     <span class="feed-dot" :style="{ background: sevColor(a.severity) }" />
                     <div class="feed-body">
                       <div class="feed-top">

@@ -372,6 +372,12 @@ public final class SoarWorkflowSupport {
             return runId + ":node:" + nodeId;
         }
 
+        public void cancel() { signal("cancel"); }
+
+        public io.temporal.common.WorkflowExecutionHistory history() {
+            return client.fetchHistory(stub.getExecution().getWorkflowId());
+        }
+
         public void approveGate(String nodeId) { signal("approveGate", approvalKey(nodeId)); }
 
         public void rejectGate(String nodeId) { signal("rejectGate", approvalKey(nodeId)); }
