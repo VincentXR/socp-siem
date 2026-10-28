@@ -78,6 +78,37 @@ class SoarWorkflowPrimitiveTest {
     }
 
     @Test
+    void cancellationInterruptsDelayWithoutRecordingSuccessOrRunningTheNextNode() {
+        String definition = new SoarWorkflowSupport.Def()
+                .node("start", "START")
+                .node("delay", "DELAY", "config", Map.of("durationSeconds", 3600L))
+                .node("action", "ACTION", "actionRef", "noop")
+                .node("end", "END", "outcome", "SUCCEEDED")
+                .edge("start", "delay").edge("delay", "action").edge("action", "end").json();
+        harness.startWorkflow(definition, "{}");
+        harness.env().sleep(java.time.Duration.ofSeconds(5));
+        harness.cancel();
+        SoarWorkflowResult result = harness.result();
+        assertThat(result.status()).isEqualTo("CANCELLED");
+        var events = harness.history().getEvents();
+        var timer = events.stream().filter(event -> event.hasTimerStartedEventAttributes()
+                        && event.getTimerStartedEventAttributes().getStartToFireTimeout().getSeconds() == 3600)
+                .findFirst().orElseThrow().getTimerStartedEventAttributes().getTimerId();
+        // Completing a workflow closes its outstanding timer without a separate cancellation event.
+        assertThat(events).noneMatch(event -> event.hasTimerFiredEventAttributes()
+                && timer.equals(event.getTimerFiredEventAttributes().getTimerId()));
+        assertThat(rowById(nodeRows(result), "delay").get("status")).isEqualTo("CANCELLED");
+        assertThat(rowById(nodeRows(result), "action")).isNull();
+        assertThat(harness.fake().lastCompletedUpdate().status()).isEqualTo("CANCELLED");
+    }
+
+    @Test
+    void replaysCancellationFromBeforeInterruptibleDelayWasIntroduced() throws Exception {
+        io.temporal.testing.WorkflowReplayer.replayWorkflowExecutionFromResource(
+                "temporal/legacy-delay-cancelled.json", SoarWorkflowImpl.class);
+    }
+
+    @Test
     void malformedDurableInputFailsExplicitlyInsteadOfBecomingAnEmptyObject() {
         String definition = new SoarWorkflowSupport.Def()
                 .node("start", "START")

@@ -55,8 +55,8 @@ scrape_configs:
   # 部署 exporter 后，将对应 scrape jobs 作为独立 overlay 加入。
 
 rule_files:
-  - /etc/prometheus/rules/soar-alerts.yml
-  - /etc/prometheus/rules/service-alerts.yml
+  - /etc/prometheus-rules/soar-alerts.yml
+  - /etc/prometheus-rules/service-alerts.yml
 
 alerting:
   alertmanagers:

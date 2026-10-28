@@ -112,3 +112,18 @@ socp_ratelimit_defaults() {
   if [ "$SOCP_RATELIMIT_BACKEND" = redis ]; then default_fail_closed=true; fi
   export SOCP_RATELIMIT_FAIL_CLOSED="${SOCP_RATELIMIT_FAIL_CLOSED:-$default_fail_closed}"
 }
+
+# Local development cache weights leave room in the default 256 MiB heap for
+# decoded objects, query work and framework state. These are admission estimates,
+# not measured retained bytes. Never inject this trial budget into production.
+socp_local_memory_defaults() {
+  local profiles="${1// /}"
+  case ",$profiles," in
+    *,prod,*) return 0 ;;
+    *,dev,*)
+      export SOCP_SEARCH_CACHE_MAX_BYTES_TOTAL="${SOCP_SEARCH_CACHE_MAX_BYTES_TOTAL:-67108864}"
+      export SOCP_SEARCH_CACHE_MAX_BYTES_PER_TENANT="${SOCP_SEARCH_CACHE_MAX_BYTES_PER_TENANT:-8388608}"
+      export SOCP_SEARCH_CACHE_MAX_CONCURRENT_WARMUPS="${SOCP_SEARCH_CACHE_MAX_CONCURRENT_WARMUPS:-1}"
+      ;;
+  esac
+}

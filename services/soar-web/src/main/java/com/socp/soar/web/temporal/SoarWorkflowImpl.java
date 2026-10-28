@@ -441,7 +441,22 @@ public class SoarWorkflowImpl implements SoarWorkflow {
                     fail("EXECUTION_TIMEOUT", "workflow exceeded its published execution timeout");
                     break;
                 }
-                if (seconds > 0) Workflow.sleep(Duration.ofSeconds(Math.min(seconds, remaining)));
+                if (seconds > 0) {
+                    Duration delay = Duration.ofSeconds(Math.min(seconds, remaining));
+                    // Preserve replay of histories that already scheduled the legacy timer.
+                    if (Workflow.getVersion("interruptible-delay", Workflow.DEFAULT_VERSION, 1)
+                            == Workflow.DEFAULT_VERSION) {
+                        Workflow.sleep(delay);
+                    } else {
+                        Workflow.await(delay, () -> cancelled);
+                        if (cancelled) {
+                            terminalStatus = "CANCELLED";
+                            errorCode = "RUN_CANCELLED";
+                            addNodeResult(nodeId, type, path, "CANCELLED", output, errorCode, "run cancelled");
+                            break;
+                        }
+                    }
+                }
                 if (seconds > remaining) {
                     fail("EXECUTION_TIMEOUT", "workflow exceeded its published execution timeout");
                     break;

@@ -162,6 +162,13 @@ public class AlarmController {
         return ApiResult.ok(service.get(id));
     }
 
+    /** A detection feed identity is distinct from the persisted alarm identity. */
+    @RateLimit(permits = 20, seconds = 1)
+    @GetMapping("/by-source")
+    public ApiResult<Alarm> bySource(@RequestParam String sourceAlertId) {
+        return ApiResult.ok(service.bySourceAlert(sourceAlertId));
+    }
+
     /** Reverse lookup used to connect a log event to alert/case/SOAR context. */
     @RateLimit(permits = 20, seconds = 1)
     @GetMapping("/by-event")

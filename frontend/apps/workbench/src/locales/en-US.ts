@@ -685,6 +685,7 @@ export const enUS: LocaleMessages = {
     streamReconnecting: 'Reconnecting (polling)',
     allLevels: 'All Levels',
     eventCount: '{count} events',
+    alarmPending: 'This detection has not produced an available alarm yet. Try again shortly.',
     noLiveAlarmsHint: 'New alarms will appear here as they arrive.',
     topRiskAlarms: 'Top Risk Alarms',
     score: 'Score',

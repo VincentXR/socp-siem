@@ -16,6 +16,8 @@ export const listAlarmsPaged = (
   order: 'ascending' | 'descending' = 'descending', options?: ApiRequestOptions, filters: AlarmInvestigationFilters = {},
 ) => get<AlarmPage>(withQuery('/alert-web/api/alarms', { page, size, q, severity, status: alarmStatusFilter(status), rule, sort, order, ...filters }), options)
 export const createAlarm = (a: Partial<Alarm>) => post<Alarm>('/alert-web/api/alarms', a)
+export const getAlarmBySource = (sourceAlertId: string, options?: ApiRequestOptions) =>
+  get<Alarm>(withQuery('/alert-web/api/alarms/by-source', { sourceAlertId }), options)
 export const getAlarm = (id: string, options?: ApiRequestOptions) =>
   get<Alarm>(`/alert-web/api/alarms/${encodeURIComponent(id)}`, options)
 export const getDisposition = (id: string) => get<Disposition>(`/alert-web/api/alarms/${encodeURIComponent(id)}/disposition`)

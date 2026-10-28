@@ -683,6 +683,7 @@ export const zhCN = {
     streamReconnecting: '重连中（后台轮询）',
     allLevels: '全部级别',
     eventCount: '{count} 条事件',
+    alarmPending: '此检测尚未生成可用告警，请稍后重试。',
     noLiveAlarmsHint: '新告警进入后会显示在这里。',
     topRiskAlarms: '高风险告警 Top',
     score: '评分',

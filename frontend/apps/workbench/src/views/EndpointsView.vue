@@ -250,7 +250,7 @@ useDebouncedWatch(keyword, () => {
         </FilterToolbar>
       </template>
       <template #empty-actions><el-button v-if="hasFilters" @click="clearFilters">{{ t('experience.clearFilters') }}</el-button><el-button v-else @click="installOpen = true">{{ t('experience.installAgent') }}</el-button></template>
-      <el-table :data="endpoints" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openDetail">
+      <el-table row-key="id" :data="endpoints" size="small" border allow-drag-last-column @header-dragend="onHeaderDragEnd" @row-click="openDetail">
         <el-table-column prop="hostname" column-key="hostname" :label="t('endpoints.hostname')" :width="columnWidth('hostname')" min-width="200" show-overflow-tooltip><template #default="{ row }"><RowActivate :aria-label="t('endpoints.openDetails', { name: row.hostname })" @activate="openDetail(row as Endpoint)">{{ row.hostname }}</RowActivate></template></el-table-column>
         <el-table-column prop="ip" column-key="ip" :label="t('common.ip')" :width="columnWidth('ip', 150)" show-overflow-tooltip />
         <el-table-column prop="os" column-key="os" :label="t('endpoints.os')" :width="columnWidth('os', 170)" show-overflow-tooltip />
@@ -264,8 +264,8 @@ useDebouncedWatch(keyword, () => {
         <el-table-column :label="t('common.actions')" width="150" fixed="right" :resizable="false">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click.stop="openDetail(row as Endpoint)">{{ t('common.details') }}</el-button>
-            <el-dropdown v-if="canWrite" class="endpoint-row-menu" trigger="click" @click.stop @command="command => onEndpointCommand(String(command), row as Endpoint)">
-              <el-button link size="small" :loading="actionBusy" :disabled="actionBusy" :aria-label="t('endpoints.moreActions', { name: row.hostname })">{{ t('common.more') }}</el-button>
+            <el-dropdown v-if="canWrite" class="endpoint-row-menu" trigger="click" @command="command => onEndpointCommand(String(command), row as Endpoint)">
+              <el-button link size="small" :loading="actionBusy" :disabled="actionBusy" :aria-label="t('endpoints.moreActions', { name: row.hostname })" @click.stop>{{ t('common.more') }}</el-button>
               <template #dropdown><el-dropdown-menu><el-dropdown-item command="unregister">{{ t('endpoints.unregister') }}</el-dropdown-item></el-dropdown-menu></template>
             </el-dropdown>
           </template>

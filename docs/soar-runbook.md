@@ -221,3 +221,14 @@ bash build/mvnw.sh -pl services/soar-web -am test \
 无前序失败的补偿及未知旧状态。测试核对原有活动参数和结果，并回放整理前实现
 生成的 history；它不证明生产 history 已迁移或旧执行器可以删除。发布前仍需
 目标环境 PostgreSQL/Temporal 的 live 验证和实际 history 抽样回放。
+
+
+### Interruptible delay nodes
+
+New workflow histories use the `interruptible-delay` version marker. A cancel
+signal wakes an active DELAY, records the node and run as CANCELLED, and does
+not execute the next node. The published execution deadline still bounds an
+uncancelled delay. Histories that scheduled the legacy timer before upgrade
+retain the old timer path for deterministic replay; their pending delay may
+finish before cancellation settles. Do not edit persisted run states to bypass
+Temporal completion or replay compatibility.

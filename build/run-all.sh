@@ -33,7 +33,7 @@ FRONTEND_PORT="$SOCP_PORT_FRONTEND_WORKBENCH"
 # JVM 内存：开发默认使用较小堆；完整启动时可用 SOCP_JVM_OPTS 覆盖。
 # 单个服务可用 SOCP_<SERVICE>_JVM_OPTS 覆盖（例如
 # SOCP_SEARCH_CONFIG_JVM_OPTS），避免为一个重型服务抬高所有 JVM 的预算。
-# 14 个默认进程同时启动时，降低 Xms/Xmx 能明显减少内存峰值和 GC 竞争。
+# SOCP_START_BATCH_SIZE=1 serializes startup; measure resident memory under load.
 JVM_OPTS="${SOCP_JVM_OPTS:--Xms32m -Xmx256m}"
 START_BATCH_SIZE="${SOCP_START_BATCH_SIZE:-3}"
 START_HEALTH_TIMEOUT="${SOCP_START_HEALTH_TIMEOUT:-45}"
@@ -46,6 +46,7 @@ export SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE="${SPRING_DATASOURCE_HIKARI_MINIMUM
 # Named runtime modes: local (H2/file-backed where supported), integration
 # (PostgreSQL overlays), or prod (fail-fast production guard).
 RUNTIME_PROFILES="${SOCP_RUNTIME_PROFILES:-dev,pg}"
+socp_local_memory_defaults "$RUNTIME_PROFILES"
 
 # core：Golden Demo 和日常后端开发所需的最小事件闭环。
 CORE_SERVICES="alert-web search-config detect-web incident-web soar-web notify-web report-web api-gateway"

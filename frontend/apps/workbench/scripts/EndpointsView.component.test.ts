@@ -66,6 +66,19 @@ describe('endpoint investigation', () => {
   })
   afterEach(() => { document.body.innerHTML = '' })
 
+  it('opens the row menu without opening details and unregisters the selected endpoint', async () => {
+    const { router, wrapper } = await open('/endpoints')
+    await wrapper.get('.endpoint-row-menu button').trigger('click'); await flushPromises()
+    expect(router.currentRoute.value.query.endpointId).toBeUndefined()
+    expect(mocks.get).not.toHaveBeenCalled()
+    const remove = new DOMWrapper(document.body).findAll('[role="menuitem"]')
+      .find(item => item.text() === translate('endpoints.unregister'))
+    expect(remove).toBeTruthy()
+    await remove!.trigger('click'); await flushPromises()
+    expect(mocks.remove).toHaveBeenCalledExactlyOnceWith('listed')
+    expect(mocks.get).not.toHaveBeenCalled()
+  })
+
   it('applies effective offline filtering and opens the exact retained event', async () => {
     const { router, wrapper, click } = await open('/endpoints?status=OFFLINE&page=2&endpointId=outside')
     expect(mocks.list).toHaveBeenLastCalledWith(2, 10, undefined, expect.anything(), 'OFFLINE')
