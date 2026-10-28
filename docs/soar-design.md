@@ -357,6 +357,13 @@ sequenceDiagram
 
 只要 API 返回 `202`，receipt、run 和 dispatch intent 就必须已经提交。Temporal 暂时不可用时保留 `QUEUED` 并重试，不得改走进程内执行器。超过重试预算进入 `DEAD`，在运维 API 和指标中可见，可人工 requeue/discard；discard 必须填写原因。
 
+派发前的可用性探针检查配置 namespace 的 gRPC 响应及 REGISTERED 状态，期限 2 秒、
+结果缓存 5 秒；TCP 端口可连接不能单独判定可用。该探针也不证明 worker 已能及时执行，
+验收必须继续检查对应工作流的终态与历史。普通 Temporal RPC 单次期限 3 秒，SDK 至多
+尝试 3 次、重试总预算 10 秒，长期重试交给 durable outbox；任务长轮询沿用独立期限。
+派发失败日志包含 tenant、run、claim version 和脱敏原因。outbox 的 `last_error`
+在成功后保留最近一次失败原因，是否仍需处理以 `status` 为准，不能仅凭该字段非空判为失败。
+
 ## 7. 执行引擎
 
 ### 7.1 总体架构

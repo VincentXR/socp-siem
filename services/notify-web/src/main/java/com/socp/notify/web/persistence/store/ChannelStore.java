@@ -21,6 +21,8 @@ import org.springframework.data.domain.PageRequest;
 @Component
 public class ChannelStore {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(ChannelStore.class);
+
     private final ChannelRepository repository;
     private final boolean demoDataEnabled;
     private final ChannelCoordinator coordinator;
@@ -38,6 +40,25 @@ public class ChannelStore {
     @PostConstruct
     void seed() {
         if (!demoDataEnabled) return;
+        for (int attempt = 1; ; attempt++) {
+            try {
+                seedOnce();
+                return;
+            } catch (RuntimeException failure) {
+                if (attempt >= 3 || !transactionTimedOut(failure)) throw failure;
+                log.warn("Demo channel initialization transaction timed out; retrying with a new transaction (attempt {}/3)", attempt + 1);
+            }
+        }
+    }
+
+    private static boolean transactionTimedOut(Throwable failure) {
+        for (int depth = 0; failure != null && depth < 16; depth++, failure = failure.getCause()) {
+            if (failure instanceof org.springframework.transaction.TransactionTimedOutException) return true;
+        }
+        return false;
+    }
+
+    private void seedOnce() {
         TenantContext.runWith("default", () -> coordinator.mutate(() -> {
             if (repository.countByTenantId("default") == 0) {
                 add(Channel.of("值班群(Slack)", "SLACK",

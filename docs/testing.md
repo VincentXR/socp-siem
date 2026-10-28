@@ -293,6 +293,29 @@ smoke against a live gateway, set `SOCP_E2E_BACKEND_URL` (for example
 `http://127.0.0.1:18092`) before `pnpm test:e2e`; the smoke accepts either a
 200 authenticated session or the expected unauthenticated 401 response.
 
+For real service acceptance, start an isolated full stack with PostgreSQL,
+Kafka, Redis, OpenSearch, ClickHouse, Temporal and MinIO. Export the fixture's
+`SOCP_AUTH_USERS` (including admin, demo and viewer) and
+`SOAR_VERIFY_PASSWORD`; they must match the running gateway. From
+`frontend/apps/workbench`, run:
+
+```bash
+SOCP_LIVE_E2E=true SOCP_GATEWAY_URL=http://127.0.0.1:18092 \
+  pnpm exec playwright test e2e/live-source-workflow.spec.ts \
+  e2e/live-workbench-acceptance.spec.ts --workers=1
+```
+
+These opt-in tests use actual service responses without route interception.
+They check source create/edit/abandon/retry, administrator and analyst business
+pages and AI answers, viewer write rejection, and report archive/download
+integrity against real object storage. Each page owns its response listener so
+an earlier page's pending request cannot satisfy a later page's check. The
+download test reads the browser's actual attachment and compares a second
+signed download byte for byte. The fixture retains the created source and
+archive records. This coverage complements the API, persistence and recovery
+probes; it does not establish production throughput, retention or disaster
+recovery objectives.
+
 ## Test ownership
 
 See the [focused contract reference](testing-contracts.md#test-ownership) for the

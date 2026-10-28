@@ -1,6 +1,7 @@
-import { mount, flushPromises } from '@vue/test-utils'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, mount, flushPromises } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { toRaw } from 'vue'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import SoarControlPlane from '../src/components/soar/SoarControlPlane.vue'
 import SoarCatalogPager from '../src/components/soar/SoarCatalogPager.vue'
 import SchemaInputForm from '../src/components/SchemaInputForm.vue'
@@ -8,6 +9,8 @@ import FieldConditionBuilder from '../src/components/FieldConditionBuilder.vue'
 import ElDrawer from 'element-plus/es/components/drawer/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import type { SoarPage, SoarPlaybook, SoarVersion } from '../src/api'
+
+enableAutoUnmount(afterEach)
 
 const mocks = vi.hoisted(() => ({
   listAutomationRules: vi.fn(),
@@ -46,8 +49,15 @@ beforeEach(() => {
   mocks.completeManualTask.mockResolvedValue({})
 })
 
+function mountControlPlane(props: InstanceType<typeof SoarControlPlane>['$props']) {
+  const router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/:pathMatch(.*)*', component: { template: '<div />' } },
+  ] })
+  return mount(SoarControlPlane, { props, global: { plugins: [router] } })
+}
+
 async function mountPlane(props: { section: 'rules' | 'tasks' | 'connections-and-ops'; hideTabs?: boolean }) {
-  const wrapper = mount(SoarControlPlane, { props })
+  const wrapper = mountControlPlane(props)
   await flushPromises()
   return wrapper
 }
@@ -84,7 +94,7 @@ describe('soar control plane data scoping', () => {
   })
 
   it('prefills a published-version handoff for review without creating or enabling a rule', async () => {
-    const wrapper = mount(SoarControlPlane, { props: { section: 'rules', initialVersionId: 'published-version', canWrite: true } })
+    const wrapper = mountControlPlane({ section: 'rules', initialVersionId: 'published-version', canWrite: true })
     await flushPromises()
     expect(versionPicker(wrapper).props('modelValue')).toEqual(['published-version'])
     expect(mocks.createAutomationRule).not.toHaveBeenCalled()
@@ -96,7 +106,7 @@ describe('soar control plane data scoping', () => {
   })
 
   it('does not open a version handoff for a read-only operator', async () => {
-    const wrapper = mount(SoarControlPlane, { props: { section: 'rules', initialVersionId: 'published-version', canWrite: false } })
+    const wrapper = mountControlPlane({ section: 'rules', initialVersionId: 'published-version', canWrite: false })
     await flushPromises()
     expect(wrapper.findAllComponents(ElDrawer).some(drawer => drawer.props('modelValue'))).toBe(false)
     expect(mocks.listPlaybooks).not.toHaveBeenCalled()
@@ -136,7 +146,7 @@ describe('soar control plane data scoping', () => {
   it('keeps the empty-state hidden while the first load is in flight', async () => {
     let release: (value: typeof emptyPage) => void = () => {}
     mocks.listManualTasksPage.mockImplementation(() => new Promise(resolve => { release = resolve }))
-    const wrapper = mount(SoarControlPlane, { props: { section: 'tasks', hideTabs: true } })
+    const wrapper = mountControlPlane({ section: 'tasks', hideTabs: true })
     await flushPromises()
     expect(wrapper.find('.soar-empty').exists()).toBe(false)
     release(emptyPage)
@@ -579,7 +589,7 @@ describe('automation condition wire contract', () => {
   })
 
   it('creates a disabled rule using the same canonical condition contract', async () => {
-    const wrapper = mount(SoarControlPlane, { props: { section: 'rules', initialVersionId: 'published-version', canWrite: true } })
+    const wrapper = mountControlPlane({ section: 'rules', initialVersionId: 'published-version', canWrite: true })
     await flushPromises()
     const drawer = wrapper.findAllComponents(ElDrawer)[0]
     await drawer.get('input').setValue('New entity response')

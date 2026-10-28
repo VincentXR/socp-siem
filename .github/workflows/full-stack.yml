@@ -431,12 +431,12 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
         working-directory: frontend/apps/workbench
 
-      - name: Run live log-source browser acceptance
+      - name: Run live workbench and log-source browser acceptance
         env:
           SOCP_LIVE_E2E: "true"
           SOCP_GATEWAY_URL: http://127.0.0.1:18092
           SOCP_E2E_USERNAME: admin
-        run: pnpm exec playwright test e2e/live-source-workflow.spec.ts
+        run: pnpm exec playwright test e2e/live-source-workflow.spec.ts e2e/live-workbench-acceptance.spec.ts --workers=1
         working-directory: frontend/apps/workbench
 
       - name: Run true event-pipeline verification

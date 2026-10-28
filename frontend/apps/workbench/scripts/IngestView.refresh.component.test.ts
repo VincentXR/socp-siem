@@ -1,13 +1,15 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { nextTick, ref } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ElSelect } from 'element-plus/es/components/select/index.mjs'
 import IngestView from '../src/views/IngestView.vue'
 import PageHeader from '../src/components/PageHeader.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import { translate } from '../src/i18n'
 import type { IngestTask, LogSource } from '../src/api'
+
+enableAutoUnmount(afterEach)
 
 const api = vi.hoisted(() => ({
   listSourcesPage: vi.fn(), listOutputs: vi.fn(), listParseRulesPage: vi.fn(), resolveParseRules: vi.fn(),

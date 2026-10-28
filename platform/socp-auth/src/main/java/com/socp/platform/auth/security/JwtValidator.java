@@ -1,6 +1,8 @@
 package com.socp.platform.auth.security;
 import com.socp.platform.auth.config.SocpSecurityProperties;
 import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.KeySourceException;
+import com.nimbusds.jose.util.DefaultResourceRetriever;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.source.ImmutableJWKSet;
 import com.nimbusds.jose.jwk.source.ImmutableSecret;
@@ -108,6 +110,9 @@ public class JwtValidator {
         }
         try {
             return processor.process(token.trim(), null);
+        } catch (KeySourceException e) {
+            // A failed key lookup does not establish that the credential is invalid.
+            throw new JwtKeySourceUnavailableException(e);
         } catch (JwtValidationException e) {
             throw e;
         } catch (Exception e) {
@@ -149,8 +154,11 @@ public class JwtValidator {
             } catch (Exception e) {
                 throw new IllegalStateException("socp.security 的 JWKS 地址非法: " + uri, e);
             }
-            JWKSource<SecurityContext> jwkSource = JWKSourceBuilder.<SecurityContext>create(url)
+            var retriever = new DefaultResourceRetriever(props.getJwksConnectTimeoutMs(),
+                    props.getJwksReadTimeoutMs(), JWKSourceBuilder.DEFAULT_HTTP_SIZE_LIMIT);
+            JWKSource<SecurityContext> jwkSource = JWKSourceBuilder.<SecurityContext>create(url, retriever)
                     .cache(JWKS_CACHE_TTL_MS, JWKS_CACHE_REFRESH_TIMEOUT_MS)
+                    .retrying(true)
                     .build();
             processor.setJWSKeySelector(new JWSVerificationKeySelector<>(ASYMMETRIC_ALGS, jwkSource));
         } else if (props.hasSecret()) {

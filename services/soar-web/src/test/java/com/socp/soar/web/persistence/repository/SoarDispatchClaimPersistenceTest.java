@@ -126,6 +126,16 @@ class SoarDispatchClaimPersistenceTest {
         assertEquals("DISPATCHING", row("one").getStatus());
     }
 
+    @Test void successfulRetryRetainsTheLastFailedDispatchForDiagnosis() {
+        var first = state.claim(dispatch("one", "tenant-a"), "worker-a", NOW).orElseThrow();
+        assertTrue(state.fail(first, "Temporal RPC deadline exceeded", false, NOW));
+        var second = state.claim(row("one"), "worker-b", NOW.plusSeconds(3)).orElseThrow();
+        assertTrue(state.complete(second, "temporal-run", NOW.plusSeconds(4)));
+        assertEquals("DISPATCHED", row("one").getStatus());
+        assertEquals(2, row("one").getAttempts());
+        assertEquals("Temporal RPC deadline exceeded", row("one").getLastError());
+    }
+
     @Test void runAndOutboxCompletionRollbackTogetherOnConstraintFailure() {
         var claim = state.claim(dispatch("one", "tenant-a"), "owner", NOW).orElseThrow();
         assertThrows(RuntimeException.class, () -> state.complete(claim, "x".repeat(1024), NOW));

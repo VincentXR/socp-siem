@@ -1,8 +1,10 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import AlarmsView from '../src/views/AlarmsView.vue'
 import type { Alarm } from '../src/api'
+
+enableAutoUnmount(afterEach)
 
 const mocks = vi.hoisted(() => ({ confirm: vi.fn(), batchUpdateAlarmDisposition: vi.fn(), listRuleOptions: vi.fn() }))
 vi.mock('element-plus/es/components/message-box/index.mjs', () => ({ default: { confirm: mocks.confirm } }))

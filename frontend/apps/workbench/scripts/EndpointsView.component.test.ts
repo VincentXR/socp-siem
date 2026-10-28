@@ -1,4 +1,4 @@
-import { DOMWrapper, mount, flushPromises } from '@vue/test-utils'
+import { enableAutoUnmount, DOMWrapper, mount, flushPromises } from '@vue/test-utils'
 import { ElDropdown } from 'element-plus/es/components/dropdown/index.mjs'
 import { h, ref } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
@@ -9,6 +9,8 @@ import MetricCard from '../src/components/MetricCard.vue'
 import PagerBar from '../src/components/PagerBar.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import type { Endpoint } from '../src/api/models'
+
+enableAutoUnmount(afterEach)
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), stats: vi.fn(), history: vi.fn(), events: vi.fn(), remove: vi.fn(), related: vi.fn(), assetList: vi.fn(), confirm: vi.fn(), info: vi.fn() }))
 vi.mock('../src/api/domains', async original => ({ ...await original<object>(), endpointApi: mocks, assetApi: { related: mocks.related, list: mocks.assetList } }))
@@ -21,7 +23,6 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no })
   return { promise, resolve, reject }
 }
-let wrapper: ReturnType<typeof mount>
 async function open(path = '/endpoints?endpointId=outside', role = 'analyst') {
   const router = createRouter({ history: createMemoryHistory(), routes: [
     { name: 'endpoints', path: '/endpoints', component: EndpointsView },
@@ -29,27 +30,27 @@ async function open(path = '/endpoints?endpointId=outside', role = 'analyst') {
     { name: 'assets', path: '/assets', component: { template: '<p>Assets</p>' } },
   ] })
   await router.push(path); await router.isReady()
-  wrapper = mount({ render: () => h(RouterView) }, { attachTo: document.body, global: {
+  const wrapper = mount({ render: () => h(RouterView) }, { attachTo: document.body, global: {
     plugins: [router], provide: { [WORKBENCH_STATE as symbol]: { currentRole: ref(role), currentUser: ref('alice') } },
   } })
   await flushPromises()
-  return router
-}
-async function click(label: string, scope = '') {
-  const container = scope ? wrapper.find(scope) : wrapper
-  const button = container.findAll('button').find(item => item.text() === label)
-  if (!button && label === translate('endpoints.unregister')) {
-    const trigger = container.findComponent(ElDropdown).find('button')
-    const disabled = trigger.attributes('disabled') !== undefined
-    await trigger.trigger('click'); await flushPromises()
-    if (disabled) return
-    const menuItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === label)
-    expect(menuItem, label).toBeTruthy()
-    await new DOMWrapper(menuItem!).trigger('click'); await flushPromises()
-    return
+  async function click(label: string, scope = '') {
+    const container = scope ? wrapper.find(scope) : wrapper
+    const button = container.findAll('button').find(item => item.text() === label)
+    if (!button && label === translate('endpoints.unregister')) {
+      const trigger = container.findComponent(ElDropdown).find('button')
+      const disabled = trigger.attributes('disabled') !== undefined
+      await trigger.trigger('click'); await flushPromises()
+      if (disabled) return
+      const menuItem = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent?.trim() === label)
+      expect(menuItem, label).toBeTruthy()
+      await new DOMWrapper(menuItem!).trigger('click'); await flushPromises()
+      return
+    }
+    expect(button, label).toBeTruthy()
+    await button!.trigger('click'); await flushPromises()
   }
-  expect(button, label).toBeTruthy()
-  await button!.trigger('click'); await flushPromises()
+  return { router, wrapper, click }
 }
 
 describe('endpoint investigation', () => {
@@ -63,10 +64,10 @@ describe('endpoint investigation', () => {
     mocks.remove.mockResolvedValue({ removed: true })
     mocks.confirm.mockResolvedValue('confirm')
   })
-  afterEach(() => { wrapper?.unmount(); document.body.innerHTML = '' })
+  afterEach(() => { document.body.innerHTML = '' })
 
   it('applies effective offline filtering and opens the exact retained event', async () => {
-    const router = await open('/endpoints?status=OFFLINE&page=2&endpointId=outside')
+    const { router, wrapper, click } = await open('/endpoints?status=OFFLINE&page=2&endpointId=outside')
     expect(mocks.list).toHaveBeenLastCalledWith(2, 10, undefined, expect.anything(), 'OFFLINE')
     wrapper.findAllComponents(MetricCard).find(card => card.props('tone') === 'success')!.vm.$emit('click')
     await flushPromises()
@@ -78,7 +79,7 @@ describe('endpoint investigation', () => {
   })
 
   it('opens off-page details and pages both associations without global prefix fetches', async () => {
-    const router = await open('/endpoints?page=2&q=unrelated&endpointId=outside')
+    const { router, wrapper, click } = await open('/endpoints?page=2&q=unrelated&endpointId=outside')
     expect(mocks.get).toHaveBeenCalledWith('outside', expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(mocks.history).toHaveBeenCalledWith('outside', 1, 20, expect.anything())
     expect(mocks.related).toHaveBeenCalledWith('203.0.113.7', 'host-outside', 1, 20, expect.anything())
@@ -94,7 +95,7 @@ describe('endpoint investigation', () => {
   })
 
   it('does not fetch detail associations until selected and restores a closed deep link through history', async () => {
-    const router = await open('/endpoints?page=2&q=before')
+    const { router, wrapper } = await open('/endpoints?page=2&q=before')
     expect(mocks.get).not.toHaveBeenCalled(); expect(mocks.history).not.toHaveBeenCalled()
     const name = wrapper.find('.row-activate')
     expect(name.attributes('aria-label')).toBe(translate('endpoints.openDetails', { name: 'host-listed' }))
@@ -113,7 +114,7 @@ describe('endpoint investigation', () => {
     mocks.stats.mockRejectedValue(new Error('Stats unavailable'))
     mocks.related.mockRejectedValueOnce(new Error('Asset lookup unavailable'))
     mocks.history.mockRejectedValueOnce(new Error('History unavailable'))
-    await open()
+    const { wrapper, click } = await open()
     expect(wrapper.find('.el-drawer').text()).toContain('Detail unavailable')
     expect(wrapper.text()).toContain('Stats unavailable')
     expect(wrapper.find('.page-metrics').exists()).toBe(false)
@@ -133,7 +134,7 @@ describe('endpoint investigation', () => {
     const history = deferred<unknown>()
     const assets = deferred<unknown>()
     mocks.get.mockReturnValueOnce(detail.promise)
-    const router = await open('/endpoints?endpointId=first')
+    const { router, wrapper } = await open('/endpoints?endpointId=first')
     mocks.history.mockReturnValueOnce(history.promise); mocks.related.mockReturnValueOnce(assets.promise)
     await router.push('/endpoints?endpointId=second'); await flushPromises()
     await router.push('/endpoints?endpointId=third'); await flushPromises()
@@ -149,7 +150,7 @@ describe('endpoint investigation', () => {
   it('pins deletion to its confirmed identity and keeps a newer selection after acknowledgement', async () => {
     const confirmation = deferred<string>()
     mocks.confirm.mockReturnValueOnce(confirmation.promise)
-    const router = await open('/endpoints?endpointId=listed')
+    const { router, wrapper, click } = await open('/endpoints?endpointId=listed')
     await click(translate('endpoints.unregister'), '.el-drawer')
     expect(mocks.confirm.mock.calls[0][0]).toContain('listed')
     await router.push('/endpoints?endpointId=other'); await flushPromises()
@@ -165,7 +166,7 @@ describe('endpoint investigation', () => {
   it('blocks close, navigation and duplicate deletion until failure settles, then permits retry', async () => {
     const pending = deferred<unknown>()
     mocks.remove.mockReturnValueOnce(pending.promise)
-    const router = await open()
+    const { router, wrapper, click } = await open()
     await click(translate('endpoints.unregister'), '.el-drawer')
     await click(translate('endpoints.unregister'), '.el-drawer')
     await wrapper.find('.el-drawer__close-btn').trigger('click'); await flushPromises()
@@ -182,7 +183,7 @@ describe('endpoint investigation', () => {
   })
 
   it('restores query pages without a delayed keyword reset and hides writes from viewers', async () => {
-    const router = await open('/endpoints?page=2&q=before&endpointId=outside', 'viewer')
+    const { router, wrapper } = await open('/endpoints?page=2&q=before&endpointId=outside', 'viewer')
     expect(wrapper.find('.el-drawer').text()).not.toContain(translate('endpoints.unregister'))
     await router.push('/endpoints?page=3&q=after&endpointId=outside'); await flushPromises()
     await new Promise(resolve => setTimeout(resolve, 400)); await flushPromises()

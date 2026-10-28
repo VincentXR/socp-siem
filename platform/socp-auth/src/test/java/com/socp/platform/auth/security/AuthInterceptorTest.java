@@ -26,6 +26,17 @@ class AuthInterceptorTest {
     private final AuthInterceptor interceptor = new AuthInterceptor(validator, properties);
 
     @Test
+    void keyServiceOutageReturnsRetryable503WithoutAuthenticatingAnIdentity() throws Exception {
+        org.mockito.BDDMockito.given(validator.validate("signed-token")).willThrow(
+                new JwtKeySourceUnavailableException(new java.net.SocketTimeoutException()));
+        ApiException failure = assertThrows(ApiException.class, () -> interceptor.preHandle(
+                request("signed-token", null, "tenant-a"), new MockHttpServletResponse(), protectedHandler()));
+        assertEquals(503, failure.getCode());
+        assertEquals(1L, failure.getRetryAfterSeconds());
+        assertTrue(AuthenticatedIdentityContext.current().isEmpty());
+    }
+
+    @Test
     void gatewayProofIsConsumedOncePerHttpRequestAcrossAsyncRedispatch() throws Exception {
         configureGatewayUser();
         var request = request("signed-token", null, "tenant-a");
