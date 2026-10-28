@@ -151,6 +151,20 @@ def cpu_counters():
     }
 
 
+def verify_notification_targets(channels, fixture_url=""):
+    for channel in channels:
+        if not channel["enabled"] or channel["type"] == "LOG":
+            continue
+        if (
+            fixture_url
+            and channel["type"] == "WEBHOOK"
+            and channel.get("target") == fixture_url
+        ):
+            require_loopback(fixture_url)
+            continue
+        raise RuntimeError("load test refuses enabled unapproved notification channels")
+
+
 def initialize(args):
     global P, GW, OS, INGEST, COLLECTOR, CREDENTIAL, METRICS, started_at, ip_base, RUN, OUT, db, memory_limit, working_set_limit
     if not args.allow_local_fixture:
@@ -1039,8 +1053,9 @@ def main():
             raise RuntimeError("required fixture rule is not active: " + rule)
     channels = api("/notify-web/api/v1/channels")
     channels = channels.get("items", []) if isinstance(channels, dict) else channels
-    if any(c["type"] != "LOG" and c["enabled"] for c in channels):
-        raise RuntimeError("load test refuses enabled external notification channels")
+    verify_notification_targets(
+        channels, os.environ.get("SOCP_WEBHOOK_FIXTURE_URL", "")
+    )
     consumer = KafkaConsumer(
         bootstrap_servers=os.environ.get("PIPELINE_KAFKA", "localhost:9092"),
         group_id=None,

@@ -142,6 +142,8 @@ the service supports it.
   Rule-state, ownership-lease, and JDBC tenant-scope critical sections use
   reentrant locks so database waits can release Java 21 virtual-thread
   carriers while preserving mutual exclusion and checkpoint ordering.
+  Service-token refresh and invalidation use the same lock discipline around
+  bounded HTTP exchange, preserving a single refresh for concurrent cache misses.
 - Detection persists a deterministic alert before remote delivery. A failed
   Alert Web request remains `PENDING`; a publisher crash recovers stale claims.
 - Alert Web uses `(tenant_id, source_alert_id)` idempotency, so replaying a

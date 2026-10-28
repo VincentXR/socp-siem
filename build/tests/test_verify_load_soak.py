@@ -17,6 +17,41 @@ SPEC.loader.exec_module(PROBE)
 
 
 class LoadSoakTest(unittest.TestCase):
+    def test_notification_guard_allows_only_the_exact_declared_loopback_fixture(self):
+        fixture = "http://127.0.0.1:28421/notify"
+        PROBE.verify_notification_targets(
+            [
+                {"enabled": True, "type": "LOG"},
+                {
+                    "enabled": False,
+                    "type": "SLACK",
+                    "target": "https://external.example",
+                },
+                {"enabled": True, "type": "WEBHOOK", "target": fixture},
+            ],
+            fixture,
+        )
+        for channel, allowed in [
+            ({"enabled": True, "type": "WEBHOOK", "target": fixture}, ""),
+            (
+                {"enabled": True, "type": "WEBHOOK", "target": fixture + "/other"},
+                fixture,
+            ),
+            ({"enabled": True, "type": "SLACK", "target": fixture}, fixture),
+            (
+                {
+                    "enabled": True,
+                    "type": "WEBHOOK",
+                    "target": "https://external.example",
+                },
+                "https://external.example",
+            ),
+        ]:
+            with self.subTest(channel=channel), self.assertRaises(
+                (ValueError, RuntimeError)
+            ):
+                PROBE.verify_notification_targets([channel], allowed)
+
     def test_vm_root_without_memory_controller_files_keeps_memory_and_oom_guards(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

@@ -80,6 +80,10 @@ searches every ten seconds. A successful replay counts as an acknowledgement
 even when its concurrent primary request fails; that failed request still fails
 the zero-error gate. Every accepted event and expected alarm is reconciled
 across Kafka, PostgreSQL, OpenSearch and ClickHouse.
+Enabled notifications must be LOG or a WEBHOOK whose target exactly matches
+the explicitly supplied loopback `SOCP_WEBHOOK_FIXTURE_URL`; other enabled
+channels stop the probe before it submits load. This lets the manual workflow
+reuse its persistent local webhook fixture without allowing off-host delivery.
 
 The manual **Full Stack E2E** workflow has a `run_load_soak` boolean input for
 this additional one-hour check. It uses the job's isolated middleware and disk

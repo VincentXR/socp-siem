@@ -16,6 +16,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.concurrent.locks.ReentrantLock;
 
 /** Exchanges the configured service credential for a short-lived bearer token. */
 @Component
@@ -29,7 +30,7 @@ public class ServiceTokenProvider {
     private final HttpClient http;
     private final String serviceName;
     private final String serviceSecret;
-    private final Object lock = new Object();
+    private final ReentrantLock lock = new ReentrantLock();
 
     private volatile String cachedToken;
     private volatile long expireAt;
@@ -52,7 +53,8 @@ public class ServiceTokenProvider {
         long now = System.currentTimeMillis();
         String current = cachedToken;
         if (current != null && now < expireAt) return current;
-        synchronized (lock) {
+        lock.lock();
+        try {
             now = System.currentTimeMillis();
             if (cachedToken != null && now < expireAt) return cachedToken;
             String fresh = exchange();
@@ -60,13 +62,18 @@ public class ServiceTokenProvider {
             cachedToken = fresh;
             expireAt = now + properties.getTokenTtlMs();
             return fresh;
+        } finally {
+            lock.unlock();
         }
     }
 
     public void invalidate() {
-        synchronized (lock) {
+        lock.lock();
+        try {
             cachedToken = null;
             expireAt = 0L;
+        } finally {
+            lock.unlock();
         }
     }
 
