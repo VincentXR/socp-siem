@@ -50,8 +50,8 @@ def check_runtime_wiring(errors: list[str]) -> None:
         errors.append("observability Prometheus configuration is missing")
     else:
         text = OBS_PROMETHEUS.read_text(encoding="utf-8")
-        for required in ("rule_files:", "/etc/prometheus/rules/soar-alerts.yml",
-                         "/etc/prometheus/rules/service-alerts.yml", "alertmanager:9093"):
+        for required in ("rule_files:", "/etc/prometheus-rules/soar-alerts.yml",
+                         "/etc/prometheus-rules/service-alerts.yml", "alertmanager:9093"):
             if required not in text:
                 errors.append("Prometheus operational alert wiring omits " + required)
     if not LOG_VECTOR.is_file():

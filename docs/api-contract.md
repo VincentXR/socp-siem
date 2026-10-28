@@ -841,3 +841,16 @@ current tenant independently of list pages and returns 404 for unavailable IDs.
 Both reads require `soar:view`; decision commands retain `soar:approve` and policy
 checks. The OpenAPI snapshot defines both the legacy/paged union and the typed
 single-approval response for generated clients.
+
+
+### Detection-to-alarm identity
+
+`GET /alert-web/api/v1/alarms/by-source?sourceAlertId=<detection-id>` resolves
+one Detection feed identity to its materialized Alarm within the authenticated
+tenant. The `/api/alarms/by-source` compatibility route has identical semantics.
+The response is `ApiResult<Alarm>`; missing/unmaterialized and other-tenant
+identities return 404, and empty or oversized identities return 400. The
+lookup never interprets a source identity as an Alarm primary key. Workbench
+feed links resolve this mapping on activation and retain a retryable message
+if durable delivery has not completed yet; risk-table links already hold
+Alarm IDs and use the direct detail route.

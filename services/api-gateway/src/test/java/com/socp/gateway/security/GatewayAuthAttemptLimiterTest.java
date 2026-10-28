@@ -21,6 +21,20 @@ class GatewayAuthAttemptLimiterTest {
     private static final int LOGIN_PERMITS = 2;
 
     @Test
+    void unresponsiveRedisRejectsWithinTheConfiguredBudgetAndResetDoesNotHang() {
+        ReactiveStringRedisTemplate redis = mock(ReactiveStringRedisTemplate.class);
+        when(redis.execute(any(), anyList(), anyList())).thenReturn(Flux.never());
+        when(redis.delete(org.mockito.ArgumentMatchers.anyString())).thenReturn(reactor.core.publisher.Mono.never());
+        GatewayAuthAttemptLimiter limiter = new GatewayAuthAttemptLimiter(
+                redis, new SimpleMeterRegistry(), "redis", true, LOGIN_PERMITS, 1, 60);
+        reactor.test.StepVerifier.withVirtualTime(() -> limiter.acquire("login", "127.0.0.1", "alice"))
+                .thenAwait(java.time.Duration.ofSeconds(1))
+                .expectNextMatches(decision -> !decision.allowed()).verifyComplete();
+        reactor.test.StepVerifier.withVirtualTime(() -> limiter.reset("login", "127.0.0.1", "alice"))
+                .thenAwait(java.time.Duration.ofSeconds(1)).verifyComplete();
+    }
+
+    @Test
     void localBackendLimitsByAddressAndIdentityAndCanReset() {
         MeterRegistry registry = new SimpleMeterRegistry();
         GatewayAuthAttemptLimiter limiter = new GatewayAuthAttemptLimiter(

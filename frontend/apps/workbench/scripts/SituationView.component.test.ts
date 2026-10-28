@@ -6,7 +6,7 @@ import SituationView from '../src/views/SituationView.vue'
 import { translate } from '../src/i18n'
 import { ApiError } from '../src/api'
 
-const api = vi.hoisted(() => ({ alarmStats: vi.fn(), gasEngineStats: vi.fn(), gasRecentAlerts: vi.fn(), ingestSummary: vi.fn(), currentSession: vi.fn() }))
+const api = vi.hoisted(() => ({ alarmStats: vi.fn(), gasEngineStats: vi.fn(), gasRecentAlerts: vi.fn(), getAlarmBySource: vi.fn(), ingestSummary: vi.fn(), currentSession: vi.fn() }))
 vi.mock('../src/api', async original => ({ ...await original<typeof import('../src/api')>(), ...api }))
 vi.mock('../src/lib/echarts', () => ({ loadEcharts: async () => ({
   init: () => ({ isDisposed: () => false, setOption: () => {}, resize: () => {}, dispose: () => {} }),
@@ -141,5 +141,45 @@ describe('situation refresh ownership', () => {
     api.currentSession.mockRejectedValueOnce(new ApiError(401, 'unauthorized'))
     stream!.onerror!(); await flushPromises()
     expect(view.emitted('session-expired')).toHaveLength(1)
+  })
+})
+
+
+describe('detection feed alarm identity', () => {
+  async function feed() {
+    api.gasRecentAlerts.mockResolvedValue([{ id: 'detection-1', ruleId: 'rule-1', severity: 'HIGH', timestamp: '2026-01-01T00:00:00Z' }])
+    const view = setup(); await flushPromises()
+    return view
+  }
+
+  it('resolves the source identity before navigating', async () => {
+    api.getAlarmBySource.mockResolvedValue({ id: 'persisted-alarm-9' })
+    const view = await feed()
+    await view.get('.feed-item').trigger('click'); await flushPromises()
+    expect(api.getAlarmBySource).toHaveBeenCalledWith('detection-1', expect.objectContaining({ signal: expect.any(AbortSignal) }))
+    expect(view.emitted('go-alarm')).toEqual([['persisted-alarm-9']])
+  })
+
+  it('retains the feed and permits retry while materialization is pending', async () => {
+    api.getAlarmBySource.mockRejectedValueOnce(new ApiError(404, 'not materialized'))
+    const view = await feed()
+    await view.get('.feed-item').trigger('click'); await flushPromises()
+    expect(view.emitted('go-alarm')).toBeUndefined()
+    expect(view.text()).toContain(translate('situation.alarmPending'))
+    api.getAlarmBySource.mockResolvedValue({ id: 'persisted-alarm-9' })
+    await view.get('.feed-item').trigger('keydown', { key: 'Enter' }); await flushPromises()
+    expect(view.emitted('go-alarm')).toEqual([['persisted-alarm-9']])
+    expect(view.text()).not.toContain(translate('situation.alarmPending'))
+  })
+
+  it('does not navigate after leaving the view with a pending lookup', async () => {
+    const lookup = deferred<{ id: string }>()
+    api.getAlarmBySource.mockReturnValue(lookup.promise)
+    const view = await feed()
+    await view.get('.feed-item').trigger('click')
+    view.unmount(); wrapper = undefined
+    expect(api.getAlarmBySource.mock.calls[0][1].signal.aborted).toBe(true)
+    lookup.resolve({ id: 'obsolete' }); await flushPromises()
+    expect(view.emitted('go-alarm')).toBeUndefined()
   })
 })

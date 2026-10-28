@@ -90,6 +90,18 @@ describe('asset investigation and reviewed writes', () => {
     expect(mocks.get).not.toHaveBeenCalled()
   })
 
+  it('keeps an open delete menu attached to its asset when a refresh reorders rows', async () => {
+    mocks.list.mockResolvedValueOnce({ items: [asset('selected'), asset('other')], total: 2 })
+    await open('/assets')
+    await wrapper.get('.asset-row-menu button').trigger('click'); await flushPromises()
+    mocks.list.mockResolvedValueOnce({ items: [asset('other'), asset('selected')], total: 2 })
+    await click('刷新')
+    const remove = new DOMWrapper(document.body).findAll('[role="menuitem"]').find(item => item.text() === '删除')
+    expect(remove).toBeTruthy()
+    await remove!.trigger('click'); await flushPromises()
+    expect(mocks.remove).toHaveBeenCalledExactlyOnceWith('selected')
+  })
+
   it('turns inventory goals into server filters and restores direct filter links', async () => {
     const router = await open('/assets?type=SERVER&owner=sec&criticality=HIGH&page=2')
     expect(mocks.list).toHaveBeenLastCalledWith(2, 10, undefined, expect.anything(), { type: 'SERVER', owner: 'sec', criticality: 'HIGH' })

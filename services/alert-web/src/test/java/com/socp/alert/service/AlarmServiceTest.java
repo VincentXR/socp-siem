@@ -129,6 +129,30 @@ class AlarmServiceTest {
     }
 
     @Test
+    void detectionLookupUsesAuthenticatedTenantAndNeverFallsBackToAnAlarmId() {
+        TenantContext.set("tenant-a");
+        Alarm alarm = new Alarm();
+        alarm.setId("persisted-alarm");
+        given(repository.findByTenantIdAndSourceAlertId("tenant-a", "source-1"))
+                .willReturn(java.util.Optional.of(alarm));
+        assertSame(alarm, service.bySourceAlert("source-1"));
+        TenantContext.set("tenant-b");
+        var missing = assertThrows(com.socp.platform.error.exception.ApiException.class,
+                () -> service.bySourceAlert("source-1"));
+        assertEquals(404, missing.getCode());
+        verify(repository).findByTenantIdAndSourceAlertId("tenant-b", "source-1");
+        verify(queryService, org.mockito.Mockito.never()).get("source-1");
+        assertEquals(400, assertThrows(com.socp.platform.error.exception.ApiException.class,
+                () -> service.bySourceAlert(" ")).getCode());
+        assertEquals(400, assertThrows(com.socp.platform.error.exception.ApiException.class,
+                () -> service.bySourceAlert("x".repeat(256))).getCode());
+        String longest = "x".repeat(255);
+        given(repository.findByTenantIdAndSourceAlertId("tenant-b", longest))
+                .willReturn(java.util.Optional.of(alarm));
+        assertSame(alarm, service.bySourceAlert(longest));
+    }
+
+    @Test
     void exactAlarmLookupReturnsTheRecordOrARealNotFoundError() {
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", null);

@@ -933,6 +933,35 @@ class SoarActivityImplCoverageTest {
     // ------------------------------------------------------------------
 
     @Test
+    void interruptedDelayPersistsCancellationWhileTheRunIsCancelling() {
+        given(runs.findByTenantIdAndIdForUpdate(TENANT, RUN_ID)).willReturn(Optional.of(run("CANCELLING")));
+        var request = new SoarNodeRequest(TENANT, RUN_ID, NODE_ID, "DELAY", "", "", "{}", "delay-key", "", Map.of());
+        activity.recordNode(request, new SoarNodeResult("CANCELLED", "{}", "RUN_CANCELLED", "run cancelled"));
+        ArgumentCaptor<SoarNodeRunEntity> node = ArgumentCaptor.forClass(SoarNodeRunEntity.class);
+        verify(nodeRuns).save(node.capture());
+        assertThat(node.getValue().getStatus()).isEqualTo("CANCELLED");
+        assertThat(node.getValue().getTenantId()).isEqualTo(TENANT);
+        assertThat(node.getValue().getCompletedAt()).isNotNull();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"CANCELLED", "SUCCEEDED", "FAILED", "ACTION_UNKNOWN"})
+    void lateDelayCancellationCannotRewriteATerminalOrUncertainRun(String status) {
+        given(runs.findByTenantIdAndIdForUpdate(TENANT, RUN_ID)).willReturn(Optional.of(run(status)));
+        var request = new SoarNodeRequest(TENANT, RUN_ID, NODE_ID, "DELAY", "", "", "{}", "delay-key", "", Map.of());
+        activity.recordNode(request, new SoarNodeResult("CANCELLED", "{}", "RUN_CANCELLED", "run cancelled"));
+        verifyNoInteractions(nodeRuns, events);
+    }
+
+    @Test
+    void aLateSuccessfulDelayCannotOverrideCancellation() {
+        givenRunLocked(run("CANCELLING"));
+        var request = new SoarNodeRequest(TENANT, RUN_ID, NODE_ID, "DELAY", "", "", "{}", "delay-key", "", Map.of());
+        activity.recordNode(request, new SoarNodeResult("SUCCEEDED", "{}", null, null));
+        verifyNoInteractions(nodeRuns, events);
+    }
+
+    @Test
     void recordNodePersistsARedactedProjection() {
         givenRunLocked(run("RUNNING"));
         givenNoPriorNodeRun();

@@ -76,6 +76,9 @@ public class GatewayAuthAttemptLimiter implements AuthAttemptLimiter {
     static final String FAIL_CLOSED = "fail-closed";
     static final String BUDGET_EXHAUSTED = "signal-budget-exhausted";
 
+    @Value("${spring.data.redis.timeout:1s}")
+    private java.time.Duration redisTimeout = java.time.Duration.ofSeconds(1);
+
     private final ReactiveStringRedisTemplate redis;
     private final MeterRegistry registry;
     private final String backend;
@@ -138,6 +141,7 @@ public class GatewayAuthAttemptLimiter implements AuthAttemptLimiter {
         return redis.execute(INCREMENT, List.of(key(kind, clientAddress, identity)),
                         List.of(String.valueOf(windowSeconds)))
                 .next()
+                .timeout(redisTimeout)
                 .map(count -> {
                     Decision decision = count <= permits
                             ? Decision.permit() : Decision.reject(windowSeconds);
@@ -155,7 +159,7 @@ public class GatewayAuthAttemptLimiter implements AuthAttemptLimiter {
         local.remove(key(kind, clientAddress, identity));
         successCounter(kind).increment();
         if (!"redis".equalsIgnoreCase(backend)) return Mono.empty();
-        return redis.delete(key(kind, clientAddress, identity)).then().onErrorResume(failure -> {
+        return redis.delete(key(kind, clientAddress, identity)).timeout(redisTimeout).then().onErrorResume(failure -> {
             log.warn("Unable to reset auth rate-limit key: {}", failure.getMessage());
             return Mono.empty();
         });

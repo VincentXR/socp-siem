@@ -1,0 +1,7 @@
+# Match the shared authentication limiter selected by the PostgreSQL launcher.
+management:
+  endpoint:
+    health:
+      group:
+        readiness:
+          include: ${MANAGEMENT_ENDPOINT_HEALTH_GROUP_READINESS_INCLUDE:readinessState,redis}

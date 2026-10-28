@@ -410,7 +410,14 @@ public class SoarActivityImpl implements SoarActivity {
     @Transactional
     public void recordNode(SoarNodeRequest request, SoarNodeResult result) {
         TenantContext.callWith(request.tenantId(), () -> {
-            if (runTerminalOrCancelling(request.tenantId(), request.runId())) return null;
+            if ("DELAY".equals(request.nodeType()) && "CANCELLED".equals(result.status())) {
+                // Serialize the cancellation acknowledgement with terminal projection.
+                // Other late node results must still be fenced out while cancelling.
+                var run = runs.findByTenantIdAndIdForUpdate(request.tenantId(), request.runId());
+                if (run.isEmpty() || terminalProjection(run.get())
+                        || !("CANCELLING".equals(run.get().getStatus())
+                        || "RUNNING".equals(run.get().getStatus()))) return null;
+            } else if (runTerminalOrCancelling(request.tenantId(), request.runId())) return null;
             String iteration = request.iterationPath() == null ? "" : request.iterationPath();
             SoarNodeRunEntity row = nodeRuns.findByTenantIdAndRunIdAndNodeIdAndIterationPath(
                     request.tenantId(), request.runId(), request.nodeId(), iteration).orElseGet(SoarNodeRunEntity::new);

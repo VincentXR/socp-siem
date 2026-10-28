@@ -9,8 +9,9 @@ Outbox fan-out, or dependency recovery.
 - JDK 21 and a POSIX-compatible shell such as Git Bash or WSL.
 - Node.js 22, Corepack, and pnpm 10 for the workbench.
 - Docker Desktop for middleware and integration checks.
-- At least 24 GB RAM is recommended for the complete local stack. A service
-  slice is sufficient for most feature development.
+- Size the local stack from measured process/container use, memory pressure
+  and swap under your workload. Heap limits and container caps are not actual
+  memory consumption; the complete stack has no verified minimum-RAM claim.
 
 ## Install and build
 
@@ -42,7 +43,7 @@ cluster follows the same rule through `SOCP_DETECT_WEB_JVM_OPTS`.
 ## Start the local stack
 
 ```bash
-# PostgreSQL, Kafka, OpenSearch, ClickHouse and supporting middleware.
+# PostgreSQL, Kafka, OpenSearch, Redis, ClickHouse, MinIO and Temporal.
 # build/compose.sh injects the pinned image catalog for every service.
 bash build/compose.sh up -d
 # Native PowerShell equivalent: .\build\compose.ps1 up -d
@@ -68,11 +69,57 @@ The workbench is available at `http://localhost:5173`; the gateway is available
 at `http://localhost:18092`. The local demo account is `demo / demo123` and
 must not be reused outside development.
 
-Optional middleware for OIDC, Temporal, Jaeger, and dashboards:
+Optional tools start individually, without enabling every extra service:
 
 ```bash
+# Pick only the tools needed for this session; dependencies start automatically.
+bash build/compose.sh up -d prometheus grafana
+bash build/compose.sh up -d dashboards temporal-ui
+bash build/compose.sh up -d jaeger loki
+bash build/compose.sh up -d keycloak
+
+# Explicitly opt into all extras when needed.
 bash build/compose.sh --profile extra up -d
 ```
+
+Prometheus, Grafana, OpenSearch Dashboards, Temporal UI, Jaeger, Loki and
+Keycloak are off by default. Temporal itself remains a required dependency
+for real SOAR execution. Profiles do not stop already-running extras: inspect
+`bash build/compose.sh ps -a` before starting a session.
+
+### Lower-concurrency development on a 16 GB Mac
+
+Use the same real middleware and serialize JVM startup; keep each service's
+existing `-Xms32m -Xmx256m` heap until measurements identify a specific need:
+
+```bash
+# Defaults for a development database initialized by this Compose project.
+# For existing databases, supply their actual runtime and migration credentials.
+export SOCP_PG_USER="${SOCP_PG_USER:-socp_runtime}"
+export SOCP_PG_PASSWORD="${SOCP_PG_PASSWORD:-socp}"
+export SOCP_PG_MIGRATION_USER="${SOCP_PG_MIGRATION_USER:-socp_migrator}"
+export SOCP_PG_MIGRATION_PASSWORD="${SOCP_PG_MIGRATION_PASSWORD:-socp-migrator-local}"
+bash build/compose.sh up -d
+SOCP_START_BATCH_SIZE=1 bash build/run-all.sh start core
+# Alternatively, every business service and the workbench:
+SOCP_START_BATCH_SIZE=1 bash build/run-all.sh start full
+```
+
+`core` is a service slice, not full business acceptance. The `dev` / `dev,pg`
+launcher sets the following search-cache trial budgets unless overridden:
+
+```bash
+SOCP_SEARCH_CACHE_MAX_BYTES_TOTAL=67108864       # 64 MiB
+SOCP_SEARCH_CACHE_MAX_BYTES_PER_TENANT=8388608  # 8 MiB
+SOCP_SEARCH_CACHE_MAX_CONCURRENT_WARMUPS=1
+```
+
+These weights do not include all decoded-object or JVM overhead. The launcher
+does not inject them into `prod`; application/production defaults stay intact.
+Eviction removes cache entries, not persisted events. Normal search reads
+OpenSearch; its degraded local fallback is a bounded window and must not be
+treated as a complete historical result. See the [development memory verification
+procedure](operations/development-memory.md) before drawing capacity conclusions.
 
 ## Runtime configuration
 
