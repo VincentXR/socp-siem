@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_load_soak:
+        description: Run an additional one-hour 5 EPS load/soak verification
+        type: boolean
+        default: false
   schedule:
     - cron: "30 2 * * 1"
 
@@ -51,7 +56,7 @@ jobs:
     if: needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     # Original full-stack budget plus the bounded patched Vector source build.
-    timeout-minutes: 130
+    timeout-minutes: ${{ inputs.run_load_soak && 200 || 130 }}
     env:
       SOCP_PG_USER: socp_runtime
       SOCP_PG_RUNTIME_USER: socp_runtime
@@ -441,6 +446,13 @@ jobs:
 
       - name: Run true event-pipeline verification
         run: python3 build/verify-pipeline.py
+
+      - name: Run optional one-hour load and soak verification
+        if: ${{ inputs.run_load_soak }}
+        timeout-minutes: 75
+        run: >-
+          python3 build/verify-load-soak.py --allow-local-fixture
+          --seconds 3600 --eps 5 --report-dir .cache/load-soak
 
       - name: Run Compose-backed dependency chaos evidence
         run: |

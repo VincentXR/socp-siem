@@ -71,6 +71,23 @@ printing unrelated secrets.
 
 ## Measure phases and functional results
 
+For a sustained verification on a disposable local stack, run
+`python3 build/verify-load-soak.py --allow-local-fixture --seconds 3600 --eps 5`.
+The probe requires explicit collector, metrics, OpenSearch and ClickHouse
+fixture credentials and rejects non-loopback endpoints. It sends approximately
+1 KiB events with concurrent duplicate replay and issues bursts of ten gateway
+searches every ten seconds. A successful replay counts as an acknowledgement
+even when its concurrent primary request fails; that failed request still fails
+the zero-error gate. Every accepted event and expected alarm is reconciled
+across Kafka, PostgreSQL, OpenSearch and ClickHouse.
+
+The manual **Full Stack E2E** workflow has a `run_load_soak` boolean input for
+this additional one-hour check. It uses the job's isolated middleware and disk
+volumes, retains raw results under `.cache/load-soak`, and fails on request/query
+errors, incomplete duration, resource guards or reconciliation failures. Normal
+PR runs do not add this hour. These bounded fixture measurements do not establish
+production throughput, retention capacity or a 24-hour stability guarantee.
+
 Collect the following at a fixed interval, such as five seconds, from before
 startup through an idle observation period after the workload:
 
