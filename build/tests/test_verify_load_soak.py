@@ -2,6 +2,7 @@ import copy
 import importlib.util
 from pathlib import Path
 import sqlite3
+import tempfile
 from types import SimpleNamespace
 import unittest
 import urllib.request
@@ -16,6 +17,43 @@ SPEC.loader.exec_module(PROBE)
 
 
 class LoadSoakTest(unittest.TestCase):
+    def test_vm_root_without_memory_controller_files_keeps_memory_and_oom_guards(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            cgroup, proc = base / "cgroup", base / "proc"
+            cgroup.mkdir()
+            proc.mkdir()
+            (proc / "meminfo").write_text("MemTotal: 1000 kB\nMemAvailable: 300 kB\n")
+            (proc / "vmstat").write_text("pgfault 100\noom_kill 7\n")
+            result = PROBE.memory_snapshot(cgroup, proc)
+            self.assertEqual(result["memorySource"], "whole-vm-proc")
+            self.assertEqual(result["memoryLimitBytes"], 1000 * 1024)
+            self.assertEqual(result["workingSetBytes"], 700 * 1024)
+            self.assertEqual(result["memoryEvents"]["oom_kill"], "7")
+            self.assertIsNone(result["cgroupMemoryBytes"])
+
+    def test_delegated_cgroup_uses_its_own_limit_oom_counter_and_reclaimable_cache(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            cgroup, proc = base / "cgroup", base / "proc"
+            cgroup.mkdir()
+            proc.mkdir()
+            (proc / "meminfo").write_text("MemTotal: 1000 kB\nMemAvailable: 300 kB\n")
+            for name, value in {
+                "memory.current": "800000",
+                "memory.max": "900000",
+                "memory.stat": "inactive_file 200000\nanon 600000\n",
+                "memory.events": "oom_kill 3\n",
+            }.items():
+                (cgroup / name).write_text(value)
+            result = PROBE.memory_snapshot(cgroup, proc)
+            self.assertEqual(result["memorySource"], "delegated-cgroup")
+            self.assertEqual(result["memoryLimitBytes"], 900000)
+            self.assertEqual(result["workingSetBytes"], 600000)
+            self.assertEqual(result["memoryEvents"]["oom_kill"], "3")
+
     def test_import_does_not_create_a_fixture_or_read_credentials(self):
         self.assertIsNone(PROBE.db)
         self.assertIsNone(PROBE.OUT)

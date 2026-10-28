@@ -80,6 +80,77 @@ class LoopbackRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, message, headers, new_url)
 
 
+def memory_snapshot(cgroup=pathlib.Path("/sys/fs/cgroup"), proc=pathlib.Path("/proc")):
+    """Use delegated cgroup counters, or whole-VM counters on a hosted runner."""
+    info = {
+        line.split(":", 1)[0]: int(line.split()[1]) * 1024
+        for line in (proc / "meminfo").read_text().splitlines()
+        if line.split()[-1] == "kB"
+    }
+    maximum = (
+        (cgroup / "memory.max").read_text().strip()
+        if (cgroup / "memory.max").exists()
+        else "max"
+    )
+    limit = (
+        min(int(maximum), info["MemTotal"]) if maximum != "max" else info["MemTotal"]
+    )
+    if (cgroup / "memory.current").exists():
+        current = int((cgroup / "memory.current").read_text())
+        stat = {
+            k: int(v)
+            for k, v in (
+                line.split()
+                for line in (cgroup / "memory.stat").read_text().splitlines()
+            )
+        }
+        events = dict(
+            line.split() for line in (cgroup / "memory.events").read_text().splitlines()
+        )
+        return {
+            "memorySource": "delegated-cgroup",
+            "memoryLimitBytes": limit,
+            "cgroupMemoryBytes": current,
+            "workingSetBytes": current - stat["inactive_file"],
+            "memoryEvents": events,
+            "memoryStat": {
+                k: v
+                for k, v in stat.items()
+                if k
+                in ("anon", "file", "inactive_file", "active_file", "shmem", "kernel")
+            },
+        }
+    # Root cgroups on VMs need not expose memory.current/max/events. MemAvailable
+    # accounts for reclaimable memory; vmstat retains the kernel's OOM counter.
+    vmstat = dict(line.split() for line in (proc / "vmstat").read_text().splitlines())
+    return {
+        "memorySource": "whole-vm-proc",
+        "memoryLimitBytes": limit,
+        "cgroupMemoryBytes": None,
+        "workingSetBytes": info["MemTotal"] - info["MemAvailable"],
+        "memoryStat": {},
+        "memoryEvents": {"oom_kill": vmstat["oom_kill"]},
+    }
+
+
+def cpu_counters():
+    path = pathlib.Path("/sys/fs/cgroup/cpu.stat")
+    values = (
+        dict(line.split() for line in path.read_text().splitlines())
+        if path.exists()
+        else {}
+    )
+    if "usage_usec" in values:
+        return "delegated-cgroup", values
+    ticks = list(
+        map(int, pathlib.Path("/proc/stat").read_text().splitlines()[0].split()[1:])
+    )
+    active = sum(ticks[i] for i in (0, 1, 2, 5, 6))
+    return "whole-vm-proc", {
+        "usage_usec": str(active * 1_000_000 // os.sysconf("SC_CLK_TCK"))
+    }
+
+
 def initialize(args):
     global P, GW, OS, INGEST, COLLECTOR, CREDENTIAL, METRICS, started_at, ip_base, RUN, OUT, db, memory_limit, working_set_limit
     if not args.allow_local_fixture:
@@ -145,20 +216,7 @@ def initialize(args):
     db.execute(
         "create table events(id text primary key, phase text, n integer, kind text, host text, msg text, src_ip text, ack integer default 0, submitted real, received real)"
     )
-    configured = pathlib.Path("/sys/fs/cgroup/memory.max").read_text().strip()
-    total = (
-        int(
-            next(
-                (
-                    line.split()[1]
-                    for line in pathlib.Path("/proc/meminfo").read_text().splitlines()
-                    if line.startswith("MemTotal:")
-                )
-            )
-        )
-        * 1024
-    )
-    memory_limit = min(int(configured), total) if configured != "max" else total
+    memory_limit = memory_snapshot()["memoryLimitBytes"]
     working_set_limit = int(memory_limit * 0.875)
 
 
@@ -425,36 +483,8 @@ def monitor():
                 token_at = time.monotonic()
             disk = shutil.disk_usage(ROOT)
             sample["diskFree"] = disk.free
-            memory = int(pathlib.Path("/sys/fs/cgroup/memory.current").read_text())
-            sample["cgroupMemoryBytes"] = memory
-            sample["memoryStat"] = {
-                k: int(v)
-                for k, v in (
-                    line.split()
-                    for line in pathlib.Path("/sys/fs/cgroup/memory.stat")
-                    .read_text()
-                    .splitlines()
-                )
-                if k
-                in ("anon", "file", "inactive_file", "active_file", "shmem", "kernel")
-            }
-            sample["workingSetBytes"] = memory - sample["memoryStat"]["inactive_file"]
-            sample["memoryEvents"] = dict(
-                (
-                    line.split()
-                    for line in pathlib.Path("/sys/fs/cgroup/memory.events")
-                    .read_text()
-                    .splitlines()
-                )
-            )
-            sample["cpu"] = dict(
-                (
-                    line.split()
-                    for line in pathlib.Path("/sys/fs/cgroup/cpu.stat")
-                    .read_text()
-                    .splitlines()
-                )
-            )
+            sample.update(memory_snapshot())
+            sample["cpuCounterScope"], sample["cpu"] = cpu_counters()
             sample["hostCpu"] = pathlib.Path("/proc/stat").read_text().splitlines()[0]
             status, node = http(OS + "/_nodes/stats/fs,jvm,indices")
             if status != 200:
@@ -848,14 +878,8 @@ def run_phase(name, eps, seconds, next_n):
                             "elapsed": round(now - start),
                             "scheduledUnique": next_n,
                             "inFlight": len(pending),
-                            "memoryGiB": round(
-                                int(
-                                    pathlib.Path(
-                                        "/sys/fs/cgroup/memory.current"
-                                    ).read_text()
-                                )
-                                / 1024**3,
-                                2,
+                            "workingSetGiB": round(
+                                memory_snapshot()["workingSetBytes"] / 1024**3, 2
                             ),
                             "diskFreeGiB": round(
                                 shutil.disk_usage(ROOT).free / 1024**3, 2
@@ -1039,16 +1063,7 @@ def main():
     ends = consumer.end_offsets(parts)
     for p, n in ends.items():
         consumer.seek(p, n)
-    initial_oom = int(
-        dict(
-            (
-                line.split()
-                for line in pathlib.Path("/sys/fs/cgroup/memory.events")
-                .read_text()
-                .splitlines()
-            )
-        ).get("oom_kill", 0)
-    )
+    initial_oom = int(memory_snapshot()["memoryEvents"]["oom_kill"])
     (OUT / "config.json").write_text(
         json.dumps(
             {
