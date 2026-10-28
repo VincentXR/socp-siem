@@ -670,23 +670,24 @@ def run_verification(webhook_target):
     if prev is None:
         check("持久化基线已写入（首轮：重启后再跑一次本脚本即校验存活）", True, MARKER)
     else:
-        # 前一次探针写入的 IOC、案件和接入源在服务重启后应仍然存在。
+        # Read back the previous probe. This script does not itself restart services;
+        # counts are continuity smoke checks, not exact-record durability or DR proof.
         st, m = call(U["threat-web"] + "/threat-web/api/v1/iocs/match?value=" + prev["ioc"])
-        check("重启后 IOC 仍在库（threat-web H2）", st == 200 and bool(m) and m.get("matched", True) is not False,
+        check("先前探针的 IOC 仍在库（threat-web）", st == 200 and bool(m) and m.get("matched", True) is not False,
               prev["ioc"])
         st, srcs = call(U["search-config"] + "/search-config/api/v1/sources")
         srcs = unwrap(srcs)
-        check("重启后接入源仍在库（search-config H2）",
+        check("先前探针的接入源仍在库（search-config）",
               st == 200 and any(s.get("id") == prev["source"] for s in srcs), prev["source"])
         st, alarms_now = call(U["alert-web"] + "/alert-web/api/alarms?size=500")
         alarms_now = unwrap(alarms_now) if st == 200 else []
-        check("重启后历史告警仍在库（alert-web H2）",
+        check("历史告警数量未减少（alert-web）",
               st == 200 and len(alarms_now) >= prev.get("alarmCount", 0) and prev.get("alarmCount", 0) > 0,
               "before=%s now=%s" % (prev.get("alarmCount"), len(alarms_now)))
         st, cases_now = call(U["incident-web"] + "/incident-web/api/v1/incidents")
         cases_now = unwrap(cases_now) if st == 200 else []
-        # default 租户只看到本租户案件，并在重启后保持持久化数据。
-        check("重启后案件仍在库（incident-web H2）",
+        # default 租户的历史案件仍可读取；这里不比较具体记录或先前数量。
+        check("历史案件仍可读取（incident-web）",
               st == 200 and len(cases_now) > 0,
               "now=%s (default 租户隔离视图)" % len(cases_now))
 

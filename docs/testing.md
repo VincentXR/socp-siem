@@ -311,8 +311,10 @@ pages and AI answers, viewer write rejection, and report archive/download
 integrity against real object storage. Each page owns its response listener so
 an earlier page's pending request cannot satisfy a later page's check. The
 download test reads the browser's actual attachment and compares a second
-signed download byte for byte. The fixture retains the created source and
-archive records. This coverage complements the API, persistence and recovery
+signed download byte for byte. The source workflow deletes its own sources
+with the authenticated browser context during fixture teardown, using a
+separate cleanup budget and checking each delete response. The report fixture
+retains its archive records. This coverage complements the API, persistence and recovery
 probes; it does not establish production throughput, retention or disaster
 recovery objectives.
 
