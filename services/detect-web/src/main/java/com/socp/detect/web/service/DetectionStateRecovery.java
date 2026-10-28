@@ -19,6 +19,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -33,7 +34,7 @@ public class DetectionStateRecovery {
     private final Map<String, AtomicLong> snapshotCounters = new ConcurrentHashMap<>();
     private final Map<String, Map<Integer, Long>> snapshotOffsets = new ConcurrentHashMap<>();
     private final Map<String, DetectionStateOwnership.Lease> stateLeases = new ConcurrentHashMap<>();
-    private final Map<String, Object> stateLeaseLocks = new ConcurrentHashMap<>();
+    private final Map<String, ReentrantLock> stateLeaseLocks = new ConcurrentHashMap<>();
     private final Set<Integer> revokedPartitions = ConcurrentHashMap.newKeySet();
     private final AtomicReference<Set<Integer>> assignedPartitions = new AtomicReference<>(Set.of());
 
@@ -86,25 +87,31 @@ public class DetectionStateRecovery {
             return Set.copyOf(retained);
         });
         for (String key : stateLeases.keySet()) {
-            Object lock = stateLeaseLocks.get(key);
+            ReentrantLock lock = stateLeaseLocks.get(key);
             if (lock == null) continue;
-            synchronized (lock) {
+            lock.lock();
+            try {
                 DetectionStateOwnership.Lease lease = stateLeases.get(key);
                 if (lease != null && revoked.contains(lease.partition())
                         && stateLeases.remove(key, lease)) {
                     stateOwnership.release(lease);
                 }
+            } finally {
+                lock.unlock();
             }
         }
     }
 
     void releaseAllStateLeases() {
         for (String key : stateLeases.keySet()) {
-            Object lock = stateLeaseLocks.get(key);
+            ReentrantLock lock = stateLeaseLocks.get(key);
             if (lock == null) continue;
-            synchronized (lock) {
+            lock.lock();
+            try {
                 DetectionStateOwnership.Lease lease = stateLeases.remove(key);
                 if (lease != null) stateOwnership.release(lease);
+            } finally {
+                lock.unlock();
             }
         }
     }
@@ -129,8 +136,9 @@ public class DetectionStateRecovery {
         }
         int resolvedShard = normalizeShard(shard);
         String key = DetectionStateOwnership.unitKey(inputTopic, partition, resolvedShard);
-        Object lock = stateLeaseLocks.computeIfAbsent(key, ignored -> new Object());
-        synchronized (lock) {
+        ReentrantLock lock = stateLeaseLocks.computeIfAbsent(key, ignored -> new ReentrantLock());
+        lock.lock();
+        try {
             if (revokedPartitions.contains(partition)) {
                 throw new DetectionStateOwnership.StaleStateOwnerException(
                         "Kafka partition is no longer assigned: " + partition);
@@ -148,6 +156,8 @@ public class DetectionStateRecovery {
                     inputTopic, partition, resolvedShard);
             stateLeases.put(key, acquired);
             return acquired;
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -168,9 +178,10 @@ public class DetectionStateRecovery {
 
     void releaseUnassignedStateLeases(Set<Integer> partitions) {
         for (String key : stateLeases.keySet()) {
-            Object lock = stateLeaseLocks.get(key);
+            ReentrantLock lock = stateLeaseLocks.get(key);
             if (lock == null) continue;
-            synchronized (lock) {
+            lock.lock();
+            try {
                 DetectionStateOwnership.Lease lease = stateLeases.get(key);
                 boolean retained = lease != null && partitions != null
                         && partitions.contains(lease.partition())
@@ -178,6 +189,8 @@ public class DetectionStateRecovery {
                 if (!retained && lease != null && stateLeases.remove(key, lease)) {
                     stateOwnership.release(lease);
                 }
+            } finally {
+                lock.unlock();
             }
         }
     }

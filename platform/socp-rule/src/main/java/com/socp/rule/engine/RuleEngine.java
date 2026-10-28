@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Single-worker stateful rule engine.
@@ -68,7 +69,8 @@ public final class RuleEngine implements AutoCloseable {
     private final Map<String, RoutingMismatchState> routingMismatches =
             new java.util.concurrent.ConcurrentHashMap<>();
     /** Serializes rule mutation, durable position callbacks, and snapshots. */
-    private final Object stateLock = new Object();
+    // Durable evaluation performs JDBC I/O; a monitor would pin Java 21 carriers.
+    private final ReentrantLock stateLock = new ReentrantLock();
     private static final int RULE_FAILURE_THRESHOLD = Math.max(1,
             Integer.getInteger("socp.rule.failure-threshold", 3));
     private static final long RULE_FUSE_COOLDOWN_NANOS = TimeUnit.SECONDS.toNanos(
@@ -168,7 +170,8 @@ public final class RuleEngine implements AutoCloseable {
      */
     public void restore(List<SecurityEvent> history) {
         if (history == null || history.isEmpty()) return;
-        synchronized (stateLock) {
+        stateLock.lock();
+        try {
             for (SecurityEvent event : history) {
                 if (DetectionDelivery.isRouted(event)
                         && DetectionDelivery.kind(event) != DetectionDelivery.Kind.STATEFUL) {
@@ -178,6 +181,8 @@ public final class RuleEngine implements AutoCloseable {
                 for (Rule rule : selected) rule.accept(event);
                 for (Rule rule : selected) rule.drain();
             }
+        } finally {
+            stateLock.unlock();
         }
         log.info("Detection rule state restored events={}", history.size());
     }
@@ -211,7 +216,8 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     private void process(WorkItem item) {
-        synchronized (stateLock) {
+        stateLock.lock();
+        try {
             SecurityEvent event = item.event();
             List<Rule> selected = rulesFor(event);
             Map<StatefulRule, byte[]> before = item.durable()
@@ -240,6 +246,8 @@ public final class RuleEngine implements AutoCloseable {
                 }
                 throw failure;
             }
+        } finally {
+            stateLock.unlock();
         }
     }
 
@@ -701,12 +709,15 @@ public final class RuleEngine implements AutoCloseable {
     public void reload(List<Rule> newRules) {
         if (newRules == null) throw new IllegalArgumentException("rules are required");
         List<Rule> replacement = List.copyOf(newRules);
-        synchronized (stateLock) {
+        stateLock.lock();
+        try {
             List<Rule> old = rulesRef.getAndSet(replacement);
             ruleCircuits.clear();
             routingMismatches.clear();
             old.forEach(Rule::close);
             log.info("Detection rules reloaded count={}", replacement.size());
+        } finally {
+            stateLock.unlock();
         }
     }
 
@@ -783,7 +794,8 @@ public final class RuleEngine implements AutoCloseable {
 
     /** Capture state and its durable progress in the same critical section. */
     public <T> T captureStateSnapshot(java.util.function.Function<Map<String, RuleState>, T> capture) {
-        synchronized (stateLock) {
+        stateLock.lock();
+        try {
             Map<String, RuleState> out = new java.util.LinkedHashMap<>();
             for (Rule rule : rulesRef.get()) {
                 if (!(rule instanceof StatefulRule stateful)) continue;
@@ -791,6 +803,8 @@ public final class RuleEngine implements AutoCloseable {
                         stateful.snapshotState()));
             }
             return capture.apply(Map.copyOf(out));
+        } finally {
+            stateLock.unlock();
         }
     }
 
@@ -804,7 +818,8 @@ public final class RuleEngine implements AutoCloseable {
     /** Restore compatible rule state before journal replay. Incompatible bytes are ignored. */
     public List<String> restoreStates(Map<String, RuleState> states) {
         if (states == null || states.isEmpty()) return List.of();
-        synchronized (stateLock) {
+        stateLock.lock();
+        try {
             Map<StatefulRule, byte[]> before = new java.util.LinkedHashMap<>();
             for (Rule rule : rulesRef.get()) {
                 if (rule instanceof StatefulRule stateful) {
@@ -839,6 +854,8 @@ public final class RuleEngine implements AutoCloseable {
                 }
             }
             return List.copyOf(restored);
+        } finally {
+            stateLock.unlock();
         }
     }
 

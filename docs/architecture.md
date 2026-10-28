@@ -115,6 +115,10 @@ the service supports it.
 - Producers use `acks=all` and idempotence where configured.
 - Canonical ingestion returns only after the event and Ingestion Outbox intent
   commit together; broker outages leave retryable `PENDING` rows.
+  Concurrent HTTP requests for the same event identity retry a rolled-back
+  identity insert race up to twice, each in a fresh transaction. The winning
+  payload is checked again: identical content is acknowledged as a duplicate,
+  conflicting content remains `409`, and exhausted contention returns `503`.
 - Ingestion and Detection-routing Outbox publishers preserve FIFO per
   `(tenant_id,routing_key)` across concurrent workers and replicas. A row in
   retry backoff keeps later rows for that key pending; other keys continue.
@@ -135,6 +139,9 @@ the service supports it.
   claims, and DLQ paths.
 - Detection has a bounded queue. Queue rejection returns `503` with
   `Retry-After` at the HTTP boundary so collectors can retry.
+  Rule-state, ownership-lease, and JDBC tenant-scope critical sections use
+  reentrant locks so database waits can release Java 21 virtual-thread
+  carriers while preserving mutual exclusion and checkpoint ordering.
 - Detection persists a deterministic alert before remote delivery. A failed
   Alert Web request remains `PENDING`; a publisher crash recovers stale claims.
 - Alert Web uses `(tenant_id, source_alert_id)` idempotency, so replaying a
