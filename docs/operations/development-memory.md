@@ -54,6 +54,13 @@ MinIO and Temporal. Administrative UIs and observability tools are opt-in; see
 but a launcher timeout is not readiness evidence. Check each service and its
 required dependencies before recording the ready phase.
 
+If the three-instance Detection fixture misses its startup deadline,
+`detection-cluster.sh` captures loopback health responses and bounded `jcmd`
+platform/virtual thread dumps before stopping those processes. Evidence is
+retained under `.cache/detection-cluster/startup-failure-*`; missing attach
+support or a diagnostic timeout is recorded without converting startup failure
+into success. The startup readiness deadline is unchanged.
+
 Confirm OpenSearch's effective heap through the running JVM, for example:
 
 ```bash
