@@ -35,7 +35,7 @@ class DeploymentContractsTest(unittest.TestCase):
         self.assertEqual(2, len(errors))
         self.assertTrue(all("kafka-data" in error for error in errors))
 
-        base["services"]["kafka"]["environment"]["KAFKA_LOG_DIRS"] = "/tmp/kraft-combined-logs"
+        base["services"]["kafka"]["environment"]["KAFKA_LOG_DIRS"] = "/var/lib/kafka/data"
         base["services"]["kafka"]["volumes"] = ["kafka-data:/wrong-directory"]
         errors = []
         compose.check_kafka(errors, base, overlay, compose.merge_compose(base, overlay))

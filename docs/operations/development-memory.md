@@ -12,11 +12,12 @@ native allocations and the separate health-probe process. The topic-list probe
 overrides the inherited broker heap with `-Xms16m -Xmx64m`; otherwise a probe
 can add a second broker-sized JVM to the same container's memory charge.
 
-Compose explicitly sets `KAFKA_LOG_DIRS=/tmp/kraft-combined-logs`, matching
+Compose explicitly sets `KAFKA_LOG_DIRS=/var/lib/kafka/data`, matching
 the `kafka-data` volume. Before recreating an existing broker, inspect its
 effective `log.dirs`. If it used the container-local `/tmp/kafka-logs`, stop
 that broker and copy its complete log directory, including KRaft metadata,
-into the retained volume first. Preserve the old container until cluster ID,
+into the retained volume first, preserving ownership for the image's appuser
+(UID 1000). Preserve the old container until cluster ID,
 topic offsets and sample records have been checked after recovery. Changing
 the environment alone does not migrate existing records.
 

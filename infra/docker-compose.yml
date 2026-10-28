@@ -88,7 +88,7 @@ services:
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
       # Explicitly bind broker records and KRaft metadata to the named volume.
-      KAFKA_LOG_DIRS: "/tmp/kraft-combined-logs"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
       # 两个 listener，因为两类客户端需要不同的宣告地址（broker 在握手后会要求客户端
       # 按 advertised 地址重连，宣告错了客户端就会连到不存在的地方）：
       #   PLAINTEXT      9092  advertised=localhost:9092
@@ -130,7 +130,7 @@ services:
       - "9092:9092"
     volumes:
       # Must match KAFKA_LOG_DIRS; the image's generated config need not use this path.
-      - kafka-data:/tmp/kraft-combined-logs
+      - kafka-data:/var/lib/kafka/data
     networks: [socp]
     deploy:
       resources:
