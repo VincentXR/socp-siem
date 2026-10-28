@@ -158,7 +158,7 @@ def install_soar_fixture(entity):
     check("SOAR 已发布探针剧本和限定实体的触发规则", True, name)
 
 
-def run_verification(webhook_target):
+def run_verification(webhook_target, temporary_channel_ids=None):
     """Run mutating probes only when explicitly invoked against a disposable stack."""
     _WEBHOOK_TARGET = webhook_target
     PASS.clear()
@@ -212,6 +212,8 @@ def run_verification(webhook_target):
         "name": "Full-stack webhook sink", "type": "WEBHOOK",
         "target": _WEBHOOK_TARGET,
         "enabled": True, "description": "Hermetic full-stack verification fixture"})
+    if temporary_channel_ids is not None and st == 200 and fixture_channel.get("id"):
+        temporary_channel_ids.append(fixture_channel["id"])
     check("Webhook verification fixture is ready",
           st == 200 and fixture_channel.get("enabled") is True,
           fixture_channel if st == 200 else st)
@@ -219,6 +221,8 @@ def run_verification(webhook_target):
         "name": "Full-stack recovery probe", "type": "WEBHOOK",
         "target": "http://127.0.0.1:1/unreachable",
         "enabled": True, "description": "Terminal receipt recovery verification fixture"})
+    if temporary_channel_ids is not None and st == 200 and recovery_channel.get("id"):
+        temporary_channel_ids.append(recovery_channel["id"])
     check("通知恢复探针以不可达目标启动",
           st == 200 and recovery_channel.get("enabled") is True,
           recovery_channel if st == 200 else st)
@@ -653,7 +657,7 @@ def run_verification(webhook_target):
           st == 200 and "eps1m" in isum and isinstance(isum.get("byHealth"), dict), isum)
 
     # ---------------------------------------------------------------- 9. 持久化重启存活
-    print("\n=== 9. 持久化（重启存活） ===")
+    print("\n=== 9. 历史探针数据回读 ===")
     MARKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".cache", "persist-marker.json")
     MARKER = os.path.normpath(MARKER)
 
@@ -668,7 +672,7 @@ def run_verification(webhook_target):
 
     prev = _read_marker()
     if prev is None:
-        check("持久化基线已写入（首轮：重启后再跑一次本脚本即校验存活）", True, MARKER)
+        check("历史探针基线已写入（首轮；重启验证需另行执行重启）", True, MARKER)
     else:
         # Read back the previous probe. This script does not itself restart services;
         # counts are continuity smoke checks, not exact-record durability or DR proof.
@@ -720,8 +724,20 @@ def run_verification(webhook_target):
 
 
 def main():
-    with webhook_fixture(os.environ.get("SOCP_WEBHOOK_FIXTURE_URL", "")) as target:
-        return run_verification(target)
+    external = os.environ.get("SOCP_WEBHOOK_FIXTURE_URL", "").strip()
+    # A temporary sink stops on exit. Remove only channels created by this run
+    # so later probes do not send to its closed listener. External CI sinks
+    # deliberately remain active for the subsequent chaos scenarios.
+    temporary_channel_ids = None if external else []
+    with webhook_fixture(external) as target:
+        try:
+            result = run_verification(target, temporary_channel_ids)
+        finally:
+            for channel_id in temporary_channel_ids or []:
+                status, _ = call(U["notify-web"] + "/notify-web/api/v1/channels/"
+                                 + urllib.parse.quote(channel_id, safe=""), "DELETE")
+                check("清理临时 Webhook 渠道", status == 200, channel_id)
+        return 1 if FAIL else result
 
 
 if __name__ == "__main__":

@@ -9,6 +9,41 @@ def load(name):
     spec=importlib.util.spec_from_file_location(name,ROOT/(name+'.py'))
     module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 class CleanupContracts(unittest.TestCase):
+    def test_temporary_webhook_channels_are_removed_even_after_probe_failure(self):
+        from unittest.mock import patch
+        module = load('verify-full')
+        def fail(_target, channels):
+            channels.extend(['own-main', 'own-recovery'])
+            raise RuntimeError('probe failed')
+        with patch.dict('os.environ', {'SOCP_WEBHOOK_FIXTURE_URL': ''}), \
+                patch.object(module, 'run_verification', side_effect=fail), \
+                patch.object(module, 'call', return_value=(200, {})) as call, \
+                self.assertRaisesRegex(RuntimeError, 'probe failed'):
+            module.main()
+        self.assertEqual(['/own-main', '/own-recovery'],
+                         ['/' + args.args[0].rsplit('/', 1)[1] for args in call.call_args_list])
+        self.assertTrue(all(args.args[1] == 'DELETE' for args in call.call_args_list))
+
+    def test_temporary_cleanup_failure_fails_the_acceptance_command(self):
+        from unittest.mock import patch
+        module = load('verify-full')
+        def success(_target, channels):
+            channels.append('own-main')
+            return 0
+        with patch.dict('os.environ', {'SOCP_WEBHOOK_FIXTURE_URL': ''}), \
+                patch.object(module, 'run_verification', side_effect=success), \
+                patch.object(module, 'call', return_value=(503, {})):
+            self.assertEqual(1, module.main())
+
+    def test_external_webhook_channels_remain_for_later_chaos_probes(self):
+        from unittest.mock import patch
+        module = load('verify-full')
+        with patch.dict('os.environ', {'SOCP_WEBHOOK_FIXTURE_URL': 'http://external-fixture.invalid'}), \
+                patch.object(module, 'run_verification', return_value=0) as run, \
+                patch.object(module, 'call', side_effect=AssertionError('unexpected cleanup')):
+            self.assertEqual(0, module.main())
+        run.assert_called_once_with('http://external-fixture.invalid', None)
+
     def test_unbounded_java_handler_recognizer(self):
         check=load('verify-contracts').has_unbounded_body_handler
         for source in ['BodyHandlers.ofString()', 'HttpResponse . BodyHandlers . ofString (UTF_8)']:

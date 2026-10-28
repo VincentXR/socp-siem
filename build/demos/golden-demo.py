@@ -425,12 +425,27 @@ def ensure_automation_rule(token, playbook):
 
 def ensure_channel(token):
     status, result, _ = request("notify", "/api/v1/channels", token=token)
+    if status != 200:
+        raise RuntimeError(f"读取通知 Demo 渠道失败 status={status}")
+    unwrap(result)
     items = page_items(result)
     name = DEMO_CHANNEL
     existing = next((item for item in items if item.get("name") == name), None)
     if existing:
+        if not existing.get("id") or existing.get("type") != "LOG":
+            raise RuntimeError("通知 Demo 渠道必须是具有持久化 ID 的本地 LOG 渠道")
         if not existing.get("enabled", True):
-            request("notify", f"/api/v1/channels/{existing.get('id')}/toggle", token=token)
+            status, result, _ = request(
+                "notify", f"/api/v1/channels/{existing['id']}/toggle",
+                token=token, method="POST")
+            if status != 200:
+                raise RuntimeError(f"启用通知 Demo 渠道失败 status={status}")
+            data = unwrap(result)
+            enabled = data.get("channel") if isinstance(data, dict) else None
+            if (not isinstance(enabled, dict) or enabled.get("id") != existing["id"]
+                    or enabled.get("enabled") is not True or enabled.get("type") != "LOG"):
+                raise RuntimeError("通知 Demo 渠道未确认启用")
+            return enabled
         return existing
     status, result, _ = request(
         "notify",

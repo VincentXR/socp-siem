@@ -413,6 +413,11 @@ checks canonical source receipts, routed delivery identities, source/delivery
 positions, bounded fan-out, repeated rebalance, zero lag and zero pending
 journal work. See the [validation matrix](validation-matrix.md) for the full
 pass criteria.
+After a publisher is stopped, the probe waits for its own route outbox rows to
+reach `PUBLISHED` before sampling final routed-consumer lag. Kafka may have
+accepted a send whose database acknowledgement was interrupted; the two-minute
+processing lease must recover and its possible resend must drain. The bounded
+240-second wait still fails for missing source coverage or unfinished rows.
 The cluster launcher waits for each old listener to release its port before a
 generation switch; if a port remains occupied, the restart fails with that port
 instead of accepting a partially restarted cluster.
@@ -456,6 +461,10 @@ the same entity and partition placement alongside each run's fresh dataset.
 Golden Demo saves its canonical events, matching alerts, rules and runtime
 state in `.cache/golden-demo/` on exit. `GOLDEN_DEMO_DB_EVIDENCE=true` adds a
 read-only journal snapshot from the disposable `socp-postgres` container.
+An existing disabled LOG channel is enabled through the POST command and its
+response is checked before ingestion starts. Full API verification removes its
+own temporary webhook channels before stopping its local sink; an explicitly
+configured persistent CI sink remains available for subsequent scenarios.
 Its pass condition includes raw alarm evidence, both directions of the
 alarm/case relationship, a `SUCCEEDED` run of the no-action demo playbook,
 case claim, an idempotent note, closure materials, and fresh reads of the
