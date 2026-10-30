@@ -54,6 +54,7 @@ class DetectionParallelStateTest {
         var rules = mock(RuleSpecStore.class);
         when(rules.list(anyString())).thenReturn(List.of(rule()));
         var forwarder = mock(AlertForwarder.class);
+        when(forwarder.ownsJournalTransaction()).thenReturn(true);
         var snapshots = mock(DetectionStateSnapshotStore.class);
         when(snapshots.supportsAtomicBatch()).thenReturn(true);
         var saved = new ConcurrentHashMap<Integer, DetectionStateSnapshot>();
@@ -68,6 +69,7 @@ class DetectionParallelStateTest {
         var state = (DetectionStateRecovery) ReflectionTestUtils.getField(service, "state");
         ReflectionTestUtils.setField(state, "stateShardCount", 4);
         ReflectionTestUtils.setField(state, "snapshotEveryEvents", 1L);
+        ReflectionTestUtils.setField(state, "snapshotMinIntervalMs", 0L);
         String slowUser = "alice";
         String fastUser = "bob";
         int slowShard = state.shardFor(event("tenant-a", slowUser, "probe"));
@@ -78,7 +80,8 @@ class DetectionParallelStateTest {
         var slowTransactions = new AtomicInteger();
         var slowAlerts = new AtomicInteger();
         doAnswer(call -> {
-            List<DetectionResult> results = call.getArgument(0);
+            List<com.socp.rule.engine.BatchEventAlertSink.Entry> entries = call.getArgument(0);
+            List<DetectionResult> results = entries.stream().map(com.socp.rule.engine.BatchEventAlertSink.Entry::result).toList();
             assertEquals("tenant-a", TenantContext.require());
             if (results.getFirst().event().fields().get("user").equals(slowUser)) {
                 if (slowTransactions.incrementAndGet() == 1) {
@@ -88,7 +91,7 @@ class DetectionParallelStateTest {
                 slowAlerts.addAndGet(results.stream().mapToInt(result -> result.alerts().size()).sum());
             }
             return null;
-        }).when(forwarder).forwardBatch(anyList(), anyList(), any());
+        }).when(forwarder).forwardBatch(anyList());
         try {
             var prefix = List.of(
                     service.prepareBatchEvent(event("tenant-a", slowUser, "a1"), "events", 0, 10),

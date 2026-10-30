@@ -370,9 +370,10 @@ class DetectEngineServiceTest {
             assertFalse(((List<?>) stats.get("ruleStats")).isEmpty(), "健康规则仍在引擎里");
 
             when(store.tenant()).thenReturn("tenant-b");
-            when(store.list("tenant-b")).thenReturn(List.of());
             Map<String, Object> other = service.stats();
             assertEquals(0, other.get("isolatedRules"), "隔离计数不得跨租户串数");
+            verify(store, org.mockito.Mockito.never()).list("tenant-b");
+            assertEquals(true, asMap(other.get("stateRecovery")).get("deferredUntilEvent"));
         } finally {
             service.stop();
         }
@@ -450,6 +451,7 @@ class DetectEngineServiceTest {
         when(stateStore.supportsCheckpointReplay()).thenReturn(false);
         DetectEngineService service = new DetectEngineService(store, new RecentAlertSink(10, null, null), stateStore, performanceMetrics, snapshotStore);
         ReflectionTestUtils.setField(state(service), "snapshotEveryEvents", 2L);
+        ReflectionTestUtils.setField(state(service), "snapshotMinIntervalMs", 0L);
         SecurityEvent event = event("tenant-a", "snapshot-1");
         try {
             service.snapshotAfterDurable(null, 1, 1L);
@@ -470,9 +472,11 @@ class DetectEngineServiceTest {
     }
 
     @Test
-    void kafkaCompletionChecksTheStateUnitFenceBeforeAndAfterDurableCommit() throws Exception {
+    void kafkaCompletionRequiresTheCurrentFenceInsideTheDurableBoundary() throws Exception {
         when(store.list("tenant-a")).thenReturn(List.of());
         AtomicInteger guardCalls = new AtomicInteger();
+        AtomicBoolean fenced = new AtomicBoolean();
+        List<String> order = new ArrayList<>();
         DetectionStateOwnership.Lease lease = new DetectionStateOwnership.Lease(
                 "socp-events", 4, 0, "node-a", 7L, Instant.now().plusSeconds(30));
         DetectionStateOwnership ownership = new DetectionStateOwnership() {
@@ -484,6 +488,8 @@ class DetectEngineServiceTest {
             @Override
             public void assertCurrent(Lease current) {
                 guardCalls.incrementAndGet();
+                order.add("guard");
+                if (fenced.get()) throw new StaleStateOwnerException("ownership revoked");
             }
 
             @Override
@@ -492,7 +498,11 @@ class DetectEngineServiceTest {
         };
         // The event-aware sink owns the in-transaction fence checks. Use the
         // actual forwarder so a Mockito no-op cannot bypass that boundary.
-        InMemoryDetectionStateStore durableState = new InMemoryDetectionStateStore();
+        InMemoryDetectionStateStore durableState = org.mockito.Mockito.spy(new InMemoryDetectionStateStore());
+        doAnswer(invocation -> {
+            order.add("complete");
+            return invocation.callRealMethod();
+        }).when(durableState).markCompletedBatch(org.mockito.ArgumentMatchers.anyList());
         AlertForwarder durableForwarder = new AlertForwarder(store, null, null, durableState);
         DetectEngineService service = new DetectEngineService(
                 store, new RecentAlertSink(10, durableForwarder, null),
@@ -501,8 +511,16 @@ class DetectEngineServiceTest {
             SecurityEvent input = event("tenant-a", "fenced-event");
             durableState.claim(input);
             service.ingestFromKafkaAndAwait(input, 4, 12L).get(3, TimeUnit.SECONDS);
-            assertTrue(guardCalls.get() >= 3,
-                    "ownership must be checked before the sink and inside the forwarder before durable completion");
+            assertTrue(guardCalls.get() >= 1);
+            assertTrue(order.indexOf("guard") < order.indexOf("complete"),
+                    "the transaction's owner fence must precede journal completion");
+            fenced.set(true);
+            SecurityEvent rejected = event("tenant-a", "fenced-retry");
+            durableState.claim(rejected);
+            org.junit.jupiter.api.Assertions.assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> service.ingestFromKafkaAndAwait(rejected, 4, 13L).get(3, TimeUnit.SECONDS));
+            assertEquals(com.socp.detect.web.persistence.store.DetectionEventClaim.PENDING, durableState.claim(rejected));
+            assertEquals(1, order.stream().filter("complete"::equals).count());
             assertEquals(com.socp.detect.web.persistence.store.DetectionEventClaim.COMPLETED,
                     durableState.claim(input));
         } finally {
@@ -612,6 +630,40 @@ class DetectEngineServiceTest {
         } finally {
             service.stop();
             TenantContext.clear();
+        }
+    }
+
+    @Test
+    void globalAssignmentRecoveryUsesTenantCheckpointsInsteadOfFullPayloadReplay() {
+        when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
+        when(stateStore.supportsCheckpointReplay()).thenReturn(true);
+        var checkpoint = new DetectionStateSnapshot("THRESHOLD", thresholdRuleVersion(), "tenant-a", 0,
+                8L, "{}".getBytes(java.nio.charset.StandardCharsets.UTF_8), Instant.now(), Map.of(2, 8L));
+        when(snapshotStore.latest("tenant-a", "THRESHOLD", 0)).thenReturn(Optional.of(checkpoint));
+        doAnswer(invocation -> {
+            assertTrue(TenantContext.isSystemScope());
+            java.util.function.Consumer<String> consumer = invocation.getArgument(2);
+            consumer.accept("tenant-a");
+            return true;
+        }).when(stateStore).replayRecoveryTenants(org.mockito.ArgumentMatchers.eq(Set.of(2)),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        var service = new DetectEngineService(store, new RecentAlertSink(10, null, null), stateStore,
+                performanceMetrics, snapshotStore);
+        try {
+            service.restoreForPartitions(Set.of(2));
+            assertEquals(DetectEngineService.RecoveryStatus.READY, service.recoveryStatus());
+            assertEquals(0, lifecycle(service).cachedTenantEngines());
+            verify(snapshotStore, org.mockito.Mockito.never()).latest(
+                    org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyString(),
+                    org.mockito.ArgumentMatchers.anyInt());
+            TenantContext.runWith("tenant-a", () -> lifecycle(service).engineFor("tenant-a", 0));
+            verify(stateStore).replayCompletedAfter(org.mockito.ArgumentMatchers.eq("tenant-a"),
+                    org.mockito.ArgumentMatchers.eq(checkpoint.snapshotTimestamp()), org.mockito.ArgumentMatchers.eq(Set.of(2)),
+                    org.mockito.ArgumentMatchers.eq(Map.of(2, 8L)), org.mockito.ArgumentMatchers.any());
+            verify(stateStore, org.mockito.Mockito.never()).replayRecentForPartitions(
+                    org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any());
+        } finally {
+            service.stop();
         }
     }
 

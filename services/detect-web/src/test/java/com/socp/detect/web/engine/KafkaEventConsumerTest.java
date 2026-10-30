@@ -74,6 +74,75 @@ class KafkaEventConsumerTest {
     @Mock
     private DetectionStateStore stateStore;
 
+    @Test
+    void preAdmissionIsBoundedAndNeverAcknowledgesOffsets() throws Exception {
+        given(stateStore.supportsBatchClaims()).willReturn(true);
+        List<Integer> sizes = new ArrayList<>();
+        given(stateStore.preclaimBatch(any())).willAnswer(call -> {
+            List<?> inputs = call.getArgument(0);
+            sizes.add(inputs.size());
+            return java.util.Collections.nCopies(inputs.size(), DetectionEventClaim.NEW);
+        });
+        var metrics = mock(com.socp.detect.web.metrics.DetectionPerformanceMetrics.class);
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore, metrics);
+        List<ConsumerRecord<String, String>> rows = new ArrayList<>();
+        for (int i = 0; i < 130; i++) rows.add(new ConsumerRecord<>("socp-events", 0, i, "key",
+                "{\"eventId\":\"pre-" + i + "\",\"tenantId\":\"default\"}"));
+        rows.add(new ConsumerRecord<>("socp-events", 0, 130, "bad", "{invalid"));
+        var records = new org.apache.kafka.clients.consumer.ConsumerRecords<>(
+                Map.of(new TopicPartition("socp-events", 0), rows));
+        Map<?, ?> receipts = ReflectionTestUtils.invokeMethod(consumer, "preclaim", records);
+        assertEquals(List.of(64, 64, 2), sizes);
+        assertEquals(130, receipts.size());
+        verify(metrics, times(2)).operationCompleted(
+                eq(com.socp.rule.engine.RuleProcessingObserver.Operation.JOURNAL_PRECLAIM),
+                eq(64), org.mockito.ArgumentMatchers.anyLong(), eq(true));
+        verify(metrics).operationCompleted(
+                eq(com.socp.rule.engine.RuleProcessingObserver.Operation.JOURNAL_PRECLAIM),
+                eq(2), org.mockito.ArgumentMatchers.anyLong(), eq(true));
+        assertEquals(0, completionsOf(consumer).size());
+        verifyNoInteractions(engine);
+    }
+
+    @Test
+    void failedPreclaimedAttemptRechecksTheJournalBeforeRetrying() throws Exception {
+        given(stateStore.supportsBatchClaims()).willReturn(true);
+        given(stateStore.preclaimBatch(any())).willReturn(List.of(DetectionEventClaim.NEW));
+        given(stateStore.claim(any(), anyString(), any(), any(), anyString())).willReturn(DetectionEventClaim.COMPLETED);
+        given(engine.ingestFromKafkaAndAwait(any(), anyString(), any(), any())).willReturn(
+                CompletableFuture.failedFuture(new CannotCreateTransactionException("commit outcome unavailable")));
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        configureFastRetries(consumer);
+        var record = new ConsumerRecord<>("socp-events", 0, 10L, "key",
+                "{\"eventId\":\"retry-preclaimed\",\"tenantId\":\"default\"}");
+        var partition = new TopicPartition("socp-events", 0);
+        var records = new org.apache.kafka.clients.consumer.ConsumerRecords<>(Map.of(partition, List.of(record)));
+        Map<?, ?> receipts = ReflectionTestUtils.invokeMethod(consumer, "preclaim", records);
+        PartitionRetryState retry = (PartitionRetryState) ReflectionTestUtils.getField(consumer, "retryState");
+        try {
+            ReflectionTestUtils.invokeMethod(consumer, "processWithRetry", record, 1L,
+                    retry.acquire(partition), receipts.values().iterator().next());
+            verify(engine, times(1)).ingestFromKafkaAndAwait(any(), anyString(), any(), any());
+            verify(stateStore, times(1)).claim(any(), anyString(), any(), any(), anyString());
+            assertEquals(1, completionsOf(consumer).size());
+        } finally { consumer.stop(); }
+    }
+
+    @Test
+    void failedPreAdmissionLeavesTheWholePollForTheExistingRetryPath() throws Exception {
+        given(stateStore.supportsBatchClaims()).willReturn(true);
+        given(stateStore.preclaimBatch(any())).willThrow(new CannotCreateTransactionException("database down"));
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        var record = new ConsumerRecord<>("socp-events", 0, 10L, "key",
+                "{\"eventId\":\"retry-poll\",\"tenantId\":\"default\"}");
+        var records = new org.apache.kafka.clients.consumer.ConsumerRecords<>(
+                Map.of(new TopicPartition("socp-events", 0), List.of(record)));
+        Map<?, ?> receipts = ReflectionTestUtils.invokeMethod(consumer, "preclaim", records);
+        assertTrue(receipts.isEmpty());
+        assertEquals(0, completionsOf(consumer).size());
+        verifyNoInteractions(engine);
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
     @Timeout(20)
@@ -832,9 +901,11 @@ class KafkaEventConsumerTest {
         Method drain = KafkaEventConsumer.class.getDeclaredMethod("drainDeferred", KafkaConsumer.class);
         drain.setAccessible(true);
         drain.invoke(consumer, kafka);
-        applyPauseState.invoke(consumer, kafka);
-
         assertTrue(completed.await(1, TimeUnit.SECONDS));
+        ThreadPoolExecutor lane = ReflectionTestUtils.invokeMethod(consumer, "lane", partition.partition());
+        lane.submit(() -> { }).get(1, TimeUnit.SECONDS);
+        drain.invoke(consumer, kafka);
+        applyPauseState.invoke(consumer, kafka);
         verify(kafka).resume(eq(java.util.Set.of(partition)));
         consumer.stop();
     }
@@ -930,6 +1001,8 @@ class KafkaEventConsumerTest {
         var record = new org.apache.kafka.clients.consumer.ConsumerRecord<>(
                 "events", 1, 2L, "key", "payload");
         assertEquals(256L + 3L + 7L, recordBytes.invoke(null, record));
+        record.headers().add("trace", new byte[]{1, 2, 3});
+        assertEquals(256L + 3L + 7L + 64L + 5L + 3L, recordBytes.invoke(null, record));
 
         Method eventBytes = KafkaEventConsumer.class.getDeclaredMethod(
                 "estimateEventBytes", SecurityEvent.class);
@@ -948,20 +1021,23 @@ class KafkaEventConsumerTest {
             if (nested.getSimpleName().equals("PendingWork")) pendingType = nested;
         }
         AtomicLong counter = new AtomicLong(9L);
-        var pendingConstructor = pendingType.getDeclaredConstructor(Runnable.class, long.class, AtomicLong.class);
+        AtomicLong totalBytes = new AtomicLong(9L);
+        AtomicLong totalRecords = new AtomicLong(6L);
+        var pendingConstructor = pendingType.getDeclaredConstructor(Runnable.class, long.class, long.class,
+                AtomicLong.class, AtomicLong.class, AtomicLong.class);
         pendingConstructor.setAccessible(true);
         Runnable delegate = () -> { };
-        Runnable pending = (Runnable) pendingConstructor.newInstance(delegate, 4L, counter);
+        Runnable pending = (Runnable) pendingConstructor.newInstance(delegate, 4L, 2L, counter, totalBytes, totalRecords);
         pending.run();
         assertEquals(5L, counter.get());
 
-        Runnable dropped = (Runnable) pendingConstructor.newInstance(delegate, 3L, counter);
+        Runnable dropped = (Runnable) pendingConstructor.newInstance(delegate, 3L, 3L, counter, totalBytes, totalRecords);
         Method releaseDropped = KafkaEventConsumer.class.getDeclaredMethod("releaseDropped", List.class);
         releaseDropped.setAccessible(true);
         releaseDropped.invoke(null, List.of(dropped));
         assertEquals(2L, counter.get());
 
-        Runnable deferred = (Runnable) pendingConstructor.newInstance(delegate, 2L, counter);
+        Runnable deferred = (Runnable) pendingConstructor.newInstance(delegate, 2L, 1L, counter, totalBytes, totalRecords);
         Method releaseDeferred = KafkaEventConsumer.class.getDeclaredMethod(
                 "releaseDeferred", ArrayDeque.class);
         releaseDeferred.setAccessible(true);
@@ -969,6 +1045,10 @@ class KafkaEventConsumerTest {
         queue.add(deferred);
         releaseDeferred.invoke(null, queue);
         assertEquals(0L, counter.get());
+        releaseDropped.invoke(null, List.of(pending, dropped, deferred));
+        assertEquals(0L, counter.get());
+        assertEquals(0L, totalBytes.get());
+        assertEquals(0L, totalRecords.get());
         releaseDeferred.invoke(null, new Object[]{null});
         releaseDropped.invoke(null, new Object[]{null});
     }

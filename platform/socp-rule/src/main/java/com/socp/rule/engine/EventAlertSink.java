@@ -15,6 +15,9 @@ import java.util.List;
  */
 public interface EventAlertSink extends AlertSink {
 
+    /** True only when publication holds the authoritative fence through its commit. */
+    default boolean ownsFencedTransaction() { return false; }
+
     /**
      * Publish the explicit calculation result. Existing sinks only need to
      * implement the event/list method; durable-aware sinks can override this

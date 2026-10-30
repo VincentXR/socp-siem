@@ -7,7 +7,7 @@ import com.socp.rule.partition.DetectionRoutingKey;
 import com.socp.rule.partition.DetectionDelivery;
 import com.socp.rule.rules.Rule;
 import com.socp.rule.state.StatefulRule;
-import com.socp.rule.state.RuleStateMutation;
+import com.socp.rule.state.StateMutation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -22,7 +22,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Single-worker stateful rule engine.
@@ -73,8 +72,7 @@ public final class RuleEngine implements AutoCloseable {
     private final Map<String, RoutingMismatchState> routingMismatches =
             new java.util.concurrent.ConcurrentHashMap<>();
     /** Serializes rule mutation, durable position callbacks, and snapshots. */
-    // Durable evaluation performs JDBC I/O; a monitor would pin Java 21 carriers.
-    private final ReentrantLock stateLock = new ReentrantLock();
+    private final java.util.concurrent.locks.ReentrantLock stateLock = new java.util.concurrent.locks.ReentrantLock();
     private static final int RULE_FAILURE_THRESHOLD = Math.max(1,
             Integer.getInteger("socp.rule.failure-threshold", 3));
     private static final long RULE_FUSE_COOLDOWN_NANOS = TimeUnit.SECONDS.toNanos(
@@ -82,6 +80,35 @@ public final class RuleEngine implements AutoCloseable {
 
     /** Immediate queue admission plus an optional durable completion signal. */
     public record Submission(boolean accepted, CompletableFuture<Void> completion) {
+    }
+
+    /**
+     * Failure barrier for at most 64 ordered submissions to one engine. A failed
+     * sub-batch cancels its unevaluated successors; an already committed prefix
+     * keeps its successful completion signals. Callers must settle every original
+     * submission before retrying the failed suffix with a fresh token.
+     */
+    public static final class OrderedBatch {
+        private final AtomicReference<Throwable> failure = new AtomicReference<>();
+        private final AtomicReference<RuleEngine> engine = new AtomicReference<>();
+        private final java.util.concurrent.atomic.AtomicInteger submissions =
+                new java.util.concurrent.atomic.AtomicInteger();
+
+        public void fail(Throwable cause) {
+            failure.compareAndSet(null, java.util.Objects.requireNonNull(cause));
+        }
+
+        public Throwable failure() { return failure.get(); }
+
+        private boolean register(RuleEngine target) {
+            engine.compareAndSet(null, target);
+            if (engine.get() != target) {
+                fail(new IllegalArgumentException("ordered batch cannot span rule engines"));
+            } else if (submissions.incrementAndGet() > 64) {
+                fail(new IllegalArgumentException("ordered batch exceeds 64 events"));
+            }
+            return failure() == null;
+        }
     }
 
     /**
@@ -103,11 +130,11 @@ public final class RuleEngine implements AutoCloseable {
     private record WorkItem(SecurityEvent event, CompletableFuture<Void> completion,
                             boolean durable, Runnable onDurable, Runnable durableCommitGuard,
                             DetectionResult.InputPosition inputPosition, RuleExecutionScope scope,
-                            List<BatchEvent> batch) {
+                            OrderedBatch orderedBatch, List<BatchEvent> batch) {
         WorkItem(SecurityEvent event, CompletableFuture<Void> completion, boolean durable,
                  Runnable onDurable, Runnable guard, DetectionResult.InputPosition position,
-                 RuleExecutionScope scope) {
-            this(event, completion, durable, onDurable, guard, position, scope, List.of());
+                 RuleExecutionScope scope, OrderedBatch orderedBatch) {
+            this(event, completion, durable, onDurable, guard, position, scope, orderedBatch, List.of());
         }
         int weight() {
             return event == POISON_EVENT || event == IDLE_BARRIER_EVENT ? 0 : Math.max(1, batch.size());
@@ -209,24 +236,42 @@ public final class RuleEngine implements AutoCloseable {
         log.info("Detection rule state restored events={}", history.size());
     }
 
+    private boolean checkpointValid = true;
+    private static final int COMMIT_BATCH_SIZE = Math.max(1,
+            Math.min(64, Integer.getInteger("socp.rule.commit-batch-size", 32)));
+    private static final long COMMIT_BATCH_UNDO_BYTES = 4L * 1024 * 1024;
+
     private void loop() {
+        WorkItem carry = null;
         while (true) {
             try {
-                WorkItem item = queue.take();
-                queuedEvents.release(item.weight());
+                WorkItem item = carry == null ? queue.take() : carry;
+                if (carry == null) queuedEvents.release(item.weight());
+                carry = null;
                 if (item.event() == POISON_EVENT) break;
                 if (item.event() == IDLE_BARRIER_EVENT) {
                     if (item.completion() != null) item.completion().complete(null);
                     continue;
                 }
+                Throwable cancelled = orderedFailure(item);
+                if (cancelled != null) {
+                    notifyFailure(item.event(), cancelled);
+                    item.completion().completeExceptionally(cancelled);
+                    continue;
+                }
+                if (batchEligible(item)) {
+                    carry = processBatch(item);
+                    continue;
+                }
                 try {
                     if (item.batch().isEmpty()) process(item);
-                    else processBatch(item);
+                    else processAtomicBatch(item);
                     if (item.completion() != null) item.completion().complete(null);
                 } catch (Throwable ex) {
-                    notifyFailure(item.event(), ex);
+                    Throwable reported = failOrderedBatch(item, ex);
+                    notifyFailure(item.event(), reported);
                     if (item.completion() != null) {
-                        item.completion().completeExceptionally(ex);
+                        item.completion().completeExceptionally(reported);
                     } else {
                         log.error("Alert processing failed eventId={}: {}",
                                 item.event().id(), ex.getMessage(), ex);
@@ -239,31 +284,154 @@ public final class RuleEngine implements AutoCloseable {
         }
     }
 
-    private void process(WorkItem item) {
+    private boolean batchEligible(WorkItem item) {
+        return item.event() != POISON_EVENT && item.event() != IDLE_BARRIER_EVENT && item.durable()
+                && item.batch().isEmpty()
+                && (commitGuard(item) == null || commitGuard(item) instanceof OrderedCommitGuard)
+                && sinks.size() == 1 && sinks.getFirst() instanceof BatchEventAlertSink sink
+                && sink.supportsAtomicBatch();
+    }
+
+    private record Prepared(WorkItem item, DetectionResult result,
+                            Map<StatefulRule, StateMutation> undo) { }
+
+    /**
+     * Prepare in event order, then acknowledge only after one atomic sink commit.
+     * Stop at the first alert candidate: only that final event reserves suppression
+     * keys, so batching cannot change within-window suppression decisions.
+     */
+    private WorkItem processBatch(WorkItem first) {
+        List<Prepared> prepared = new ArrayList<>();
+        WorkItem current = first;
+        WorkItem carry = null;
+        Map<StatefulRule, StateMutation> currentUndo = null;
+        Suppressor.Batch suppression = null;
+        Throwable failure = null;
+        boolean committed = false;
+        long undoBytes = 0;
         stateLock.lock();
+        long preparationStarted = System.nanoTime();
+        boolean preparationRecorded = false;
         try {
-            SecurityEvent event = item.event();
-            List<Rule> selected = rulesFor(event);
-            try (StateMutations mutations = beginMutations(item.durable() ? selected : List.of())) {
-                Map<StatefulRule, RuleStateMutation> before = mutations.values();
-                try (RuleExecutionScope.Scope ignored = item.scope().open(event)) {
-                    processInScope(item, event, before, selected, null);
+            while (true) {
+                Throwable cancelled = orderedFailure(current);
+                if (cancelled != null) throw cancelled;
+                SecurityEvent event = current.event();
+                List<Rule> selected = rulesFor(event);
+                currentUndo = beginMutations(selected);
+                List<Alert> candidates;
+                DetectionResult result;
+                try (RuleExecutionScope.Scope ignored = current.scope().open(event)) {
+                    candidates = evaluateRules(event, currentUndo, selected);
+                    if (!candidates.isEmpty() && suppressor != null) suppression = suppressor.begin(candidates);
+                    List<Alert> emitted = suppression == null ? List.copyOf(candidates) : suppression.alerts();
+                    suppressedCount.addAndGet(Math.max(0, candidates.size() - emitted.size()));
+                    notifyEvaluationCompleted(event, emitted.size());
+                    result = new DetectionResult(event, current.inputPosition(), ruleVersions(selected),
+                            stateChanges(currentUndo, selected), candidates, emitted,
+                            suppressor == null ? DetectionResult.SuppressionDecision.none(candidates, emitted)
+                                    : DetectionResult.SuppressionDecision.window(candidates, emitted),
+                            DetectionDelivery.isRouted(event) ? DetectionDelivery.deliveryId(event) : event.scopedId());
                 }
-                // Position bookkeeping is deliberately inside the same
-                // critical section as state mutation. A checkpoint can
-                // therefore never capture rule bytes ahead of its watermark.
-                if (item.onDurable() != null) item.onDurable().run();
-                mutations.commit();
-            } catch (RuntimeException | Error failure) {
-                // Candidate alerts are not covered by the serialized state
-                // snapshot. Without this drain, an alert a rule emitted before
-                // it failed would be delivered against the next event.
-                discardPendingAlerts();
-                throw failure;
+                for (StateMutation mutation : currentUndo.values()) {
+                    undoBytes += mutation.retainedBytes();
+                    mutation.detach();
+                }
+                prepared.add(new Prepared(current, result, currentUndo));
+                currentUndo = null;
+                if (!candidates.isEmpty() || prepared.size() >= COMMIT_BATCH_SIZE
+                        || undoBytes >= COMMIT_BATCH_UNDO_BYTES) break;
+                WorkItem next = queue.poll(1, java.util.concurrent.TimeUnit.MILLISECONDS);
+                if (next == null) break;
+                queuedEvents.release(next.weight());
+                if (!batchEligible(next) || orderedFailure(next) != null) { carry = next; break; }
+                current = next;
             }
+            // Admission can fail while the worker prepares an earlier prefix.
+            // Reject that still-uncommitted prefix before any durable sink call.
+            for (Prepared item : prepared) {
+                Throwable cancelled = orderedFailure(item.item());
+                if (cancelled != null) throw cancelled;
+            }
+            RuleProcessingObserver.notifyOperation(observer, RuleProcessingObserver.Operation.BATCH_PREPARATION,
+                    prepared.size(), System.nanoTime() - preparationStarted, true);
+            preparationRecorded = true;
+            BatchEventAlertSink sink = (BatchEventAlertSink) sinks.getFirst();
+            WorkItem finalItem = prepared.getLast().item();
+            // Only the final event can emit candidates. Preserve its tenant and
+            // trace through the transaction and any resulting alert outbox row.
+            try (RuleExecutionScope.Scope ignored = finalItem.scope().open(finalItem.event())) {
+                long commitStarted = System.nanoTime();
+                boolean acknowledged = false;
+                try {
+                    sink.publishBatch(prepared.stream().map(item ->
+                            new BatchEventAlertSink.Entry(item.result(), commitGuard(item.item()),
+                                    item.item().scope())).toList());
+                    acknowledged = true;
+                } finally {
+                    RuleProcessingObserver.notifyOperation(observer, RuleProcessingObserver.Operation.BATCH_COMMIT,
+                            prepared.size(), System.nanoTime() - commitStarted, acknowledged);
+                }
+            }
+            committed = true;
+            if (suppression != null) suppression.commit();
+            // Advance every position before completing any future: a checkpoint
+            // triggered by the first completion must include the entire batch.
+            for (Prepared item : prepared) {
+                try (RuleExecutionScope.Scope ignored = item.item().scope().open(item.result().event())) {
+                    if (item.item().onDurable() != null) item.item().onDurable().run();
+                    alertCount.addAndGet(item.result().alerts().size());
+                    notifyDurableSinksCompleted(item.result().event(), item.result().alerts().size());
+                }
+            }
+        } catch (Throwable caught) {
+            // Publish every affected barrier before completing even the first
+            // future: its caller may immediately begin settling/retrying a group.
+            for (Prepared item : prepared) failOrderedBatch(item.item(), caught);
+            failOrderedBatch(current, caught);
+            if (!preparationRecorded) {
+                RuleProcessingObserver.notifyOperation(observer, RuleProcessingObserver.Operation.BATCH_PREPARATION,
+                        prepared.size(), System.nanoTime() - preparationStarted, false);
+            }
+            failure = caught;
+            discardPendingAlerts();
+            if (committed) {
+                // Durable truth won. Keep committed state, but prevent an incomplete
+                // position callback from creating a checkpoint ahead of its vector.
+                checkpointValid = false;
+            } else {
+                if (currentUndo != null) {
+                    try { restoreMutableStates(currentUndo); }
+                    catch (RuntimeException rollbackFailure) { failure.addSuppressed(rollbackFailure); }
+                    currentUndo.values().forEach(StateMutation::close);
+                    currentUndo = null;
+                }
+                for (int i = prepared.size() - 1; i >= 0; i--) {
+                    try { restoreMutableStates(prepared.get(i).undo()); }
+                    catch (RuntimeException rollbackFailure) { failure.addSuppressed(rollbackFailure); }
+                }
+            }
+            if (caught instanceof InterruptedException) Thread.currentThread().interrupt();
         } finally {
+            if (currentUndo != null) currentUndo.values().forEach(StateMutation::close);
+            for (Prepared item : prepared) item.undo().values().forEach(StateMutation::close);
+            if (suppression != null) suppression.close();
             stateLock.unlock();
         }
+        for (Prepared item : prepared) {
+            if (failure == null) item.item().completion().complete(null);
+            else {
+                Throwable reported = failOrderedBatch(item.item(), failure);
+                notifyFailure(item.item().event(), reported);
+                item.item().completion().completeExceptionally(reported);
+            }
+        }
+        if (failure != null && (prepared.isEmpty() || prepared.getLast().item() != current)) {
+            Throwable reported = failOrderedBatch(current, failure);
+            notifyFailure(current.event(), reported);
+            current.completion().completeExceptionally(reported);
+        }
+        return carry;
     }
 
     public boolean supportsAtomicBatch() {
@@ -271,72 +439,147 @@ public final class RuleEngine implements AutoCloseable {
                 && sink.supportsAtomicBatch();
     }
 
-    /** The engine owns all state until the atomic result transaction is acknowledged. */
-    private void processBatch(WorkItem batchItem) {
-        stateLock.lock();
-        Map<StatefulRule, byte[]> before = new java.util.LinkedHashMap<>();
+    /** Explicit batches retain one atomic boundary, including all suppression decisions. */
+    private void processAtomicBatch(WorkItem batchItem) {
+        List<Prepared> prepared = new ArrayList<>(batchItem.batch().size());
+        Map<StatefulRule, StateMutation> currentUndo = null;
         boolean committed = false;
+        long undoBytes = 0;
+        stateLock.lock();
+        long preparationStarted = System.nanoTime();
+        boolean preparationRecorded = false;
         try {
             if (!supportsAtomicBatch()) throw new IllegalStateException("atomic batch sink unavailable");
-            // One complete recovery boundary per bounded batch, never one per event.
-            // Per-event entity undo still produces the original audit envelope.
-            for (Rule rule : rulesRef.get()) {
-                if (rule instanceof StatefulRule stateful) before.put(stateful, stateful.snapshotState());
-            }
-            List<DetectionResult> results = new ArrayList<>(batchItem.batch().size());
             for (BatchEvent input : batchItem.batch()) {
                 WorkItem item = new WorkItem(input.event(), null, true, null,
-                        batchItem.durableCommitGuard(), input.position(), input.scope());
+                        batchItem.durableCommitGuard(), input.position(), input.scope(), null);
                 List<Rule> selected = rulesFor(input.event());
-                try (StateMutations mutations = beginMutations(selected);
-                     RuleExecutionScope.Scope ignored = input.scope().open(input.event())) {
-                    processInScope(item, input.event(), mutations.values(), selected, results);
-                    mutations.commit();
+                currentUndo = beginMutations(selected);
+                DetectionResult result;
+                try (RuleExecutionScope.Scope ignored = input.scope().open(input.event())) {
+                    List<Alert> candidates = evaluateRules(input.event(), currentUndo, selected);
+                    result = new DetectionResult(input.event(), input.position(), ruleVersions(selected),
+                            stateChanges(currentUndo, selected), candidates, candidates,
+                            DetectionResult.SuppressionDecision.none(candidates, candidates),
+                            DetectionDelivery.isRouted(input.event())
+                                    ? DetectionDelivery.deliveryId(input.event()) : input.event().scopedId());
+                }
+                for (StateMutation mutation : currentUndo.values()) {
+                    undoBytes += mutation.retainedBytes();
+                    mutation.detach();
+                }
+                prepared.add(new Prepared(item, result, currentUndo));
+                currentUndo = null;
+                if (undoBytes > COMMIT_BATCH_UNDO_BYTES) {
+                    throw new IllegalStateException("atomic batch exceeds the retained undo budget");
                 }
             }
-            // Evaluate first, then reserve only the suppression keys this batch actually touches.
-            // Taking their stripes in one fixed order avoids cross-engine deadlocks without
-            // holding process-wide locks through snapshots or unrelated database transactions.
-            List<Alert> candidates = results.stream().flatMap(result -> result.candidates().stream()).toList();
+            // Reserve all touched stripes in a fixed order only after evaluation.
+            // A failed durable transaction must not consume a suppression window.
+            List<Alert> candidates = prepared.stream().flatMap(item -> item.result().candidates().stream()).toList();
             try (Suppressor.Transaction suppression = suppressor == null
                     ? null : suppressor.beginTransaction(candidates)) {
-                for (int index = 0; index < results.size(); index++) {
-                    DetectionResult evaluated = results.get(index);
-                    try (RuleExecutionScope.Scope ignored = batchItem.batch().get(index).scope().open(evaluated.event());
+                List<BatchEventAlertSink.Entry> entries = new ArrayList<>(prepared.size());
+                for (Prepared item : prepared) {
+                    DetectionResult evaluated = item.result();
+                    try (RuleExecutionScope.Scope ignored = item.item().scope().open(evaluated.event());
                          Suppressor.Batch reservation = suppressor == null ? null : suppressor.begin(evaluated.candidates())) {
                         List<Alert> emitted = reservation == null ? evaluated.candidates() : reservation.alerts();
                         suppressedCount.addAndGet(Math.max(0, evaluated.candidates().size() - emitted.size()));
                         notifyEvaluationCompleted(evaluated.event(), emitted.size());
-                        results.set(index, new DetectionResult(evaluated.event(), evaluated.inputPosition(),
+                        DetectionResult result = new DetectionResult(evaluated.event(), evaluated.inputPosition(),
                                 evaluated.ruleVersions(), evaluated.stateChanges(), evaluated.candidates(), emitted,
                                 reservation == null ? DetectionResult.SuppressionDecision.none(evaluated.candidates(), emitted)
                                         : DetectionResult.SuppressionDecision.window(evaluated.candidates(), emitted),
-                                evaluated.idempotencyKey()));
+                                evaluated.idempotencyKey());
+                        entries.add(new BatchEventAlertSink.Entry(result,
+                                entries.isEmpty() ? commitGuard(batchItem) : null, item.item().scope()));
                         if (reservation != null) reservation.commit();
                     }
                 }
+                RuleProcessingObserver.notifyOperation(observer, RuleProcessingObserver.Operation.BATCH_PREPARATION,
+                        prepared.size(), System.nanoTime() - preparationStarted, true);
+                preparationRecorded = true;
                 try (RuleExecutionScope.Scope ignored = batchItem.scope().open(batchItem.event())) {
-                    ((BatchEventAlertSink) sinks.getFirst()).publishBatch(List.copyOf(results),
-                            batchItem.batch().stream().map(BatchEvent::scope).toList(), commitGuard(batchItem));
+                    long commitStarted = System.nanoTime();
+                    boolean acknowledged = false;
+                    try {
+                        ((BatchEventAlertSink) sinks.getFirst()).publishBatch(List.copyOf(entries));
+                        acknowledged = true;
+                    } finally {
+                        RuleProcessingObserver.notifyOperation(observer, RuleProcessingObserver.Operation.BATCH_COMMIT,
+                                entries.size(), System.nanoTime() - commitStarted, acknowledged);
+                    }
                 }
                 committed = true;
                 if (suppression != null) suppression.commit();
-                for (DetectionResult result : results) {
-                    alertCount.addAndGet(result.alerts().size());
-                    notifyDurableSinksCompleted(result.event(), result.alerts().size());
+                for (BatchEventAlertSink.Entry entry : entries) {
+                    try (RuleExecutionScope.Scope ignored = entry.scope().open(entry.result().event())) {
+                        alertCount.addAndGet(entry.result().alerts().size());
+                        notifyDurableSinksCompleted(entry.result().event(), entry.result().alerts().size());
+                    }
                 }
-                // Every position is installed together, before any checkpoint can see the batch state.
                 if (batchItem.onDurable() != null) batchItem.onDurable().run();
             }
         } catch (RuntimeException | Error failure) {
-            if (!committed) {
-                before.forEach((rule, bytes) -> {
-                    try { rule.restoreState(bytes); }
-                    catch (RuntimeException rollback) { failure.addSuppressed(rollback); }
-                });
+            if (!preparationRecorded) {
+                RuleProcessingObserver.notifyOperation(observer, RuleProcessingObserver.Operation.BATCH_PREPARATION,
+                        prepared.size(), System.nanoTime() - preparationStarted, false);
             }
             discardPendingAlerts();
+            if (committed) {
+                checkpointValid = false;
+            } else {
+                if (currentUndo != null) {
+                    try { restoreMutableStates(currentUndo); }
+                    catch (RuntimeException rollback) { failure.addSuppressed(rollback); }
+                }
+                for (int i = prepared.size() - 1; i >= 0; i--) {
+                    try { restoreMutableStates(prepared.get(i).undo()); }
+                    catch (RuntimeException rollback) { failure.addSuppressed(rollback); }
+                }
+            }
             throw failure;
+        } finally {
+            if (currentUndo != null) currentUndo.values().forEach(StateMutation::close);
+            for (Prepared item : prepared) item.undo().values().forEach(StateMutation::close);
+            stateLock.unlock();
+        }
+    }
+
+    private void process(WorkItem item) {
+        stateLock.lock();
+        try {
+            SecurityEvent event = item.event();
+            List<Rule> selected = rulesFor(event);
+            Map<StatefulRule, StateMutation> before = item.durable()
+                    ? beginMutations(selected) : Map.of();
+            try {
+                try (RuleExecutionScope.Scope ignored = item.scope().open(event)) {
+                    processInScope(item, event, before, selected);
+                }
+                // Position bookkeeping is deliberately inside the same
+                // critical section as state mutation. A checkpoint can
+                // therefore never capture rule bytes ahead of its watermark.
+                if (item.onDurable() != null) item.onDurable().run();
+            } catch (RuntimeException | Error failure) {
+                // Candidate alerts are not covered by the serialized state
+                // snapshot. Without this drain, an alert a rule emitted before
+                // it failed would be delivered against the next event.
+                discardPendingAlerts();
+                if (item.durable() && !before.isEmpty()) {
+                    try {
+                        restoreMutableStates(before);
+                    } catch (RuntimeException rollbackFailure) {
+                        failure.addSuppressed(rollbackFailure);
+                        log.error("Unable to roll back detection state eventId={}: {}",
+                                event.id(), rollbackFailure.getMessage(), rollbackFailure);
+                    }
+                }
+                throw failure;
+            } finally {
+                before.values().forEach(StateMutation::close);
+            }
         } finally {
             stateLock.unlock();
         }
@@ -355,29 +598,9 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     private void processInScope(WorkItem item, SecurityEvent event,
-                                Map<StatefulRule, RuleStateMutation> before,
-                                List<Rule> rules, List<DetectionResult> buffered) {
-        eventCount.incrementAndGet();
-        if (!DetectionDelivery.isRouted(event)) observeRoutingDimensions(event);
-        for (Rule rule : rules) {
-            if (ruleCircuitOpen(rule)) {
-                log.warn("Skipping isolated detection rule ruleId={} eventId={}", rule.id(), event.id());
-                continue;
-            }
-            acceptRule(rule, event, before);
-        }
-
-        List<Alert> candidates = new ArrayList<>();
-        for (Rule rule : rules) candidates.addAll(rule.drain());
-        if (buffered != null) {
-            // Capture each event's audit diff before the next event mutates rule state.
-            // Suppression is resolved once all candidate keys are known to the batch.
-            buffered.add(new DetectionResult(event, item.inputPosition(), ruleVersions(rules),
-                    stateChanges(before, rules), candidates, candidates,
-                    DetectionResult.SuppressionDecision.none(candidates, candidates),
-                    DetectionDelivery.isRouted(event) ? DetectionDelivery.deliveryId(event) : event.scopedId()));
-            return;
-        }
+                                Map<StatefulRule, StateMutation> before,
+                                List<Rule> rules) {
+        List<Alert> candidates = evaluateRules(event, before, rules);
         try (Suppressor.Batch batch = suppressor == null ? null : suppressor.begin(candidates)) {
             List<Alert> emitted = batch == null ? List.copyOf(candidates) : batch.alerts();
             suppressedCount.addAndGet(Math.max(0, candidates.size() - emitted.size()));
@@ -396,7 +619,12 @@ public final class RuleEngine implements AutoCloseable {
                             ? DetectionDelivery.deliveryId(event) : event.scopedId());
             boolean delivered = true;
             boolean eventAwareBoundary = false;
-            runCommitGuard(item);
+            // Atomic sinks check and hold the database fence themselves.
+            // Legacy sinks still need the surrounding compatibility guards.
+            boolean atomicSinks = !sinks.isEmpty() && sinks.stream().allMatch(
+                    sink -> sink instanceof EventAlertSink eventSink && eventSink.ownsFencedTransaction());
+            requireOrderedBatchActive(item);
+            if (!atomicSinks) runCommitGuard(item);
             for (AlertSink sink : sinks) {
                 try {
                     if (sink instanceof EventAlertSink eventSink) {
@@ -425,13 +653,42 @@ public final class RuleEngine implements AutoCloseable {
         }
     }
 
-    /** Isolate permanent rule errors while retaining whole-event rollback on sink failure. */
-    private void acceptRule(Rule rule, SecurityEvent event,
-                            Map<StatefulRule, RuleStateMutation> durableBefore) {
-        RuleStateMutation mutation = rule instanceof StatefulRule stateful
-                ? durableBefore.get(stateful) : null;
-        boolean owned = mutation == null && rule instanceof StatefulRule;
-        if (owned) mutation = ((StatefulRule) rule).beginMutation();
+    private List<Alert> evaluateRules(SecurityEvent event, Map<StatefulRule, StateMutation> before,
+                                     List<Rule> rules) {
+        eventCount.incrementAndGet();
+        if (!DetectionDelivery.isRouted(event)) observeRoutingDimensions(event);
+        for (Rule rule : rules) {
+            if (ruleCircuitOpen(rule)) {
+                log.warn("Skipping isolated detection rule ruleId={} eventId={}", rule.id(), event.id());
+                continue;
+            }
+            acceptRule(rule, event, before);
+        }
+
+        List<Alert> candidates = new ArrayList<>();
+        for (Rule rule : rules) candidates.addAll(rule.drain());
+        return candidates;
+    }
+
+    /**
+     * Evaluate one rule with its own rollback boundary. A permanently bad
+     * rule must not prevent healthy rules from producing a durable result for
+     * the same event; transient failures still escape to the caller so the
+     * event remains retryable.
+     *
+     * @param durableBefore event-local undo boundaries shared with whole-event
+     *        rollback. Non-durable calls create a boundary for this rule only.
+     */
+    private void acceptRule(Rule rule, SecurityEvent event, Map<StatefulRule, StateMutation> durableBefore) {
+        StateMutation before = null;
+        boolean localMutation = false;
+        if (rule instanceof StatefulRule stateful) {
+            before = durableBefore.get(stateful);
+            if (before == null) {
+                before = stateful.beginMutation();
+                localMutation = true;
+            }
+        }
         try {
             boolean instrumented = observer != RuleProcessingObserver.NOOP;
             long started = instrumented ? System.nanoTime() : 0L;
@@ -440,11 +697,10 @@ public final class RuleEngine implements AutoCloseable {
                 notifyRuleEvaluated(rule.id(), System.nanoTime() - started);
             }
             ruleCircuits.computeIfAbsent(rule.id(), ignored -> new RuleCircuitState()).success();
-            if (owned) mutation.commit();
         } catch (RuntimeException failure) {
-            if (mutation != null) {
+            if (before != null && rule instanceof StatefulRule stateful) {
                 try {
-                    mutation.rollback();
+                    before.rollback();
                 } catch (RuntimeException rollbackFailure) {
                     failure.addSuppressed(rollbackFailure);
                     throw failure;
@@ -464,7 +720,7 @@ public final class RuleEngine implements AutoCloseable {
             }
             throw failure;
         } finally {
-            if (owned) mutation.close();
+            if (localMutation) before.close();
         }
     }
 
@@ -531,35 +787,16 @@ public final class RuleEngine implements AutoCloseable {
         return circuit != null && circuit.open();
     }
 
-    private StateMutations beginMutations(List<Rule> rules) {
-        StateMutations mutations = new StateMutations(new java.util.LinkedHashMap<>());
+    private Map<StatefulRule, StateMutation> beginMutations(List<Rule> rules) {
+        Map<StatefulRule, StateMutation> before = new java.util.LinkedHashMap<>();
         try {
             for (Rule rule : rules) {
-                if (rule instanceof StatefulRule stateful) {
-                    mutations.values().put(stateful, stateful.beginMutation());
-                }
+                if (rule instanceof StatefulRule stateful) before.put(stateful, stateful.beginMutation());
             }
-            return mutations;
+            return before;
         } catch (RuntimeException | Error failure) {
-            try { mutations.close(); } catch (RuntimeException rollback) { failure.addSuppressed(rollback); }
+            before.values().forEach(StateMutation::close);
             throw failure;
-        }
-    }
-
-    private record StateMutations(Map<StatefulRule, RuleStateMutation> values) implements AutoCloseable {
-        void commit() { values.values().forEach(RuleStateMutation::commit); }
-
-        @Override
-        public void close() {
-            RuntimeException failure = null;
-            for (RuleStateMutation mutation : values.values()) {
-                try { mutation.close(); }
-                catch (RuntimeException rollback) {
-                    if (failure == null) failure = rollback;
-                    else failure.addSuppressed(rollback);
-                }
-            }
-            if (failure != null) throw failure;
         }
     }
 
@@ -603,16 +840,26 @@ public final class RuleEngine implements AutoCloseable {
         return Map.copyOf(versions);
     }
 
-    private List<DetectionResult.StateChange> stateChanges(Map<StatefulRule, RuleStateMutation> before,
-                                                          List<Rule> rules) {
-        if (before.isEmpty()) return List.of();
+    private List<DetectionResult.StateChange> stateChanges(Map<StatefulRule, StateMutation> before,
+                                                            List<Rule> rules) {
+        if (before == null || before.isEmpty()) return List.of();
         List<DetectionResult.StateChange> changes = new ArrayList<>();
         for (Rule rule : rules) {
-            if (rule instanceof StatefulRule stateful) {
-                changes.add(before.get(stateful).change(rule.id()));
-            }
+            if (rule instanceof StatefulRule stateful) changes.add(before.get(stateful).change(rule.id()));
         }
         return List.copyOf(changes);
+    }
+
+    private void restoreMutableStates(Map<StatefulRule, StateMutation> before) {
+        RuntimeException failure = null;
+        for (StateMutation mutation : before.values()) {
+            try { mutation.rollback(); }
+            catch (RuntimeException rollbackFailure) {
+                if (failure == null) failure = rollbackFailure;
+                else failure.addSuppressed(rollbackFailure);
+            }
+        }
+        if (failure != null) throw failure;
     }
 
     private Runnable commitGuard(WorkItem item) {
@@ -687,6 +934,15 @@ public final class RuleEngine implements AutoCloseable {
         return submit(event, true, onDurable, durableCommitGuard, inputPosition).completion();
     }
 
+    /** Submit one member of a bounded, single-engine ordered admission group. */
+    public CompletableFuture<Void> ingestAndAwait(SecurityEvent event,
+                                                  DetectionResult.InputPosition inputPosition,
+                                                  Runnable onDurable,
+                                                  Runnable durableCommitGuard,
+                                                  OrderedBatch orderedBatch) {
+        return submit(event, true, onDurable, durableCommitGuard, inputPosition, orderedBatch).completion();
+    }
+
     public Submission submit(SecurityEvent event, boolean durable) {
         return submit(event, durable, null);
     }
@@ -706,13 +962,24 @@ public final class RuleEngine implements AutoCloseable {
     public Submission submit(SecurityEvent event, boolean durable, Runnable onDurable,
                              Runnable durableCommitGuard,
                              DetectionResult.InputPosition inputPosition) {
+        return submit(event, durable, onDurable, durableCommitGuard, inputPosition, null);
+    }
+
+    private Submission submit(SecurityEvent event, boolean durable, Runnable onDurable,
+                              Runnable durableCommitGuard,
+                              DetectionResult.InputPosition inputPosition, OrderedBatch orderedBatch) {
         CompletableFuture<Void> completion = new CompletableFuture<>();
+        if (orderedBatch != null && !orderedBatch.register(this)) {
+            completion.completeExceptionally(orderedBatch.failure());
+            return new Submission(false, completion);
+        }
         WorkItem item = new WorkItem(event, completion, durable, onDurable, durableCommitGuard,
                 inputPosition == null ? DetectionResult.InputPosition.unknown() : inputPosition,
-                executionScope.capture());
+                executionScope.capture(), orderedBatch);
         return enqueueItem(item);
     }
 
+    /** One explicitly atomic batch; ordered admission groups may commit smaller prefixes. */
     public CompletableFuture<Void> ingestBatchAndAwait(List<BatchEvent> events, Runnable onDurable,
                                                        Runnable ownershipGuard) {
         if (events == null || events.isEmpty() || events.size() > MAX_BATCH_EVENTS) {
@@ -730,7 +997,7 @@ public final class RuleEngine implements AutoCloseable {
         }
         CompletableFuture<Void> completion = new CompletableFuture<>();
         return enqueueItem(new WorkItem(first.event(), completion, true, onDurable, ownershipGuard,
-                first.position(), first.scope(), batch)).completion();
+                first.position(), first.scope(), null, batch)).completion();
     }
 
     private Submission enqueueItem(WorkItem item) {
@@ -739,7 +1006,8 @@ public final class RuleEngine implements AutoCloseable {
         lifecycle.readLock().lock();
         try {
             if (!running) {
-                completion.completeExceptionally(new IllegalStateException("detection engine is closed"));
+                completion.completeExceptionally(failOrderedBatch(item,
+                        new IllegalStateException("detection engine is closed")));
                 return new Submission(false, completion);
             }
             reserved = queuedEvents.tryAcquire(item.weight());
@@ -747,26 +1015,38 @@ public final class RuleEngine implements AutoCloseable {
                 try { reserved = queuedEvents.tryAcquire(item.weight(), 50, TimeUnit.MILLISECONDS); }
                 catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
             }
-            if (!reserved) {
-                dropCount.addAndGet(item.weight());
-                completion.completeExceptionally(new IllegalStateException("detection queue full"));
-                return new Submission(false, completion);
-            }
-            if (queue.offer(item)) return new Submission(true, completion);
-            try {
-                if (queue.offer(item, 50, TimeUnit.MILLISECONDS)) {
-                    return new Submission(true, completion);
+            if (reserved) {
+                if (queue.offer(item)) return new Submission(true, completion);
+                try {
+                    if (queue.offer(item, 50, TimeUnit.MILLISECONDS)) return new Submission(true, completion);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
             }
         } finally {
             lifecycle.readLock().unlock();
         }
         if (reserved) queuedEvents.release(item.weight());
         dropCount.addAndGet(item.weight());
-        completion.completeExceptionally(new IllegalStateException("detection queue full"));
+        completion.completeExceptionally(failOrderedBatch(item, new IllegalStateException("detection queue full")));
         return new Submission(false, completion);
+    }
+
+    private static Throwable orderedFailure(WorkItem item) {
+        return item.orderedBatch() == null ? null : item.orderedBatch().failure();
+    }
+
+    private static Throwable failOrderedBatch(WorkItem item, Throwable failure) {
+        if (item.orderedBatch() == null) return failure;
+        item.orderedBatch().fail(failure);
+        return item.orderedBatch().failure();
+    }
+
+    private static void requireOrderedBatchActive(WorkItem item) {
+        Throwable failure = orderedFailure(item);
+        if (failure instanceof Error error) throw error;
+        if (failure instanceof RuntimeException runtime) throw runtime;
+        if (failure != null) throw new java.util.concurrent.CompletionException(failure);
     }
 
     public double queueLoad() {
@@ -790,7 +1070,7 @@ public final class RuleEngine implements AutoCloseable {
         try {
             if (!running) return true;
             WorkItem item = new WorkItem(IDLE_BARRIER_EVENT, barrier, false, null, null,
-                    DetectionResult.InputPosition.unknown(), RuleExecutionScope.NOOP);
+                    DetectionResult.InputPosition.unknown(), RuleExecutionScope.NOOP, null);
             if (!queue.offer(item, budget, TimeUnit.MILLISECONDS)) {
                 log.warn("Detection engine is saturated; unable to schedule an idle barrier");
                 return false;
@@ -822,7 +1102,7 @@ public final class RuleEngine implements AutoCloseable {
             for (;;) {
                 try {
                     queue.put(new WorkItem(POISON_EVENT, null, false, null, null,
-                            DetectionResult.InputPosition.unknown(), RuleExecutionScope.NOOP));
+                            DetectionResult.InputPosition.unknown(), RuleExecutionScope.NOOP, null));
                     break;
                 } catch (InterruptedException interruption) {
                     // Closing without the marker can strand every accepted
@@ -864,28 +1144,22 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     public List<Map<String, Object>> ruleStats() {
-        // stats() may expire idle keys; it must not race an event's undo boundary.
-        stateLock.lock();
-        try {
-            return rulesRef.get().stream().map(rule -> {
-                Map<String, Object> stats = new java.util.LinkedHashMap<>(rule.stats());
-                RuleCircuitState circuit = ruleCircuits.get(rule.id());
-                if (circuit != null) stats.putAll(circuit.stats());
-                else {
-                    stats.put("ruleFailures", 0L);
-                    stats.put("ruleCircuit", "CLOSED");
-                }
-                RoutingDimension dimension = routingDimensions.get(rule.id());
-                if (dimension != null) {
-                    stats.put("routingField", dimension.declaredField());
-                    RoutingMismatchState mismatch = routingMismatches.get(rule.id());
-                    stats.put("routingMismatchWindows", mismatch == null ? 0L : mismatch.reports());
-                }
-                return stats;
-            }).toList();
-        } finally {
-            stateLock.unlock();
-        }
+        return rulesRef.get().stream().map(rule -> {
+            Map<String, Object> stats = new java.util.LinkedHashMap<>(rule.stats());
+            RuleCircuitState circuit = ruleCircuits.get(rule.id());
+            if (circuit != null) stats.putAll(circuit.stats());
+            else {
+                stats.put("ruleFailures", 0L);
+                stats.put("ruleCircuit", "CLOSED");
+            }
+            RoutingDimension dimension = routingDimensions.get(rule.id());
+            if (dimension != null) {
+                stats.put("routingField", dimension.declaredField());
+                RoutingMismatchState mismatch = routingMismatches.get(rule.id());
+                stats.put("routingMismatchWindows", mismatch == null ? 0L : mismatch.reports());
+            }
+            return stats;
+        }).toList();
     }
 
     private static final class RuleCircuitState {
@@ -944,6 +1218,7 @@ public final class RuleEngine implements AutoCloseable {
     public <T> T captureStateSnapshot(java.util.function.Function<Map<String, RuleState>, T> capture) {
         stateLock.lock();
         try {
+            if (!checkpointValid) throw new IllegalStateException("checkpoint requires state recovery after commit callback failure");
             Map<String, RuleState> out = new java.util.LinkedHashMap<>();
             for (Rule rule : rulesRef.get()) {
                 if (!(rule instanceof StatefulRule stateful)) continue;
@@ -968,6 +1243,16 @@ public final class RuleEngine implements AutoCloseable {
         if (states == null || states.isEmpty()) return List.of();
         stateLock.lock();
         try {
+            // Validate the complete generation before applying any rule. A
+            // version mismatch must not leave earlier rules partially restored
+            // when recovery falls back to replaying the full durable window.
+            for (Rule rule : rulesRef.get()) {
+                if (!(rule instanceof StatefulRule stateful)) continue;
+                RuleState snapshot = states.get(rule.id());
+                if (snapshot == null || !stateCompatibilityVersion(stateful).equals(snapshot.version())) {
+                    return List.of();
+                }
+            }
             Map<StatefulRule, byte[]> before = new java.util.LinkedHashMap<>();
             for (Rule rule : rulesRef.get()) {
                 if (rule instanceof StatefulRule stateful) {

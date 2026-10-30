@@ -537,6 +537,19 @@ class RuleEngineTest {
     }
 
     @Test
+    void incompatibleGenerationDoesNotPartiallyRestoreEarlierRules() {
+        TestStatefulRule first = new TestStatefulRule("first", "old", false);
+        TestStatefulRule second = new TestStatefulRule("second", "old", false);
+        try (RuleEngine engine = new RuleEngine(List.of(first, second), List.of())) {
+            assertTrue(engine.restoreStates(Map.of(
+                    "first", new RuleEngine.RuleState("first", "v1", bytes("new")),
+                    "second", new RuleEngine.RuleState("second", "obsolete", bytes("new")))).isEmpty());
+            assertEquals("old", first.state);
+            assertEquals("old", second.state);
+        }
+    }
+
+    @Test
     void explicitStateCompatibilityVersionControlsSnapshotRestore() {
         TestStatefulRule rule = new TestStatefulRule("versioned", "old", false);
         try (RuleEngine engine = new RuleEngine(List.of(rule), List.of(), null, null,

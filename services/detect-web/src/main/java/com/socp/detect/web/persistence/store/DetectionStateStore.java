@@ -21,13 +21,20 @@ import java.util.function.Consumer;
  */
 public interface DetectionStateStore {
 
-    default List<DetectionEventClaim> claimBatch(List<DetectionEventInput> inputs) {
+    record Input(SecurityEvent event, String topic, Integer partition, Long offset, String routingKey) { }
+
+    default boolean supportsBatchClaims() { return false; }
+
+    /** Bounded durable admission only; evaluation and offset acknowledgement remain ordered. */
+    default List<DetectionEventClaim> preclaimBatch(List<Input> inputs) {
         return inputs.stream().map(input -> claim(input.event(), input.topic(), input.partition(),
                 input.offset(), input.routingKey())).toList();
     }
 
-    default void markCompletedBatch(List<DetectionResult> results) {
-        results.forEach(this::markCompleted);
+    /** Atomic evaluation batches require a single tenant and distinct delivery identities. */
+    default List<DetectionEventClaim> claimBatch(List<DetectionEventInput> inputs) {
+        return inputs.stream().map(input -> claim(input.event(), input.topic(), input.partition(),
+                input.offset(), input.routingKey())).toList();
     }
 
     /** Claim an event, retaining the distinction between replayable and terminal rows. */
@@ -45,6 +52,11 @@ public interface DetectionStateStore {
     default DetectionEventClaim claim(SecurityEvent event, String deliveryTopic,
                                       Integer partition, Long offset, String routingKey) {
         return claim(event, partition, offset, routingKey);
+    }
+
+    /** Called inside the sink transaction, after all alert outbox writes. */
+    default void markCompletedBatch(List<DetectionResult> results) {
+        results.forEach(this::markCompleted);
     }
 
     /** Mark all durable effects for an event as committed. */
@@ -167,6 +179,11 @@ public interface DetectionStateStore {
                     .toList();
             if (!tenantEvents.isEmpty()) batchConsumer.accept(tenantEvents);
         });
+    }
+
+    /** Enumerate journal tenants without decoding event payloads; false uses legacy replay. */
+    default boolean replayRecoveryTenants(Set<Integer> partitions, Duration window, Consumer<String> consumer) {
+        return false;
     }
 
     /** Human-readable configured replay window for health/operations output. */

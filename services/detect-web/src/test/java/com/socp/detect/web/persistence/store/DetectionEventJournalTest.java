@@ -135,6 +135,18 @@ class DetectionEventJournalTest {
     }
 
     @Test
+    void repeatedFinalizationRetainsTheOriginalCommitTimestampWithoutAnotherWrite() {
+        DetectionEventEntity row = row("event-99", "tenant-a", "{}");
+        row.setStatus(DetectionEventStatus.COMPLETED.name());
+        row.setCompletedAt(Instant.parse("2026-01-01T00:00:00Z"));
+        when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-99"))
+                .thenReturn(Optional.of(row));
+        journal.markCompleted("tenant-a", "event-99");
+        assertThat(row.getCompletedAt()).isEqualTo(Instant.parse("2026-01-01T00:00:00Z"));
+        verify(repository, never()).saveAndFlush(any());
+    }
+
+    @Test
     void marksCompletedAndDeadLetteredWithoutOverwritingTerminalRows() {
         DetectionEventEntity row = row("event-4", "tenant-a", "{}");
         when(repository.findByTenantIdAndDeliveryId("tenant-a", "event-4"))
@@ -374,10 +386,10 @@ class DetectionEventJournalTest {
         before.setStatus(DetectionEventStatus.COMPLETED.name());
         included.setStatus(DetectionEventStatus.COMPLETED.name());
         otherPartition.setStatus(DetectionEventStatus.COMPLETED.name());
-        when(repository.findByTenantStatusTopicPartitionsOrderByKafkaPosition(
-                eq("tenant-a"), eq(DetectionEventStatus.COMPLETED.name()), eq(INPUT_TOPIC),
-                eq(Set.of(4, 5)), any(Pageable.class)))
-                .thenReturn(List.of(before, included, otherPartition));
+        when(repository.partitionTail(eq("tenant-a"), eq(DetectionEventStatus.COMPLETED.name()),
+                eq(INPUT_TOPIC), eq(4), eq(8L), any(Pageable.class))).thenReturn(List.of(included));
+        when(repository.partitionTail(eq("tenant-a"), eq(DetectionEventStatus.COMPLETED.name()),
+                eq(INPUT_TOPIC), eq(5), eq(20L), any(Pageable.class))).thenReturn(List.of());
 
         List<SecurityEvent> replayed = new java.util.ArrayList<>();
         journal.replayCompletedAfter("tenant-a", Instant.now().plusSeconds(3600), Set.of(4, 5),

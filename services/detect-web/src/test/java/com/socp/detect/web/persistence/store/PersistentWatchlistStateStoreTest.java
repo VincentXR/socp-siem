@@ -79,6 +79,29 @@ class PersistentWatchlistStateStoreTest {
     }
 
     @Test
+    void cachedReadsDoNotOpenTransactionsThroughTheSpringProxy() {
+        var repo = mock(WatchlistRepository.class);
+        when(repo.findByTenantIdAndListName("tenant-a", "blocked_ips")).thenReturn(java.util.Optional.empty());
+        var tx = mock(org.springframework.transaction.PlatformTransactionManager.class);
+        var target = new PersistentWatchlistStateStore(repo, new ObjectMapper(), jdbc, tx);
+        ReflectionTestUtils.setField(target, "refreshMs", 60_000L);
+        var interceptor = new org.springframework.transaction.interceptor.TransactionInterceptor();
+        interceptor.setTransactionManager(tx);
+        interceptor.setTransactionAttributeSource(new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource());
+        var factory = new org.springframework.aop.framework.ProxyFactory(target);
+        factory.setProxyTargetClass(true);
+        factory.addAdvice(interceptor);
+        var proxy = (PersistentWatchlistStateStore) factory.getProxy();
+        proxy.find("tenant-a", "blocked_ips");
+        verify(tx, org.mockito.Mockito.times(1)).getTransaction(
+                org.mockito.ArgumentMatchers.any(org.springframework.transaction.TransactionDefinition.class));
+        org.mockito.Mockito.clearInvocations(tx);
+        for (int i = 0; i < 20; i++) proxy.find("tenant-a", "blocked_ips");
+        verify(repo, org.mockito.Mockito.times(1)).findByTenantIdAndListName("tenant-a", "blocked_ips");
+        org.mockito.Mockito.verifyNoInteractions(tx);
+    }
+
+    @Test
     void savedValuesAndTombstonesAreSharedAcrossStoreInstances() {
         PersistentWatchlistStateStore first = new PersistentWatchlistStateStore(repository, new ObjectMapper(), jdbc, transactions);
         PersistentWatchlistStateStore second = new PersistentWatchlistStateStore(repository, new ObjectMapper(), jdbc, transactions);

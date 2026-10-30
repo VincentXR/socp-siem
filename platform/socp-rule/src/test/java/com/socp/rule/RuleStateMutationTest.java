@@ -1,120 +1,97 @@
 package com.socp.rule;
 
-import com.socp.rule.engine.DetectionResult;
 import com.socp.rule.state.RuleStateLimits;
 import com.socp.rule.state.RuleStateMap;
 import com.socp.rule.state.StateSnapshotCodec;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 class RuleStateMutationTest {
+    private static Map<String, Object> decode(Object value) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        ((Map<?, ?>) value).forEach((key, item) -> result.put(String.valueOf(key), item));
+        return result;
+    }
+
     @Test
-    void touchesOneEntityAtHighCardinalityAndRollsBackNestedCollections() {
-        RuleStateMap<List<String>> state = new RuleStateMap<>(new RuleStateLimits(5000, Duration.ofMinutes(5)));
-        for (int i = 0; i < 5000; i++) state.get("key-" + i, ArrayList::new).add("before");
-        byte[] checkpoint = state.snapshot(List::copyOf);
-        AtomicInteger copies = new AtomicInteger();
+    void undoAndAuditOnlyEncodeTouchedKeysRegardlessOfTotalCardinality() {
+        RuleStateMap<Map<String, Object>> state = new RuleStateMap<>();
+        for (int i = 0; i < 10_000; i++) state.get("key-" + i, () -> new LinkedHashMap<>(Map.of("count", 1)));
+        byte[] before = state.snapshot(value -> value);
         AtomicInteger encodes = new AtomicInteger();
-        try (var mutation = state.beginMutation(value -> {
-            copies.incrementAndGet();
-            return new ArrayList<>(value);
-        }, value -> { encodes.incrementAndGet(); return List.copyOf(value); })) {
-            state.get("key-17", ArrayList::new).add("after");
-            state.invalidateSnapshot("key-17");
-            assertSame(state.get("key-17", ArrayList::new), state.get("key-17", ArrayList::new));
-            var change = mutation.change("test");
-            assertEquals("entity-delta-v1:sha256:" + DetectionResult.digest(
-                    StateSnapshotCodec.write(Map.of("key-17", List.of("before")))), change.beforeDigest());
+        try (var mutation = state.beginMutation(value -> { encodes.incrementAndGet(); return value; },
+                RuleStateMutationTest::decode)) {
+            state.get("key-42", LinkedHashMap::new).put("count", 2);
+            state.invalidateSnapshot("key-42");
+            state.get("new", LinkedHashMap::new).put("count", 1);
+            var change = mutation.change("rule");
             assertTrue(change.changed());
-            assertEquals(1, copies.get());
-            assertEquals(2, encodes.get());
-        }
-        assertArrayEquals(checkpoint, state.snapshot(List::copyOf));
-        try (var mutation = state.beginMutation(ArrayList::new, List::copyOf)) {
-            assertFalse(mutation.change("test").changed());
-            state.get("key-17", ArrayList::new).add("committed");
-            state.invalidateSnapshot("key-17");
-            mutation.commit();
-        }
-        assertEquals(List.of("before", "committed"), state.get("key-17", ArrayList::new));
-    }
-
-    @Test
-    void rollbackRestoresCapacityEvictionsAndKeepsSnapshotCacheBounded() {
-        RuleStateMap<List<String>> state = new RuleStateMap<>(new RuleStateLimits(2, Duration.ofMinutes(5)));
-        state.get("oldest", ArrayList::new).add("one");
-        state.get("second", ArrayList::new).add("two");
-        byte[] before = state.snapshot(List::copyOf);
-        long cacheBefore = ((Number) state.stats().get("stateSnapshotCacheBytes")).longValue();
-        try (var mutation = state.beginMutation(ArrayList::new, List::copyOf)) {
-            state.get("third", ArrayList::new).add("three");
-            state.invalidateSnapshot("third");
-            assertEquals(2, state.size());
-            assertTrue(mutation.change("test").changed());
-            state.snapshot(List::copyOf);
+            assertEquals("affected-keys-merkle-v1", change.digestScope());
+            assertEquals(3, encodes.get(), "one old key and two resulting keys, not 10,000 keys");
             mutation.rollback();
-            assertFalse(mutation.change("test").changed());
-            // A rollback is reusable until close, as required by rule isolation.
-            state.get("second", ArrayList::new).add("temporary");
-            state.invalidateSnapshot("second");
+            assertFalse(mutation.change("rule").changed());
         }
-        assertArrayEquals(before, state.snapshot(List::copyOf));
-        assertEquals(cacheBefore, state.stats().get("stateSnapshotCacheBytes"));
+        assertArrayEquals(before, state.snapshot(value -> value));
     }
 
     @Test
-    void ttlRemovalsBelongToTheUndoBoundary() throws Exception {
-        RuleStateMap<List<String>> state = new RuleStateMap<>(new RuleStateLimits(10, Duration.ofMillis(20)));
-        state.get("expired", ArrayList::new).add("restore-me");
-        Thread.sleep(40);
-        try (var mutation = state.beginMutation(ArrayList::new, List::copyOf)) {
-            assertEquals(0, state.size());
-            assertTrue(mutation.change("test").changed());
+    void rollbackRestoresEvictedKeysAndRemovesInsertedKeysWithoutExceedingCacheBudget() {
+        RuleStateMap<Map<String, Object>> state = new RuleStateMap<>(new RuleStateLimits(2, Duration.ofMinutes(1)));
+        state.get("old", () -> new LinkedHashMap<>(Map.of("count", 1)));
+        state.get("kept", () -> new LinkedHashMap<>(Map.of("count", 2)));
+        byte[] before = state.snapshot(value -> value);
+        try (var mutation = state.beginMutation(value -> value, RuleStateMutationTest::decode)) {
+            state.get("new", () -> new LinkedHashMap<>(Map.of("count", 3)));
+            assertFalse(StateSnapshotCodec.read(state.snapshot(value -> value)).containsKey("old"));
             mutation.rollback();
-            // Undo restores the entry's original age as well as its value.
-            // A subsequent access must expire it again, not revive stale state.
-            assertEquals(List.of(), state.get("expired", ArrayList::new));
-            assertEquals(2L, state.evictions());
-            mutation.commit();
+        }
+        assertArrayEquals(before, state.snapshot(value -> value));
+        assertEquals(2, state.size());
+        assertTrue(((Number) state.stats().get("stateSnapshotCacheBytes")).longValue()
+                <= ((Number) state.stats().get("stateSnapshotCacheMaxBytes")).longValue());
+    }
+
+    @Test
+    void unchangedMutationAndRollbackAreRepeatableAndScopesCannotOverlap() {
+        RuleStateMap<Map<String, Object>> state = new RuleStateMap<>();
+        state.get("a", () -> new LinkedHashMap<>(Map.of("count", 1)));
+        try (var mutation = state.beginMutation(value -> value, RuleStateMutationTest::decode)) {
+            assertFalse(mutation.change("rule").changed());
+            assertThrows(IllegalStateException.class,
+                    () -> state.beginMutation(value -> value, RuleStateMutationTest::decode));
+            state.get("a", LinkedHashMap::new).put("count", 2);
+            state.invalidateSnapshot("a");
+            mutation.rollback();
+            mutation.rollback();
+            assertFalse(mutation.change("rule").changed());
+        }
+        try (var next = state.beginMutation(value -> value, RuleStateMutationTest::decode)) {
+            assertFalse(next.change("rule").changed());
         }
     }
 
     @Test
-    void lazyAccessExpiresAnIdleEntityBeforeItCanContributeToTheNextWindow() throws Exception {
-        RuleStateMap<List<String>> state = new RuleStateMap<>(new RuleStateLimits(10, Duration.ofMillis(500)));
-        state.get("entity", ArrayList::new).add("stale-evidence");
-        Thread.sleep(550);
-        try (var mutation = state.beginMutation(ArrayList::new, List::copyOf)) {
-            assertEquals(List.of(), state.get("entity", ArrayList::new));
-            state.get("entity", ArrayList::new).add("fresh-evidence");
-            assertTrue(mutation.change("test").changed());
-            mutation.commit();
+    void statsReaderCannotExpireKeysWhileDetachedUndoIsAwaitingCommit() throws Exception {
+        RuleStateMap<Map<String, Object>> state = new RuleStateMap<>(new RuleStateLimits(10, Duration.ofNanos(1)));
+        state.get("a", () -> new LinkedHashMap<>(Map.of("count", 1)));
+        try (var mutation = state.beginMutation(value -> value, RuleStateMutationTest::decode)) {
+            state.get("a", LinkedHashMap::new).put("count", 2);
+            mutation.detach();
+            try (var reader = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+                assertEquals(1, reader.submit(state::size).get(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.ExecutionException.class, () -> reader.submit(() ->
+                        state.beginMutation(value -> value, RuleStateMutationTest::decode))
+                        .get(5, java.util.concurrent.TimeUnit.SECONDS));
+            }
+            mutation.rollback();
+            assertEquals(1, state.get("a", LinkedHashMap::new).get("count"));
         }
-        assertEquals(List.of("fresh-evidence"), state.get("entity", ArrayList::new));
-    }
-
-    @Test
-    void excessiveMutationFailsClosedAndCanStillRestoreEveryOriginalKey() {
-        RuleStateMap<List<String>> state = new RuleStateMap<>(new RuleStateLimits(2, Duration.ofMinutes(5)));
-        state.get("original", ArrayList::new).add("keep");
-        byte[] before = state.snapshot(List::copyOf);
-        try (var mutation = state.beginMutation(ArrayList::new, List::copyOf)) {
-            state.get("two", ArrayList::new).add("2");
-            state.get("three", ArrayList::new).add("3");
-            assertThrows(IllegalStateException.class, () -> state.get("four", ArrayList::new));
-        }
-        assertArrayEquals(before, state.snapshot(List::copyOf));
+        assertEquals(0, state.size(), "expired keys become eligible after the transaction closes");
     }
 }

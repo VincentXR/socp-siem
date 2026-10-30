@@ -4,7 +4,6 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
-import com.socp.rule.state.RuleStateMutation;
 import com.socp.rule.state.StateSnapshotCodec;
 import com.socp.rule.state.StatefulRule;
 import com.socp.rule.time.EventTimePolicy;
@@ -136,64 +135,51 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
 
     @Override
     public byte[] snapshotState() {
-        return buckets.snapshot(ThresholdRule::encodeState);
+        return buckets.snapshot(this::encodeState);
     }
 
     @Override
-    public RuleStateMutation beginMutation() {
-        return buckets.beginMutation(ThresholdRule::copyState, ThresholdRule::encodeState);
+    public com.socp.rule.state.StateMutation beginMutation() {
+        return buckets.beginMutation(this::encodeState, this::decodeState);
     }
 
-    private static BucketState copyState(BucketState state) {
-        BucketState copy = new BucketState();
-        copy.watermark = state.watermark;
-        copy.events.addAll(state.events);
-        return copy;
-    }
-
-    private static Object encodeState(BucketState state) {
+    private Object encodeState(BucketState state) {
         Map<String, Object> value = new java.util.LinkedHashMap<>();
         value.put("watermark", state.watermark == null ? null : state.watermark.toString());
         value.put("events", state.events.stream().map(StateSnapshotCodec::event).toList());
         return value;
     }
 
-
     @Override
     public void restoreState(byte[] serializedState) {
-        Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
-        buckets.clear();
-        snapshot.forEach((key, raw) -> {
-            // accept() never stores a blank grouping key, so a blank key in a
-            // checkpoint is corrupt content; skip it instead of failing the
-            // whole restore.
-            if (key == null || key.isBlank()) return;
-            BucketState state = buckets.get(key, BucketState::new);
-            synchronized (state) {
-                state.events.clear();
-                List<?> items;
-                if (raw instanceof Map<?, ?> values) {
-                    state.watermark = parseInstant(values.get("watermark"));
-                    Object events = values.get("events");
-                    items = events instanceof List<?> list ? list : List.of();
-                } else if (raw instanceof List<?> legacy) {
-                    // Read v1 snapshots during an explicit compatibility
-                    // migration; newly written snapshots always carry the
-                    // watermark separately.
-                    state.watermark = null;
-                    items = legacy;
-                } else {
-                    return;
-                }
-                items.stream().map(StateSnapshotCodec::event).filter(java.util.Objects::nonNull)
-                        .limit(Math.max(threshold * 2, 200)).forEach(event -> {
-                            state.events.addLast(event);
-                            if (state.watermark == null || state.watermark.isBefore(event.timestamp())) {
-                                state.watermark = event.timestamp();
-                            }
-                        });
-            }
-        });
+        buckets.restore(serializedState, this::decodeState);
+    }
+
+    private BucketState decodeState(Object raw) {
+        BucketState state = new BucketState();
+        state.events.clear();
+        List<?> items;
+        if (raw instanceof Map<?, ?> values) {
+            state.watermark = parseInstant(values.get("watermark"));
+            Object events = values.get("events");
+            items = events instanceof List<?> list ? list : List.of();
+        } else if (raw instanceof List<?> legacy) {
+            // Read v1 snapshots during an explicit compatibility
+            // migration; newly written snapshots always carry the
+            // watermark separately.
+            state.watermark = null;
+            items = legacy;
+        } else {
+            return null;
+        }
+        items.stream().map(StateSnapshotCodec::event).filter(java.util.Objects::nonNull)
+                .limit(Math.max(threshold * 2, 200)).forEach(event -> {
+                    state.events.addLast(event);
+                    if (state.watermark == null || state.watermark.isBefore(event.timestamp())) {
+                        state.watermark = event.timestamp();
+                    }
+                });
+        return state;
     }
 
     private static Instant parseInstant(Object value) {

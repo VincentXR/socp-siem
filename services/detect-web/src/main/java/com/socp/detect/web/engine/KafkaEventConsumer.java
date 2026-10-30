@@ -94,6 +94,11 @@ public class KafkaEventConsumer {
     private final Map<TopicPartition, ArrayDeque<PendingWork>> deferredWork = new ConcurrentHashMap<>();
     /** In-flight, lane-queued and deferred bytes for each Kafka partition. */
     private final Map<TopicPartition, AtomicLong> pendingBytes = new ConcurrentHashMap<>();
+    /** Retained work from every assignment, including revoked lanes still finishing. */
+    private final AtomicLong totalPendingBytes = new AtomicLong();
+    private final AtomicLong totalPendingRecords = new AtomicLong();
+    /** Poller-owned hysteresis; worker releases never call KafkaConsumer. */
+    private boolean processBackpressure;
     /** Backpressure and failure retries are independent pause reasons. */
     private final Set<TopicPartition> backpressureBlockedPartitions = ConcurrentHashMap.newKeySet();
     private final PartitionRetryState retryState = new PartitionRetryState();
@@ -128,6 +133,16 @@ public class KafkaEventConsumer {
 
     @Value("${socp.detect.backpressure.partition-max-bytes:16777216}")
     private long partitionMaxPendingBytes = 16L * 1024 * 1024;
+
+    @Value("${socp.detect.backpressure.max-pending-bytes:8388608}")
+    private long maxPendingBytes = 8L * 1024 * 1024;
+
+    @Value("${socp.detect.backpressure.max-pending-records:4096}")
+    private long maxPendingRecords = 4096;
+
+    @Value("${socp.kafka.processing-batch-size:32}")
+    private int processingBatchSize = 32;
+    private static final long ADMISSION_BATCH_MAX_BYTES = 1024L * 1024;
 
     @Value("${socp.detect.state.retention}")
     private Duration replayWindow;
@@ -183,6 +198,8 @@ public class KafkaEventConsumer {
      */
     private void registerMetrics() {
         if (metrics == null) return;
+        metrics.gauge("socp.detection.consumer.pending.bytes", totalPendingBytes, AtomicLong::get);
+        metrics.gauge("socp.detection.consumer.pending.records", totalPendingRecords, AtomicLong::get);
         metrics.gauge("socp.detection.offset.pinned", completionTracker,
                 ignored -> {
                     long pinned = 0L;
@@ -307,6 +324,11 @@ public class KafkaEventConsumer {
                         for (Integer partition : assigned) lane(partition);
                         replayPending(assigned);
                     });
+                    // Assignment is installed before this poll-thread callback,
+                    // but newly assigned partitions do not inherit Kafka pauses.
+                    // Old revoked work may still own the process reservation.
+                    appliedPausedPartitions.removeAll(partitions);
+                    applyPauseState(consumer);
                     log.info("Detection state restored for partitions={}", assigned);
                 }
             });
@@ -317,20 +339,217 @@ public class KafkaEventConsumer {
                 drainDeferred(consumer);
                 applyPauseState(consumer);
                 var records = consumer.poll(Duration.ofMillis(250));
-                for (TopicPartition partition : records.partitions()) {
-                    var partitionRecords = records.records(partition);
-                    for (int start = 0; start < partitionRecords.size(); start += com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) {
-                        var batch = List.copyOf(partitionRecords.subList(start,
-                                Math.min(partitionRecords.size(), start + com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS)));
-                        var epochs = batch.stream().map(record -> completionTracker.register(
-                                record.partition(), record.offset())).toList();
-                        PartitionRetryState.Lease lease = retryState.acquire(partition);
-                        dispatchBatch(consumer, partition, batch, epochs, lease);
-                    }
-                }
+                dispatchPolledRecords(consumer, records);
                 drainCompletions(consumer);
                 drainDeferred(consumer);
                 applyPauseState(consumer);
+            }
+        }
+    }
+
+    private record PolledRecord(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record, long epoch) { }
+    private record ParsedRecord(PolledRecord polled, DetectionRecordProcessor.NormalizedDetectionRecord normalized) { }
+
+    /** The poller only reserves bounded work; journal I/O runs in the ordered lane. */
+    private void dispatchPolledRecords(KafkaConsumer<String, String> consumer,
+                                      org.apache.kafka.clients.consumer.ConsumerRecords<String, String> records) {
+        int limit = Math.max(1, Math.min(64, processingBatchSize));
+        long byteLimit = Math.max(1L, Math.min(ADMISSION_BATCH_MAX_BYTES, partitionMaxPendingBytes));
+        for (TopicPartition partition : records.partitions()) {
+            java.util.List<PolledRecord> batch = new java.util.ArrayList<>();
+            long bytes = 0;
+            for (var record : records.records(partition)) {
+                long weight = estimateRecordBytes(record);
+                if (!batch.isEmpty() && (batch.size() >= limit || bytes + weight > byteLimit)) {
+                    dispatchOrderedBatch(consumer, partition, batch, bytes);
+                    batch = new java.util.ArrayList<>();
+                    bytes = 0;
+                }
+                batch.add(new PolledRecord(record, completionTracker.register(record.partition(), record.offset())));
+                bytes += weight;
+            }
+            if (!batch.isEmpty()) dispatchOrderedBatch(consumer, partition, batch, bytes);
+        }
+    }
+
+    private void dispatchOrderedBatch(KafkaConsumer<String, String> consumer, TopicPartition partition,
+                                      java.util.List<PolledRecord> batch, long bytes) {
+        var immutable = java.util.List.copyOf(batch);
+        PartitionRetryState.Lease lease = retryState.acquire(partition);
+        dispatchOrDefer(consumer, partition,
+                new OrderedPartitionWork(partition, immutable, lease, lane(partition.partition()), bytes),
+                bytes, immutable.size());
+    }
+
+    /** Coalesce only work already queued behind this assignment's current lane task. */
+    private final class OrderedPartitionWork implements Runnable {
+        private final TopicPartition partition;
+        private final List<PolledRecord> records;
+        private final PartitionRetryState.Lease lease;
+        private final ThreadPoolExecutor ownerLane;
+        private final long bytes;
+
+        private OrderedPartitionWork(TopicPartition partition, List<PolledRecord> records,
+                                     PartitionRetryState.Lease lease, ThreadPoolExecutor ownerLane, long bytes) {
+            this.partition = partition;
+            this.records = records;
+            this.lease = lease;
+            this.ownerLane = ownerLane;
+            this.bytes = bytes;
+        }
+
+        @Override
+        public void run() {
+            int limit = Math.max(1, Math.min(64, processingBatchSize));
+            long byteLimit = Math.max(1L, Math.min(ADMISSION_BATCH_MAX_BYTES, partitionMaxPendingBytes));
+            List<PolledRecord> combined = new java.util.ArrayList<>(records);
+            List<PendingWork> absorbed = new java.util.ArrayList<>();
+            long combinedBytes = bytes;
+            try {
+                while (running.get() && retryState.active(lease) && !ownerLane.isShutdown()
+                        && !Thread.currentThread().isInterrupted()) {
+                    Runnable head = ownerLane.getQueue().peek();
+                    if (!(head instanceof PendingWork pending)
+                            || !(pending.delegate instanceof OrderedPartitionWork next)
+                            || next.ownerLane != ownerLane || next.lease != lease
+                            || !partition.equals(next.partition)
+                            || combined.size() + next.records.size() > limit
+                            || pending.bytes > byteLimit - combinedBytes) break;
+                    // Revoke may drain the queue concurrently. Remove only the inspected head.
+                    if (!ownerLane.getQueue().remove(head)) break;
+                    absorbed.add(pending);
+                    combined.addAll(next.records);
+                    combinedBytes += pending.bytes;
+                }
+                processOrderedRecords(combined, lease);
+            } finally {
+                // Removed tasks are no longer returned by shutdownNow; this runner owns them.
+                absorbed.forEach(PendingWork::release);
+            }
+        }
+    }
+
+    /**
+     * NEW receipts can share one engine generation. Duplicate IDs, existing
+     * receipts, malformed records and tenant/shard changes retain serial barriers.
+     */
+    private void processOrderedRecords(java.util.List<PolledRecord> records, PartitionRetryState.Lease lease) {
+        if (hasIndependentStateGroups(records)) {
+            // Each state unit can commit independently, but the partition waits
+            // for all siblings to settle before retry or offset advancement.
+            processBatchWithRetry(records.stream().map(PolledRecord::record).toList(),
+                    records.stream().map(PolledRecord::epoch).toList(), lease);
+            return;
+        }
+        int cursor = 0;
+        while (cursor < records.size() && running.get() && retryState.active(lease)
+                && !Thread.currentThread().isInterrupted()) {
+            if (!stateStore.supportsBatchClaims() || !engine.completesJournal(stateStore)) {
+                PolledRecord row = records.get(cursor++);
+                processWithRetry(row.record(), row.epoch(), lease);
+                continue;
+            }
+            java.util.List<ParsedRecord> group = new java.util.ArrayList<>();
+            java.util.Set<String> identities = new java.util.HashSet<>();
+            DetectEngineService.BatchKey key = null;
+            for (int next = cursor; next < records.size(); next++) {
+                PolledRecord row = records.get(next);
+                var record = row.record();
+                DetectionRecordProcessor.NormalizedDetectionRecord normalized;
+                try { normalized = recordProcessor.parse(record.partition(), record.offset(), record.key(), record.value()); }
+                catch (RuntimeException invalid) { break; }
+                var candidate = engine.batchKey(normalized.event());
+                if (!group.isEmpty() && !java.util.Objects.equals(key, candidate)) break;
+                if (!identities.add(com.socp.rule.partition.DetectionDelivery.deliveryId(normalized.event()))) break;
+                key = candidate;
+                group.add(new ParsedRecord(row, normalized));
+            }
+            if (group.isEmpty()) {
+                PolledRecord row = records.get(cursor++);
+                processWithRetry(row.record(), row.epoch(), lease);
+                continue;
+            }
+            var inputs = new java.util.ArrayList<DetectionStateStore.Input>();
+            var positions = new java.util.ArrayList<RecordPosition>();
+            Map<RecordPosition, Preclaimed> claims = new java.util.HashMap<>();
+            for (ParsedRecord parsed : group) {
+                var record = parsed.polled().record();
+                inputs.add(new DetectionStateStore.Input(parsed.normalized().event(), record.topic(),
+                        record.partition(), record.offset(), parsed.normalized().routingKey()));
+                positions.add(new RecordPosition(record.partition(), record.offset()));
+            }
+            flushClaims(inputs, positions, claims);
+            int start = 0;
+            while (start < group.size() && running.get() && retryState.active(lease)
+                    && !Thread.currentThread().isInterrupted()) {
+                int end = start;
+                while (end < group.size()) {
+                    var record = group.get(end).polled().record();
+                    Preclaimed receipt = claims.get(new RecordPosition(record.partition(), record.offset()));
+                    if (receipt == null || receipt.claim() != com.socp.detect.web.persistence.store.DetectionEventClaim.NEW) break;
+                    end++;
+                }
+                if (end - start >= 2) {
+                    processClaimedGroup(group.subList(start, end), lease);
+                    start = end;
+                } else {
+                    var row = group.get(start++).polled();
+                    processWithRetry(row.record(), row.epoch(), lease,
+                            claims.get(new RecordPosition(row.record().partition(), row.record().offset())));
+                }
+            }
+            cursor += group.size();
+        }
+    }
+
+    private boolean hasIndependentStateGroups(List<PolledRecord> records) {
+        if (records.size() < 2 || !engine.completesJournal(stateStore)) return false;
+        DetectEngineService.BatchKey first = null;
+        for (var row : records) {
+            try {
+                var record = row.record();
+                var normalized = recordProcessor.parse(record.partition(), record.offset(), record.key(), record.value());
+                var key = engine.batchKey(normalized.event());
+                if (first == null) first = key;
+                else if (!java.util.Objects.equals(first, key)) return true;
+            } catch (RuntimeException malformed) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    private void processClaimedGroup(java.util.List<ParsedRecord> group, PartitionRetryState.Lease lease) {
+        java.util.List<java.util.concurrent.CompletableFuture<Void>> futures;
+        try {
+            futures = recordProcessor.submitPreclaimedBatch(group.stream().map(parsed -> {
+                var record = parsed.polled().record();
+                return new DetectEngineService.KafkaInput(parsed.normalized().event(), record.topic(),
+                        record.partition(), record.offset(), record.headers());
+            }).toList(), () -> running.get() && retryState.active(lease));
+        } catch (RuntimeException admissionFailure) {
+            futures = java.util.Collections.nCopies(group.size(),
+                    java.util.concurrent.CompletableFuture.failedFuture(admissionFailure));
+        }
+        var settled = java.util.concurrent.CompletableFuture.allOf(
+                futures.toArray(java.util.concurrent.CompletableFuture[]::new)).handle((ignored, failure) -> null);
+        // A timeout never creates a second evaluation while the first is live.
+        while (running.get() && retryState.active(lease)) {
+            try { settled.get(1, TimeUnit.SECONDS); break; }
+            catch (java.util.concurrent.TimeoutException waiting) { /* Keep the original futures. */ }
+            catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return; }
+            catch (java.util.concurrent.ExecutionException unexpected) { throw new IllegalStateException(unexpected); }
+        }
+        if (!settled.isDone()) return;
+        for (int i = 0; i < group.size() && running.get() && retryState.active(lease); i++) {
+            var row = group.get(i).polled();
+            if (futures.get(i).isCompletedExceptionally()) {
+                // All original evaluations have settled. Fresh receipts distinguish
+                // a rolled-back event from an uncertain but committed transaction.
+                processWithRetry(row.record(), row.epoch(), lease);
+            } else {
+                clearRetryBlocked(lease, true);
+                completions.offer(new RecordCompletion(row.record().partition(), row.record().offset(), row.epoch()));
             }
         }
     }
@@ -423,11 +642,23 @@ public class KafkaEventConsumer {
                                  TopicPartition partition,
                                  Runnable task,
                                  long estimatedBytes) {
+        dispatchOrDefer(consumer, partition, task, estimatedBytes, 1L);
+    }
+
+    private void dispatchOrDefer(KafkaConsumer<String, String> consumer,
+                                 TopicPartition partition,
+                                 Runnable task,
+                                 long estimatedBytes, long recordCount) {
         long bytes = Math.max(1L, estimatedBytes);
+        long records = Math.max(1L, recordCount);
         AtomicLong partitionBytes = pendingBytes.computeIfAbsent(partition,
                 ignored -> new AtomicLong());
         boolean overBudget = reserveBytes(partitionBytes, bytes);
-        PendingWork work = new PendingWork(task, bytes, partitionBytes);
+        totalPendingBytes.addAndGet(bytes);
+        totalPendingRecords.addAndGet(records);
+        updateProcessBackpressure();
+        PendingWork work = new PendingWork(task, bytes, records, partitionBytes,
+                totalPendingBytes, totalPendingRecords);
         ArrayDeque<PendingWork> deferred = deferredWork.get(partition);
         if (deferred != null && !deferred.isEmpty()) {
             // A partition has one logical FIFO. Once an older record has moved
@@ -437,7 +668,7 @@ public class KafkaEventConsumer {
             backpressureBlockedPartitions.add(partition);
             return;
         }
-        if (!overBudget && tryDispatch(partition.partition(), work)) return;
+        if (!overBudget && !processBackpressure && tryDispatch(partition.partition(), work)) return;
         // A poll may already contain more records than the byte budget. Keep
         // those records losslessly in the bounded deferred batch, but stop
         // polling the partition so the overshoot cannot continue indefinitely.
@@ -457,12 +688,21 @@ public class KafkaEventConsumer {
             }
             // Allow one oversized record through when the partition is idle;
             // otherwise it could never make progress under a too-small limit.
-            if (after > limit && before > 0L) {
+            if (after >= limit && before > 0L) {
                 current.addAndGet(bytes);
                 return true;
             }
-            if (current.compareAndSet(before, after)) return after > limit;
+            if (current.compareAndSet(before, after)) return after >= limit;
         }
+    }
+
+    private void updateProcessBackpressure() {
+        long bytes = totalPendingBytes.get();
+        long records = totalPendingRecords.get();
+        long byteLimit = Math.max(1L, maxPendingBytes);
+        long recordLimit = Math.max(1L, maxPendingRecords);
+        if (bytes >= byteLimit || records >= recordLimit) processBackpressure = true;
+        else if (bytes <= byteLimit / 2 && records <= recordLimit / 2) processBackpressure = false;
     }
 
     /**
@@ -482,7 +722,9 @@ public class KafkaEventConsumer {
                 deferred.removeFirst();
             }
 
-            if (deferred.isEmpty() && lane.getQueue().size() <= LANE_RESUME_THRESHOLD) {
+            AtomicLong retained = pendingBytes.get(partition);
+            if (deferred.isEmpty() && lane.getQueue().size() <= LANE_RESUME_THRESHOLD
+                    && (retained == null || retained.get() <= Math.max(1L, partitionMaxPendingBytes) / 2)) {
                 deferredWork.remove(partition, deferred);
                 backpressureBlockedPartitions.remove(partition);
             } else {
@@ -498,7 +740,9 @@ public class KafkaEventConsumer {
     private void applyPauseState(KafkaConsumer<String, String> consumer) {
         if (consumer == null) return;
         Set<TopicPartition> assigned = consumer.assignment();
+        updateProcessBackpressure();
         Set<TopicPartition> desired = new HashSet<>(backpressureBlockedPartitions);
+        if (processBackpressure) desired.addAll(assigned);
         desired.addAll(retryState.blockedPartitions());
         desired.retainAll(assigned);
 
@@ -531,11 +775,17 @@ public class KafkaEventConsumer {
     }
 
     private void replayPending(Set<Integer> partitions) {
-        int cap = pendingReplayMax <= 0 ? 100 : pendingReplayMax;
+        updateProcessBackpressure();
+        if (processBackpressure) return;
+        int cap = (int) Math.min(pendingReplayMax <= 0 ? 100 : pendingReplayMax,
+                Math.max(1L, maxPendingRecords));
         java.util.concurrent.atomic.AtomicInteger queued =
                 new java.util.concurrent.atomic.AtomicInteger();
         stateStore.replayPendingPages(partitions, configuredReplayWindow(), cap, batch -> {
             for (PendingDetectionEvent row : batch) {
+                // These rows are already durable. Unadmitted replay stays behind
+                // its Kafka offset instead of expanding the process reservation.
+                if (processBackpressure) break;
                 if (row == null || row.event() == null || row.partition() == null) continue;
                 TopicPartition partition = new TopicPartition(configuredTopic(), row.partition());
                 PartitionRetryState.Lease lease = retryState.acquire(partition);
@@ -609,7 +859,7 @@ public class KafkaEventConsumer {
                        List<org.apache.kafka.clients.consumer.ConsumerRecord<String, String>> records,
                        List<Long> epochs, PartitionRetryState.Lease lease) {
         long bytes = records.stream().mapToLong(KafkaEventConsumer::estimateRecordBytes).sum();
-        dispatchOrDefer(consumer, partition, new KafkaBatch(records, epochs, lease), bytes);
+        dispatchOrDefer(consumer, partition, new KafkaBatch(records, epochs, lease), bytes, records.size());
     }
 
     /** Coalesce only already-queued adjacent work; quiet partitions incur no batching delay. */
@@ -655,6 +905,66 @@ public class KafkaEventConsumer {
 
     private void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
                                   long epoch, PartitionRetryState.Lease lease) {
+        processWithRetry(record, epoch, lease, null);
+    }
+
+    private record RecordPosition(int partition, long offset) { }
+    private record Preclaimed(DetectionRecordProcessor.NormalizedDetectionRecord normalized,
+                              com.socp.detect.web.persistence.store.DetectionEventClaim claim) { }
+
+    /** Pre-admit a poll in bounded transactions; lanes still evaluate one offset at a time. */
+    private Map<RecordPosition, Preclaimed> preclaim(org.apache.kafka.clients.consumer.ConsumerRecords<String, String> records) {
+        Map<RecordPosition, Preclaimed> result = new java.util.HashMap<>();
+        if (!stateStore.supportsBatchClaims()) return result;
+        var inputs = new java.util.ArrayList<com.socp.detect.web.persistence.store.DetectionStateStore.Input>();
+        var positions = new java.util.ArrayList<RecordPosition>();
+        for (var record : records) {
+            try {
+                var normalized = recordProcessor.parse(record.partition(), record.offset(), record.key(), record.value());
+                inputs.add(new com.socp.detect.web.persistence.store.DetectionStateStore.Input(
+                        normalized.event(), record.topic(), record.partition(), record.offset(), normalized.routingKey()));
+                positions.add(new RecordPosition(record.partition(), record.offset()));
+                if (inputs.size() == 64) flushClaims(inputs, positions, result);
+            } catch (DetectionRecordProcessor.MalformedDetectionRecordException malformed) {
+                // The existing lane retains the durable DLQ and offset rules for malformed input.
+            }
+        }
+        flushClaims(inputs, positions, result);
+        return result;
+    }
+
+    private void flushClaims(java.util.List<com.socp.detect.web.persistence.store.DetectionStateStore.Input> inputs,
+                             java.util.List<RecordPosition> positions, Map<RecordPosition, Preclaimed> result) {
+        if (inputs.isEmpty()) return;
+        long started = System.nanoTime();
+        boolean acknowledged = false;
+        try {
+            var claims = stateStore.preclaimBatch(inputs);
+            if (claims.size() != inputs.size()) throw new IllegalStateException("journal batch receipt mismatch");
+            acknowledged = true;
+            for (int i = 0; i < inputs.size(); i++) {
+                var input = inputs.get(i);
+                // Existing PENDING rows may complete while this lane waits. Re-read
+                // them at execution time, including duplicate IDs within one poll.
+                if (claims.get(i) == com.socp.detect.web.persistence.store.DetectionEventClaim.PENDING) continue;
+                result.put(positions.get(i), new Preclaimed(
+                        new DetectionRecordProcessor.NormalizedDetectionRecord(input.routingKey(), input.event()), claims.get(i)));
+            }
+        } catch (RuntimeException unavailable) {
+            // Fall back to the lane's bounded retry path. No offset is acknowledged by pre-admission.
+            log.warn("Detection journal batch deferred to ordered retry: {}", unavailable.getMessage());
+        } finally {
+            com.socp.rule.engine.RuleProcessingObserver.notifyOperation(performanceMetrics,
+                    com.socp.rule.engine.RuleProcessingObserver.Operation.JOURNAL_PRECLAIM,
+                    inputs.size(), System.nanoTime() - started, acknowledged);
+            inputs.clear();
+            positions.clear();
+        }
+    }
+
+    private void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
+                                  long epoch, PartitionRetryState.Lease lease, Preclaimed preclaimed) {
+        boolean firstAttempt = true;
         long delay = Math.max(1L, processingRetryInitialDelayMs);
         int attemptsThisRound = 0;
         DetectionRecordProcessor.InFlightDetectionTimeout inFlight = null;
@@ -664,11 +974,16 @@ public class KafkaEventConsumer {
             try {
                 DetectionRecordProcessor.InFlightDetectionTimeout timedOut = inFlight;
                 DetectionRecordProcessor.FinalizationPendingFailure pendingFinalization = finalization;
+                Preclaimed admitted = firstAttempt ? preclaimed : null;
+                firstAttempt = false;
                 KafkaTrace.runConsumed("detect " + record.topic() + " receive", record.headers(), () -> {
                     if (timedOut != null) {
                         recordProcessor.resumeTimedOut(timedOut, Math.min(RETRY_MAX.toMillis(), 30_000L));
                     } else if (pendingFinalization != null) {
                         recordProcessor.resumeFinalization(pendingFinalization);
+                    } else if (admitted != null) {
+                        recordProcessor.processPreclaimed(record.topic(), record.partition(), record.offset(),
+                                admitted.normalized().routingKey(), admitted.normalized().event(), admitted.claim());
                     } else {
                         processOne(record.topic(), record.partition(), record.offset(),
                                 record.key(), record.value());
@@ -740,7 +1055,7 @@ public class KafkaEventConsumer {
                 failure.category().metricTag(), failure.stage().metricTag(),
                 jitterCeiling(delay), failure.getMessage());
         if (failure.category() == DetectionRecordProcessor.FailureCategory.OWNERSHIP_LOST) {
-            sessionRestartRequested.set(true);
+            if (retryState.retire(lease)) sessionRestartRequested.set(true);
             count("socp.detection.processing.withheld", "ownership_lost");
             return attempts;
         }
@@ -851,7 +1166,7 @@ public class KafkaEventConsumer {
                 failure.category().metricTag(), failure.stage().metricTag(),
                 jitterCeiling(delay), failure.getMessage());
         if (failure.category() == DetectionRecordProcessor.FailureCategory.OWNERSHIP_LOST) {
-            sessionRestartRequested.set(true);
+            if (retryState.retire(lease)) sessionRestartRequested.set(true);
             return attempts;
         }
         if (attempts >= limit) {
@@ -1048,6 +1363,10 @@ public class KafkaEventConsumer {
         if (record.value() != null) {
             bytes += record.value().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         }
+        for (var header : record.headers()) {
+            bytes += 64L + header.key().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+            if (header.value() != null) bytes += header.value().length;
+        }
         return Math.max(1L, bytes);
     }
 
@@ -1083,13 +1402,20 @@ public class KafkaEventConsumer {
     private static final class PendingWork implements Runnable {
         private final Runnable delegate;
         private final long bytes;
+        private final long records;
         private final AtomicLong counter;
+        private final AtomicLong totalBytes;
+        private final AtomicLong totalRecords;
         private final AtomicBoolean released = new AtomicBoolean();
 
-        private PendingWork(Runnable delegate, long bytes, AtomicLong counter) {
+        private PendingWork(Runnable delegate, long bytes, long records, AtomicLong counter,
+                            AtomicLong totalBytes, AtomicLong totalRecords) {
             this.delegate = delegate;
             this.bytes = bytes;
+            this.records = records;
             this.counter = counter;
+            this.totalBytes = totalBytes;
+            this.totalRecords = totalRecords;
         }
 
         @Override
@@ -1102,7 +1428,11 @@ public class KafkaEventConsumer {
         }
 
         private void release() {
-            if (released.compareAndSet(false, true)) counter.addAndGet(-bytes);
+            if (released.compareAndSet(false, true)) {
+                counter.addAndGet(-bytes);
+                totalBytes.addAndGet(-bytes);
+                totalRecords.addAndGet(-records);
+            }
         }
     }
 

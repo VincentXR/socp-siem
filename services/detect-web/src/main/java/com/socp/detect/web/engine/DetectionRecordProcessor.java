@@ -197,6 +197,11 @@ final class DetectionRecordProcessor {
 
     void processNormalized(String topic, Integer partition, Long offset,
                            String routingKey, SecurityEvent normalized) {
+        processPreclaimed(topic, partition, offset, routingKey, normalized, null);
+    }
+
+    void processPreclaimed(String topic, Integer partition, Long offset, String routingKey,
+                           SecurityEvent normalized, DetectionEventClaim preclaimed) {
         if (normalized == null) throw new IllegalArgumentException("normalized event is required");
         String tenant = normalized.requireTenantId();
         try (com.socp.platform.tenant.context.TenantContext.Scope ignored =
@@ -205,7 +210,7 @@ final class DetectionRecordProcessor {
 
             DetectionEventClaim claim;
             try {
-                claim = topic == null || topic.isBlank()
+                claim = preclaimed != null ? preclaimed : topic == null || topic.isBlank()
                         ? stateStore.claim(normalized, partition, offset, routingKey)
                         : stateStore.claim(normalized, topic, partition, offset, routingKey);
             } catch (RuntimeException failure) {
@@ -265,6 +270,26 @@ final class DetectionRecordProcessor {
         }
     }
 
+    /** Receipts are NEW and durable before this bounded group is admitted. */
+    java.util.List<CompletableFuture<Void>> submitPreclaimedBatch(java.util.List<DetectEngineService.KafkaInput> inputs) {
+        return submitPreclaimedBatch(inputs, () -> true);
+    }
+
+    java.util.List<CompletableFuture<Void>> submitPreclaimedBatch(
+            java.util.List<DetectEngineService.KafkaInput> inputs,
+            java.util.function.BooleanSupplier assignmentActive) {
+        if (!engine.completesJournal(stateStore)) {
+            throw new IllegalStateException("ordered batches require atomic journal completion");
+        }
+        for (var input : inputs) {
+            if (performanceMetrics != null) {
+                performanceMetrics.kafkaReceived(input.event());
+                performanceMetrics.journalCommitted(input.event());
+            }
+        }
+        return engine.ingestOrderedBatchFromKafkaAndAwait(inputs, assignmentActive);
+    }
+
     /**
      * Continue waiting on the original timed-out evaluation. A repeated timeout
      * rethrows the same in-flight token; no rule evaluation, sink write or state
@@ -292,6 +317,10 @@ final class DetectionRecordProcessor {
     }
 
     private void finalizeCompletedEvaluation(SecurityEvent normalized, Integer partition) {
+        // A successful primary sink future already committed the outbox and
+        // journal atomically and passed the post-commit ownership callback.
+        // Shadow and legacy sinks still require the explicit finalization path.
+        if (engine.completesJournal(stateStore)) return;
         try {
             // Durable sink completion is necessary but not sufficient: the owner
             // that observed it must still hold the current fencing epoch before

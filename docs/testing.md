@@ -177,17 +177,21 @@ bash build/mvnw.sh -pl platform/socp-rule -am test \
 The report is `platform/socp-rule/target/durable-state-serialization-benchmark.json`.
 It uses the real `RuleEngine.ingestAndAwait` and `ThresholdRule` at 100, 1,000,
 and 5,000 populated keys, with 50 warm-up events and 100 measured events for
-both matching and nonmatching input. A result-aware in-memory sink verifies
+both matching and nonmatching input, comparing full-state fallback and
+incremental affected-key undo in the same JVM. A result-aware in-memory sink verifies
 state-change digests and completion. Matching events grow existing buckets;
 initial and final state bytes are both reported. Nonmatching input leaves
 state unchanged, so it also measures the cost paid before a matcher returns.
 
-Snapshot instrumentation records calls, bytes and time in the engine's actual
-state-lock critical path. End-to-end latency also includes queue handoff,
-state digesting, assertions and completion. The implementation retains
-two complete snapshots per selected stateful rule per durable event: the
-rollback image before evaluation and the digest image afterward. The test
-asserts that count, but intentionally asserts no timing budget.
+Snapshot instrumentation records full-snapshot calls, bytes and time in the
+engine's state-lock critical path; affected-key encoding is excluded from that
+byte counter. End-to-end latency includes queue handoff, undo/audit encoding,
+assertions and completion. The fallback takes two complete snapshots per event;
+the built-in mutation path takes none. The test asserts these structural bounds
+and equivalent change decisions, with no timing floor. `RuleStateMutationTest`
+also checks bounded affected-key encoding, rollback and capacity eviction.
+`DetectionVirtualThreadProgressTest` uses one carrier to reproduce starvation
+when state or ownership monitors enclose simulated database waits.
 
 Run separate JVMs at least three times on otherwise idle hardware and retain
 the JSON together with the exact commit and command in local or CI evidence.
@@ -199,8 +203,34 @@ Compare paired fresh JVMs at 0 and 8388608 bytes. `StateSnapshotCacheTest`
 compares exact legacy JSON bytes for all five stateful rule types, repeated
 snapshots, late events, restore, whole-event rollback, and replay. Cache entries
 are invalidated under the state monitor and released on eviction/restore.
-Full rollback snapshots, state-change digests, and checkpoint ordering remain
-unchanged; cached bytes do not establish production throughput.
+Cache settings preserve checkpoint JSON, rollback outcomes and checkpoint
+ordering; cached bytes do not establish production throughput.
+
+### Live Detection workload budgets
+
+Record distinct entities as well as EPS. The default tenant admission limit
+is 100,000 active entities with a 30-minute idle TTL; completing an event
+releases its pending-byte permit, not its entity slot. Each rule state map
+also defaults to 100,000 keys. A fixture with one new source IP per event can
+reach either bound before a short throughput run ends.
+
+For an explicitly declared fixture of up to 200,000 distinct entities, set
+both finite limits on the diagnostic Detection process before startup:
+
+```bash
+export SOCP_DETECT_TENANT_MAX_ACTIVE_ENTITIES=200000
+export SOCP_RULE_STATE_MAX_KEYS=200000
+```
+
+The second setting is read directly from the environment when each state map
+is constructed; `-Dsocp.rule.state.max-keys` takes precedence. These are test
+profile overrides, not revised production defaults or a heap-sizing claim.
+After warmup, verify the effective limits in tenant admission and stateful
+rule statistics. Record admission rejections, state evictions, GC, actual
+memory usage, assigned Kafka partitions, persisted completion rate and backlog.
+Preserve TTLs, suppression and exact event/alert identity checks. A successful
+restart recovery does not replace a fresh-tenant test: admission entity slots
+are not reconstructed from historical state replay.
 
 ### SOAR HTTP request contracts
 

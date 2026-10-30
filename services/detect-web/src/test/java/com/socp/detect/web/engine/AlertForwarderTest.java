@@ -46,6 +46,34 @@ class AlertForwarderTest {
     @Mock
     private DetectionAlertOutboxService outbox;
 
+    @Test
+    void fencingFailureIsMeasuredAndCannotReachJournalEvenWhenTheObserverThrows() {
+        var journal = mock(DetectionStateStore.class);
+        var metrics = mock(com.socp.detect.web.metrics.DetectionPerformanceMetrics.class);
+        var forwarder = new AlertForwarder(ruleStore, riskStore, outbox, journal);
+        org.springframework.test.util.ReflectionTestUtils.setField(forwarder, "performanceMetrics", metrics);
+        org.mockito.Mockito.doThrow(new IllegalStateException("metrics unavailable")).when(metrics)
+                .operationCompleted(org.mockito.ArgumentMatchers.any(), anyInt(),
+                        org.mockito.ArgumentMatchers.anyLong(), org.mockito.ArgumentMatchers.anyBoolean());
+        var event = new SecurityEvent("batch-fence", Instant.EPOCH, "test", "host", "raw",
+                Map.of("tenant_id", "tenant-b"), Severity.INFO);
+        var result = new DetectionResult(event, null, Map.of(), List.of(), List.of(), List.of(), null, null);
+        var guard = new com.socp.rule.engine.OrderedCommitGuard("owner", () -> {
+            throw new IllegalStateException("stale owner");
+        });
+        var failure = assertThrows(IllegalStateException.class, () -> forwarder.forwardBatch(List.of(
+                new com.socp.rule.engine.BatchEventAlertSink.Entry(result, guard))));
+        assertEquals("stale owner", failure.getMessage());
+        verify(metrics).operationCompleted(eq(com.socp.rule.engine.RuleProcessingObserver.Operation.FENCING),
+                eq(1), org.mockito.ArgumentMatchers.anyLong(), eq(false));
+        verifyNoInteractions(journal, outbox, riskStore);
+        forwarder.forwardBatch(List.of(new com.socp.rule.engine.BatchEventAlertSink.Entry(result,
+                new com.socp.rule.engine.OrderedCommitGuard("owner", () -> { }))));
+        verify(metrics).operationCompleted(eq(com.socp.rule.engine.RuleProcessingObserver.Operation.FENCING),
+                eq(1), org.mockito.ArgumentMatchers.anyLong(), eq(true));
+        verify(journal).markCompletedBatch(List.of(result));
+    }
+
     @AfterEach
     void clearTenant() {
         TenantContext.clear();

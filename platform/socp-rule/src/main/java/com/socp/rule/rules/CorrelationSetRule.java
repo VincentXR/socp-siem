@@ -4,7 +4,6 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
-import com.socp.rule.state.RuleStateMutation;
 import com.socp.rule.state.StateSnapshotCodec;
 import com.socp.rule.state.StatefulRule;
 import com.socp.rule.time.EventTimePolicy;
@@ -132,24 +131,15 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
 
     @Override
     public byte[] snapshotState() {
-        return states.snapshot(CorrelationSetRule::encodeState);
+        return states.snapshot(this::encodeState);
     }
 
     @Override
-    public RuleStateMutation beginMutation() {
-        return states.beginMutation(CorrelationSetRule::copyState, CorrelationSetRule::encodeState);
+    public com.socp.rule.state.StateMutation beginMutation() {
+        return states.beginMutation(this::encodeState, this::decodeState);
     }
 
-    private static State copyState(State state) {
-        State copy = new State();
-        copy.bits.or(state.bits);
-        copy.firstTs = state.firstTs;
-        copy.watermark = state.watermark;
-        copy.evidence.putAll(state.evidence);
-        return copy;
-    }
-
-    private static Object encodeState(State state) {
+    private Object encodeState(State state) {
         Map<String, Object> value = new java.util.LinkedHashMap<>();
         value.put("bits", state.bits.toLongArray());
         value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
@@ -160,45 +150,41 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
         return value;
     }
 
-
     @Override
     public void restoreState(byte[] serializedState) {
-        Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
-        states.clear();
-        snapshot.forEach((key, raw) -> {
-            // A blank grouping key cannot exist in state produced by accept();
-            // skip corrupt checkpoint content instead of failing the restore.
-            if (key == null || key.isBlank() || !(raw instanceof Map<?, ?> values)) return;
-            State state = states.get(key, State::new);
-            synchronized (state) {
-                state.bits.clear();
-                Object bits = values.get("bits");
-                if (bits instanceof List<?> numbers) {
-                    for (int i = 0; i < numbers.size(); i++) {
-                        if (numbers.get(i) instanceof Number n) {
-                            long value = n.longValue();
-                            for (int bit = 0; bit < Long.SIZE; bit++) {
-                                if ((value & (1L << bit)) != 0) state.bits.set(i * Long.SIZE + bit);
-                            }
-                        }
+        states.restore(serializedState, this::decodeState);
+    }
+
+    private State decodeState(Object raw) {
+        if (!(raw instanceof Map<?, ?> values)) return null;
+        State state = new State();
+        state.bits.clear();
+        Object bits = values.get("bits");
+        if (bits instanceof List<?> numbers) {
+            for (int i = 0; i < numbers.size(); i++) {
+                if (numbers.get(i) instanceof Number n) {
+                    long value = n.longValue();
+                    for (int bit = 0; bit < Long.SIZE; bit++) {
+                        if ((value & (1L << bit)) != 0) state.bits.set(i * Long.SIZE + bit);
                     }
                 }
-                state.firstTs = parseInstant(values.get("firstTs"));
-                state.watermark = parseInstant(values.get("watermark"));
-                if (state.watermark == null) state.watermark = state.firstTs;
-                state.evidence.clear();
-                Object evidence = values.get("evidence");
-                if (evidence instanceof Map<?, ?> map) {
-                    map.forEach((index, event) -> {
-                        try {
-                            state.evidence.put(Integer.parseInt(String.valueOf(index)), StateSnapshotCodec.event(event));
-                        } catch (NumberFormatException ignored) {
-                            // Ignore a corrupt individual evidence index; the state remains recoverable.
-                        }
-                    });
-                }
             }
-        });
+        }
+        state.firstTs = parseInstant(values.get("firstTs"));
+        state.watermark = parseInstant(values.get("watermark"));
+        if (state.watermark == null) state.watermark = state.firstTs;
+        state.evidence.clear();
+        Object evidence = values.get("evidence");
+        if (evidence instanceof Map<?, ?> map) {
+            map.forEach((index, event) -> {
+                try {
+                    state.evidence.put(Integer.parseInt(String.valueOf(index)), StateSnapshotCodec.event(event));
+                } catch (NumberFormatException ignored) {
+                    // Ignore a corrupt individual evidence index; the state remains recoverable.
+                }
+            });
+        }
+        return state;
     }
 
     private static Instant parseInstant(Object value) {

@@ -71,6 +71,8 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
         reads.setReadOnly(true);
     }
 
+    // Cache hits must not open a transaction. The miss is one tenant-scoped
+    // repository SELECT; write paths still own their explicit transactions.
     @Override
     public State find(String tenantId, String name) {
         // Cache hits must not borrow a JDBC connection or start an otherwise empty

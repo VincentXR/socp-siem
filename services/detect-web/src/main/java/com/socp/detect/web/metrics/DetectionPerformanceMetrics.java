@@ -8,6 +8,7 @@ import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.engine.RuleProcessingObserver;
 import com.socp.rule.model.SecurityEvent;
+import com.socp.rule.partition.DetectionDelivery;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.Timer;
@@ -69,6 +70,10 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
     static final int MAX_TRACKED_TENANTS = 512;
 
     private final MeterRegistry registry;
+    private record OperationMeters(Timer success, Timer failure,
+                                   io.micrometer.core.instrument.DistributionSummary successItems,
+                                   io.micrometer.core.instrument.DistributionSummary failureItems) { }
+    private final Map<Operation, OperationMeters> operationMeters = new java.util.EnumMap<>(Operation.class);
     /** Per-rule evaluation latency histogram name; the ReDoS regression signal. */
     static final String RULE_EVALUATION = "socp.detection.rule.evaluation";
     /**
@@ -102,21 +107,32 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
                                        ObjectProvider<DetectEngineService> engineProvider) {
         this.registry = registry;
         this.engineProvider = engineProvider;
+        for (Operation operation : Operation.values()) {
+            String stage = operation.name().toLowerCase(java.util.Locale.ROOT);
+            operationMeters.put(operation, new OperationMeters(
+                    registry.timer("socp.detection.operation", "stage", stage, "outcome", "success"),
+                    registry.timer("socp.detection.operation", "stage", stage, "outcome", "failure"),
+                    registry.summary("socp.detection.operation.items", "stage", stage, "outcome", "success"),
+                    registry.summary("socp.detection.operation.items", "stage", stage, "outcome", "failure")));
+        }
     }
 
-    /** T1: Kafka record has entered the Detection consumer. */
+    /** T1: the record enters its serial partition lane, after poll and any batch preclaim. */
     public void kafkaReceived(SecurityEvent event) {
         if (event == null || event.id() == null) return;
         trackTenant(event.tenantId());
         long now = System.nanoTime();
-        events.put(event.scopedId(), new EventTiming(now));
+        events.put(timingKey(event), new EventTiming(now));
         Instant ingestedAt = ingestTime(event);
         if (ingestedAt != null) {
             recordInstant("socp.detection.event.stage", "kafka_queue", ingestedAt, Instant.now());
         }
     }
 
-    /** T2: the Journal PENDING transaction returned successfully. */
+    /**
+     * T2: the lane has a journal receipt; batch-preclaim I/O is measured separately.
+     * The string key remains tenant-scoped; legacy deliveries use tenant|eventId.
+     */
     public void journalCommitted(String eventId) {
         EventTiming timing = events.get(eventId);
         if (timing == null) return;
@@ -128,7 +144,14 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
     }
 
     public void journalCommitted(SecurityEvent event) {
-        if (event != null) journalCommitted(event.scopedId());
+        if (event != null) journalCommitted(timingKey(event));
+    }
+
+    @Override
+    public void operationCompleted(Operation operation, int items, long nanos, boolean success) {
+        OperationMeters meters = operationMeters.get(operation);
+        (success ? meters.success() : meters.failure()).record(Math.max(0L, nanos), TimeUnit.NANOSECONDS);
+        (success ? meters.successItems() : meters.failureItems()).record(Math.max(0, items));
     }
 
     /** Bounded state-unit fan-out of a partition batch; no entity/tenant labels. */
@@ -142,7 +165,7 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
     }
 
     public void terminalWithoutEvaluation(SecurityEvent event, String outcome) {
-        if (event != null) terminalWithoutEvaluation(event.scopedId(), outcome);
+        if (event != null) terminalWithoutEvaluation(timingKey(event), outcome);
     }
 
     @Override
@@ -169,12 +192,12 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
                 emittedAlerts > 0 ? "alert" : "no_alert").increment();
         registry.counter("socp.detection.db.transactions", "scope", "event",
                 "operation", "outbox_and_completion").increment();
-        events.remove(event.scopedId());
+        events.remove(timingKey(event));
     }
 
     @Override
     public void processingFailed(SecurityEvent event, Throwable failure) {
-        if (event != null) events.remove(event.scopedId());
+        if (event != null) events.remove(timingKey(event));
         registry.counter("socp.detection.event.completed", "outcome", "failed").increment();
     }
 
@@ -379,7 +402,12 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
     }
 
     private EventTiming timing(SecurityEvent event) {
-        return event == null || event.id() == null ? null : events.get(event.scopedId());
+        return event == null || event.id() == null ? null : events.get(timingKey(event));
+    }
+
+    /** Routed copies share source evidence identity but have independent durable lifecycles. */
+    private static String timingKey(SecurityEvent event) {
+        return event.tenantId() + "|" + DetectionDelivery.deliveryId(event);
     }
 
     private void recordNanos(String name, String stage, long nanos) {

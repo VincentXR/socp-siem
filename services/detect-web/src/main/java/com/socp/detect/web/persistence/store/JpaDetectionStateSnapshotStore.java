@@ -120,20 +120,25 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
 
     private void assertOwnerFences(List<DetectionStateSnapshot> snapshots) {
         if (ownerRepository == null) return;
+        Map<String, Long> epochs = new java.util.TreeMap<>();
         for (DetectionStateSnapshot snapshot : snapshots) {
             for (Map.Entry<Integer, Long> entry : snapshot.partitionOwnerEpochs().entrySet()) {
                 String topic = snapshot.inputTopic() == null ? inputTopic : snapshot.inputTopic();
-                String ownerKey = DetectionStateOwnership.unitKey(
-                        topic, entry.getKey(), snapshot.shardId());
-                DetectionStateOwnerEntity owner = ownerRepository.findByOwnerKeyForUpdate(ownerKey)
-                        .orElseThrow(() -> new DetectionStateOwnership.StaleStateOwnerException(
-                                "checkpoint owner fence is missing: " + ownerKey));
-                if (owner.getFencingEpoch() != entry.getValue()) {
-                    throw new DetectionStateOwnership.StaleStateOwnerException(
-                            "checkpoint owner fence was superseded: " + ownerKey
-                                    + " expected=" + entry.getValue()
-                                    + " actual=" + owner.getFencingEpoch());
+                String key = DetectionStateOwnership.unitKey(topic, entry.getKey(), snapshot.shardId());
+                Long previous = epochs.putIfAbsent(key, entry.getValue());
+                if (previous != null && !previous.equals(entry.getValue())) {
+                    throw new IllegalArgumentException("checkpoint contains inconsistent owner epochs");
                 }
+            }
+        }
+        // Match event-batch lock order and lock each row once per generation.
+        for (Map.Entry<String, Long> entry : epochs.entrySet()) {
+            DetectionStateOwnerEntity owner = ownerRepository.findByOwnerKeyForUpdate(entry.getKey())
+                    .orElseThrow(() -> new DetectionStateOwnership.StaleStateOwnerException(
+                            "checkpoint owner fence is missing: " + entry.getKey()));
+            if (owner.getFencingEpoch() != entry.getValue()) {
+                throw new DetectionStateOwnership.StaleStateOwnerException(
+                        "checkpoint owner fence was superseded: " + entry.getKey());
             }
         }
     }
