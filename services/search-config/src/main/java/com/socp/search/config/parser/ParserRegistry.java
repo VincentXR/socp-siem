@@ -182,6 +182,9 @@ public class ParserRegistry {
     private Map<String, String> parseEmbeddedText(Map<String, String> envelope, int depth) {
         String message = envelope.get(CanonicalEvent.EVENT_MESSAGE);
         if (message == null || message.isBlank()) return null;
+        String body = message.stripLeading();
+        if (body.startsWith("CEF:")) return safeParse(byVendor.get("cef"), body);
+        if (body.startsWith("LEEF:")) return safeParse(byVendor.get("leef"), body);
         if (message.stripLeading().startsWith("{")) {
             if (depth >= MAX_ENVELOPE_DEPTH) {
                 return parseFailure(message, "JSON envelope nesting exceeds " + MAX_ENVELOPE_DEPTH);

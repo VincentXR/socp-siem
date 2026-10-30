@@ -131,6 +131,11 @@ public class DetectionPerformanceMetrics implements RuleProcessingObserver {
         if (event != null) journalCommitted(event.scopedId());
     }
 
+    /** Bounded state-unit fan-out of a partition batch; no entity/tenant labels. */
+    public void batchStateUnits(int units) {
+        registry.summary("socp.detection.batch.state.units").record(units);
+    }
+
     public void terminalWithoutEvaluation(String eventId, String outcome) {
         events.remove(eventId);
         registry.counter("socp.detection.event.terminal", "outcome", outcome).increment();

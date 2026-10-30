@@ -25,6 +25,12 @@ public interface SoarDispatchOutboxRepository extends TenantScopedRepository<Soa
     Optional<SoarDispatchOutboxEntity> findByTenantIdAndIdForUpdateSkipLocked(
             @Param("tenantId") String tenantId, @Param("id") String id);
 
+    /** An owned claim waits for short contention instead of silently losing its acknowledgement. */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select o from SoarDispatchOutboxEntity o where o.tenantId = :tenantId and o.id = :id")
+    Optional<SoarDispatchOutboxEntity> findByTenantIdAndIdForUpdate(
+            @Param("tenantId") String tenantId, @Param("id") String id);
+
     /** Bounded candidates only; the coordinator rechecks each version in its own transaction. */
     @Transactional
     @Query(value = "select * from t_soar_dispatch_outbox where "

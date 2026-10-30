@@ -58,7 +58,7 @@ public class SoarDispatchState {
                 row.getRowVersion(), worker, run));
     }
 
-    @Transactional
+    @Transactional(timeout = 5)
     public boolean beforeStart(Claim claim, Instant now) {
         var pair = owned(claim);
         if (pair == null) return false;
@@ -67,7 +67,7 @@ public class SoarDispatchState {
         return false;
     }
 
-    @Transactional
+    @Transactional(timeout = 5)
     public boolean complete(Claim claim, String temporalRunId, Instant now) {
         var pair = owned(claim);
         if (pair == null) return false;
@@ -79,7 +79,7 @@ public class SoarDispatchState {
         return true;
     }
 
-    @Transactional
+    @Transactional(timeout = 5)
     public boolean fail(Claim claim, String error, boolean permanent, Instant now) {
         var pair = owned(claim);
         if (pair == null) return false;
@@ -107,18 +107,27 @@ public class SoarDispatchState {
     }
 
     private Pair owned(Claim claim) {
-        var pair = lock(claim.tenant(), claim.id(), claim.runId());
+        // SKIP LOCKED is suitable when choosing work, but a busy owned row is
+        // not evidence that its claim disappeared. Wait within the short caller
+        // transaction so dispatch/acknowledgement is not abandoned until lease expiry.
+        var pair = lock(claim.tenant(), claim.id(), claim.runId(), false);
         return pair != null && "DISPATCHING".equals(pair.outbox().getStatus())
                 && Objects.equals(claim.version(), pair.outbox().getRowVersion())
                 && Objects.equals(claim.worker(), pair.outbox().getClaimedBy()) ? pair : null;
     }
 
     private Pair lock(String tenant, String id, String runId) {
-        // Keep one lock order; SKIP LOCKED also avoids waiting behind an
-        // operator command or a workflow activity holding either record.
-        var run = runs.findByTenantIdAndIdForUpdateSkipLocked(tenant, runId);
+        return lock(tenant, id, runId, true);
+    }
+
+    private Pair lock(String tenant, String id, String runId, boolean skipBusy) {
+        // One lock order for both paths. Candidate scans skip busy rows; owned
+        // transitions use a bounded transaction and still recheck the claim token.
+        var run = skipBusy ? runs.findByTenantIdAndIdForUpdateSkipLocked(tenant, runId)
+                : runs.findByTenantIdAndIdForUpdate(tenant, runId);
         if (run.isEmpty()) return null;
-        var row = dispatches.findByTenantIdAndIdForUpdateSkipLocked(tenant, id);
+        var row = skipBusy ? dispatches.findByTenantIdAndIdForUpdateSkipLocked(tenant, id)
+                : dispatches.findByTenantIdAndIdForUpdate(tenant, id);
         if (row.isEmpty() || !Objects.equals(runId, row.get().getRunId())) return null;
         return new Pair(row.get(), run.get());
     }

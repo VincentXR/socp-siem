@@ -1,85 +1,60 @@
 package com.socp.search.config.parser;
 
 import java.time.Instant;
-import java.time.ZoneOffset;
-import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Syslog 解析器：支持 RFC3164（BSD）与 RFC5424（IETF）两种风格。
- *
- * <pre>
- * RFC3164: &lt;34&gt;Oct 11 22:14:15 mymachine su[1123]: 'su root' failed for lonvick on /dev/pts/8
- * RFC5424: &lt;165&gt;1 2003-10-11T22:14:15.003Z mymachine evntslog - ID47 [meta sequenceId="1"] msg
- * </pre>
- *
- * 输出：event.severity（按 PRI 换算，0-3 emergency/alert/critical/error，4-6 warning/notice/info，7 debug）、
- * host.name、event.message（正文）、vendor="syslog"，正文再交给 KV 等后续步骤（SourceRouter 可链式）。
- */
+/** RFC3164 and RFC5424. Yearless timestamps are resolved against trusted receipt time at ingestion. */
 public final class SyslogParser implements EventParser {
-
-    // <PRI>VERSION? TIMESTAMP HOST TAG[PID]: MSG 或 <PRI>TIMESTAMP HOST TAG[PID]: MSG
     private static final Pattern RFC5424 = Pattern.compile(
-            "^<(?<pri>\\d{1,3})>\\s*(?<ver>\\d)\\s+(?<ts>\\S+)\\s+(?<host>\\S+)\\s+(?<app>[^\\s\\[]+)(?:\\s+\\S+){0,2}\\s*(?:\\[(?<pid>\\d+)])?\\s*:?\\s*(?<msg>.*)$");
+            "^<(?<pri>\\d{1,3})>(?<ver>[1-9]\\d{0,2}) (?<ts>\\S+) (?<host>\\S+) (?<app>\\S+) (?<pid>\\S+) (?<msgid>\\S+) (?<data>.*)$",
+            Pattern.DOTALL);
     private static final Pattern RFC3164 = Pattern.compile(
-            "^<(?<pri>\\d{1,3})>\\s*(?<ts>[A-Z][a-z]{2}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2})\\s+(?<host>\\S+)\\s+(?<app>[^\\s\\[:]+)(?:\\[(?<pid>\\d+)])?\\s*:?\\s*(?<msg>.*)$");
-    private static final DateTimeFormatter RFC3164_FMT = DateTimeFormatter.ofPattern("MMM d HH:mm:ss").withZone(ZoneOffset.UTC);
+            "^<(?<pri>\\d{1,3})>\\s*(?<ts>[A-Z][a-z]{2}\\s+\\d{1,2}\\s+\\d{2}:\\d{2}:\\d{2})\\s+(?<host>\\S+)\\s+(?<app>[^\\s\\[:]+)(?:\\[(?<pid>\\d+)])?\\s*:?\\s*(?<msg>.*)$",
+            Pattern.DOTALL);
 
     @Override
-    public String name() {
-        return "syslog";
-    }
+    public String name() { return "syslog"; }
 
     @Override
     public Map<String, String> parse(String raw) {
-        if (raw == null || !raw.stripLeading().startsWith("<")) {
-            return null;
-        }
-        Matcher m = RFC5424.matcher(raw);
-        if (!m.matches()) {
-            m = RFC3164.matcher(raw);
-        }
-        if (!m.matches()) {
-            return null; // 不是 syslog 形态（如 <tag> 出现在 KV 里），交给下一个 parser
-        }
+        if (raw == null || !raw.stripLeading().startsWith("<")) return null;
+        var m = RFC5424.matcher(raw.stripLeading());
+        boolean ietf = m.matches();
+        if (!ietf) m = RFC3164.matcher(raw.stripLeading());
+        if (!m.matches()) return null;
         Map<String, String> out = new LinkedHashMap<>();
         out.put("vendor", "syslog");
-        out.put(CanonicalEvent.EVENT_MESSAGE, m.group("msg") == null ? "" : m.group("msg").trim());
-        if (m.group("host") != null) {
-            out.put(CanonicalEvent.HOST_NAME, m.group("host"));
-        }
-        out.put(CanonicalEvent.EVENT_CODE, m.group("app") == null ? "syslog" : m.group("app"));
+        out.put("syslog.version", ietf ? m.group("ver") : "3164");
+        out.put(CanonicalEvent.EVENT_MESSAGE, ietf ? structuredData(m.group("data"), out) : m.group("msg"));
+        put(out, CanonicalEvent.HOST_NAME, m.group("host"));
         String app = m.group("app");
-        if (app != null) {
-            out.put(CanonicalEvent.PROCESS_NAME, app);
-            String source = switch (app.toLowerCase(java.util.Locale.ROOT)) {
-                case "sshd", "sudo", "su" -> "auth";
-                case "auditd", "linux", "edr", "falco" -> app.toLowerCase(java.util.Locale.ROOT);
-                default -> "syslog";
-            };
-            out.put("source", source);
-        }
-        if (m.group("pid") != null) {
-            out.put(CanonicalEvent.PROCESS_PID, m.group("pid"));
-        }
+        put(out, CanonicalEvent.EVENT_CODE, app);
+        put(out, CanonicalEvent.PROCESS_NAME, app);
+        out.put("source", switch (app.toLowerCase(Locale.ROOT)) {
+            case "sshd", "sudo", "su" -> "auth";
+            case "auditd", "linux", "edr", "falco" -> app.toLowerCase(Locale.ROOT);
+            default -> "syslog";
+        });
+        String pid = m.group("pid");
+        put(out, "syslog.procid", pid);
+        if (pid != null && pid.matches("[0-9]+")) out.put(CanonicalEvent.PROCESS_PID, pid);
+        if (ietf) put(out, "syslog.msgid", m.group("msgid"));
         int pri = Integer.parseInt(m.group("pri"));
-        out.put(CanonicalEvent.EVENT_SEVERITY, severityOf(pri & 0x07));
+        if (pri > 191) throw new IllegalArgumentException("syslog PRI exceeds 191");
+        out.put("syslog.facility", Integer.toString(pri / 8));
+        out.put(CanonicalEvent.EVENT_SEVERITY, severityOf(pri & 7));
         String ts = m.group("ts");
-        if (ts != null && !ts.isEmpty()) {
+        if (!"-".equals(ts)) {
             try {
-                Instant inst = ts.indexOf('T') > 0 ? Instant.parse(ts)
-                        : RFC3164_FMT.parse(ts, Instant::from).plus(java.time.Duration.ofHours(0));
-                out.put("timestamp", inst.toString());
-            } catch (Exception ignored) {
-                out.put("timestamp", ts);
+                out.put("timestamp", ietf ? Instant.parse(ts).toString() : ts);
+            } catch (java.time.DateTimeException invalid) {
+                throw new IllegalArgumentException("invalid RFC5424 timestamp", invalid);
             }
         }
         if ("sshd".equalsIgnoreCase(app)) {
-            // Reuse the authentication parser so RFC syslog and plain auth
-            // files carry the same IP/user/action dimensions into routing.
             Map<String, String> authentication = new SshdParser().parse(
                     ts + " " + m.group("host") + " sshd: " + out.get(CanonicalEvent.EVENT_MESSAGE));
             if (authentication != null) {
@@ -90,11 +65,65 @@ public final class SyslogParser implements EventParser {
         return out;
     }
 
-    private static String severityOf(int sev) {
-        return switch (sev) {
+    /** Parse SD separately from MSG; escaped quotes, backslashes and brackets belong to PARAM-VALUE. */
+    private static String structuredData(String data, Map<String, String> out) {
+        int position = 0;
+        if (data.startsWith("-")) position = 1;
+        else {
+            while (position < data.length() && data.charAt(position) == '[') {
+                int start = ++position;
+                while (position < data.length() && data.charAt(position) != ' ' && data.charAt(position) != ']') position++;
+                String id = sdName(data.substring(start, position));
+                while (position < data.length() && data.charAt(position) == ' ') {
+                    start = ++position;
+                    while (position < data.length() && data.charAt(position) != '=') position++;
+                    String name = sdName(data.substring(start, position));
+                    if (++position >= data.length() || data.charAt(position++) != '"') throw invalidData();
+                    var value = new StringBuilder();
+                    boolean closed = false;
+                    while (position < data.length()) {
+                        char c = data.charAt(position++);
+                        if (c == '"') { closed = true; break; }
+                        if (c == ']') throw invalidData();
+                        if (c == '\\' && position < data.length()) {
+                            char next = data.charAt(position);
+                            if (next == '"' || next == '\\' || next == ']') { value.append(next); position++; continue; }
+                        }
+                        value.append(c);
+                    }
+                    if (!closed) throw invalidData();
+                    out.put("syslog.sd." + id + "." + name, value.toString());
+                }
+                if (position >= data.length() || data.charAt(position++) != ']') throw invalidData();
+            }
+            if (position == 0) throw invalidData();
+            out.put("syslog.structured_data", data.substring(0, position));
+        }
+        if (position == data.length()) return "";
+        if (data.charAt(position) != ' ') throw invalidData();
+        return data.substring(position + 1);
+    }
+
+    private static String sdName(String value) {
+        if (value.isEmpty() || value.length() > 32 || value.chars().anyMatch(
+                c -> c < 33 || c > 126 || c == '=' || c == '"' || c == ']')) throw invalidData();
+        return value;
+    }
+
+    private static IllegalArgumentException invalidData() {
+        return new IllegalArgumentException("invalid RFC5424 structured data");
+    }
+
+    private static void put(Map<String, String> out, String key, String value) {
+        if (value != null && !"-".equals(value)) out.put(key, value);
+    }
+
+    private static String severityOf(int severity) {
+        return switch (severity) {
             case 0, 1, 2 -> "CRITICAL";
             case 3 -> "ERROR";
             case 4 -> "WARNING";
+            case 5 -> "NOTICE";
             case 6 -> "INFO";
             default -> "DEBUG";
         };

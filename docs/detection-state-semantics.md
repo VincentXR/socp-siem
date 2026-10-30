@@ -269,6 +269,10 @@ independent per-tenant event-rate, pending-byte, and active-routing-entity
 budgets. A rejected HTTP admission returns 503; a rejected Kafka admission
 remains retryable and leaves the partition offset pending. A tenant's budget is
 never charged to another tenant.
+If batch admission rejects a suffix before any event reaches the engine, the
+admitted prefix returns its rate tokens and pending bytes; entity reservations
+unwind in reverse order. Each permit settles once, so completion never refunds
+an already processed event and repeated rollback cannot create extra tokens.
 
 Rule evaluation has a per-rule circuit breaker. A malformed rule failure
 (`IllegalArgumentException`) is isolated immediately; repeated
@@ -363,6 +367,33 @@ rule had accumulated for the failed event, because pending alerts are not part
 of the serialized snapshot; without it a rolled back event would deliver its
 alerts against the next event's result.
 
+Atomic batches evaluate their events in order and capture each event's audit
+diff before evaluating the next. Once all candidates are known, suppression
+reserves only their affected lock stripes in a fixed order. The reservation
+lasts through the result transaction and is committed only after its durable
+acknowledgement. A failed transaction discards staged suppression decisions;
+an alert-free batch takes no suppression locks. Unrelated tenants or shards
+therefore do not wait behind a process-wide suppression lock during database I/O.
+
+A bounded Kafka partition prefix may contain several tenants or state shards.
+The consumer claims the journal rows per tenant, then submits one ordered atomic
+batch per state unit to its own engine without awaiting the preceding unit.
+The partition prefix remains unacknowledged until every submitted future has
+settled successfully and every unit's ownership fence is current. A synchronous
+admission error also waits for already submitted units before record-level retry;
+timeouts retain the original futures. Completed sibling receipts survive another
+unit's rollback and are skipped on replay. Each engine records only its own
+partition-offset vector, so a faster shard cannot checkpoint a slower shard's state.
+
+`socp.detect.state.shards` controls the independent engine count per tenant.
+Checkpoint compatibility fingerprints include the shard count, routing
+hash version and rule semantics. Changing the layout invalidates those snapshots
+and rebuilds from the retained journal. Legacy checkpoints with no layout
+fingerprint also require full retained-journal replay, including on a single-shard
+deployment; their original shard count cannot be inferred. Apply one shard count consistently to
+the cluster and drain/restart it when changing the layout; canonical cross-field
+limitations still require the routed delivery contract.
+
 For Kafka records, the durable sink evaluates the current state-unit fence
 inside that transaction before the Outbox/journal commit. Checkpoint rows also
 store a partition-to-owner-epoch vector; `JpaDetectionStateSnapshotStore`
@@ -397,6 +428,12 @@ This distinction prevents a PostgreSQL timeout or broker outage from being
 silently converted into a committed offset.
 
 ## Recovery and rebalance
+
+Kafka event, route-source, rule-change and secondary-alarm consumers start on
+`ApplicationReadyEvent`, after Spring singleton initialization and application
+runners finish. Starting replay from a bean initialization callback can publish
+transaction events that resolve another bean while the main thread holds the
+singleton lock. Repeated ready notifications must not create a second poller.
 
 At startup and `onPartitionsAssigned`, Detection rebuilds rule windows only
 from `COMPLETED` journal rows belonging to the current assignment. Replayed

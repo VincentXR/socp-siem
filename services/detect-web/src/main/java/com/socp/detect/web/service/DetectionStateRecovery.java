@@ -2,6 +2,7 @@ package com.socp.detect.web.service;
 
 import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.detect.web.persistence.store.DetectionStateOwnership;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.engine.RuleEngine;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.partition.DetectionRoutingKey;
@@ -324,19 +325,32 @@ public class DetectionStateRecovery {
     /** Capture from a known engine instance; used by its worker callback during a hot swap. */
     void snapshotAfterDurable(RuleEngine engine, SecurityEvent event,
                                       Integer partition, Long offset) {
+        snapshotAfterDurable(engine, event, partition, offset, 1);
+    }
+
+    /** Batch state and its scalar/vector watermarks must all describe the last durable event. */
+    void snapshotAfterDurable(RuleEngine engine, SecurityEvent event,
+                              Integer partition, Long offset, int processedEvents) {
+        if (processedEvents < 1 || processedEvents > RuleEngine.MAX_BATCH_EVENTS) {
+            throw new IllegalArgumentException("invalid checkpoint batch size");
+        }
         if (snapshotStore == null || event == null || engine == null) return;
         String tenant = event.requireTenantId();
         long every = Math.max(1L, snapshotEveryEvents);
         int shard = shardFor(event);
         String counterKey = engineKey(tenant, shard);
-        long count = snapshotCounters.computeIfAbsent(counterKey, ignored -> new AtomicLong()).incrementAndGet();
+        long before = snapshotCounters.computeIfAbsent(counterKey, ignored -> new AtomicLong()).getAndAdd(processedEvents);
+        long count = before + processedEvents;
         Map<Integer, Long> offsets = snapshotOffsets.computeIfAbsent(counterKey,
                 ignored -> new ConcurrentHashMap<>());
         if (partition != null && offset != null && partition >= 0 && offset >= 0) {
             offsets.merge(partition, offset, Math::max);
         }
-        if (count % every != 0) return;
-        try {
+        if (before / every == count / every) return;
+        // Completion callbacks can run on engine workers after the ingress
+        // tenant scope has closed. Install the validated event tenant before
+        // entering the snapshot store's transaction and restore caller scope.
+        try (TenantContext.Scope ignored = TenantContext.open(tenant)) {
             // Snapshot writes are also a durable side effect. Do not let a
             // revoked worker overwrite the replacement owner's checkpoint.
             durableGuardFor(partition == null ? -1 : partition, shard).run();

@@ -9,7 +9,8 @@ import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.detect.web.persistence.store.InMemoryDetectionStateStore;
 import com.socp.detect.web.persistence.store.PendingDetectionEvent;
 import com.socp.rule.model.SecurityEvent;
-import jakarta.annotation.PostConstruct;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
@@ -85,7 +86,8 @@ public class KafkaEventConsumer {
     private final DetectionPerformanceMetrics performanceMetrics;
     private final DetectionRecordProcessor recordProcessor;
     private final PartitionCompletionTracker completionTracker = new PartitionCompletionTracker();
-    private static final int LANE_QUEUE_CAPACITY = 1_000;
+    // At most 32 deliveries per task; retain roughly the previous 1,000-record lane bound.
+    private static final int LANE_QUEUE_CAPACITY = 32;
     private static final int LANE_RESUME_THRESHOLD = LANE_QUEUE_CAPACITY / 2;
     private final Map<Integer, ThreadPoolExecutor> partitionLanes = new ConcurrentHashMap<>();
     /** Consumer-thread-owned tasks which could not yet enter their partition lane. */
@@ -116,7 +118,7 @@ public class KafkaEventConsumer {
     /** Set by {@link #setDlqSink}; null means the Kafka DLQ path is used. */
     private BiConsumer<String, String> dlqSink;
     private volatile boolean customDlqSink;
-    private Thread consumerThread;
+    private volatile Thread consumerThread;
 
     /** A dead poller must not leave a live HTTP process reporting healthy. */
     public boolean isHealthy() {
@@ -164,9 +166,11 @@ public class KafkaEventConsumer {
         recordProcessor.setRoutedInput(runtime.routedDetection());
     }
 
-    @PostConstruct
-    public void start() {
-        if (!enabled) return;
+    // Replays can publish transaction events that resolve other Spring beans.
+    // Start only after singleton initialization and application runners finish.
+    @EventListener(ApplicationReadyEvent.class)
+    public synchronized void start() {
+        if (!enabled || consumerThread != null) return;
         registerMetrics();
         consumerThread = Thread.ofPlatform().name("kafka-consumer").daemon(true).start(this::run);
         log.info("Kafka event consumer started bootstrap={} topic={} group={}", bootstrap, topic, groupId);
@@ -313,12 +317,16 @@ public class KafkaEventConsumer {
                 drainDeferred(consumer);
                 applyPauseState(consumer);
                 var records = consumer.poll(Duration.ofMillis(250));
-                for (var record : records) {
-                    long epoch = completionTracker.register(record.partition(), record.offset());
-                    TopicPartition partition = new TopicPartition(record.topic(), record.partition());
-                    PartitionRetryState.Lease lease = retryState.acquire(partition);
-                    dispatchOrDefer(consumer, partition, () -> processWithRetry(record, epoch, lease),
-                            estimateRecordBytes(record));
+                for (TopicPartition partition : records.partitions()) {
+                    var partitionRecords = records.records(partition);
+                    for (int start = 0; start < partitionRecords.size(); start += com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) {
+                        var batch = List.copyOf(partitionRecords.subList(start,
+                                Math.min(partitionRecords.size(), start + com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS)));
+                        var epochs = batch.stream().map(record -> completionTracker.register(
+                                record.partition(), record.offset())).toList();
+                        PartitionRetryState.Lease lease = retryState.acquire(partition);
+                        dispatchBatch(consumer, partition, batch, epochs, lease);
+                    }
                 }
                 drainCompletions(consumer);
                 drainDeferred(consumer);
@@ -560,6 +568,89 @@ public class KafkaEventConsumer {
     void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,
                           long epoch) {
         processWithRetry(record, epoch, retryState.acquire(new TopicPartition(record.topic(), record.partition())));
+    }
+
+    void processBatchWithRetry(List<org.apache.kafka.clients.consumer.ConsumerRecord<String, String>> records,
+                               List<Long> epochs, PartitionRetryState.Lease lease) {
+        if (!running.get() || Thread.currentThread().isInterrupted() || !retryState.active(lease)) return;
+        try {
+            if (recordProcessor.processBatch(records)) {
+                if (metrics != null) metrics.summary("socp.detection.batch.records").record(records.size());
+                if (!retryState.active(lease)) return;
+                clearRetryBlocked(lease, true);
+                for (int i = 0; i < records.size(); i++) {
+                    var record = records.get(i);
+                    completions.offer(new RecordCompletion(record.partition(), record.offset(), epochs.get(i)));
+                }
+                return;
+            }
+        } catch (RuntimeException failedBatch) {
+            if (Thread.currentThread().isInterrupted() || !retryState.active(lease)) return;
+            if (DetectionRecordProcessor.classifyFailure(failedBatch)
+                    == DetectionRecordProcessor.FailureCategory.OWNERSHIP_LOST) {
+                recordRetryFailure(lease, records.getFirst(), retryableUnknown(records.getFirst(), failedBatch), 0,
+                        processingRetryInitialDelayMs);
+                return;
+            }
+            // The batch future settled or admission failed. Re-enter the proven
+            // record-level retry/DLQ path, which retains the failed prefix and all terminal receipts.
+            count("socp.detection.batch.fallback", "record_retry");
+        } finally {
+            com.socp.platform.tenant.context.TenantContext.clear();
+        }
+        for (int i = 0; i < records.size(); i++) {
+            if (!running.get() || Thread.currentThread().isInterrupted() || !retryState.active(lease)
+                    || sessionRestartRequested.get()) return;
+            processWithRetry(records.get(i), epochs.get(i), lease);
+        }
+    }
+
+    void dispatchBatch(KafkaConsumer<String, String> consumer, TopicPartition partition,
+                       List<org.apache.kafka.clients.consumer.ConsumerRecord<String, String>> records,
+                       List<Long> epochs, PartitionRetryState.Lease lease) {
+        long bytes = records.stream().mapToLong(KafkaEventConsumer::estimateRecordBytes).sum();
+        dispatchOrDefer(consumer, partition, new KafkaBatch(records, epochs, lease), bytes);
+    }
+
+    /** Coalesce only already-queued adjacent work; quiet partitions incur no batching delay. */
+    private final class KafkaBatch implements Runnable {
+        private final List<org.apache.kafka.clients.consumer.ConsumerRecord<String, String>> records;
+        private final List<Long> epochs;
+        private final PartitionRetryState.Lease lease;
+
+        private KafkaBatch(List<org.apache.kafka.clients.consumer.ConsumerRecord<String, String>> records,
+                           List<Long> epochs, PartitionRetryState.Lease lease) {
+            this.records = List.copyOf(records);
+            this.epochs = List.copyOf(epochs);
+            this.lease = lease;
+        }
+
+        @Override public void run() {
+            var combined = new java.util.ArrayList<>(records);
+            var combinedEpochs = new java.util.ArrayList<>(epochs);
+            List<PendingWork> absorbed = new java.util.ArrayList<>();
+            ThreadPoolExecutor ownerLane = partitionLanes.get(records.getFirst().partition());
+            try {
+                while (ownerLane != null && retryState.active(lease) && !Thread.currentThread().isInterrupted()
+                        && combined.size() < com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) {
+                    Runnable head = ownerLane.getQueue().peek();
+                    if (!(head instanceof PendingWork work) || !(work.delegate instanceof KafkaBatch next)
+                            || next.lease != lease
+                            || !records.getFirst().topic().equals(next.records.getFirst().topic())
+                            || combined.getLast().offset() >= next.records.getFirst().offset()
+                            || combined.size() + next.records.size() > com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) break;
+                    // A concurrent revoke may drain this queue. Only the worker
+                    // which actually removes the task inherits its byte reservation.
+                    if (!ownerLane.getQueue().remove(head)) break;
+                    absorbed.add(work);
+                    combined.addAll(next.records);
+                    combinedEpochs.addAll(next.epochs);
+                }
+                processBatchWithRetry(combined, combinedEpochs, lease);
+            } finally {
+                absorbed.forEach(PendingWork::release);
+            }
+        }
     }
 
     private void processWithRetry(org.apache.kafka.clients.consumer.ConsumerRecord<String, String> record,

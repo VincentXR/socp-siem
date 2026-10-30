@@ -63,16 +63,18 @@ public final class TenantAdmission {
 
             if (configured.eventsPerSecond() > 0) state.tokens -= 1.0;
             state.pendingBytes = safeAdd(state.pendingBytes, bytes);
-            state.entities.put(entity, now);
-            return Decision.admitted(new Permit(tenant, entity, newEntity, now, bytes));
+            Long previousTouch = state.entities.put(entity, now);
+            return Decision.admitted(new Permit(tenant, entity, previousTouch, now, bytes,
+                    configured.eventsPerSecond() > 0, state));
         }
     }
 
     public void release(Permit permit) {
         if (permit == null) return;
-        TenantState state = tenants.get(permit.tenant());
-        if (state == null) return;
+        TenantState state = permit.state;
         synchronized (state) {
+            if (permit.settled) return;
+            permit.settled = true;
             state.pendingBytes = Math.max(0L, state.pendingBytes - permit.bytes());
         }
     }
@@ -80,15 +82,27 @@ public final class TenantAdmission {
     /** Undo an admission which could not enter the RuleEngine queue. */
     public void rollback(Permit permit) {
         if (permit == null) return;
-        TenantState state = tenants.get(permit.tenant());
-        if (state == null) return;
+        TenantState state = permit.state;
         synchronized (state) {
+            if (permit.settled) return;
+            permit.settled = true;
             state.pendingBytes = Math.max(0L, state.pendingBytes - permit.bytes());
-            if (permit.newEntity() && state.entities.get(permit.entity()) != null
+            if (permit.rateCharged) {
+                Limits configured = limits;
+                state.refill(System.nanoTime(), configured);
+                state.tokens = Math.min(configured.burst(), state.tokens + 1.0);
+            }
+            if (state.entities.get(permit.entity()) != null
                     && state.entities.get(permit.entity()) == permit.entityTouchNanos()) {
-                state.entities.remove(permit.entity());
+                if (permit.previousEntityTouch == null) state.entities.remove(permit.entity());
+                else state.entities.put(permit.entity(), permit.previousEntityTouch);
             }
         }
+    }
+
+    /** Restore chained entity touches from the end of an unqueued batch. */
+    public void rollbackBatch(java.util.List<Permit> permits) {
+        for (int index = permits.size() - 1; index >= 0; index--) rollback(permits.get(index));
     }
 
     public Map<String, Object> stats(String tenant) {
@@ -154,8 +168,33 @@ public final class TenantAdmission {
         }
     }
 
-    public record Permit(String tenant, String entity, boolean newEntity,
-                         long entityTouchNanos, long bytes) {
+    public static final class Permit {
+        private final String tenant;
+        private final String entity;
+        private final Long previousEntityTouch;
+        private final long entityTouchNanos;
+        private final long bytes;
+        private final boolean rateCharged;
+        private final TenantState state;
+        // Accessed only while holding the exact state that issued this permit.
+        private boolean settled;
+
+        private Permit(String tenant, String entity, Long previousEntityTouch,
+                       long entityTouchNanos, long bytes, boolean rateCharged, TenantState state) {
+            this.tenant = tenant;
+            this.entity = entity;
+            this.previousEntityTouch = previousEntityTouch;
+            this.entityTouchNanos = entityTouchNanos;
+            this.bytes = bytes;
+            this.rateCharged = rateCharged;
+            this.state = state;
+        }
+
+        public String tenant() { return tenant; }
+        public String entity() { return entity; }
+        public boolean newEntity() { return previousEntityTouch == null; }
+        public long entityTouchNanos() { return entityTouchNanos; }
+        public long bytes() { return bytes; }
     }
 
     public record Decision(Permit permit, RejectionReason reason) {

@@ -4,6 +4,7 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
+import com.socp.rule.state.RuleStateMutation;
 import com.socp.rule.state.StateSnapshotCodec;
 import com.socp.rule.state.StatefulRule;
 
@@ -204,16 +205,34 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
 
     @Override
     public byte[] snapshotState() {
-        return states.snapshot(state -> {
-            Map<String, Object> value = new java.util.LinkedHashMap<>();
-            value.put("bucketIdx", state.bucketIdx);
-            value.put("count", state.count);
-            value.put("alerted", state.alerted);
-            value.put("history", new ArrayList<>(state.history));
-            value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
-            return value;
-        });
+        return states.snapshot(BaselineRule::encodeState);
     }
+
+    @Override
+    public RuleStateMutation beginMutation() {
+        return states.beginMutation(BaselineRule::copyState, BaselineRule::encodeState);
+    }
+
+    private static State copyState(State state) {
+        State copy = new State();
+        copy.bucketIdx = state.bucketIdx;
+        copy.count = state.count;
+        copy.alerted = state.alerted;
+        copy.history.addAll(state.history);
+        copy.evidence.addAll(state.evidence);
+        return copy;
+    }
+
+    private static Object encodeState(State state) {
+        Map<String, Object> value = new java.util.LinkedHashMap<>();
+        value.put("bucketIdx", state.bucketIdx);
+        value.put("count", state.count);
+        value.put("alerted", state.alerted);
+        value.put("history", new ArrayList<>(state.history));
+        value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
+        return value;
+    }
+
 
     @Override
     @SuppressWarnings("unchecked")

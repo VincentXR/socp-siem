@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Set;
 
 public interface DetectionEventRepository extends TenantScopedRepository<DetectionEventEntity, String> {
+    List<DetectionEventEntity> findByTenantIdAndDeliveryIdIn(String tenantId, java.util.Collection<String> deliveryIds);
     List<DetectionEventEntity> findByTenantId(String tenantId);
     java.util.Optional<DetectionEventEntity> findByStorageIdAndTenantId(String storageId, String tenantId);
 

@@ -4,6 +4,7 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
+import com.socp.rule.state.RuleStateMutation;
 import com.socp.rule.state.StateSnapshotCodec;
 import com.socp.rule.state.StatefulRule;
 import com.socp.rule.time.EventTimePolicy;
@@ -135,12 +136,26 @@ public final class ThresholdRule extends AbstractRule implements StatefulRule {
 
     @Override
     public byte[] snapshotState() {
-        return buckets.snapshot(state -> {
-            Map<String, Object> value = new java.util.LinkedHashMap<>();
-            value.put("watermark", state.watermark == null ? null : state.watermark.toString());
-            value.put("events", state.events.stream().map(StateSnapshotCodec::event).toList());
-            return value;
-        });
+        return buckets.snapshot(ThresholdRule::encodeState);
+    }
+
+    @Override
+    public RuleStateMutation beginMutation() {
+        return buckets.beginMutation(ThresholdRule::copyState, ThresholdRule::encodeState);
+    }
+
+    private static BucketState copyState(BucketState state) {
+        BucketState copy = new BucketState();
+        copy.watermark = state.watermark;
+        copy.events.addAll(state.events);
+        return copy;
+    }
+
+    private static Object encodeState(BucketState state) {
+        Map<String, Object> value = new java.util.LinkedHashMap<>();
+        value.put("watermark", state.watermark == null ? null : state.watermark.toString());
+        value.put("events", state.events.stream().map(StateSnapshotCodec::event).toList());
+        return value;
     }
 
 

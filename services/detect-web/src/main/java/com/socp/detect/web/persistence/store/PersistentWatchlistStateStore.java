@@ -46,6 +46,7 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
     private final Map<Key, CachedState> cache = new LinkedHashMap<>(16, 0.75f, true);
     private final JdbcTemplate jdbc;
     private final TransactionTemplate transactions;
+    private final TransactionTemplate reads;
     private long cacheWeight;
 
     @Value("${socp.detect.watchlists.refresh-ms:1000}")
@@ -66,11 +67,17 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
         // Each retry needs a fresh transaction after an insert/optimistic conflict.
         transactions.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         transactions.setTimeout(5);
+        reads = new TransactionTemplate(transactionManager);
+        reads.setReadOnly(true);
     }
 
     @Override
-    @Transactional(readOnly = true)
     public State find(String tenantId, String name) {
+        // Cache hits must not borrow a JDBC connection or start an otherwise empty
+        // transaction. Validate authority before consulting either cache or store.
+        if (!TenantContext.isSystemScope() && !TenantContext.require().equals(tenantId)) {
+            throw new IllegalArgumentException("watchlist tenant does not match authenticated tenant");
+        }
         Key key = new Key(tenantId, name);
         long now = System.currentTimeMillis();
         synchronized (cache) {
@@ -79,9 +86,9 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
             invalidate(key);
         }
 
-        State state = repository.findByTenantIdAndListName(tenantId, name)
+        State state = reads.execute(status -> repository.findByTenantIdAndListName(tenantId, name)
                 .map(this::toState)
-                .orElse(null);
+                .orElse(null));
         cachePut(key, state, now + Math.max(0L, refreshMs));
         return state;
     }

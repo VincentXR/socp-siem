@@ -21,6 +21,120 @@ import static org.mockito.Mockito.times;
 
 class DetectionRecordProcessorTest {
 
+    private static java.util.List<org.apache.kafka.clients.consumer.ConsumerRecord<String,String>> records() {
+        return java.util.stream.IntStream.range(0,2).mapToObj(n->new org.apache.kafka.clients.consumer.ConsumerRecord<>(
+                "socp-events",0,(long)n,"key","{\"eventId\":\"batch-"+n+"\",\"tenantId\":\"default\",\"source\":\"auth\"}")).toList();
+    }
+    private static void enableBatch(DetectEngineService engine) {
+        org.mockito.Mockito.when(engine.prepareBatchEvent(any(),anyString(),org.mockito.ArgumentMatchers.anyInt(),org.mockito.ArgumentMatchers.anyLong()))
+                .thenAnswer(i->new com.socp.rule.engine.RuleEngine.BatchEvent(i.getArgument(0),
+                        new com.socp.rule.engine.DetectionResult.InputPosition(i.getArgument(1),i.getArgument(2),i.getArgument(3)),
+                        com.socp.rule.engine.RuleExecutionScope.NOOP));
+        org.mockito.Mockito.when(engine.batchGroups(org.mockito.ArgumentMatchers.anyList()))
+                .thenAnswer(i -> java.util.List.of(java.util.List.copyOf(i.getArgument(0))));
+    }
+    @Test void batchRetainsItsOriginalFutureAcrossTimeoutAndOnlyRetriesFinalFence() throws Exception {
+        var engine=mock(DetectEngineService.class);var state=mock(DetectionStateStore.class);enableBatch(engine);
+        var durable=new CompletableFuture<Void>();var admitted=new java.util.concurrent.CountDownLatch(1);
+        given(state.claimBatch(org.mockito.ArgumentMatchers.anyList())).willReturn(java.util.List.of(DetectionEventClaim.NEW,DetectionEventClaim.NEW));
+        org.mockito.Mockito.when(engine.ingestBatchFromKafkaAndAwait(org.mockito.ArgumentMatchers.anyList())).thenAnswer(i->{admitted.countDown();return durable;});
+        org.mockito.Mockito.doThrow(new org.springframework.transaction.CannotCreateTransactionException("transient"))
+                .doNothing().when(engine).assertCurrentOwner(any(),org.mockito.ArgumentMatchers.eq(0));
+        var processor=new DetectionRecordProcessor(engine,state,null,20L);
+        var result=CompletableFuture.supplyAsync(()->processor.processBatch(records()));
+        assertTrue(admitted.await(2,java.util.concurrent.TimeUnit.SECONDS));
+        Thread.sleep(50);assertTrue(!result.isDone());durable.complete(null);
+        assertTrue(result.get(3,java.util.concurrent.TimeUnit.SECONDS));
+        verify(engine,times(1)).ingestBatchFromKafkaAndAwait(org.mockito.ArgumentMatchers.anyList());
+        verify(state,times(1)).claimBatch(org.mockito.ArgumentMatchers.anyList());
+        verify(engine,times(2)).assertCurrentOwner(any(),org.mockito.ArgumentMatchers.eq(0));
+        org.mockito.Mockito.verify(state,org.mockito.Mockito.never()).markCompleted(any(SecurityEvent.class));
+    }
+    @Test void terminalBatchEntriesAreNotEvaluatedAgain() {
+        var engine=mock(DetectEngineService.class);var state=mock(DetectionStateStore.class);enableBatch(engine);
+        given(state.claimBatch(org.mockito.ArgumentMatchers.anyList())).willReturn(java.util.List.of(DetectionEventClaim.COMPLETED,DetectionEventClaim.NEW));
+        org.mockito.Mockito.when(engine.ingestBatchFromKafkaAndAwait(org.mockito.ArgumentMatchers.anyList())).thenAnswer(i->{
+            java.util.List<com.socp.rule.engine.RuleEngine.BatchEvent> pending=i.getArgument(0);
+            assertEquals(1,pending.size());assertEquals("batch-1",pending.getFirst().event().id());
+            return CompletableFuture.completedFuture(null);
+        });
+        assertTrue(new DetectionRecordProcessor(engine,state,null).processBatch(records()));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"success", "async-failure", "admission-failure"})
+    void parallelGroupsAllSettleBeforePartitionCompletionOrRecordRetry(String outcome) throws Exception {
+        var engine = mock(DetectEngineService.class);
+        var state = mock(DetectionStateStore.class);
+        enableBatch(engine);
+        org.mockito.Mockito.when(engine.batchGroups(org.mockito.ArgumentMatchers.anyList())).thenAnswer(call -> {
+            java.util.List<com.socp.rule.engine.RuleEngine.BatchEvent> events = call.getArgument(0);
+            return events.stream().map(java.util.List::of).toList();
+        });
+        given(state.claimBatch(org.mockito.ArgumentMatchers.anyList()))
+                .willReturn(java.util.List.of(DetectionEventClaim.NEW, DetectionEventClaim.NEW));
+        var slow = new CompletableFuture<Void>();
+        var otherSubmitted = new java.util.concurrent.CountDownLatch(1);
+        org.mockito.Mockito.when(engine.ingestBatchFromKafkaAndAwait(org.mockito.ArgumentMatchers.anyList())).thenAnswer(call -> {
+            assertEquals("default", com.socp.platform.tenant.context.TenantContext.require());
+            java.util.List<com.socp.rule.engine.RuleEngine.BatchEvent> events = call.getArgument(0);
+            if (events.getFirst().position().offset() == 0) return slow;
+            otherSubmitted.countDown();
+            if (outcome.equals("admission-failure")) throw new IllegalStateException("second group not admitted");
+            return outcome.equals("success") ? CompletableFuture.completedFuture(null)
+                    : CompletableFuture.failedFuture(new IllegalStateException("second transaction rolled back"));
+        });
+        try (var worker = java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var result = worker.submit(() -> new DetectionRecordProcessor(engine, state, null, 10L).processBatch(records()));
+            try {
+                assertTrue(otherSubmitted.await(3, java.util.concurrent.TimeUnit.SECONDS),
+                        "a slow state unit must not prevent another unit from starting");
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> result.get(50, java.util.concurrent.TimeUnit.MILLISECONDS),
+                        "neither ACK nor fallback may escape while any submitted transaction is in flight");
+                org.mockito.Mockito.verify(engine, org.mockito.Mockito.never())
+                        .assertCurrentOwner(any(), org.mockito.ArgumentMatchers.anyInt());
+                slow.complete(null);
+                if (outcome.equals("success")) {
+                    assertTrue(result.get(3, java.util.concurrent.TimeUnit.SECONDS));
+                    verify(engine, times(2)).assertCurrentOwner(any(), org.mockito.ArgumentMatchers.eq(0));
+                } else {
+                    assertThrows(java.util.concurrent.ExecutionException.class,
+                            () -> result.get(3, java.util.concurrent.TimeUnit.SECONDS));
+                }
+                verify(engine, times(2)).ingestBatchFromKafkaAndAwait(org.mockito.ArgumentMatchers.anyList());
+            } finally {
+                slow.complete(null);
+            }
+        }
+    }
+
+    @Test
+    void allTenantClaimsFinishBeforeAnyParallelEvaluationStarts() {
+        var engine = mock(DetectEngineService.class);
+        var state = mock(DetectionStateStore.class);
+        enableBatch(engine);
+        org.mockito.Mockito.when(engine.batchGroups(org.mockito.ArgumentMatchers.anyList())).thenAnswer(call -> {
+            java.util.List<com.socp.rule.engine.RuleEngine.BatchEvent> events = call.getArgument(0);
+            return events.stream().map(java.util.List::of).toList();
+        });
+        given(state.claimBatch(org.mockito.ArgumentMatchers.anyList())).willAnswer(call -> {
+            java.util.List<com.socp.detect.web.persistence.store.DetectionEventInput> inputs = call.getArgument(0);
+            String tenant = inputs.getFirst().event().requireTenantId();
+            assertEquals(tenant, com.socp.platform.tenant.context.TenantContext.require());
+            if (tenant.equals("second")) throw new IllegalStateException("claim unavailable");
+            return java.util.List.of(DetectionEventClaim.NEW);
+        });
+        var mixed = new java.util.ArrayList<>(records());
+        var second = mixed.get(1);
+        mixed.set(1, new org.apache.kafka.clients.consumer.ConsumerRecord<>(second.topic(), second.partition(),
+                second.offset(), second.key(), second.value().replace("default", "second")));
+        assertThrows(DetectionRecordProcessor.RetryableDetectionFailure.class,
+                () -> new DetectionRecordProcessor(engine, state, null).processBatch(mixed));
+        verify(engine, org.mockito.Mockito.never()).ingestBatchFromKafkaAndAwait(org.mockito.ArgumentMatchers.anyList());
+        assertEquals(null, com.socp.platform.tenant.context.TenantContext.get());
+    }
+
     @Test
     void canonicalAndHttpIngressCannotChooseTheirOwnDeliveryClassOrIdentity() {
         var processor = new DetectionRecordProcessor(mock(DetectEngineService.class),

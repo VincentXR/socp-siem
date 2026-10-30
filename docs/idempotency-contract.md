@@ -40,6 +40,18 @@ schema 上该列恒非空，与 `ContainerIdempotencyContractTest` 的建表断�
   作为非空、无冲突身份以保证唯一约束成立；它每次调用生成新 UUID，故这类手工无键告警在
   跨调用层面**不**去重。需要幂等的手工写入必须显式携带稳定 `sourceAlertId`。
 
+并发写入使用 PostgreSQL `INSERT ... ON CONFLICT (tenant_id, source_alert_id)
+DO NOTHING`，冲突方等待首写事务提交后回读同一告警，不重复生成 evidence、event outbox
+或 delivery。其他数据库约束错误仍回滚整个事务。H2 开发环境使用插入式 MERGE，并仅
+对目标身份唯一约束的并发冲突回读；H2 的单语句回滚行为不用于 PostgreSQL。
+
+批量创建的 `(tenant_id, Idempotency-Key)` 在同一事务内先原子占位，再写入告警和完整
+响应。相同 key、相同请求返回首次响应；相同 key、不同请求返回 409。失败事务连同
+占位记录一起回滚，不留下半完成响应。不同 key 的重叠批次按 sourceAlertId 排序获取
+唯一键锁，响应仍保持输入顺序，accepted/duplicates 取决于实际插入结果。
+`AlarmIdempotencyPersistenceTest` 与 `AlarmIdempotencyPostgresTest` 覆盖并发请求、
+跨租户隔离、逆序重叠批次及失败回滚。
+
 ### ClickHouse alarm detail version semantics
 
 `alert_agg.alarm_detail` intentionally uses `ReplacingMergeTree(row_version)`

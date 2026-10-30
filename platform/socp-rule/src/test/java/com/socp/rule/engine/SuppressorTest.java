@@ -32,6 +32,33 @@ class SuppressorTest {
     }
 
     @Test
+    void transactionReservesItsKeysUntilCommitAndRejectsUnreservedKeys() throws Exception {
+        Alert alert = new Alert("rule", "rule", Severity.INFO, "message", "entity", List.of());
+        Alert unrelated = new Alert("rule", "rule", Severity.INFO, "message", "entity-b", List.of());
+        try (Suppressor suppressor = new Suppressor(Duration.ofHours(1))) {
+            var transaction = suppressor.beginTransaction(List.of(alert));
+            var entered = new java.util.concurrent.CountDownLatch(1);
+            var waiting = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                entered.countDown();
+                return suppressor.allow(alert);
+            });
+            try {
+                org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                        () -> suppressor.begin(List.of(unrelated)));
+                try (var batch = suppressor.begin(List.of(alert))) {
+                    org.junit.jupiter.api.Assertions.assertEquals(1, batch.alerts().size());
+                    batch.commit();
+                }
+                assertTrue(entered.await(1, java.util.concurrent.TimeUnit.SECONDS));
+                org.junit.jupiter.api.Assertions.assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> waiting.get(100, java.util.concurrent.TimeUnit.MILLISECONDS));
+                transaction.commit();
+            } finally { transaction.close(); }
+            org.junit.jupiter.api.Assertions.assertFalse(waiting.get(2, java.util.concurrent.TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
     void batchDeduplicatesKeysAndClosesIdempotently() {
         Alert alert = new Alert("rule", "rule", Severity.INFO, "message", "entity", List.of());
         try (Suppressor suppressor = new Suppressor(Duration.ofHours(1))) {

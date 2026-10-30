@@ -4,6 +4,7 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
+import com.socp.rule.state.RuleStateMutation;
 import com.socp.rule.state.StateSnapshotCodec;
 import com.socp.rule.state.StatefulRule;
 import com.socp.rule.time.EventTimePolicy;
@@ -155,14 +156,30 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
 
     @Override
     public byte[] snapshotState() {
-        return states.snapshot(state -> {
-            Map<String, Object> value = new java.util.LinkedHashMap<>();
-            value.put("step", state.step);
-            value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
-            value.put("lastTs", state.lastTs == null ? null : state.lastTs.toString());
-            value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
-            return value;
-        });
+        return states.snapshot(CorrelationRule::encodeState);
+    }
+
+    @Override
+    public RuleStateMutation beginMutation() {
+        return states.beginMutation(CorrelationRule::copyState, CorrelationRule::encodeState);
+    }
+
+    private static State copyState(State state) {
+        State copy = new State();
+        copy.step = state.step;
+        copy.firstTs = state.firstTs;
+        copy.lastTs = state.lastTs;
+        copy.evidence.addAll(state.evidence);
+        return copy;
+    }
+
+    private static Object encodeState(State state) {
+        Map<String, Object> value = new java.util.LinkedHashMap<>();
+        value.put("step", state.step);
+        value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
+        value.put("lastTs", state.lastTs == null ? null : state.lastTs.toString());
+        value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
+        return value;
     }
 
 

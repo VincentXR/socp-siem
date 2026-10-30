@@ -145,6 +145,13 @@ class DetectionEventJournalTest {
         assertThat(row.getCompletedAt()).isNotNull();
         verify(repository).saveAndFlush(row);
 
+        Instant firstCompletion = row.getCompletedAt();
+        row.setResultJson("{\"receipt\":\"committed\"}");
+        journal.markCompleted("tenant-a", "event-4");
+        assertThat(row.getCompletedAt()).isEqualTo(firstCompletion);
+        assertThat(row.getResultJson()).isEqualTo("{\"receipt\":\"committed\"}");
+        verify(repository).saveAndFlush(row);
+
         row.setStatus(DetectionEventStatus.DEAD_LETTERED.name());
         journal.markCompleted("tenant-a", "event-4");
         assertThat(row.getStatus()).isEqualTo(DetectionEventStatus.DEAD_LETTERED.name());

@@ -87,6 +87,17 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
         assertTrue(execution.find(), plan);
         assertTrue(Double.parseDouble(execution.group(1)) < 2_000, plan);
 
+        String headSql = IngestionOutboxRepository.class
+                .getMethod("findDueHeadsForUpdate", java.time.Instant.class, int.class, int.class)
+                .getAnnotation(Query.class).value()
+                .replace(":now", "timestamp '2026-09-01 00:00:00'")
+                .replace(":maxAttempts", "12").replace(":limit", "32");
+        String headPlan = String.join("\n", jdbc.query("EXPLAIN (ANALYZE, BUFFERS) " + headSql,
+                (row, index) -> row.getString(1)));
+        var headExecution = java.util.regex.Pattern.compile("Execution Time: ([0-9.]+) ms").matcher(headPlan);
+        assertTrue(headExecution.find(), headPlan);
+        assertTrue(Double.parseDouble(headExecution.group(1)) < 2_000, headPlan);
+
         var heads = repository.findDueOrderedBatch(BASE);
         assertEquals(16, heads.size());
         assertEquals("history-10001", heads.getFirst().getId());
@@ -95,5 +106,47 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
         assertEquals(1, repository.claim("history-10001", BASE, 12, 0, "head-owner"));
         assertEquals(1, repository.markPublished("history-10001", BASE, "head-owner"));
         assertEquals("history-10002", repository.findDueOrderedBatch(BASE).getFirst().getId());
+    }
+
+    @Test void deepMultiKeyBacklogKeepsHeadSelectionWithinAdmissionBudget() throws Exception {
+        // Keep fixture inserts under the same five-second statement timeout.
+        for (int start = 1; start <= 200000; start += 10000) jdbc.update("""
+                insert into t_ingestion_outbox
+                    (id, tenant_id, event_id, routing_key, payload, status, attempts,
+                     next_attempt_at, created_at, updated_at)
+                select 'deep-' || n, 'tenant-a', 'deep-' || n, 'tenant-a|host|' || (n % 32),
+                       repeat(md5(n::text), 32), case when n <= 100000 then 'PUBLISHED' else 'PENDING' end,
+                       0, timestamp '2026-09-01 00:00:00', timestamp '2026-09-01 00:00:00',
+                       timestamp '2026-09-01 00:00:00'
+                from generate_series(?, ?) as n order by n
+                """, start, start + 9999);
+        jdbc.execute("VACUUM (ANALYZE) t_ingestion_outbox");
+        String sql = IngestionOutboxRepository.class
+                .getMethod("findDueHeadsForUpdate", java.time.Instant.class, int.class, int.class)
+                .getAnnotation(Query.class).value()
+                .replace(":now", "timestamp '2026-09-01 00:00:00'")
+                .replace(":maxAttempts", "12").replace(":limit", "32");
+        System.out.println("Deep outbox estimated plan:\n" + String.join("\n", jdbc.query("EXPLAIN " + sql,
+                (row, index) -> row.getString(1))));
+        String plan = String.join("\n", jdbc.query("EXPLAIN (ANALYZE, BUFFERS) " + sql,
+                (row, index) -> row.getString(1)));
+        System.out.println("Deep outbox head-selection plan:\n" + plan);
+        var elapsed = java.util.regex.Pattern.compile("Execution Time: ([0-9.]+) ms").matcher(plan);
+        assertTrue(elapsed.find(), plan);
+        assertTrue(Double.parseDouble(elapsed.group(1)) < 2_000, plan);
+        try (var ignored = com.socp.platform.tenant.context.TenantContext.openSystem()) {
+            var first = batchStore.claim(32, 12);
+            assertEquals(32, first.rows().size());
+            assertEquals(java.util.stream.IntStream.rangeClosed(100001, 100032)
+                    .mapToObj(n -> "deep-" + n).collect(java.util.stream.Collectors.toSet()),
+                    first.rows().stream().map(row -> row.getId()).collect(java.util.stream.Collectors.toSet()));
+            assertTrue(batchStore.claim(32, 12).rows().isEmpty(), "processing heads must block every successor");
+            var ids = first.rows().stream().map(row -> row.getId()).collect(java.util.stream.Collectors.toSet());
+            assertEquals(32, batchStore.settle(first, ids, 12).published());
+            var next = batchStore.claim(32, 12);
+            assertEquals(java.util.stream.IntStream.rangeClosed(100033, 100064)
+                    .mapToObj(n -> "deep-" + n).collect(java.util.stream.Collectors.toSet()),
+                    next.rows().stream().map(row -> row.getId()).collect(java.util.stream.Collectors.toSet()));
+        }
     }
 }

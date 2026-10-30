@@ -26,14 +26,16 @@ final class DetectionEngineFactory {
     private final RecentAlertSink sink;
     private final Suppressor suppressor;
     private final RuleProcessingObserver processingObserver;
+    private final java.util.function.IntSupplier shardCount;
     private final Map<String, Integer> isolatedRules = new ConcurrentHashMap<>();
 
     DetectionEngineFactory(RuleSpecStore store, RecentAlertSink sink, Suppressor suppressor,
-                           RuleProcessingObserver processingObserver) {
+                           RuleProcessingObserver processingObserver, java.util.function.IntSupplier shardCount) {
         this.store = store;
         this.sink = sink;
         this.suppressor = suppressor;
         this.processingObserver = processingObserver;
+        this.shardCount = shardCount;
     }
 
     RuleEngine build(String engineKey, String tenant, List<SecurityEvent> history,
@@ -55,7 +57,8 @@ final class DetectionEngineFactory {
                 rules.add(rule);
                 if (rule instanceof StatefulRule stateful) {
                     stateCompatibilityVersions.put(spec.id,
-                            stateful.stateVersion() + ":" + spec.stateSemanticsFingerprint());
+                            stateVersion(stateful.stateVersion() + ":" + spec.stateSemanticsFingerprint(),
+                                    shardCount.getAsInt()));
                     if (spec.groupBy != null && !spec.groupBy.isBlank()) {
                         routingDimensions.put(spec.id, new RuleEngine.RoutingDimension(
                                 spec.groupBy, Math.max(1L, spec.window.getSeconds())));
@@ -92,6 +95,21 @@ final class DetectionEngineFactory {
                 .filter(entry -> entry.getKey().startsWith(keyPrefix))
                 .mapToInt(Map.Entry::getValue)
                 .sum();
+    }
+
+    static String stateVersion(String ruleVersion, int shards) {
+        // Legacy snapshots did not record their shard count, including layouts
+        // with more than one shard. Rebuild those from the journal even when
+        // starting with one shard: their original layout cannot be inferred safely.
+        String layout = com.socp.rule.state.StateRoutingKey.VERSION + ":" + shards + ":" + ruleVersion;
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(layout.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            // The persistence column is bounded to 64 characters.
+            return "sharded-v1-" + java.util.HexFormat.of().formatHex(digest).substring(0, 48);
+        } catch (java.security.NoSuchAlgorithmException failure) {
+            throw new IllegalStateException("unable to fingerprint state layout", failure);
+        }
     }
 
     void removeIsolation(String engineKey) {

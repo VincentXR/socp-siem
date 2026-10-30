@@ -4,6 +4,7 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
+import com.socp.rule.state.RuleStateMutation;
 import com.socp.rule.state.StateSnapshotCodec;
 import com.socp.rule.state.StatefulRule;
 
@@ -135,9 +136,23 @@ public final class RareValueRule extends AbstractRule implements StatefulRule {
 
     @Override
     public byte[] snapshotState() {
-        return states.snapshot(state -> {
-            return Map.of("seen", List.copyOf(state.seen), "observed", state.observed);
-        });
+        return states.snapshot(RareValueRule::encodeState);
+    }
+
+    @Override
+    public RuleStateMutation beginMutation() {
+        return states.beginMutation(RareValueRule::copyState, RareValueRule::encodeState);
+    }
+
+    private static State copyState(State state) {
+        State copy = new State();
+        copy.seen.addAll(state.seen);
+        copy.observed = state.observed;
+        return copy;
+    }
+
+    private static Object encodeState(State state) {
+        return Map.of("seen", List.copyOf(state.seen), "observed", state.observed);
     }
 
 

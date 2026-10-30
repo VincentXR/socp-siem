@@ -11,6 +11,11 @@ import org.springframework.data.domain.Pageable;
 /** Database-side filtering and deterministic sorting for alarm reads. */
 public interface AlarmRepositoryCustom {
 
+    record Creation(Alarm alarm, boolean created) { }
+
+    /** A competing tenant/source identity returns the committed winner without side effects. */
+    Creation insertIfAbsent(Alarm alarm);
+
     Page<Alarm> page(String tenant, AlarmQuery query, Pageable pageable);
 
     /** Count a filtered tenant view without materialising the matching alarms. */

@@ -246,6 +246,56 @@ class SoarDispatchClaimPersistenceTest {
         }
     }
 
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"run,start", "outbox,start", "run,complete",
+            "outbox,complete", "run,fail", "outbox,fail"})
+    void ownedClaimSurvivesTransientRowContention(String lockedRow, String operation) throws Exception {
+        var claim = state.claim(dispatch("one", "tenant-a"), "owner", NOW).orElseThrow();
+        var locked = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var checking = new CountDownLatch(1);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var holder = executor.submit(() -> new TransactionTemplate(transactions).execute(status -> {
+                String sql = lockedRow.equals("run")
+                        ? "select id from t_soar_run where id='run-one' for update"
+                        : "select id from t_soar_dispatch_outbox where id='one' for update";
+                jdbc.queryForObject(sql, String.class);
+                locked.countDown();
+                try { assertTrue(release.await(10, TimeUnit.SECONDS)); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(interrupted);
+                }
+                return null;
+            }));
+            try {
+                assertTrue(locked.await(5, TimeUnit.SECONDS));
+                var action = executor.submit(() -> TenantContext.callWith("tenant-a", () -> {
+                    checking.countDown();
+                    return switch (operation) {
+                        case "start" -> state.beforeStart(claim, NOW);
+                        case "complete" -> state.complete(claim, "remote-run", NOW);
+                        default -> state.fail(claim, "retryable remote error", false, NOW);
+                    };
+                }));
+                assertTrue(checking.await(5, TimeUnit.SECONDS));
+                assertThrows(java.util.concurrent.TimeoutException.class,
+                        () -> action.get(100, TimeUnit.MILLISECONDS),
+                        "a busy row must not be treated as a missing or superseded owned claim");
+                release.countDown();
+                holder.get(5, TimeUnit.SECONDS);
+                assertTrue(action.get(5, TimeUnit.SECONDS));
+                assertEquals(switch (operation) {
+                    case "start" -> "DISPATCHING";
+                    case "complete" -> "DISPATCHED";
+                    default -> "PENDING";
+                }, row("one").getStatus());
+                assertEquals(1, row("one").getAttempts(), "contention must not consume another attempt");
+            } finally { release.countDown(); }
+            holder.get(5, TimeUnit.SECONDS);
+        }
+    }
+
     @ParameterizedTest @ValueSource(booleans = {false, true})
     void remoteCallbackAfterRecoveryCannotOverwriteReplacementLease(boolean failure) {
         dispatch("one", "tenant-a");
