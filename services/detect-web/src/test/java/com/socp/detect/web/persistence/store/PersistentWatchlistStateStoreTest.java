@@ -30,6 +30,7 @@ class PersistentWatchlistStateStoreTest {
 
     @org.junit.jupiter.api.BeforeEach
     void prepare() {
+        com.socp.platform.tenant.context.TenantContext.set("tenant-a");
         jdbc.update("delete from t_watchlist");
         jdbc.update("delete from t_watchlist_namespace");
         com.socp.rule.engine.Watchlists.putTemplate("blocked_ips", Set.of("inherited"));
@@ -39,6 +40,42 @@ class PersistentWatchlistStateStoreTest {
     void clearFixture() {
         jdbc.update("delete from t_watchlist");
         jdbc.update("delete from t_watchlist_namespace");
+        com.socp.platform.tenant.context.TenantContext.clear();
+    }
+
+    @Test
+    void proxiedCacheHitsAvoidTransactionsAndStillEnforceTenantScope() {
+        var observedTransactions = org.mockito.Mockito.spy(transactions);
+        var target = new PersistentWatchlistStateStore(repository, new ObjectMapper(), jdbc, observedTransactions);
+        ReflectionTestUtils.setField(target, "refreshMs", 60_000L);
+        var proxyFactory = new org.springframework.aop.framework.ProxyFactory(target);
+        proxyFactory.setProxyTargetClass(true);
+        proxyFactory.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(
+                observedTransactions, new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+        var store = (PersistentWatchlistStateStore) proxyFactory.getProxy();
+        store.save("tenant-a", "shared", Set.of("committed"));
+        org.mockito.Mockito.clearInvocations(observedTransactions);
+        assertEquals(Set.of("committed"), store.find("tenant-a", "shared").values());
+        org.junit.jupiter.api.Assertions.assertNull(store.find("tenant-a", "absent"));
+        org.mockito.Mockito.verify(observedTransactions, org.mockito.Mockito.times(2))
+                .getTransaction(org.mockito.ArgumentMatchers.any(org.springframework.transaction.TransactionDefinition.class));
+        org.mockito.Mockito.clearInvocations(observedTransactions);
+        for (int index = 0; index < 2000; index++) {
+            assertEquals(Set.of("committed"), store.find("tenant-a", "shared").values());
+            org.junit.jupiter.api.Assertions.assertNull(store.find("tenant-a", "absent"));
+        }
+        try (var ignored = com.socp.platform.tenant.context.TenantContext.open("tenant-b")) {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> store.find("tenant-a", "shared"));
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> store.find("tenant-a", "absent"));
+        }
+        com.socp.platform.tenant.context.TenantContext.clear();
+        try {
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                    () -> store.find("tenant-a", "shared"));
+        } finally { com.socp.platform.tenant.context.TenantContext.set("tenant-a"); }
+        org.mockito.Mockito.verifyNoInteractions(observedTransactions);
     }
 
     @Test
@@ -68,7 +105,9 @@ class PersistentWatchlistStateStoreTest {
         ReflectionTestUtils.setField(store, "maxCacheEntries", 1);
 
         store.find("tenant-a", "first");
-        store.find("tenant-b", "second");
+        try (var ignored = com.socp.platform.tenant.context.TenantContext.open("tenant-b")) {
+            store.find("tenant-b", "second");
+        }
 
         assertEquals(1, store.cachedEntries());
     }

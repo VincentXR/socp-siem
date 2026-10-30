@@ -4,6 +4,7 @@ import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.state.RuleStateMap;
+import com.socp.rule.state.RuleStateMutation;
 import com.socp.rule.state.StateSnapshotCodec;
 import com.socp.rule.state.StatefulRule;
 import com.socp.rule.time.EventTimePolicy;
@@ -131,16 +132,32 @@ public final class CorrelationSetRule extends AbstractRule implements StatefulRu
 
     @Override
     public byte[] snapshotState() {
-        return states.snapshot(state -> {
-            Map<String, Object> value = new java.util.LinkedHashMap<>();
-            value.put("bits", state.bits.toLongArray());
-            value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
-            value.put("watermark", state.watermark == null ? null : state.watermark.toString());
-            Map<String, Object> evidence = new java.util.LinkedHashMap<>();
-            state.evidence.forEach((index, event) -> evidence.put(String.valueOf(index), StateSnapshotCodec.event(event)));
-            value.put("evidence", evidence);
-            return value;
-        });
+        return states.snapshot(CorrelationSetRule::encodeState);
+    }
+
+    @Override
+    public RuleStateMutation beginMutation() {
+        return states.beginMutation(CorrelationSetRule::copyState, CorrelationSetRule::encodeState);
+    }
+
+    private static State copyState(State state) {
+        State copy = new State();
+        copy.bits.or(state.bits);
+        copy.firstTs = state.firstTs;
+        copy.watermark = state.watermark;
+        copy.evidence.putAll(state.evidence);
+        return copy;
+    }
+
+    private static Object encodeState(State state) {
+        Map<String, Object> value = new java.util.LinkedHashMap<>();
+        value.put("bits", state.bits.toLongArray());
+        value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
+        value.put("watermark", state.watermark == null ? null : state.watermark.toString());
+        Map<String, Object> evidence = new java.util.LinkedHashMap<>();
+        state.evidence.forEach((index, event) -> evidence.put(String.valueOf(index), StateSnapshotCodec.event(event)));
+        value.put("evidence", evidence);
+        return value;
     }
 
 

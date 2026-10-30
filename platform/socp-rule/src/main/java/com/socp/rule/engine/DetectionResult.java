@@ -111,7 +111,12 @@ public record DetectionResult(
         }
     }
 
-    /** Digest-only before/after state evidence; state payloads stay in snapshots. */
+    /**
+     * Digest-only before/after state evidence; state payloads stay in snapshots.
+     * Unprefixed SHA-256 values describe legacy full snapshots. Values prefixed
+     * entity-delta-v1:sha256: describe the sorted projection of keys touched by
+     * this event (including removals), and cannot be compared to checkpoint hashes.
+     */
     public record StateChange(String ruleId, String beforeDigest, String afterDigest, boolean changed) {
         public StateChange {
             if (ruleId == null || ruleId.isBlank()) throw new IllegalArgumentException("ruleId is required");

@@ -32,7 +32,7 @@ class ParserCoverageTest {
     @Test
     void syslogParserSupportsRfc5424AndRfc3164AndRejectsOtherShapes() {
         Map<String, String> rfc5424 = new SyslogParser().parse(
-                "<134>1 2003-10-11T22:14:15.003Z mymachine sshd - - login accepted");
+                "<134>1 2003-10-11T22:14:15.003Z mymachine sshd - - - login accepted");
         assertEquals("syslog", rfc5424.get("vendor"));
         assertEquals("INFO", rfc5424.get(CanonicalEvent.EVENT_SEVERITY));
         assertEquals("login accepted", rfc5424.get(CanonicalEvent.EVENT_MESSAGE));
@@ -61,7 +61,7 @@ class ParserCoverageTest {
         assertEquals("value", cef.get("cef.custom"));
 
         Map<String, String> leef = new LeefParser().parse(
-                "LEEF:1.0|Microsoft|Sysmon|10.0|1|Process creation|5|"
+                "LEEF:1.0|Microsoft|Sysmon|10.0|1|"
                         + "src=1.2.3.4\tdst=5.6.7.8\tproto=tcp\tsev=5");
         assertEquals("1.2.3.4", leef.get(CanonicalEvent.SOURCE_IP));
         assertEquals("MEDIUM", leef.get(CanonicalEvent.EVENT_SEVERITY));

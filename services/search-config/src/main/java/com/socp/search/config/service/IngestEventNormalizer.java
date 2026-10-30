@@ -36,6 +36,11 @@ public class IngestEventNormalizer {
     /** Keep attacker-controlled parser output from creating unbounded maps. */
     private static final int MAX_NORMALIZED_FIELDS = 512;
     private static final int MAX_INDEXED_DIMENSION_CHARS = 255;
+    private static final java.util.regex.Pattern RFC3164_TIME = java.util.regex.Pattern.compile(
+            "[A-Z][a-z]{2}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2}");
+    private static final DateTimeFormatter RFC3164_DATE = DateTimeFormatter
+            .ofPattern("uuuu MMM d HH:mm:ss", java.util.Locale.ENGLISH)
+            .withResolverStyle(java.time.format.ResolverStyle.STRICT);
     private static final DateTimeFormatter SPACE_LOCAL_DATE_TIME = new DateTimeFormatterBuilder()
             .appendPattern("yyyy-MM-dd HH:mm:ss")
             .optionalStart().appendFraction(java.time.temporal.ChronoField.NANO_OF_SECOND, 0, 9, true)
@@ -217,7 +222,7 @@ public class IngestEventNormalizer {
                 : firstNonBlank(canonical.get(configuredTimeField));
         boolean configuredTimestampPresent = configuredTimeField != null && timestampValue != null;
         Instant eventTimestamp = parseTimestamp(timestampValue,
-                sourceContext == null ? null : sourceContext.timezone(), configuredTimestampPresent);
+                sourceContext == null ? null : sourceContext.timezone(), configuredTimestampPresent, receivedAt);
         boolean generatedEventTime = eventTimestamp == null;
         if (generatedEventTime) eventTimestamp = receivedAt;
         try {
@@ -389,13 +394,32 @@ public class IngestEventNormalizer {
         };
     }
 
-    private static Instant parseTimestamp(String value, String timezone, boolean strict) {
+    private static Instant parseTimestamp(String value, String timezone, boolean strict, Instant receivedAt) {
         if (value == null || value.isBlank()) return null;
         ZoneId zone;
         try {
             zone = ZoneId.of(firstNonBlank(timezone) == null ? "UTC" : timezone.trim());
         } catch (java.time.DateTimeException invalidZone) {
             throw new IngestParseException("configured event timezone is invalid");
+        }
+        if (RFC3164_TIME.matcher(value).matches()) {
+            // RFC3164 has neither year nor timezone. Choose the nearest valid
+            // adjacent year in the source timezone, then apply the usual future
+            // skew guard. Long archival replays must supply an explicit year.
+            int year = receivedAt.atZone(zone).getYear();
+            Instant nearest = null;
+            for (int candidateYear = year - 1; candidateYear <= year + 1; candidateYear++) {
+                try {
+                    Instant candidate = LocalDateTime.parse(candidateYear + " " + value.replaceAll("\\s+", " "), RFC3164_DATE)
+                            .atZone(zone).toInstant();
+                    if (nearest == null || java.time.Duration.between(receivedAt, candidate).abs()
+                            .compareTo(java.time.Duration.between(receivedAt, nearest).abs()) < 0) nearest = candidate;
+                } catch (java.time.DateTimeException invalidDate) {
+                    // A leap day can be valid in one of the adjacent years only.
+                }
+            }
+            if (nearest == null) throw new IngestParseException("invalid RFC3164 timestamp");
+            return nearest;
         }
         try {
             return Instant.parse(value);

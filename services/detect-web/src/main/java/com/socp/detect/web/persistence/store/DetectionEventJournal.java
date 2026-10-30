@@ -144,18 +144,7 @@ public class DetectionEventJournal implements DetectionStateStore {
         if (existing.isPresent()) return claimOf(existing.get());
 
         try {
-            String fields = com.socp.rule.util.Json.mapper().writeValueAsString(
-                    event.fields() == null ? Map.of() : event.fields());
-            repository.saveAndFlush(new DetectionEventEntity(
-                    tenant, deliveryId, DetectionDelivery.sourceEventId(event),
-                    DetectionDelivery.routingVersion(event),
-                    safe(event.source(), "unknown", 128),
-                    safe(event.host(), "unknown", 255), safe(event.raw(), "", 8192),
-                    fields, event.severity() == null ? Severity.INFO.name() : event.severity().name(),
-                    event.timestamp() == null ? Instant.now() : event.timestamp(),
-                    DetectionDelivery.sourceTopic(event),
-                    DetectionDelivery.sourcePartition(event), DetectionDelivery.sourceOffset(event),
-                    deliveryTopic, partition, offset, routingKey));
+            repository.saveAndFlush(newRow(event, deliveryTopic, partition, offset, routingKey));
             return DetectionEventClaim.NEW;
         } catch (DataIntegrityViolationException duplicate) {
             // The primary key is the final arbiter when two consumers race.
@@ -164,6 +153,83 @@ public class DetectionEventJournal implements DetectionStateStore {
         } catch (Exception ex) {
             throw new IllegalStateException("unable to write detection event journal: " + ex.getMessage(), ex);
         }
+    }
+
+    private static DetectionEventEntity newRow(SecurityEvent event, String topic, Integer partition,
+                                                Long offset, String routingKey) throws Exception {
+        String fields = com.socp.rule.util.Json.mapper().writeValueAsString(event.fields());
+        return new DetectionEventEntity(event.requireTenantId(), DetectionDelivery.deliveryId(event),
+                DetectionDelivery.sourceEventId(event), DetectionDelivery.routingVersion(event),
+                safe(event.source(), "unknown", 128), safe(event.host(), "unknown", 255),
+                safe(event.raw(), "", 8192), fields,
+                event.severity() == null ? Severity.INFO.name() : event.severity().name(),
+                event.timestamp() == null ? Instant.now() : event.timestamp(),
+                DetectionDelivery.sourceTopic(event), DetectionDelivery.sourcePartition(event),
+                DetectionDelivery.sourceOffset(event), topic, partition, offset, routingKey);
+    }
+
+    @Override
+    @Transactional
+    public List<DetectionEventClaim> claimBatch(List<DetectionEventInput> inputs) {
+        if (inputs == null || inputs.isEmpty() || inputs.size() > com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) {
+            throw new IllegalArgumentException("bounded journal batch required");
+        }
+        String tenant = inputs.getFirst().event().requireTenantId();
+        var ids = new java.util.LinkedHashSet<String>();
+        for (DetectionEventInput input : inputs) {
+            if (input.event().id() == null || input.event().id().isBlank()
+                    || !tenant.equals(input.event().requireTenantId())
+                    || !ids.add(DetectionDelivery.deliveryId(input.event()))) {
+                throw new IllegalArgumentException("journal batch requires one tenant and unique deliveries");
+            }
+        }
+        Map<String, DetectionEventEntity> existing = new java.util.HashMap<>();
+        repository.findByTenantIdAndDeliveryIdIn(tenant, ids).forEach(row -> existing.put(row.getDeliveryId(), row));
+        List<DetectionEventEntity> insertions = new ArrayList<>();
+        List<DetectionEventClaim> claims = new ArrayList<>();
+        for (DetectionEventInput input : inputs) {
+            DetectionEventEntity row = existing.get(DetectionDelivery.deliveryId(input.event()));
+            if (row != null) claims.add(claimOf(row));
+            else {
+                try { insertions.add(newRow(input.event(), input.topic(), input.partition(), input.offset(), input.routingKey())); }
+                catch (Exception failure) { throw new IllegalStateException("unable to encode detection journal batch", failure); }
+                claims.add(DetectionEventClaim.NEW);
+            }
+        }
+        repository.saveAll(insertions);
+        repository.flush();
+        return List.copyOf(claims);
+    }
+
+    @Override
+    @Transactional
+    public void markCompletedBatch(List<DetectionResult> results) {
+        if (results == null || results.isEmpty() || results.size() > com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) {
+            throw new IllegalArgumentException("bounded completion batch required");
+        }
+        String tenant = results.getFirst().event().requireTenantId();
+        Map<String, DetectionResult> byId = new java.util.LinkedHashMap<>();
+        for (DetectionResult result : results) {
+            if (!tenant.equals(result.event().requireTenantId())
+                    || byId.put(DetectionDelivery.deliveryId(result.event()), result) != null) {
+                throw new IllegalArgumentException("completion batch requires one tenant and unique deliveries");
+            }
+        }
+        List<DetectionEventEntity> rows = repository.findByTenantIdAndDeliveryIdIn(tenant, byId.keySet());
+        if (rows.size() != results.size()) throw new IllegalStateException("completion batch missing journal claim");
+        Map<String, DetectionEventEntity> indexed = new java.util.HashMap<>();
+        rows.forEach(row -> indexed.put(row.getDeliveryId(), row));
+        // Recovery orders completed events by this timestamp. IN-query result
+        // order is unspecified, and PostgreSQL retains microsecond precision.
+        // Assign distinct timestamps in evaluation order, including random IDs.
+        Instant completedAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        for (int index = 0; index < results.size(); index++) {
+            DetectionResult result = results.get(index);
+            completeRow(indexed.get(DetectionDelivery.deliveryId(result.event())), result,
+                    completedAt.plusNanos(index * 1_000L));
+        }
+        repository.saveAll(rows);
+        repository.flush();
     }
 
     @Override
@@ -200,21 +266,32 @@ public class DetectionEventJournal implements DetectionStateStore {
     private void markCompletedInternal(String tenantId, String eventId, DetectionResult result) {
         if (eventId == null || eventId.isBlank()) return;
         repository.findByTenantIdAndDeliveryId(tenantId, eventId).ifPresent(row -> {
-            if (DetectionEventStatus.DEAD_LETTERED.name().equals(row.getStatus())) return;
-            Instant now = Instant.now();
-            row.setStatus(DetectionEventStatus.COMPLETED.name());
-            row.setCompletedAt(now);
-            row.setStatusReason(null);
-            if (result != null) {
-                try {
-                    row.setResultJson(com.socp.rule.util.Json.mapper()
-                            .writeValueAsString(result.auditSummary()));
-                } catch (Exception failure) {
-                    throw new IllegalStateException("unable to persist detection result summary", failure);
-                }
-            }
-            repository.saveAndFlush(row);
+            if (completeRow(row, result)) repository.saveAndFlush(row);
         });
+    }
+
+    private static boolean completeRow(DetectionEventEntity row, DetectionResult result) {
+        return completeRow(row, result, Instant.now());
+    }
+
+    private static boolean completeRow(DetectionEventEntity row, DetectionResult result, Instant now) {
+        // The result sink and the consumer's fenced finalization can both
+        // observe completion. A terminal receipt is immutable: avoid a
+        // second UPDATE/flush and keep its original completion timestamp.
+        if (DetectionEventStatus.DEAD_LETTERED.name().equals(row.getStatus())
+                || DetectionEventStatus.COMPLETED.name().equals(row.getStatus())) return false;
+        row.setStatus(DetectionEventStatus.COMPLETED.name());
+        row.setCompletedAt(now);
+        row.setStatusReason(null);
+        if (result != null) {
+            try {
+                row.setResultJson(com.socp.rule.util.Json.mapper()
+                        .writeValueAsString(result.auditSummary()));
+            } catch (Exception failure) {
+                throw new IllegalStateException("unable to persist detection result summary", failure);
+            }
+        }
+        return true;
     }
 
     @Override

@@ -240,19 +240,23 @@ class AlarmDeliveryPublisherTest {
     @Test
     void asyncTriggerRunsCrossTenantScanInsideSystemScope() throws Exception {
         var systemScope = new java.util.concurrent.CompletableFuture<Boolean>();
+        var maintenanceScope = new AtomicBoolean();
         given(repository.markExhaustedBatch(anyInt(), anyString(), any(Instant.class), eq(100))).willAnswer(invocation -> {
-            systemScope.complete(TenantContext.isSystemScope());
+            maintenanceScope.set(TenantContext.isSystemScope());
             return 0;
         });
         given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
-                eq("PENDING"), any(Instant.class))).willReturn(List.of());
+                eq("PENDING"), any(Instant.class))).willAnswer(invocation -> {
+            systemScope.complete(maintenanceScope.get() && TenantContext.isSystemScope());
+            return List.of();
+        });
         publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient);
 
         TenantContext.set("tenant-a");
         publisher.triggerAsync();
 
-        // Mockito records invocation before executing the answer. Wait for the
-        // observation itself so verification cannot race its scope publication.
+        // Wait for the last configured asynchronous observation, so test teardown
+        // cannot interrupt the scan before its pending-row query uses the stub.
         assertEquals(true, systemScope.get(2, java.util.concurrent.TimeUnit.SECONDS).booleanValue());
         verify(repository).markExhaustedBatch(anyInt(), anyString(), any(Instant.class), eq(100));
     }

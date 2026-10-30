@@ -21,6 +21,15 @@ import java.util.function.Consumer;
  */
 public interface DetectionStateStore {
 
+    default List<DetectionEventClaim> claimBatch(List<DetectionEventInput> inputs) {
+        return inputs.stream().map(input -> claim(input.event(), input.topic(), input.partition(),
+                input.offset(), input.routingKey())).toList();
+    }
+
+    default void markCompletedBatch(List<DetectionResult> results) {
+        results.forEach(this::markCompleted);
+    }
+
     /** Claim an event, retaining the distinction between replayable and terminal rows. */
     default DetectionEventClaim claim(SecurityEvent event) {
         return recordIfNew(event) ? DetectionEventClaim.NEW : DetectionEventClaim.COMPLETED;

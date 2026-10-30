@@ -42,6 +42,8 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
 
     private final IngestionOutboxRepository repository;
     private final KafkaEventProducer producer;
+    private IngestionOutboxBatchStore batchStore;
+    private final int deliveryConcurrency;
     private final MeterRegistry meterRegistry;
     private final OutboxDeliveryExecutor executor;
     private final ExecutorService triggerExecutor;
@@ -64,7 +66,8 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
     public IngestionOutboxPublisher(IngestionOutboxRepository repository,
                                     KafkaEventProducer producer,
                                     MeterRegistry meterRegistry,
-                                    IngestRuntimeProperties properties) {
+                                    IngestRuntimeProperties properties,
+                                    IngestionOutboxBatchStore batchStore) {
         this(repository, producer, meterRegistry,
                 properties.getOutbox().getDeliveryConcurrency(),
                 properties.getOutbox().getMaxAttempts(),
@@ -73,6 +76,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                 properties.getOutbox().getCleanupMaxBatches(),
                 properties.getOutbox().getMaxDrainRounds(),
                 properties.getOutbox().getMaxDrainDurationMs());
+        this.batchStore = java.util.Objects.requireNonNull(batchStore);
     }
 
     public IngestionOutboxPublisher(IngestionOutboxRepository repository,
@@ -95,6 +99,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         this.producer = producer;
         this.meterRegistry = meterRegistry;
         int bounded = Math.max(1, Math.min(32, concurrency));
+        this.deliveryConcurrency = bounded;
         this.executor = new OutboxDeliveryExecutor("ingestion-outbox-", bounded);
         this.triggerExecutor = Executors.newSingleThreadExecutor(
                 Thread.ofVirtual().name("ingestion-outbox-trigger-", 0).factory());
@@ -171,6 +176,15 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                 lifecycle("dead", exhausted);
             }
             while (rounds < maxDrainRounds && (rounds == 0 || System.nanoTime() < admissionDeadline)) {
+                if (batchStore != null) {
+                    IngestionOutboxBatchStore.Claim claim = batchStore.claim(deliveryConcurrency, maxAttempts);
+                    lastBatchSize = claim.rows().size();
+                    if (claim.rows().isEmpty()) break;
+                    if (rounds == 0) admissionDeadline = System.nanoTime() + maxDrainDurationNanos;
+                    rounds++;
+                    deliverBatch(claim);
+                    continue;
+                }
                 now = Instant.now();
                 List<IngestionOutboxEvent> pending = repository.findDueOrderedBatch(now).stream()
                         .filter(event -> attempted.add(event.getId())).toList();
@@ -204,6 +218,33 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
             updateBacklogMetrics(lastBatchSize, Instant.now());
             recordDrain(rounds, System.nanoTime() - started);
         }
+    }
+
+    private void deliverBatch(IngestionOutboxBatchStore.Claim claim) {
+        java.util.Set<String> acknowledged = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        AtomicInteger attempted = new AtomicInteger();
+        // All claimed heads fit the worker bound. They have already been admitted
+        // durably, so finish their bounded broker I/O even when the next-round
+        // admission deadline expires. No database transaction spans this wait.
+        executor.deliver(claim.rows(), Long.MAX_VALUE, row -> {
+            attempted.incrementAndGet();
+            try {
+                boolean accepted = TenantContext.callWith(row.getTenantId(),
+                        () -> producer.sendAndAwait(row.getRoutingKey(), row.getPayload(), row.getTraceparent()));
+                if (accepted) acknowledged.add(row.getId());
+            } catch (RuntimeException failure) {
+                log.warn("Canonical batch delivery failed id={}: {}", row.getId(), failure.toString());
+            }
+        });
+        if (attempted.get() != claim.rows().size() || Thread.currentThread().isInterrupted()) {
+            // Preserve interrupted claims for the same stale-claim recovery as
+            // a process crash, rather than classifying them as broker rejection.
+            throw new IllegalStateException("claimed outbox batch interrupted before settlement");
+        }
+        var settled = batchStore.settle(claim, acknowledged, maxAttempts);
+        if (settled.retry() > 0) lifecycle("retry", settled.retry());
+        if (settled.dead() > 0) lifecycle("dead", settled.dead());
+        if (settled.lost() > 0) throw new IllegalStateException("outbox batch ownership changed before settlement");
     }
 
     private void recordDrain(int rounds, long durationNanos) {

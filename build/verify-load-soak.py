@@ -54,11 +54,13 @@ query_ids = []
 query_serial = 0
 started_at = 0
 ip_base = 0
+ip_block_size = 1000
 RUN = ""
 OUT = None
 db = None
 memory_limit = 0
 working_set_limit = 0
+http_clients = threading.local()
 
 
 def require_loopback(url):
@@ -151,6 +153,36 @@ def cpu_counters():
     }
 
 
+def process_cpu_counters(proc=pathlib.Path("/proc")):
+    """Bounded counters only: never read process arguments or environment."""
+    counters = {}
+    ticks_per_second = os.sysconf("SC_CLK_TCK")
+    for entry in sorted(proc.iterdir(), key=lambda p: p.name)[:4096]:
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+            end = stat.rfind(")")
+            fields = stat[end + 2:].split()
+            counters[entry.name] = {
+                "name": stat[stat.index("(") + 1:end],
+                "startTicks": int(fields[19]),
+                "cpuSeconds": (int(fields[11]) + int(fields[12])) / ticks_per_second,
+            }
+        except (OSError, ValueError, IndexError):
+            # Processes can exit while /proc is being sampled.
+            continue
+    return counters
+
+
+def warmup_plan(args):
+    eps = getattr(args, "warmup_eps", 10)
+    seconds = getattr(args, "warmup_seconds", 20)
+    if not 1 <= eps <= 100 or not 1 <= seconds <= 120:
+        raise ValueError("warmup must use 1..100 EPS for 1..120 seconds")
+    return eps, seconds
+
+
 def verify_notification_targets(channels, fixture_url=""):
     for channel in channels:
         if not channel["enabled"] or channel["type"] == "LOG":
@@ -165,12 +197,56 @@ def verify_notification_targets(channels, fixture_url=""):
         raise RuntimeError("load test refuses enabled unapproved notification channels")
 
 
+def load_plan(args):
+    warmup_eps, warmup_seconds = warmup_plan(args)
+    if getattr(args, "mode", "soak") == "soak":
+        if (not 60 <= args.seconds <= 3600 or not 1 <= args.eps <= 25
+                or args.seconds * args.eps + warmup_eps * warmup_seconds > 100000):
+            raise ValueError("duration must be 60..3600 seconds and EPS 1..25")
+        return [("soak", args.eps, args.seconds)]
+    try:
+        stages = [int(value) for value in args.stages.split(",")]
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("pressure stages must be comma-separated integer EPS") from exc
+    capacity = args.mode == "capacity"
+    max_eps, max_events, max_seconds = (3000, 500000, 120) if capacity else (100, 100000, 600)
+    if (
+        not 60 <= args.seconds <= max_seconds
+        or not 1 <= len(stages) <= 5
+        or any(not 1 <= value <= max_eps for value in stages)
+        or stages != sorted(set(stages))
+        or sum(stages) * args.seconds + warmup_eps * warmup_seconds > max_events
+    ):
+        raise ValueError(
+            f"{args.mode} duration must be 60..{max_seconds} seconds per stage, with 1..5 "
+            f"strictly increasing EPS stages in 1..{max_eps} and at most {max_events} events "
+            "including warmup"
+        )
+    return [(f"{args.mode}-{eps}", eps, args.seconds) for eps in stages]
+
+
+def is_load_phase(name):
+    return name == "soak" or (
+        name.startswith(("pressure-", "capacity-")) and not name.endswith("-drain")
+    )
+
+
+def lag_limit(name):
+    # Capacity runs declare a time-scaled backlog budget before starting load.
+    # The original low-rate pressure gate remains unchanged.
+    return max(1000, int(name.split("-")[1]) * 5) if name.startswith("capacity-") else 1000
+
+
+def available_ip_blocks(used, block_size):
+    return [base for base in range(0, 131072 - block_size + 1, block_size)
+            if all(base + block_size <= start or start + size <= base for start, size in used)]
+
+
 def initialize(args):
-    global P, GW, OS, INGEST, COLLECTOR, CREDENTIAL, METRICS, started_at, ip_base, RUN, OUT, db, memory_limit, working_set_limit
+    global P, GW, OS, INGEST, COLLECTOR, CREDENTIAL, METRICS, started_at, ip_base, ip_block_size, RUN, OUT, db, memory_limit, working_set_limit
     if not args.allow_local_fixture:
         raise ValueError("explicit --allow-local-fixture is required")
-    if not 60 <= args.seconds <= 3600 or not 1 <= args.eps <= 25:
-        raise ValueError("duration must be 60..3600 seconds and EPS 1..25")
+    load_plan(args)
     GW = os.environ.get("PIPELINE_GATEWAY", "http://127.0.0.1:18092").rstrip("/")
     OS = os.environ.get("PIPELINE_OS", "https://localhost:9200").rstrip("/")
     INGEST = os.environ.get(
@@ -203,21 +279,18 @@ def initialize(args):
         raise ValueError("report directory must remain inside the repository")
     P.mkdir(parents=True, exist_ok=True)
     started_at = time.time()
-    ip_base = int(uuid.uuid4().hex[:8], 16) % 60 * 1000
+    ip_block_size = 8192 if args.mode == "capacity" else 1000
     used = {
-        json.loads(p.read_text()).get("thresholdIpBase")
+        (config["thresholdIpBase"], config.get("thresholdIpBlockSize", 1000))
         for p in P.glob("load-*/config.json")
+        for config in [json.loads(p.read_text())]
     }
-    available = [
-        (ip_base + n * 1000) % 60000
-        for n in range(60)
-        if (ip_base + n * 1000) % 60000 not in used
-    ]
+    available = available_ip_blocks(used, ip_block_size)
     if not available:
         raise ValueError(
             "all threshold fixture address blocks were used in this report directory"
         )
-    ip_base = available[0]
+    ip_base = available[int(uuid.uuid4().hex[:8], 16) % len(available)]
     RUN = (
         "load-"
         + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
@@ -247,12 +320,33 @@ def phase_passed(result, expected_unique, guard_active):
     return (
         not result["requestErrors"]
         and (not result["queries"]["errors"])
+        and (not result.get("monitorErrors", 0))
+        and (not result.get("healthFailures", 0))
         and (not guard_active)
         and result["reconciliation"]["pass"]
         and (result["acceptedUnique"] >= expected_unique * 0.98)
         and (result["elapsedSeconds"] >= result["requestedSeconds"])
+        and (
+            result["acceptedUnique"] / result["elapsedSeconds"]
+            >= expected_unique / result["requestedSeconds"] * 0.98
+        )
+        and (result["name"] == "warmup" or result["queries"].get("count", 0) > 0)
         and (result["name"] == "warmup" or result["capacityStable"])
     )
+
+
+def http_opener(insecure_fixture):
+    # HTTPSHandler loads the trust store at construction, even for plain HTTP
+    # requests. Keep one handler per trust mode and sending/monitoring thread.
+    key = "fixture" if insecure_fixture else "verified"
+    opener = getattr(http_clients, key, None)
+    if opener is None:
+        context = ssl._create_unverified_context() if insecure_fixture else None
+        opener = urllib.request.build_opener(
+            LoopbackRedirectHandler(), urllib.request.HTTPSHandler(context=context)
+        )
+        setattr(http_clients, key, opener)
+    return opener
 
 
 def http(url, body=None, headers=None, method=None, timeout=15):
@@ -262,7 +356,7 @@ def http(url, body=None, headers=None, method=None, timeout=15):
         else body if isinstance(body, bytes) else json.dumps(body).encode()
     )
     request_headers = {"Content-Type": "application/json"} | (headers or {})
-    context = None
+    insecure_fixture = False
     if url.startswith(OS + "/"):
         if os.environ.get("PIPELINE_OS_AUTH"):
             request_headers["Authorization"] = (
@@ -271,7 +365,7 @@ def http(url, body=None, headers=None, method=None, timeout=15):
             )
         if OS.startswith("https://"):
             # Explicitly opted-in loopback fixture with a self-signed certificate.
-            context = ssl._create_unverified_context()
+            insecure_fixture = True
     req = urllib.request.Request(
         url,
         data=raw,
@@ -279,9 +373,7 @@ def http(url, body=None, headers=None, method=None, timeout=15):
         headers=request_headers,
     )
     try:
-        opener = urllib.request.build_opener(
-            LoopbackRedirectHandler(), urllib.request.HTTPSHandler(context=context)
-        )
+        opener = http_opener(insecure_fixture)
         with opener.open(req, timeout=timeout) as r:
             data = r.read(32 * 1024 * 1024 + 1)
             if len(data) > 32 * 1024 * 1024:
@@ -344,7 +436,7 @@ def event(n):
         "benign": f"bounded telemetry heartbeat {ident}",
     }[kind]
     ip = (
-        f"198.18.{(ip_base + n // 100) // 256}.{(ip_base + n // 100) % 256}"
+        f"198.{18 + (ip_base + n // 100) // 65536}.{((ip_base + n // 100) // 256) % 256}.{(ip_base + n // 100) % 256}"
         if kind == "threshold"
         else None
     )
@@ -499,6 +591,7 @@ def monitor():
             sample["diskFree"] = disk.free
             sample.update(memory_snapshot())
             sample["cpuCounterScope"], sample["cpu"] = cpu_counters()
+            sample["processCpu"] = process_cpu_counters()
             sample["hostCpu"] = pathlib.Path("/proc/stat").read_text().splitlines()[0]
             status, node = http(OS + "/_nodes/stats/fs,jvm,indices")
             if status != 200:
@@ -553,7 +646,7 @@ def monitor():
                             "jvm_gc_pause_seconds_sum{",
                             "process_cpu_usage ",
                             "socp_ingestion_outbox_oldest_pending_age_seconds ",
-                            "socp_detection_event_completed_total{",
+                            "socp_detection_",
                             "socp_ingestion_outbox_",
                             "socp_kafka_consumer_lag",
                             "socp_detection_alert_outbox_",
@@ -568,8 +661,9 @@ def monitor():
                     if k.startswith("socp_kafka_consumer_lag")
                 )
             )
-            if phase == "soak" and sample["detectKafkaLag"] > 1000:
-                saturation_reason.append("detection Kafka lag exceeded 1000 records")
+            sample["detectKafkaLagLimit"] = lag_limit(phase)
+            if is_load_phase(phase) and sample["detectKafkaLag"] > lag_limit(phase):
+                saturation_reason.append(f"detection Kafka lag exceeded {lag_limit(phase)} records")
                 saturation.set()
             if len(samples) % 4 == 0:
                 status, recent = http(
@@ -824,7 +918,7 @@ def run_phase(name, eps, seconds, next_n):
     started_wall = time.time()
     start = time.monotonic()
     deadline = start + seconds
-    batch_size = min(20, eps)
+    batch_size = min(200, max(1, eps // 10)) if name.startswith("capacity-") else min(20, eps)
     slot = 0
     missed = 0
     pending = {}
@@ -915,6 +1009,8 @@ def run_phase(name, eps, seconds, next_n):
         "startedAt": started_wall,
         "finishedSendingAt": time.time(),
         "targetEPS": eps,
+        "batchSize": batch_size,
+        "kafkaLagLimit": lag_limit(name),
         "requestedSeconds": seconds,
         "elapsedSeconds": wall,
         "acceptedUnique": good,
@@ -935,9 +1031,10 @@ def run_phase(name, eps, seconds, next_n):
     result["drain"] = drain(expected)
     result["drainSeconds"] = time.monotonic() - drain_start
     if warm_id is None:
-        warm_id = db.execute(
+        first_ack = db.execute(
             "select id from events where ack=1 order by n limit 1"
-        ).fetchone()[0]
+        ).fetchone()
+        warm_id = first_ack[0] if first_ack else None
     for _ in range(12):
         oracle = reconcile()
         if oracle["pass"]:
@@ -958,6 +1055,9 @@ def run_phase(name, eps, seconds, next_n):
         "p95Seconds": percentile([q["seconds"] for q in qp], 0.95),
         "p99Seconds": percentile([q["seconds"] for q in qp], 0.99),
     }
+    phase_samples = [s for s in samples if s["phase"] in (name, name + "-drain")]
+    result["monitorErrors"] = sum("error" in s for s in phase_samples)
+    result["healthFailures"] = sum(s.get("healthFailures", 0) for s in phase_samples)
     result["capacityStable"] = result["drainSeconds"] <= 15 and (
         not result["capacityStop"]
     )
@@ -966,6 +1066,18 @@ def run_phase(name, eps, seconds, next_n):
     print(json.dumps({"completedPhase": result}), flush=True)
     records.append(result)
     return (next_n, result)
+
+
+def run_measurements(plan, warmup_settings=(10, 20)):
+    next_n, warmup = run_phase("warmup", *warmup_settings, 0)
+    if not warmup["pass"]:
+        return
+    for name, eps, seconds in plan:
+        if guard.is_set():
+            break
+        next_n, result = run_phase(name, eps, seconds, next_n)
+        if not result["pass"] or guard.is_set():
+            break
 
 
 def latency_evidence():
@@ -1030,15 +1142,38 @@ def latency_evidence():
     return result
 
 
+def state_snapshot_evidence():
+    """Read a checkpoint produced by this run, not a pre-existing fixture row."""
+    value = json.loads(
+        sql(
+            "detect",
+            "select json_build_object('freshRows',count(*),'latestCheckpoint',max(snapshot_timestamp)) "
+            "from t_detection_state_snapshot where tenant_id='default' "
+            "and rule_id='LATERAL-RDP' and input_topic='socp-events' "
+            "and serialized_state<>'' and partition_offsets_json<>'{}' "
+            f"and snapshot_timestamp >= to_timestamp({started_at})",
+        )
+    )
+    value["pass"] = value["freshRows"] > 0
+    (OUT / "state-snapshot.json").write_text(json.dumps(value, indent=2) + "\n")
+    return value
+
+
 def main():
     global TOKEN, token_at, consumer, initial_oom, phase
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-local-fixture", action="store_true")
+    parser.add_argument("--mode", choices=["soak", "pressure", "capacity"], default="soak")
     parser.add_argument("--seconds", type=int, default=3600)
     parser.add_argument("--eps", type=int, default=5)
+    parser.add_argument("--stages", default="10,25,50,100")
+    parser.add_argument("--warmup-eps", type=int, default=10)
+    parser.add_argument("--warmup-seconds", type=int, default=20)
+    parser.add_argument("--require-state-snapshot", action="store_true")
     parser.add_argument("--report-dir", type=pathlib.Path, default=P)
     args = parser.parse_args()
     initialize(args)
+    plan = load_plan(args)
     from kafka import KafkaConsumer, TopicPartition
 
     TOKEN = login_token(GW)
@@ -1087,10 +1222,19 @@ def main():
                 ).hexdigest(),
                 "run": RUN,
                 "startedAt": started_at,
-                "selectedSoakEPS": args.eps,
+                "mode": args.mode,
+                "requireStateSnapshot": args.require_state_snapshot,
+                "plannedStages": [
+                    {"name": name, "eps": eps, "seconds": seconds}
+                    for name, eps, seconds in plan
+                ],
+                "warmup": {"eps": args.warmup_eps, "seconds": args.warmup_seconds},
+                "selectedSoakEPS": args.eps if args.mode == "soak" else None,
                 "workingSetLimitBytes": working_set_limit,
                 "hostMemoryLimitBytes": memory_limit,
                 "thresholdIpBase": ip_base,
+                "thresholdIpBlockSize": ip_block_size,
+                "capacityBacklogSeconds": 5 if args.mode == "capacity" else None,
                 "sourceCommit": subprocess.check_output(
                     ["git", "rev-parse", "HEAD"], text=True
                 ).strip(),
@@ -1102,9 +1246,10 @@ def main():
                 "queryConcurrency": 10,
                 "queryBurstIntervalSeconds": 10,
                 "indexStorage": "externally provisioned fixture; inspect workflow and middleware artifacts",
-                "capacityCriteria": "zero request/query errors, offered unique rate >=98%, end backlog drain <=15 seconds; stop workload on detection lag >1000",
-                "soakRate": "explicit CLI EPS",
-                "soakSeconds": args.seconds,
+                "capacityCriteria": "zero request/query/monitor/health errors, acknowledged unique rate >=98% including in-flight completion, end backlog drain <=15 seconds; stop workload on detection lag >"
+                + ("max(1000, targetEPS * 5)" if args.mode == "capacity" else "1000"),
+                "soakRate": "explicit CLI EPS" if args.mode == "soak" else None,
+                "soakSeconds": args.seconds if args.mode == "soak" else None,
                 "kafkaStartOffsets": {str(p.partition): n for p, n in ends.items()},
             },
             indent=2,
@@ -1118,19 +1263,32 @@ def main():
     for t in threads:
         t.start()
     try:
-        next_n, first = run_phase("warmup", 10, 20, 0)
-        if not first["reconciliation"]["pass"]:
-            raise RuntimeError("warmup reconciliation failed")
-        next_n, result = run_phase("soak", args.eps, args.seconds, next_n)
+        run_measurements(plan, warmup_plan(args))
         phase = "final"
         final = reconcile()
         final["durableLatency"] = latency_evidence()
+        if args.require_state_snapshot:
+            final["stateSnapshot"] = state_snapshot_evidence()
         stop.set()
         for t in threads:
             t.join(timeout=35)
         if any(t.is_alive() for t in threads):
             raise RuntimeError("evidence workers did not stop before final aggregation")
         final.update(
+            mode=args.mode,
+            plannedStages=len(plan),
+            completedStages=len(records) - 1,
+            highestPassingEPS=max(
+                (
+                    r["targetEPS"]
+                    for r in records
+                    if is_load_phase(r["name"]) and r["pass"]
+                ),
+                default=None,
+            ),
+            stoppedAfterFailedPhase=next(
+                (r["name"] for r in records if not r["pass"]), None
+            ),
             phases=records,
             resourceGuard=guard_reason,
             monitorErrors=sum(("error" in s for s in samples)),
@@ -1146,7 +1304,9 @@ def main():
             and (not final["monitorErrors"])
             and (not final["healthFailures"])
             and (not final["queryErrors"])
-            and (records[-1]["name"] == "soak" and records[-1]["pass"])
+            and len(records) == len(plan) + 1
+            and all(r["pass"] for r in records)
+            and (not args.require_state_snapshot or final["stateSnapshot"]["pass"])
         )
         (OUT / "final.json").write_text(json.dumps(final, indent=2) + "\n")
         print(json.dumps({"final": final}), flush=True)

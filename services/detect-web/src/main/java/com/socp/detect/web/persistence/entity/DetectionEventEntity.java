@@ -18,7 +18,19 @@ import java.time.Instant;
         @Index(name = "idx_detection_event_delivery_position",
                 columnList = "delivery_topic,delivery_partition,delivery_offset")
 })
-public class DetectionEventEntity {
+public class DetectionEventEntity implements org.springframework.data.domain.Persistable<String> {
+
+    @jakarta.persistence.Transient
+    private boolean newEntity = true;
+
+    @Override @com.fasterxml.jackson.annotation.JsonIgnore
+    public String getId() { return storageId; }
+
+    @Override @com.fasterxml.jackson.annotation.JsonIgnore
+    public boolean isNew() { return newEntity; }
+
+    @jakarta.persistence.PostLoad @jakarta.persistence.PostPersist
+    void persisted() { newEntity = false; }
 
     @Id
     @Column(name = "event_id", length = 128)

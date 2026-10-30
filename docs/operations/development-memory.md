@@ -99,6 +99,32 @@ errors, incomplete duration, resource guards or reconciliation failures. Normal
 PR runs do not add this hour. These bounded fixture measurements do not establish
 production throughput, retention capacity or a 24-hour stability guarantee.
 
+For a pressure ramp without a soak, use
+`python3 build/verify-load-soak.py --allow-local-fixture --mode pressure --seconds 300 --stages 10,25,50,100`.
+The manual workflow's separate `run_load_pressure` input runs these four stages
+on the same isolated stack, retaining evidence under `.cache/load-pressure`.
+Choose either pressure or soak per workflow run. Each pressure stage is bounded
+to 60–600 seconds, with at most five increasing rates in 1–100 EPS and 100,000
+planned events including warmup. The first failed stage stops escalation; a
+detection lag above 1,000 also stops that stage's submissions. Previously
+acknowledged events are still drained and reconciled, and a failed stage retains
+a nonzero exit status. Warmup errors also fail the run. Each load phase must
+contain actual queries and sustain at least 98% of its target acknowledgement
+rate, including the time spent completing in-flight requests. Query concurrency
+remains ten per burst with a ten-second pause, not ten continuously active users.
+Report each stage's duration, actual rate, errors, latency, backlog and identity
+checks; the highest passing stage is an observed test result, not a production
+capacity commitment.
+
+The manual pressure run also requires a fresh `LATERAL-RDP` checkpoint for the
+canonical input topic, including serialized state and a partition offset vector.
+An asynchronous completion callback must install the event's validated tenant
+before entering the snapshot transaction, then restore its previous scope even
+when persistence fails. Without that scope the journal can remain correct while
+every periodic checkpoint is deferred; event/alert identity checks alone do not
+prove checkpoint persistence. Use `--require-state-snapshot` on a local fixture
+whose configured checkpoint interval will be reached by the chosen workload.
+
 Collect the following at a fixed interval, such as five seconds, from before
 startup through an idle observation period after the workload:
 

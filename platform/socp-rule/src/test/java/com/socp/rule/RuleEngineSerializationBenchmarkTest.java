@@ -9,6 +9,7 @@ import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
 import com.socp.rule.rules.ThresholdRule;
 import com.socp.rule.state.StatefulRule;
+import com.socp.rule.state.RuleStateMutation;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
@@ -31,8 +32,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @EnabledIfSystemProperty(named = "socp.benchmark.serialization", matches = "true")
 class RuleEngineSerializationBenchmarkTest {
     private static final Instant EVENT_TIME = Instant.parse("2026-01-01T00:00:00Z");
-    private static final int WARMUP_EVENTS = 50;
-    private static final int MEASURED_EVENTS = 100;
+    private static final int WARMUP_EVENTS = boundedCount("socp.benchmark.warmup", 50, 0, 10_000);
+    private static final int MEASURED_EVENTS = boundedCount("socp.benchmark.events", 100, 100, 100_000);
+
+    private static int boundedCount(String property, int fallback, int min, int max) {
+        int value = Integer.getInteger(property, fallback);
+        if (value < min || value > max) throw new IllegalArgumentException(property + " outside bounds");
+        return value;
+    }
 
     @Test
     void measureDurableThresholdSerializationAtBoundedCardinalities() throws Exception {
@@ -42,7 +49,8 @@ class RuleEngineSerializationBenchmarkTest {
             scenarios.add(measure(keys, true));
         }
         Map<String, Object> report = new LinkedHashMap<>();
-        report.put("schemaVersion", 2);
+        report.put("schemaVersion", 3);
+        report.put("mutationMode", Boolean.getBoolean("socp.benchmark.full-snapshot") ? "full-snapshot" : "entity-delta-v1");
         report.put("snapshotCacheMaxBytes", Long.getLong("socp.rule.snapshot-cache.max-bytes", 8L * 1024 * 1024));
         report.put("javaVersion", System.getProperty("java.version"));
         report.put("os", System.getProperty("os.name"));
@@ -91,11 +99,11 @@ class RuleEngineSerializationBenchmarkTest {
         // This count is a correctness guard for the measured implementation,
         // not a performance threshold. Change it deliberately if the contract
         // evolves, then compare like-for-like workload results.
-        assertEquals(MEASURED_EVENTS * 2L, rule.snapshotCalls);
+        assertEquals(Boolean.getBoolean("socp.benchmark.full-snapshot") ? MEASURED_EVENTS * 2L : 0L, rule.snapshotCalls);
         assertEquals(MEASURED_EVENTS, sink.results);
         assertEquals(MEASURED_EVENTS, rule.acceptCalls);
         assertEquals(keys, delegate.stats().get("stateKeys"));
-        assertTrue(rule.snapshotBytes > 0);
+        assertTrue(rule.mutationNanos > 0);
         Arrays.sort(latencies);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("stateKeys", keys);
@@ -107,11 +115,12 @@ class RuleEngineSerializationBenchmarkTest {
         result.put("serializedBytes", rule.snapshotBytes);
         result.put("snapshotNanos", rule.snapshotNanos);
         result.put("acceptNanos", rule.acceptNanos);
+        result.put("mutationNanos", rule.mutationNanos);
         result.put("eventsPerSecond", MEASURED_EVENTS * 1_000_000_000.0 / elapsed);
         result.put("snapshotElapsedFraction", (double) rule.snapshotNanos / elapsed);
-        result.put("p50Nanos", latencies[49]);
-        result.put("p95Nanos", latencies[94]);
-        result.put("p99Nanos", latencies[98]);
+        result.put("p50Nanos", latencies[(int) Math.ceil(MEASURED_EVENTS * 0.50) - 1]);
+        result.put("p95Nanos", latencies[(int) Math.ceil(MEASURED_EVENTS * 0.95) - 1]);
+        result.put("p99Nanos", latencies[(int) Math.ceil(MEASURED_EVENTS * 0.99) - 1]);
         return result;
     }
 
@@ -123,6 +132,7 @@ class RuleEngineSerializationBenchmarkTest {
 
     private static final class TimedStatefulRule implements StatefulRule {
         private final StatefulRule delegate;
+        private long mutationNanos;
         private long snapshotCalls;
         private long snapshotBytes;
         private long snapshotNanos;
@@ -150,7 +160,24 @@ class RuleEngineSerializationBenchmarkTest {
             snapshotBytes += result.length;
             return result;
         }
+        @Override public RuleStateMutation beginMutation() {
+            long started = System.nanoTime();
+            RuleStateMutation mutation = Boolean.getBoolean("socp.benchmark.full-snapshot")
+                    ? StatefulRule.super.beginMutation() : delegate.beginMutation();
+            mutationNanos += System.nanoTime() - started;
+            return new RuleStateMutation() {
+                @Override public DetectionResult.StateChange change(String ruleId) {
+                    long changeStarted = System.nanoTime();
+                    try { return mutation.change(ruleId); }
+                    finally { mutationNanos += System.nanoTime() - changeStarted; }
+                }
+                @Override public void rollback() { mutation.rollback(); }
+                @Override public void commit() { mutation.commit(); }
+                @Override public void close() { mutation.close(); }
+            };
+        }
         private void resetMeasurements() {
+            mutationNanos = 0;
             snapshotCalls = 0;
             snapshotBytes = 0;
             snapshotNanos = 0;

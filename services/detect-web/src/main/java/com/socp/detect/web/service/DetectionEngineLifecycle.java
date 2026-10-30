@@ -78,7 +78,7 @@ public class DetectionEngineLifecycle {
                              RuleProcessingObserver observer, DetectionStateRecovery state) {
         this.store = store;
         this.state = state;
-        this.engineFactory = new DetectionEngineFactory(store, sink, suppressor, observer);
+        this.engineFactory = new DetectionEngineFactory(store, sink, suppressor, observer, state::effectiveShardCount);
     }
 
     Lock readLock() { return engineLifecycle.readLock(); }

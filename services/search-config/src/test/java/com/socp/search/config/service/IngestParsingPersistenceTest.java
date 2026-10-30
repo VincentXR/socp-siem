@@ -49,7 +49,9 @@ class IngestParsingPersistenceTest {
     void prepare() {
         TenantContext.set("parser-contract");
         transaction = new TransactionTemplate(transactions);
-        var normalizer = new IngestEventNormalizer(null, null, null, new ParserRegistry());
+        var normalizer = new IngestEventNormalizer(null, new ParserRegistry(), null, null,
+                com.socp.rule.time.SourceEventTimePolicy.defaults(), java.time.Clock.fixed(
+                java.time.Instant.parse("2026-10-30T00:00:00Z"), java.time.ZoneOffset.UTC));
         var commits = new IngestionCommitService(events, outbox, mock(SearchStore.class));
         var monitor = mock(IngestTaskMonitor.class);
         when(monitor.runtime(any(), anyBoolean())).thenReturn(Map.of("eps1m", 0.0));
@@ -107,6 +109,43 @@ class IngestParsingPersistenceTest {
         assertEquals("login_failed", canonical.at("/fields/action").asText());
         assertEquals("configured-source", canonical.at("/fields/source_id").asText());
         assertEquals("parser-contract", canonical.at("/fields/tenant_id").asText());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"cef", "leef1", "leef2", "syslog3164", "syslog5424"})
+    void standardSecurityLogsReachDurableCanonicalOutboxAndReplayExactlyOnce(String format) throws Exception {
+        String raw = switch (format) {
+            case "cef" -> "CEF:0|ArcSight|Logger|1|100|denied|10|src=192.0.2.1 msg=connection denied by policy dpt=80";
+            case "leef1" -> "LEEF:1.0|IBM|IPS|1|100|src=192.0.2.1\tsev=10\tmsg=connection denied by policy\tdstPort=80";
+            case "leef2" -> "LEEF:2.0|IBM|IPS|1|100|0x5E|src=192.0.2.1^sev=10^msg=connection denied by policy^dstPort=80";
+            case "syslog3164" -> "<165>Oct 11 22:14:15 host app[123]: connection denied by policy";
+            case "syslog5424" -> "<165>1 2026-10-11T22:14:15Z host app 123 ID47 [example@32473 key=\"value\"] connection denied by policy";
+            default -> throw new AssertionError(format);
+        };
+        var mapper = new ObjectMapper();
+        String id = "standard-" + format;
+        String envelope = mapper.writeValueAsString(Map.of("eventId", id, "message", raw));
+        var first = transaction.execute(status -> pipeline.process(envelope, "vector"));
+        var replay = transaction.execute(status -> pipeline.process(envelope, "vector"));
+        assertEquals(1, first.get("created"));
+        assertEquals(1, replay.get("duplicates"));
+        assertEquals(0, failures.countByTenantId("parser-contract"));
+        assertEquals(1, events.findByTenantIdAndEventIdIn("parser-contract", List.of(id)).size());
+        var rows = outbox.findByTenantIdAndEventIdIn("parser-contract", List.of(id));
+        assertEquals(1, rows.size());
+        var payload = mapper.readTree(rows.getFirst().getPayload());
+        assertEquals("connection denied by policy", payload.path("msg").asText());
+        assertEquals("parser-contract", payload.path("tenantId").asText());
+        if (format.startsWith("syslog")) {
+            assertEquals("MEDIUM", payload.path("severity").asText());
+            assertEquals("2026-10-11T22:14:15Z", payload.path("timestamp").asText());
+            assertFalse(payload.path("fields").has("event_time_generated"));
+            assertEquals("123", payload.path("ecs").path("process.pid").asText());
+        } else {
+            assertEquals("CRITICAL", payload.path("severity").asText());
+            assertEquals("192.0.2.1", payload.path("ecs").path("source.ip").asText());
+            assertEquals("80", payload.path("ecs").path("destination.port").asText());
+        }
     }
 
     @Test

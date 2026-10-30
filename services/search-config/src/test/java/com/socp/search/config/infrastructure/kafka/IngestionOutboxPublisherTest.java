@@ -31,6 +31,28 @@ class IngestionOutboxPublisherTest {
         if (publisher != null) publisher.stop();
     }
 
+    @Test void productionBatchSettlesOnlyAcknowledgedHeadsAfterBrokerCalls() {
+        var repository=mock(IngestionOutboxRepository.class);var producer=mock(KafkaEventProducer.class);
+        var batches=mock(IngestionOutboxBatchStore.class);
+        var first=pending("batch-good","key-a","{}",null);var second=pending("batch-retry","key-b","{}",null);
+        var claim=new IngestionOutboxBatchStore.Claim("claim-token",List.of(first,second));
+        var config=new com.socp.search.config.config.IngestRuntimeProperties();config.getOutbox().setMaxDrainRounds(1);
+        when(producer.isEnabled()).thenReturn(true);
+        when(batches.claim(32,12)).thenReturn(claim);
+        when(producer.sendAndAwait(eq("key-a"),any(),any())).thenReturn(true);
+        when(producer.sendAndAwait(eq("key-b"),any(),any())).thenReturn(false);
+        when(batches.settle(eq(claim),eq(java.util.Set.of(first.getId())),eq(12)))
+                .thenReturn(new IngestionOutboxBatchStore.Settlement(1,1,0,0));
+        publisher=new IngestionOutboxPublisher(repository,producer,null,config,batches);
+        publisher.publish();
+        var order=org.mockito.Mockito.inOrder(batches,producer);
+        order.verify(batches).claim(32,12);
+        order.verify(producer,org.mockito.Mockito.times(2)).sendAndAwait(any(),any(),any());
+        order.verify(batches).settle(claim,java.util.Set.of(first.getId()),12);
+        verify(repository,never()).claim(any(),any(),anyInt(),anyInt(),anyString());
+        verify(repository,never()).markPublished(any(),any(),any());
+    }
+
     @Test
     void slowHeadSelectionStillAdmitsTheFirstBoundedDeliveryBatch() {
         var repository = mock(IngestionOutboxRepository.class);

@@ -267,6 +267,109 @@ public class DetectEngineService {
         }
     }
 
+    /** Capture each delivery's trace before the bounded queue crosses threads. */
+    public RuleEngine.BatchEvent prepareBatchEvent(SecurityEvent event, String topic, int partition, long offset) {
+        return new RuleEngine.BatchEvent(event,
+                new com.socp.rule.engine.DetectionResult.InputPosition(topic, partition, offset),
+                new DetectionExecutionScope().capture());
+    }
+
+    public boolean canBatch(List<RuleEngine.BatchEvent> events) {
+        lifecycle.readLock().lock();
+        try { return batchTarget(events) != null; }
+        finally { lifecycle.readLock().unlock(); }
+    }
+
+    /** Split one bounded partition prefix into independently ordered state units. */
+    public List<List<RuleEngine.BatchEvent>> batchGroups(List<RuleEngine.BatchEvent> events) {
+        if (events == null || events.isEmpty() || events.size() > RuleEngine.MAX_BATCH_EVENTS) return List.of();
+        lifecycle.readLock().lock();
+        try {
+            var first = events.getFirst().position();
+            long previous = -1L;
+            var identities = new java.util.HashSet<String>();
+            Map<String, List<RuleEngine.BatchEvent>> groups = new LinkedHashMap<>();
+            for (var input : events) {
+                String tenant = input.event().requireTenantId();
+                if (!java.util.Objects.equals(first.topic(), input.position().topic())
+                        || first.partition() != input.position().partition()
+                        || input.position().offset() <= previous
+                        || !identities.add(tenant + "\u0000"
+                        + com.socp.rule.partition.DetectionDelivery.deliveryId(input.event()))) return List.of();
+                previous = input.position().offset();
+                String key = DetectionStateRecovery.engineKey(tenant, state.shardFor(input.event()));
+                groups.computeIfAbsent(key, ignored -> new java.util.ArrayList<>()).add(input);
+            }
+            for (var group : groups.values()) {
+                try (var ignored = com.socp.platform.tenant.context.TenantContext.open(
+                        group.getFirst().event().requireTenantId())) {
+                    if (batchTarget(group) == null) return List.of();
+                }
+            }
+            return groups.values().stream().map(List::copyOf).toList();
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
+    private RuleEngine batchTarget(List<RuleEngine.BatchEvent> events) {
+        if (events == null || events.isEmpty() || events.size() > RuleEngine.MAX_BATCH_EVENTS
+                || !lifecycle.workerRole()) return null;
+        var first = events.getFirst();
+        String tenant = first.event().requireTenantId();
+        int shard = state.shardFor(first.event());
+        long previous = -1L;
+        var identities = new java.util.HashSet<String>();
+        for (var input : events) {
+            if (!tenant.equals(input.event().requireTenantId()) || state.shardFor(input.event()) != shard
+                    || !java.util.Objects.equals(first.position().topic(), input.position().topic())
+                    || first.position().partition() != input.position().partition()
+                    || input.position().offset() <= previous
+                    || !identities.add(com.socp.rule.partition.DetectionDelivery.deliveryId(input.event()))) return null;
+            previous = input.position().offset();
+        }
+        if (!lifecycle.readyFor(tenant, shard)) return null;
+        RuleEngine target = lifecycle.engineFor(tenant, shard);
+        return target.supportsAtomicBatch() ? target : null;
+    }
+
+    /** One state unit, one result transaction, one durable position boundary. */
+    public CompletableFuture<Void> ingestBatchFromKafkaAndAwait(List<RuleEngine.BatchEvent> events) {
+        lifecycle.readLock().lock();
+        List<TenantAdmission.Permit> permits = new java.util.ArrayList<>();
+        try {
+            RuleEngine target = batchTarget(events);
+            if (target == null) throw new RuntimeUnavailableException("atomic detection batch unavailable");
+            var first = events.getFirst();
+            for (var input : events) {
+                TenantAdmission.Decision admission = admit(input.event());
+                if (!admission.admitted()) throw new TenantAdmission.RejectedException(
+                        input.event().requireTenantId(), admission.reason());
+                permits.add(admission.permit());
+            }
+            Runnable guard = state.durableGuardFor(first.position().partition(), state.shardFor(first.event()));
+            Runnable positioned = () -> {
+                // The sink held the database owner fence through commit. This
+                // only records private in-memory positions; checkpoint writes
+                // and the consumer's final observation still assert ownership.
+                for (var input : events) state.recordDurablePosition(input.event(),
+                        input.position().partition(), input.position().offset());
+            };
+            return target.ingestBatchAndAwait(events, positioned, guard).thenRun(() -> {
+                // State already includes the whole batch and every offset above.
+                // Capturing only after this boundary cannot put bytes ahead of the watermark.
+                var last = events.getLast();
+                state.snapshotAfterDurable(target, last.event(), last.position().partition(),
+                        last.position().offset(), events.size());
+            }).whenComplete((ignored, failure) -> permits.forEach(tenantAdmission::release));
+        } catch (RuntimeException failure) {
+            tenantAdmission.rollbackBatch(permits);
+            throw failure;
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
     /** Persist a versioned rule-state checkpoint after durable sink completion. */
     public void snapshotAfterDurable(SecurityEvent event, Integer partition, Long offset) {
         if (!state.snapshotsEnabled() || event == null) return;
