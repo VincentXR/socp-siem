@@ -33,7 +33,7 @@ public class IngestRuntimeProperties {
         private long retentionMs = 2_592_000_000L;
         private int cleanupBatchSize = 1_000;
         private int cleanupMaxBatches = 10;
-        private int maxDrainRounds = 64;
+        private int maxDrainRounds = 256;
         private long maxDrainDurationMs = 2_000L;
 
         public int getDeliveryConcurrency() { return deliveryConcurrency; }

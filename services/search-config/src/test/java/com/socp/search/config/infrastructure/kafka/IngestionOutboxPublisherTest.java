@@ -33,6 +33,39 @@ class IngestionOutboxPublisherTest {
         if (publisher != null) publisher.stop();
     }
 
+    @Test void productionBatchSettlesOnlyAcknowledgedHeadsAfterBrokerCalls() {
+        var repository = mock(IngestionOutboxRepository.class);
+        var producer = mock(KafkaEventProducer.class);
+        var batches = mock(com.socp.search.config.service.IngestionOutboxBatchService.class);
+        var first = pending("batch-good", "key-a", "{}", null);
+        var second = pending("batch-retry", "key-b", "{}", null);
+        var rows = List.of(first, second);
+        var config = new com.socp.search.config.config.IngestRuntimeProperties();
+        config.getOutbox().setMaxDrainRounds(1);
+        assertEquals(8, config.getOutbox().getDeliveryConcurrency());
+        when(producer.isEnabled()).thenReturn(true);
+        when(repository.findDueOrderedBatch(any())).thenReturn(rows);
+        when(batches.claimIndependent(eq(rows), anyString(), eq(12), any())).thenReturn(rows);
+        when(producer.sendAsync(eq("key-a"), any(), any()))
+                .thenReturn(java.util.concurrent.CompletableFuture.completedFuture(true));
+        when(producer.sendAsync(eq("key-b"), any(), any()))
+                .thenReturn(java.util.concurrent.CompletableFuture.completedFuture(false));
+        when(batches.markAcknowledged(eq(List.of(first)), anyString(), any())).thenReturn(1);
+        publisher = new IngestionOutboxPublisher(repository, producer, null, config);
+        publisher.configureBatchService(batches);
+
+        TenantContext.runAsSystem(publisher::publish);
+
+        var token = org.mockito.ArgumentCaptor.forClass(String.class);
+        var order = org.mockito.Mockito.inOrder(batches, producer, repository);
+        order.verify(batches).claimIndependent(eq(rows), token.capture(), eq(12), any());
+        order.verify(producer, org.mockito.Mockito.times(2)).sendAsync(any(), any(), any());
+        order.verify(repository).scheduleRetry(eq(second.getId()), any(), any(), any(), eq(token.getValue()));
+        order.verify(batches).markAcknowledged(eq(List.of(first)), eq(token.getValue()), any());
+        verify(repository, never()).claim(any(), any(), anyInt(), anyInt(), anyString());
+        verify(repository, never()).markPublished(any(), any(), any());
+    }
+
     @Test
     void independentKeysUseBoundedClaimsAndFinalizeOnlyBrokerAcknowledgements() {
         var repository = mock(IngestionOutboxRepository.class);

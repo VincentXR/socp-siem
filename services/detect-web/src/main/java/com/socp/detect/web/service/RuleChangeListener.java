@@ -6,7 +6,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.socp.platform.client.kafka.KafkaClientSupport;
 import com.socp.platform.tenant.context.TenantContext;
-import jakarta.annotation.PostConstruct;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -45,7 +46,7 @@ public class RuleChangeListener {
     private volatile boolean running;
     private volatile KafkaConsumer<String, String> activeConsumer;
     private volatile KafkaProducer<String, String> dlqProducer;
-    private Thread worker;
+    private volatile Thread worker;
 
     /** Source-compatible constructor for focused tests. */
     public RuleChangeListener(DetectEngineService engineService) {
@@ -59,9 +60,11 @@ public class RuleChangeListener {
         this.routingPlans = routingPlans;
     }
 
-    @PostConstruct
-    public void start() {
-        if (!enabled) return;
+    // Replays can publish transaction events that resolve other Spring beans.
+    // Start only after singleton initialization and application runners finish.
+    @EventListener(ApplicationReadyEvent.class)
+    public synchronized void start() {
+        if (!enabled || worker != null) return;
         running = true;
         worker = Thread.ofPlatform().name("rule-change-consumer").daemon(true).start(this::runLoop);
         log.info("Rule-change listener started topic={} instance={}", topic, instanceId);

@@ -3,6 +3,7 @@ package com.socp.gateway.filter;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.socp.gateway.api.controller.AuthController;
 import com.socp.platform.auth.security.JwtValidationException;
+import com.socp.platform.auth.security.JwtKeySourceUnavailableException;
 import com.socp.platform.auth.security.JwtValidator;
 import com.socp.platform.auth.security.Permission;
 import com.socp.platform.obs.config.OTelSetup;
@@ -175,6 +176,11 @@ public class GatewayFilter implements GlobalFilter, Ordered {
                 locale = tokenLocale == null
                         ? defaultLocale(exchange.getRequest().getHeaders().getFirst(HttpHeaders.ACCEPT_LANGUAGE))
                         : tokenLocale;
+            } catch (JwtKeySourceUnavailableException unavailable) {
+                log.warn("Authentication key source unavailable traceId={} path={}", traceId, path);
+                exchange.getResponse().getHeaders().set(HttpHeaders.RETRY_AFTER, "1");
+                return traced(span, exchange, reject(exchange, traceId, unavailable.getMessage(),
+                        HttpStatus.SERVICE_UNAVAILABLE));
             } catch (JwtValidationException | java.text.ParseException failure) {
                 log.warn("Authentication rejected traceId={} path={} reason={}",
                         traceId, path, failure.getMessage());

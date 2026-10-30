@@ -97,6 +97,7 @@ class RuleEngineSerializationBenchmarkTest {
         assertEquals(MEASURED_EVENTS, sink.results);
         assertEquals(MEASURED_EVENTS, rule.acceptCalls);
         assertEquals(keys, delegate.stats().get("stateKeys"));
+        assertTrue(rule.mutationNanos > 0);
         if (incremental) assertEquals(0, rule.snapshotBytes);
         else assertTrue(rule.snapshotBytes > 0);
         Arrays.sort(latencies);
@@ -112,6 +113,7 @@ class RuleEngineSerializationBenchmarkTest {
         result.put("serializedBytes", rule.snapshotBytes);
         result.put("snapshotNanos", rule.snapshotNanos);
         result.put("acceptNanos", rule.acceptNanos);
+        result.put("mutationNanos", rule.mutationNanos);
         result.put("eventsPerSecond", MEASURED_EVENTS * 1_000_000_000.0 / elapsed);
         result.put("snapshotElapsedFraction", (double) rule.snapshotNanos / elapsed);
         result.put("p50Nanos", latencies[49]);
@@ -129,6 +131,7 @@ class RuleEngineSerializationBenchmarkTest {
     private static final class TimedStatefulRule implements StatefulRule {
         private final StatefulRule delegate;
         private final boolean incremental;
+        private long mutationNanos;
         private long snapshotCalls;
         private long snapshotBytes;
         private long snapshotNanos;
@@ -140,7 +143,20 @@ class RuleEngineSerializationBenchmarkTest {
             this.incremental = incremental;
         }
         @Override public com.socp.rule.state.StateMutation beginMutation() {
-            return incremental ? delegate.beginMutation() : StatefulRule.super.beginMutation();
+            long started = System.nanoTime();
+            var mutation = incremental ? delegate.beginMutation() : StatefulRule.super.beginMutation();
+            mutationNanos += System.nanoTime() - started;
+            return new com.socp.rule.state.StateMutation() {
+                @Override public DetectionResult.StateChange change(String ruleId) {
+                    long changeStarted = System.nanoTime();
+                    try { return mutation.change(ruleId); }
+                    finally { mutationNanos += System.nanoTime() - changeStarted; }
+                }
+                @Override public void rollback() { mutation.rollback(); }
+                @Override public void detach() { mutation.detach(); }
+                @Override public long retainedBytes() { return mutation.retainedBytes(); }
+                @Override public void close() { mutation.close(); }
+            };
         }
         @Override public String id() { return delegate.id(); }
         @Override public String name() { return delegate.name(); }
@@ -163,6 +179,7 @@ class RuleEngineSerializationBenchmarkTest {
             return result;
         }
         private void resetMeasurements() {
+            mutationNanos = 0;
             snapshotCalls = 0;
             snapshotBytes = 0;
             snapshotNanos = 0;

@@ -9,6 +9,32 @@ import time
 import urllib.parse
 from pathlib import Path
 
+def wait_for_route_publication(ctx, source_event_ids):
+    """Wait for durable producer acknowledgements before sampling consumer lag.
+
+    A killed publisher can leave PROCESSING after Kafka accepted its send.
+    Kafka lag and completed journals can both be zero while its two-minute
+    claim is still live. Recovery may resend, so lag is final only after all
+    of this probe's route rows have durable publication acknowledgements.
+    """
+    quoted = ",".join("'" + value.replace("'", "''") + "'"
+                      for value in sorted(source_event_ids))
+    last = {}
+
+    def published():
+        nonlocal last
+        last = json.loads(ctx.psql_scalar(
+            "detect", "select json_build_object("
+            "'sourceEvents', count(distinct source_event_id), "
+            "'unfinished', count(*) filter (where status <> 'PUBLISHED'))::text "
+            f"from t_detection_route_outbox where source_event_id in ({quoted})"))
+        return last if (last["sourceEvents"] == len(source_event_ids)
+                        and last["unfinished"] == 0) else None
+
+    completed = ctx.wait_for(published, timeout=240, interval=3) is not None
+    return {**last, "completed": completed}
+
+
 def scenario_multi_instance(ctx, token, count, rebalance_cycles=1):
     """Validate routed state correctness with an independent alert oracle.
 
@@ -247,11 +273,13 @@ def scenario_multi_instance(ctx, token, count, rebalance_cycles=1):
             if not cycle_results[-1]["rebalanceComplete"]:
                 break
 
-        # Source must drain first; only then is zero routed lag a stable end state.
+        # The source receipt commits before asynchronous route publication.
+        # Drain both durable producer state and the resulting Kafka deliveries.
         source_after = ctx.wait_for(
             lambda: (snapshot if (snapshot := ctx.kafka_snapshot(ctx.CANONICAL_TOPIC, ctx.ROUTER_GROUP))
                      and snapshot["lag"] == 0 else None),
             timeout=240, interval=3) or ctx.kafka_snapshot(ctx.CANONICAL_TOPIC, ctx.ROUTER_GROUP)
+        route_publication = wait_for_route_publication(ctx, source_event_ids)
         final_kafka = ctx.wait_for(
             lambda: (snapshot if (snapshot := ctx.kafka_snapshot()) and snapshot["lag"] == 0 else None),
             timeout=240, interval=3) or ctx.kafka_snapshot()
@@ -377,6 +405,7 @@ def scenario_multi_instance(ctx, token, count, rebalance_cycles=1):
             "forbiddenCrossTenantAlertCount": forbidden_count,
             "pendingEventsAfterRecovery": pending_values,
             "sourceKafkaAfterRecovery": source_after,
+            "routePublicationAfterRecovery": route_publication,
             "routedKafkaAfterRecovery": final_kafka,
             "routingAndJournalEvidence": evidence,
             "deliveryEvidence": delivery,
@@ -386,6 +415,7 @@ def scenario_multi_instance(ctx, token, count, rebalance_cycles=1):
                 and duplicate_count == 0
                 and forbidden_count == 0
                 and source_after.get("lag") == 0
+                and route_publication["completed"]
                 and final_kafka.get("lag") == 0
                 and final_kafka.get("partitions", 0) == 6
                 and all(value == 0 for value in pending_values)

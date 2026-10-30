@@ -19,6 +19,11 @@ spring:
   jpa:
     hibernate:
       ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc.batch_size: 64
+        order_inserts: false
+        order_updates: true
     open-in-view: false
   flyway:
     enabled: true

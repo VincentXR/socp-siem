@@ -28,6 +28,7 @@ public final class Suppressor implements AutoCloseable {
     private final int maxEntries;
     private final ConcurrentHashMap<String, Instant> lastFired = new ConcurrentHashMap<>();
     private final AtomicLong suppressed = new AtomicLong();
+    private final ThreadLocal<Transaction> transaction = new ThreadLocal<>();
     private volatile boolean closed = false;
     private final Thread cleaner;
 
@@ -65,6 +66,47 @@ public final class Suppressor implements AutoCloseable {
         return new Batch(alerts);
     }
 
+    /** Stage suppression decisions until the corresponding durable batch commits. */
+    public Transaction beginTransaction(List<Alert> candidates) {
+        if (transaction.get() != null) throw new IllegalStateException("nested suppression transaction");
+        int[] stripes = stripesFor(candidates);
+        for (int stripe : stripes) locks[stripe].lock();
+        Transaction tx = new Transaction(stripes);
+        transaction.set(tx);
+        return tx;
+    }
+
+    private int[] stripesFor(List<Alert> candidates) {
+        return candidates.stream().map(this::key)
+                .mapToInt(key -> Math.floorMod(key.hashCode(), locks.length)).distinct().sorted().toArray();
+    }
+
+    public final class Transaction implements AutoCloseable {
+        private final java.util.Map<String, Instant> staged = new java.util.LinkedHashMap<>();
+        private final int[] stripes;
+        private boolean closed;
+
+        private Transaction(int[] stripes) { this.stripes = stripes; }
+
+        public void commit() {
+            checkOpen();
+            lastFired.putAll(staged);
+            trimToLimit(Instant.now());
+        }
+
+        private void checkOpen() {
+            if (closed || transaction.get() != this) throw new IllegalStateException("closed suppression transaction");
+        }
+
+        @Override public void close() {
+            if (closed) return;
+            checkOpen();
+            closed = true;
+            transaction.remove();
+            for (int i = stripes.length - 1; i >= 0; i--) locks[stripes[i]].unlock();
+        }
+    }
+
     private String key(Alert alert) {
         String tenant = "default";
         if (alert.evidence() != null) {
@@ -83,14 +125,23 @@ public final class Suppressor implements AutoCloseable {
         private boolean closed;
 
         private Batch(List<Alert> candidates) {
-            stripes = candidates.stream().map(Suppressor.this::key)
-                    .mapToInt(key -> Math.floorMod(key.hashCode(), locks.length)).distinct().sorted().toArray();
+            stripes = stripesFor(candidates);
+            Transaction tx = transaction.get();
+            if (tx != null) {
+                tx.checkOpen();
+                for (int stripe : stripes) {
+                    if (java.util.Arrays.binarySearch(tx.stripes, stripe) < 0) {
+                        throw new IllegalStateException("suppression key was not reserved by this transaction");
+                    }
+                }
+            }
             // Fixed order prevents deadlocks when an event emits multiple alerts.
             for (int stripe : stripes) locks[stripe].lock();
             Instant now = Instant.now();
             for (Alert alert : candidates) {
                 String key = key(alert);
-                Instant previous = lastFired.get(key);
+                Instant previous = tx != null && tx.staged.containsKey(key)
+                        ? tx.staged.get(key) : lastFired.get(key);
                 if ((previous != null && previous.plus(window).isAfter(now))
                         || (!window.isZero() && keys.contains(key))) {
                     suppressed.incrementAndGet();
@@ -106,8 +157,19 @@ public final class Suppressor implements AutoCloseable {
         public void commit() {
             if (closed) throw new IllegalStateException("suppression batch is closed");
             Instant now = Instant.now();
-            for (String key : keys) lastFired.put(key, now);
-            trimToLimit(now);
+            Transaction tx = transaction.get();
+            if (tx == null) {
+                for (String key : keys) lastFired.put(key, now);
+                trimToLimit(now);
+            } else {
+                tx.checkOpen();
+                for (String key : keys) {
+                    if (!tx.staged.containsKey(key) && tx.staged.size() >= maxEntries) {
+                        throw new IllegalStateException("suppression batch exceeds state bound");
+                    }
+                    tx.staged.put(key, now);
+                }
+            }
         }
 
         @Override

@@ -70,7 +70,9 @@ public class AlertForwarder {
     @Transactional
     public void forwardBatch(List<com.socp.rule.engine.BatchEventAlertSink.Entry> entries) {
         if (entries == null || entries.isEmpty()) return;
-        if (entries.size() > 64) throw new IllegalArgumentException("detection batch exceeds 64 entries");
+        if (entries.size() > com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) {
+            throw new IllegalArgumentException("detection batch exceeds the bounded engine limit");
+        }
         String tenant = entries.getFirst().result().event().requireTenantId();
         for (var entry : entries) {
             if (!tenant.equals(entry.result().event().requireTenantId())) {
@@ -99,7 +101,9 @@ public class AlertForwarder {
             if (stateStore == null) throw new IllegalStateException("batch publication requires a durable journal");
             for (var entry : entries) {
                 validateAlertTenants(entry.result().alerts(), tenant);
-                for (Alert alert : entry.result().alerts()) forwardOne(alert, entry.result(), tenant);
+                try (var eventScope = entry.scope().open(entry.result().event())) {
+                    for (Alert alert : entry.result().alerts()) forwardOne(alert, entry.result(), tenant);
+                }
             }
             stateStore.markCompletedBatch(entries.stream().map(com.socp.rule.engine.BatchEventAlertSink.Entry::result).toList());
         }
@@ -115,6 +119,39 @@ public class AlertForwarder {
     public void forward(DetectionResult result, Runnable durableCommitGuard) {
         if (result == null) throw new IllegalArgumentException("detection result is required");
         forwardAll(result.event(), result.alerts(), durableCommitGuard, result);
+    }
+
+    /** Same-tenant results and completion receipts commit as one bounded transaction. */
+    @Transactional
+    public void forwardBatch(List<DetectionResult> results, Runnable durableCommitGuard) {
+        if (results == null) throw new IllegalArgumentException("detection results are required");
+        forwardBatch(results, results.stream().map(ignored -> com.socp.rule.engine.RuleExecutionScope.NOOP).toList(), durableCommitGuard);
+    }
+
+    @Transactional
+    public void forwardBatch(List<DetectionResult> results, List<com.socp.rule.engine.RuleExecutionScope> scopes,
+                             Runnable durableCommitGuard) {
+        if (results == null || results.isEmpty()
+                || results.size() > com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS || stateStore == null
+                || scopes == null || scopes.size() != results.size()) {
+            throw new IllegalArgumentException("durable bounded result batch required");
+        }
+        String tenant = results.getFirst().event().requireTenantId();
+        for (DetectionResult result : results) {
+            if (!tenant.equals(result.event().requireTenantId())) throw new IllegalArgumentException("mixed tenant batch");
+            validateAlertTenants(result.alerts(), tenant);
+        }
+        try (TenantContext.Scope ignored = TenantContext.open(tenant)) {
+            if (durableCommitGuard != null) durableCommitGuard.run();
+            for (int index = 0; index < results.size(); index++) {
+                DetectionResult result = results.get(index);
+                try (var eventScope = scopes.get(index).open(result.event())) {
+                    for (Alert alert : result.alerts()) forwardOne(alert, result, tenant);
+                }
+            }
+            stateStore.markCompletedBatch(results);
+            if (durableCommitGuard != null) durableCommitGuard.run();
+        }
     }
 
     /**

@@ -1,12 +1,14 @@
-import { mount, flushPromises } from '@vue/test-utils'
+import { enableAutoUnmount, mount, flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import ElPagination from 'element-plus/es/components/pagination/index.mjs'
 import ThreatIntelView from '../src/views/ThreatIntelView.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import type { Ioc } from '../src/api'
 import { translate } from '../src/i18n'
+
+enableAutoUnmount(afterEach)
 
 const mocks = vi.hoisted(() => ({
   confirm: vi.fn(),

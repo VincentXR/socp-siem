@@ -2,6 +2,7 @@ package com.socp.detect.web.service;
 
 import com.socp.detect.web.persistence.store.DetectionStateOwnership;
 import com.socp.detect.web.persistence.store.DetectionStateStore;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.engine.RuleEngine;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
@@ -22,10 +23,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -59,6 +65,59 @@ class DetectionStateRecoveryTest {
         verify(ownership).assertCurrentBatch(org.mockito.ArgumentMatchers.argThat(leases ->
                 leases.stream().map(DetectionStateOwnership.Lease::partition).toList().equals(List.of(0, 1, 2))));
         verify(ownership, never()).assertCurrent(any());
+    }
+
+    @Test
+    void workerCheckpointInstallsEventTenantBeforePersistenceAndClearsItAfterward() throws Exception {
+        var state = state(DetectionStateOwnership.noop());
+        ReflectionTestUtils.setField(state, "snapshotEveryEvents", 1L);
+        when(snapshots.supportsAtomicBatch()).thenReturn(true);
+        when(engine.captureStateSnapshot(any())).thenAnswer(invocation -> {
+            Function<Map<String, RuleEngine.RuleState>, List<DetectionStateSnapshot>> capture = invocation.getArgument(0);
+            return capture.apply(Map.of("rule-a", new RuleEngine.RuleState("rule-a", "v1", new byte[] {1})));
+        });
+        AtomicReference<String> persistedTenant = new AtomicReference<>();
+        doAnswer(invocation -> {
+            persistedTenant.set(TenantContext.require());
+            assertFalse(TenantContext.isSystemScope());
+            return null;
+        }).when(snapshots).saveAll(any());
+
+        try (var workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            workers.submit(() -> {
+                assertNull(TenantContext.get());
+                state.snapshotAfterDurable(engine, event("tenant-a", "alice"), null, -1L);
+                assertNull(TenantContext.get());
+                assertFalse(TenantContext.isSystemScope());
+            }).get(10, TimeUnit.SECONDS);
+        }
+
+        assertEquals("tenant-a", persistedTenant.get());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"tenant-b", "system"})
+    void failedCheckpointRestoresTheCallersTenantOrSystemScope(String previous) {
+        var state = state(DetectionStateOwnership.noop());
+        ReflectionTestUtils.setField(state, "snapshotEveryEvents", 1L);
+        when(snapshots.supportsAtomicBatch()).thenReturn(true);
+        when(engine.captureStateSnapshot(any())).thenAnswer(invocation -> {
+            Function<Map<String, RuleEngine.RuleState>, List<DetectionStateSnapshot>> capture = invocation.getArgument(0);
+            return capture.apply(Map.of("rule-a", new RuleEngine.RuleState("rule-a", "v1", new byte[] {1})));
+        });
+        AtomicReference<String> attemptedTenant = new AtomicReference<>();
+        doAnswer(invocation -> {
+            attemptedTenant.set(TenantContext.require());
+            assertFalse(TenantContext.isSystemScope());
+            throw new IllegalStateException("fixture snapshot write unavailable");
+        }).when(snapshots).saveAll(any());
+
+        try (var ignored = previous.equals("system") ? TenantContext.openSystem() : TenantContext.open(previous)) {
+            state.snapshotAfterDurable(engine, event("tenant-a", "alice"), null, -1L);
+            assertEquals(previous.equals("system") ? null : previous, TenantContext.get());
+            assertEquals(previous.equals("system"), TenantContext.isSystemScope());
+        }
+        assertEquals("tenant-a", attemptedTenant.get());
     }
 
     @Test

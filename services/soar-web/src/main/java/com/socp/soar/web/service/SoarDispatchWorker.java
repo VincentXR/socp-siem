@@ -174,7 +174,10 @@ public class SoarDispatchWorker {
     }
 
     private void fail(SoarDispatchState.Claim claim, RuntimeException failure) {
-        state.fail(claim, redactFreeText(failure.getMessage(), 2048), false, Instant.now());
+        String error = redactFreeText(failure.getMessage(), 2048);
+        boolean recorded = state.fail(claim, error, false, Instant.now());
+        log.warn("SOAR dispatch failed tenant={} run={} claimVersion={} recorded={} errorType={} reason={}",
+                claim.tenant(), claim.runId(), claim.version(), recorded, failure.getClass().getSimpleName(), error);
     }
 
     private static String redactFreeText(String value, int max) {

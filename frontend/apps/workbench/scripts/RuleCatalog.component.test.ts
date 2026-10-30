@@ -1,4 +1,4 @@
-import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { ref } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,8 @@ import AttackView from '../src/views/AttackView.vue'
 import PagerBar from '../src/components/PagerBar.vue'
 import FieldConditionBuilder from '../src/components/FieldConditionBuilder.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
+
+enableAutoUnmount(afterEach)
 
 const api = vi.hoisted(() => ({
   listRulePage: vi.fn(), getRule: vi.fn(), gasStats: vi.fn(), listFields: vi.fn(), listWatchlists: vi.fn(),

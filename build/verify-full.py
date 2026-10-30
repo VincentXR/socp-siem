@@ -158,7 +158,7 @@ def install_soar_fixture(entity):
     check("SOAR 已发布探针剧本和限定实体的触发规则", True, name)
 
 
-def run_verification(webhook_target):
+def run_verification(webhook_target, temporary_channel_ids=None):
     """Run mutating probes only when explicitly invoked against a disposable stack."""
     _WEBHOOK_TARGET = webhook_target
     PASS.clear()
@@ -212,6 +212,8 @@ def run_verification(webhook_target):
         "name": "Full-stack webhook sink", "type": "WEBHOOK",
         "target": _WEBHOOK_TARGET,
         "enabled": True, "description": "Hermetic full-stack verification fixture"})
+    if temporary_channel_ids is not None and st == 200 and fixture_channel.get("id"):
+        temporary_channel_ids.append(fixture_channel["id"])
     check("Webhook verification fixture is ready",
           st == 200 and fixture_channel.get("enabled") is True,
           fixture_channel if st == 200 else st)
@@ -219,6 +221,8 @@ def run_verification(webhook_target):
         "name": "Full-stack recovery probe", "type": "WEBHOOK",
         "target": "http://127.0.0.1:1/unreachable",
         "enabled": True, "description": "Terminal receipt recovery verification fixture"})
+    if temporary_channel_ids is not None and st == 200 and recovery_channel.get("id"):
+        temporary_channel_ids.append(recovery_channel["id"])
     check("通知恢复探针以不可达目标启动",
           st == 200 and recovery_channel.get("enabled") is True,
           recovery_channel if st == 200 else st)
@@ -653,7 +657,7 @@ def run_verification(webhook_target):
           st == 200 and "eps1m" in isum and isinstance(isum.get("byHealth"), dict), isum)
 
     # ---------------------------------------------------------------- 9. 持久化重启存活
-    print("\n=== 9. 持久化（重启存活） ===")
+    print("\n=== 9. 历史探针数据回读 ===")
     MARKER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".cache", "persist-marker.json")
     MARKER = os.path.normpath(MARKER)
 
@@ -668,25 +672,26 @@ def run_verification(webhook_target):
 
     prev = _read_marker()
     if prev is None:
-        check("持久化基线已写入（首轮：重启后再跑一次本脚本即校验存活）", True, MARKER)
+        check("历史探针基线已写入（首轮；重启验证需另行执行重启）", True, MARKER)
     else:
-        # 前一次探针写入的 IOC、案件和接入源在服务重启后应仍然存在。
+        # Read back the previous probe. This script does not itself restart services;
+        # counts are continuity smoke checks, not exact-record durability or DR proof.
         st, m = call(U["threat-web"] + "/threat-web/api/v1/iocs/match?value=" + prev["ioc"])
-        check("重启后 IOC 仍在库（threat-web H2）", st == 200 and bool(m) and m.get("matched", True) is not False,
+        check("先前探针的 IOC 仍在库（threat-web）", st == 200 and bool(m) and m.get("matched", True) is not False,
               prev["ioc"])
         st, srcs = call(U["search-config"] + "/search-config/api/v1/sources")
         srcs = unwrap(srcs)
-        check("重启后接入源仍在库（search-config H2）",
+        check("先前探针的接入源仍在库（search-config）",
               st == 200 and any(s.get("id") == prev["source"] for s in srcs), prev["source"])
         st, alarms_now = call(U["alert-web"] + "/alert-web/api/alarms?size=500")
         alarms_now = unwrap(alarms_now) if st == 200 else []
-        check("重启后历史告警仍在库（alert-web H2）",
+        check("历史告警数量未减少（alert-web）",
               st == 200 and len(alarms_now) >= prev.get("alarmCount", 0) and prev.get("alarmCount", 0) > 0,
               "before=%s now=%s" % (prev.get("alarmCount"), len(alarms_now)))
         st, cases_now = call(U["incident-web"] + "/incident-web/api/v1/incidents")
         cases_now = unwrap(cases_now) if st == 200 else []
-        # default 租户只看到本租户案件，并在重启后保持持久化数据。
-        check("重启后案件仍在库（incident-web H2）",
+        # default 租户的历史案件仍可读取；这里不比较具体记录或先前数量。
+        check("历史案件仍可读取（incident-web）",
               st == 200 and len(cases_now) > 0,
               "now=%s (default 租户隔离视图)" % len(cases_now))
 
@@ -719,8 +724,20 @@ def run_verification(webhook_target):
 
 
 def main():
-    with webhook_fixture(os.environ.get("SOCP_WEBHOOK_FIXTURE_URL", "")) as target:
-        return run_verification(target)
+    external = os.environ.get("SOCP_WEBHOOK_FIXTURE_URL", "").strip()
+    # A temporary sink stops on exit. Remove only channels created by this run
+    # so later probes do not send to its closed listener. External CI sinks
+    # deliberately remain active for the subsequent chaos scenarios.
+    temporary_channel_ids = None if external else []
+    with webhook_fixture(external) as target:
+        try:
+            result = run_verification(target, temporary_channel_ids)
+        finally:
+            for channel_id in temporary_channel_ids or []:
+                status, _ = call(U["notify-web"] + "/notify-web/api/v1/channels/"
+                                 + urllib.parse.quote(channel_id, safe=""), "DELETE")
+                check("清理临时 Webhook 渠道", status == 200, channel_id)
+        return 1 if FAIL else result
 
 
 if __name__ == "__main__":

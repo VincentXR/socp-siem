@@ -409,4 +409,51 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
         return plans;
     }
 
+    @Test void deepMultiKeyBacklogKeepsHeadSelectionWithinAdmissionBudget() throws Exception {
+        // Keep fixture inserts under the same five-second statement timeout.
+        for (int start = 1; start <= 200000; start += 10000) jdbc.update("""
+                insert into t_ingestion_outbox
+                    (id, tenant_id, event_id, routing_key, payload, status, attempts,
+                     next_attempt_at, created_at, updated_at)
+                select 'deep-' || n, 'tenant-a', 'deep-' || n, 'tenant-a|host|' || (n % 32),
+                       repeat(md5(n::text), 32), case when n <= 100000 then 'PUBLISHED' else 'PENDING' end,
+                       0, timestamp '2026-09-01 00:00:00', timestamp '2026-09-01 00:00:00',
+                       timestamp '2026-09-01 00:00:00'
+                from generate_series(?, ?) as n order by n
+                """, start, start + 9999);
+        jdbc.execute("VACUUM (ANALYZE) t_ingestion_outbox");
+        String sql = IngestionOutboxRepository.class
+                .getMethod("findDueOrderedBatch", java.time.Instant.class)
+                .getAnnotation(Query.class).value()
+                .replace(":now", "timestamp '2026-09-01 00:00:00'");
+        System.out.println("Deep outbox estimated plan:\n" + String.join("\n", jdbc.query("EXPLAIN " + sql,
+                (row, index) -> row.getString(1))));
+        String plan = String.join("\n", jdbc.query("EXPLAIN (ANALYZE, BUFFERS) " + sql,
+                (row, index) -> row.getString(1)));
+        System.out.println("Deep outbox head-selection plan:\n" + plan);
+        var elapsed = java.util.regex.Pattern.compile("Execution Time: ([0-9.]+) ms").matcher(plan);
+        assertTrue(elapsed.find(), plan);
+        assertTrue(Double.parseDouble(elapsed.group(1)) < 2_000, plan);
+        var selected = repository.findDueOrderedBatch(BASE);
+        assertEquals(200, selected.size());
+        assertEquals("deep-100001", selected.getFirst().getId());
+        // Selection admits up to 16 positions per key. Claim a bounded set of
+        // its fixture's heads independently to verify all 32 predecessor fences.
+        var firstIds = java.util.stream.IntStream.rangeClosed(100001, 100032)
+                .mapToObj(n -> "deep-" + n).toList();
+        var first = batches.claimIndependent(repository.findByTenantIdAndEventIdIn("tenant-a", firstIds),
+                "first-owner", 12, BASE);
+        assertEquals(32, first.size());
+        assertEquals(new java.util.HashSet<>(firstIds),
+                first.stream().map(row -> row.getId()).collect(java.util.stream.Collectors.toSet()));
+        assertTrue(repository.findDueOrderedBatch(BASE).isEmpty(), "processing heads must block every successor");
+        assertEquals(32, batches.markAcknowledged(first, "first-owner", BASE));
+        assertEquals("deep-100033", repository.findDueOrderedBatch(BASE).getFirst().getId());
+        var nextIds = java.util.stream.IntStream.rangeClosed(100033, 100064)
+                .mapToObj(n -> "deep-" + n).toList();
+        var next = batches.claimIndependent(repository.findByTenantIdAndEventIdIn("tenant-a", nextIds),
+                "next-owner", 12, BASE);
+        assertEquals(new java.util.HashSet<>(nextIds),
+                next.stream().map(row -> row.getId()).collect(java.util.stream.Collectors.toSet()));
+    }
 }

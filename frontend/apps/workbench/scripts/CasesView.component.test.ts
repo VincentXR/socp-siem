@@ -1,4 +1,4 @@
-import { mount, flushPromises } from '@vue/test-utils'
+import { enableAutoUnmount, mount, flushPromises } from '@vue/test-utils'
 import { h, ref } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -7,6 +7,8 @@ import CasesView from '../src/views/CasesView.vue'
 import PagerBar from '../src/components/PagerBar.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import type { CaseInfo, Paged, TimelineEvent } from '../src/api/models'
+
+enableAutoUnmount(afterEach)
 
 const mocks = vi.hoisted(() => ({
   changeAssociation: vi.fn(), list: vi.fn(), get: vi.fn(), stats: vi.fn(), timeline: vi.fn(), create: vi.fn(), updateStatus: vi.fn(), saveChanges: vi.fn(), claim: vi.fn(), addNote: vi.fn(), alarms: vi.fn(), rules: vi.fn(), exportSummary: vi.fn(), export: vi.fn(),

@@ -2,62 +2,56 @@ package com.socp.search.config.parser;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
-/**
- * LEEF（Log Event Extended Format）解析器：IBM QRadar 风格。
- *
- * <pre>
- * LEEF:1.0|Vendor|Product|Version|EventID|Name|Severity|Extension
- * LEEF:1.0|Microsoft|Sysmon|10.0|1|Process creation|5|src=1.2.3.4 dst=5.6.7.8 sev=5
- * </pre>
- *
- * 输出与 CEF 对齐：event.code（EventID）、event.action（Name）、event.severity、
- * vendor/product/version 标签；Extension（key=value）走 canonical 映射。
- */
+/** IBM LEEF 1.0 uses tab-separated attributes; 2.0 declares its attribute delimiter. */
 public final class LeefParser implements EventParser {
-
     @Override
-    public String name() {
-        return "leef";
-    }
+    public String name() { return "leef"; }
 
     @Override
     public Map<String, String> parse(String raw) {
-        if (raw == null || !raw.startsWith("LEEF:")) {
-            return null;
+        if (raw == null || !raw.startsWith("LEEF:")) return null;
+        boolean versionTwo = raw.startsWith("LEEF:2.0|");
+        if (!versionTwo && !raw.startsWith("LEEF:1.0|")) {
+            throw new IllegalArgumentException("unsupported LEEF version");
         }
-        String body = raw.substring("LEEF:".length());
-        String[] parts = body.split("\\|", 8);
-        if (parts.length < 7) {
-            throw new IllegalArgumentException("LEEF 段数不足: " + parts.length);
+        String[] parts = raw.substring(5).split("\\|", versionTwo ? 7 : 6);
+        if (parts.length != (versionTwo ? 7 : 6)) throw new IllegalArgumentException("incomplete LEEF header");
+        String separator = versionTwo ? delimiter(parts[5]) : "\t";
+        Map<String, String> attributes = new LinkedHashMap<>();
+        for (String attribute : parts[versionTwo ? 6 : 5].split(Pattern.quote(separator), -1)) {
+            if (attribute.isEmpty()) continue;
+            int equals = attribute.indexOf('=');
+            if (equals <= 0) throw new IllegalArgumentException("invalid LEEF attribute");
+            attributes.put(attribute.substring(0, equals).trim(), attribute.substring(equals + 1));
         }
         Map<String, String> out = new LinkedHashMap<>();
         out.put("vendor", "leef");
-        out.put("leef.device.vendor", parts[1].trim());
-        out.put("leef.device.product", parts[2].trim());
-        out.put("leef.device.version", parts[3].trim());
-        out.put(CanonicalEvent.EVENT_CODE, parts[4].trim());
-        out.put(CanonicalEvent.EVENT_ACTION, parts[5].trim());
-        String sev = parts[6].trim();
-        try {
-            int v = Integer.parseInt(sev);
-            out.put(CanonicalEvent.EVENT_SEVERITY, v <= 3 ? "HIGH" : v <= 6 ? "MEDIUM" : v <= 8 ? "LOW" : "INFO");
-        } catch (NumberFormatException e) {
-            out.put(CanonicalEvent.EVENT_SEVERITY, sev.isEmpty() ? "INFO" : sev);
-        }
-        String ext = parts.length > 7 ? parts[7].trim() : "";
-        if (!ext.isEmpty()) {
-            // LEEF extension 用 \t 分隔（QRadar 标准），也容忍空格分隔
-            String normalized = ext.contains("\t") ? ext.replace('\t', ' ') : ext;
-            Map<String, String> kv = new KvParser().parse(normalized);
-            if (kv != null) {
-                // LEEF uses the same short network/user extension names as CEF.
-                // Route them through the dedicated extension mapper so src/dst,
-                // ports and protocol remain canonical instead of leaking as
-                // vendor-specific keys (e.g. "src" or "cef.network.protocol").
-                out.putAll(CanonicalEvent.cefExt(kv));
-            }
-        }
+        out.put("leef.device.vendor", parts[1]);
+        out.put("leef.device.product", parts[2]);
+        out.put("leef.device.version", parts[3]);
+        out.put(CanonicalEvent.EVENT_CODE, parts[4]);
+        out.put(CanonicalEvent.EVENT_SEVERITY, SecurityLogSeverity.normalize(attributes.get("sev")));
+        // LEEF shares network keys with CEF but uses srcPort/dstPort/usrName.
+        attributes.forEach((key, value) -> {
+            String alias = switch (key) {
+                case "srcPort" -> "spt";
+                case "dstPort" -> "dpt";
+                case "usrName" -> "suser";
+                default -> key;
+            };
+            CanonicalEvent.cefExt(Map.of(alias, value)).forEach((mapped, text) ->
+                    out.put(mapped.startsWith("cef.") ? "leef." + mapped.substring(4) : mapped, text));
+        });
         return out;
+    }
+
+    private static String delimiter(String value) {
+        if (value.length() == 1) return value;
+        String hex = value.startsWith("0x") || value.startsWith("0X") ? value.substring(2)
+                : value.startsWith("x") || value.startsWith("X") ? value.substring(1) : "";
+        if (!hex.matches("[0-9a-fA-F]{1,4}")) throw new IllegalArgumentException("invalid LEEF delimiter");
+        return String.valueOf((char) Integer.parseInt(hex, 16));
     }
 }

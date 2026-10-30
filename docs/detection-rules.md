@@ -295,6 +295,9 @@ refresh is 1 second, bounded by both 10,000 entries and 64 MiB of estimated
 weight. Oversized entries are read without caching. These weights are admission
 estimates, not a heap-size or throughput guarantee. Operator detail reads bypass
 the cache; other rule workers observe committed changes on cache refresh.
+Cache hits validate the caller's tenant without starting a database transaction;
+only a cache miss enters the read transaction. This keeps repeated list predicates
+off the JDBC connection pool while retaining the same refresh and isolation rules.
 
 Detection V27 creates the namespace lock table; V28 backfills member counts in
 batches while preserving payloads and tombstones. Stop old watchlist writers

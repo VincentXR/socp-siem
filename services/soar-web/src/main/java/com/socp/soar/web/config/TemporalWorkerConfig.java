@@ -31,7 +31,17 @@ public class TemporalWorkerConfig {
     public WorkflowClient workflowClient(
             TemporalProperties properties) {
         WorkflowServiceStubs stubs = WorkflowServiceStubs.newServiceStubs(
-                WorkflowServiceStubsOptions.newBuilder().setTarget(properties.getTarget()).build());
+                WorkflowServiceStubsOptions.newBuilder().setTarget(properties.getTarget())
+                        // Let the durable outbox own long-term retry. A remote start must
+                        // not occupy the maintenance scheduler for the SDK's default minute.
+                        .setRpcTimeout(java.time.Duration.ofSeconds(3))
+                        .setRpcRetryOptions(io.temporal.serviceclient.RpcRetryOptions.newBuilder()
+                                .setInitialInterval(java.time.Duration.ofMillis(200))
+                                .setMaximumInterval(java.time.Duration.ofSeconds(1))
+                                .setMaximumAttempts(3)
+                                .setExpiration(java.time.Duration.ofSeconds(10))
+                                .build())
+                        .build());
         WorkflowClientOptions options = WorkflowClientOptions.newBuilder()
                 .setNamespace(properties.getNamespace())
                 .build();

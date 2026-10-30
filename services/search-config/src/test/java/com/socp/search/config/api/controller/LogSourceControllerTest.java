@@ -47,6 +47,65 @@ import static org.mockito.Mockito.when;
 class LogSourceControllerTest {
 
     @Test
+    void concurrentIdentityInsertRetriesAfterThePipelineTransactionReturns() {
+        IngestPipeline pipeline = mock(IngestPipeline.class);
+        var controller = ingestController(pipeline);
+        var request = new MockHttpServletRequest();
+        request.setAttribute(com.socp.platform.auth.security.CollectorCredentialRegistry.COLLECTOR_ID_ATTRIBUTE,
+                "trusted-collector");
+        var result = java.util.Map.<String, Object>of("acknowledged", 2, "created", 0, "duplicates", 2);
+        when(pipeline.process("batch", "trusted-collector", "request-key"))
+                .thenThrow(identityRace("uk_search_event_tenant_event"))
+                .thenReturn(result);
+
+        assertEquals(result, controller.ingest("batch", request, "request-key").data());
+        verify(pipeline, org.mockito.Mockito.times(2)).process("batch", "trusted-collector", "request-key");
+    }
+
+    @Test
+    void exhaustedOutboxIdentityRaceReturnsRetryable503() {
+        IngestPipeline pipeline = mock(IngestPipeline.class);
+        when(pipeline.process("batch", null, null))
+                .thenThrow(new ApiException(503, "rolled back", identityRace("uk_ingestion_outbox_tenant_event")));
+
+        ApiException failure = assertThrows(ApiException.class,
+                () -> ingestController(pipeline).ingest("batch", new MockHttpServletRequest(), null));
+
+        assertEquals(503, failure.getCode());
+        verify(pipeline, org.mockito.Mockito.times(3)).process("batch", null, null);
+    }
+
+    @Test
+    void retryPreservesConflictingPayload409AndDoesNotRetryUnrelatedConstraints() {
+        IngestPipeline pipeline = mock(IngestPipeline.class);
+        ApiException conflict = ApiException.conflict("identity reused with different content");
+        when(pipeline.process("batch", null, null))
+                .thenThrow(identityRace("uk_search_event_tenant_event"))
+                .thenThrow(conflict);
+        assertEquals(conflict, assertThrows(ApiException.class,
+                () -> ingestController(pipeline).ingest("batch", new MockHttpServletRequest(), null)));
+        verify(pipeline, org.mockito.Mockito.times(2)).process("batch", null, null);
+
+        IngestPipeline unrelated = mock(IngestPipeline.class);
+        var failure = identityRace("unrelated_constraint");
+        when(unrelated.process("batch", null, null)).thenThrow(failure);
+        assertEquals(failure, assertThrows(org.springframework.dao.DataIntegrityViolationException.class,
+                () -> ingestController(unrelated).ingest("batch", new MockHttpServletRequest(), null)));
+        verify(unrelated).process("batch", null, null);
+    }
+
+    private static LogSourceController ingestController(IngestPipeline pipeline) {
+        return new LogSourceController(new LogSourceStore(mock(LogSourceRepository.class)),
+                mock(SinkTargetStore.class), pipeline, new IngestLimitsProperties(), vectorProperties());
+    }
+
+    private static org.springframework.dao.DataIntegrityViolationException identityRace(String constraint) {
+        return new org.springframework.dao.DataIntegrityViolationException("identity race",
+                new org.hibernate.exception.ConstraintViolationException("insert lost race",
+                        new java.sql.SQLException("unique constraint", "23505"), constraint));
+    }
+
+    @Test
     void rawHttpLimitRejectsBeforePipelineAndUsesConfiguredSearchBudget() throws Exception {
         IngestPipeline pipeline = mock(IngestPipeline.class);
         var controller = new LogSourceController(new LogSourceStore(mock(LogSourceRepository.class)),

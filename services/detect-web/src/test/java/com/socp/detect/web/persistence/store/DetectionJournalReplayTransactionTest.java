@@ -140,17 +140,17 @@ class DetectionJournalReplayTransactionTest {
         var b = batchEntry("batch-next").result().event();
         var first = new DetectionStateStore.Input(a, "socp-events", 0, 1000L, "key");
         var second = new DetectionStateStore.Input(b, "socp-events", 0, 1001L, "key");
-        assertEquals(List.of(DetectionEventClaim.NEW, DetectionEventClaim.PENDING), journal.claimBatch(List.of(first, first)));
+        assertEquals(List.of(DetectionEventClaim.NEW, DetectionEventClaim.PENDING), journal.preclaimBatch(List.of(first, first)));
         assertEquals(1, jdbc.queryForObject("select count(*) from t_detection_event where tenant_id=? and delivery_id=?",
                 Integer.class, tenant, a.id()));
         journal.markCompleted(batchEntry("batch-new").result());
-        assertEquals(List.of(DetectionEventClaim.COMPLETED, DetectionEventClaim.NEW), journal.claimBatch(List.of(first, second)));
+        assertEquals(List.of(DetectionEventClaim.COMPLETED, DetectionEventClaim.NEW), journal.preclaimBatch(List.of(first, second)));
         var other = new SecurityEvent(a.id(), a.timestamp(), a.source(), a.host(), a.raw(),
                 Map.of("tenant_id", tenant + "-b"), a.severity());
         try {
             var otherInput = new DetectionStateStore.Input(other, "socp-events", 0, 1002L, "key");
-            assertEquals(List.of(DetectionEventClaim.NEW), journal.claimBatch(List.of(otherInput)));
-            assertEquals(List.of(DetectionEventClaim.PENDING), journal.claimBatch(List.of(otherInput)));
+            assertEquals(List.of(DetectionEventClaim.NEW), journal.preclaimBatch(List.of(otherInput)));
+            assertEquals(List.of(DetectionEventClaim.PENDING), journal.preclaimBatch(List.of(otherInput)));
             var ownRows = repository.findByTenantIdAndDeliveryIdIn(tenant, List.of(a.id(), b.id(), "absent"));
             assertEquals(Map.of(a.id(), "COMPLETED", b.id(), "PENDING"), ownRows.stream().collect(
                     java.util.stream.Collectors.toMap(DetectionEventEntity::getDeliveryId, DetectionEventEntity::getStatus)));
@@ -165,7 +165,7 @@ class DetectionJournalReplayTransactionTest {
         } finally { jdbc.update("delete from t_detection_event where tenant_id=?", other.tenantId()); }
         var rolledBack = batchEntry("batch-rollback").result().event();
         assertThrows(IllegalStateException.class, () -> transaction.executeWithoutResult(status -> {
-            journal.claimBatch(List.of(new DetectionStateStore.Input(rolledBack, "socp-events", 0, 1003L, "key")));
+            journal.preclaimBatch(List.of(new DetectionStateStore.Input(rolledBack, "socp-events", 0, 1003L, "key")));
             throw new IllegalStateException("rollback admission");
         }));
         assertTrue(repository.findByTenantIdAndDeliveryId(tenant, rolledBack.id()).isEmpty());

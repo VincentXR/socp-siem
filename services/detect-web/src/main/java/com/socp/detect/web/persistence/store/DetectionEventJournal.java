@@ -126,7 +126,7 @@ public class DetectionEventJournal implements DetectionStateStore {
 
     @Override
     @Transactional
-    public List<DetectionEventClaim> claimBatch(List<DetectionStateStore.Input> inputs) {
+    public List<DetectionEventClaim> preclaimBatch(List<DetectionStateStore.Input> inputs) {
         if (inputs == null || inputs.size() > 64) throw new IllegalArgumentException("journal batch limit is 64");
         Map<String, java.util.List<DetectionStateStore.Input>> tenants = new java.util.TreeMap<>();
         for (var input : inputs) {
@@ -224,6 +224,39 @@ public class DetectionEventJournal implements DetectionStateStore {
     }
 
     @Override
+    @Transactional
+    public List<DetectionEventClaim> claimBatch(List<DetectionEventInput> inputs) {
+        if (inputs == null || inputs.isEmpty() || inputs.size() > com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) {
+            throw new IllegalArgumentException("bounded journal batch required");
+        }
+        String tenant = inputs.getFirst().event().requireTenantId();
+        var ids = new java.util.LinkedHashSet<String>();
+        for (DetectionEventInput input : inputs) {
+            if (input.event().id() == null || input.event().id().isBlank()
+                    || !tenant.equals(input.event().requireTenantId())
+                    || !ids.add(DetectionDelivery.deliveryId(input.event()))) {
+                throw new IllegalArgumentException("journal batch requires one tenant and unique deliveries");
+            }
+        }
+        Map<String, DetectionEventEntity> existing = new java.util.HashMap<>();
+        repository.findByTenantIdAndDeliveryIdIn(tenant, ids).forEach(row -> existing.put(row.getDeliveryId(), row));
+        List<DetectionEventEntity> insertions = new ArrayList<>();
+        List<DetectionEventClaim> claims = new ArrayList<>();
+        for (DetectionEventInput input : inputs) {
+            DetectionEventEntity row = existing.get(DetectionDelivery.deliveryId(input.event()));
+            if (row != null) claims.add(claimOf(row));
+            else {
+                try { insertions.add(journalRow(input.event(), input.topic(), input.partition(), input.offset(), input.routingKey())); }
+                catch (Exception failure) { throw new IllegalStateException("unable to encode detection journal batch", failure); }
+                claims.add(DetectionEventClaim.NEW);
+            }
+        }
+        repository.saveAll(insertions);
+        repository.flush();
+        return List.copyOf(claims);
+    }
+
+    @Override
     public boolean recordIfNew(SecurityEvent event) {
         return claim(event) == DetectionEventClaim.NEW;
     }
@@ -257,12 +290,19 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public void markCompletedBatch(List<DetectionResult> results) {
-        if (results == null || results.size() > 64) throw new IllegalArgumentException("completion batch limit is 64");
-        if (results.isEmpty()) return;
+        if (results == null || results.isEmpty() || results.size() > com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) {
+            throw new IllegalArgumentException("bounded completion batch required");
+        }
         String tenant = results.getFirst().event().requireTenantId();
         if (results.stream().anyMatch(result -> !tenant.equals(result.event().requireTenantId()))) {
             throw new IllegalArgumentException("completion batch must belong to one tenant");
         }
+        var deliveries = new java.util.HashSet<String>();
+        if (results.stream().anyMatch(result -> !deliveries.add(DetectionDelivery.deliveryId(result.event())))) {
+            throw new IllegalArgumentException("completion batch requires unique deliveries");
+        }
+        // Distinct PostgreSQL microseconds retain evaluation order during journal replay.
+        Instant completedAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
         var summaries = results.stream().map(result -> {
             try { return com.socp.rule.util.Json.mapper().writeValueAsString(result.auditSummary()); }
             catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
@@ -282,14 +322,14 @@ public class DetectionEventJournal implements DetectionStateStore {
                     + "where tenant_id=? and delivery_id=?";
             try (var statement = connection.prepareStatement(sql)) {
                 for (int i = 0; i < results.size(); i++) {
-                    statement.setTimestamp(1, java.sql.Timestamp.from(Instant.now()));
+                    statement.setTimestamp(1, java.sql.Timestamp.from(completedAt.plusNanos(i * 1_000L)));
                     statement.setString(2, summaries.get(i));
                     statement.setString(3, tenant);
                     statement.setString(4, DetectionDelivery.deliveryId(results.get(i).event()));
                     statement.addBatch();
                 }
                 for (int changed : statement.executeBatch()) {
-                    if (changed != 1) throw new java.sql.SQLException("missing detection journal receipt during completion");
+                    if (changed != 1) throw new IllegalStateException("missing detection journal receipt during completion");
                 }
             }
         });
@@ -306,22 +346,32 @@ public class DetectionEventJournal implements DetectionStateStore {
             }
         }
         repository.findByTenantIdAndDeliveryId(tenantId, eventId).ifPresent(row -> {
-            if (DetectionEventStatus.DEAD_LETTERED.name().equals(row.getStatus())) return;
-            if (DetectionEventStatus.COMPLETED.name().equals(row.getStatus())) return;
-            Instant now = Instant.now();
-            row.setStatus(DetectionEventStatus.COMPLETED.name());
-            row.setCompletedAt(now);
-            row.setStatusReason(null);
-            if (result != null) {
-                try {
-                    row.setResultJson(com.socp.rule.util.Json.mapper()
-                            .writeValueAsString(result.auditSummary()));
-                } catch (Exception failure) {
-                    throw new IllegalStateException("unable to persist detection result summary", failure);
-                }
-            }
-            repository.saveAndFlush(row);
+            if (completeRow(row, result)) repository.saveAndFlush(row);
         });
+    }
+
+    private static boolean completeRow(DetectionEventEntity row, DetectionResult result) {
+        return completeRow(row, result, Instant.now());
+    }
+
+    private static boolean completeRow(DetectionEventEntity row, DetectionResult result, Instant now) {
+        // The result sink and the consumer's fenced finalization can both
+        // observe completion. A terminal receipt is immutable: avoid a
+        // second UPDATE/flush and keep its original completion timestamp.
+        if (DetectionEventStatus.DEAD_LETTERED.name().equals(row.getStatus())
+                || DetectionEventStatus.COMPLETED.name().equals(row.getStatus())) return false;
+        row.setStatus(DetectionEventStatus.COMPLETED.name());
+        row.setCompletedAt(now);
+        row.setStatusReason(null);
+        if (result != null) {
+            try {
+                row.setResultJson(com.socp.rule.util.Json.mapper()
+                        .writeValueAsString(result.auditSummary()));
+            } catch (Exception failure) {
+                throw new IllegalStateException("unable to persist detection result summary", failure);
+            }
+        }
+        return true;
     }
 
     @Override

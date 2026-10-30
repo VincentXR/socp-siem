@@ -1,10 +1,12 @@
 package com.socp.detect.web.routing;
 
 import com.socp.detect.web.config.DetectRuntimeRole;
-import jakarta.annotation.PostConstruct;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.Consumer;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -42,7 +44,7 @@ public class DetectionRouteSourceConsumer {
     private final LongConsumer retrySleep;
     private final AtomicBoolean running = new AtomicBoolean();
     private volatile Consumer<String, String> consumer;
-    private Thread thread;
+    private volatile Thread thread;
 
     @Autowired
     public DetectionRouteSourceConsumer(
@@ -67,9 +69,11 @@ public class DetectionRouteSourceConsumer {
         this.retrySleep = retrySleep;
     }
 
-    @PostConstruct
-    void start() {
-        if (!enabled) return;
+    // Replays can publish transaction events that resolve other Spring beans.
+    // Start only after singleton initialization and application runners finish.
+    @EventListener(ApplicationReadyEvent.class)
+    synchronized void start() {
+        if (!enabled || thread != null) return;
         running.set(true);
         thread = Thread.ofPlatform().name("detection-route-source").daemon(true).start(this::run);
     }
@@ -82,10 +86,8 @@ public class DetectionRouteSourceConsumer {
                 current.subscribe(java.util.List.of(sourceTopic));
                 while (running.get()) {
                     var records = current.poll(Duration.ofMillis(500));
-                    for (var record : records) {
-                        routes.route(record.topic(), record.partition(), record.offset(), record.value());
-                        TopicPartition partition = new TopicPartition(record.topic(), record.partition());
-                        current.commitSync(Map.of(partition, new OffsetAndMetadata(record.offset() + 1)));
+                    if (!records.isEmpty()) {
+                        routePoll(current, records);
                         // A fresh Kafka session or an empty poll does not prove that
                         // the failing database/plan boundary has recovered.
                         restartDelay = 250L;
@@ -108,6 +110,22 @@ public class DetectionRouteSourceConsumer {
                 consumer = null;
             }
         }
+    }
+
+    /**
+     * One synchronous commit per bounded poll, after every route receipt/outbox
+     * transaction has returned. A routing or commit failure replays the poll's
+     * durable prefix through the existing idempotency boundary. Never commit a
+     * later offset across a failed record, even when a poll spans partitions.
+     */
+    void routePoll(Consumer<String, String> current, ConsumerRecords<String, String> records) {
+        Map<TopicPartition, OffsetAndMetadata> completed = new java.util.HashMap<>();
+        for (var record : records) {
+            routes.route(record.topic(), record.partition(), record.offset(), record.value());
+            completed.put(new TopicPartition(record.topic(), record.partition()),
+                    new OffsetAndMetadata(record.offset() + 1));
+        }
+        if (!completed.isEmpty()) current.commitSync(completed);
     }
 
     private Properties properties() {

@@ -2,6 +2,7 @@ package com.socp.detect.web.service;
 
 import com.socp.detect.web.persistence.store.DetectionStateStore;
 import com.socp.detect.web.persistence.store.DetectionStateOwnership;
+import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.engine.RuleEngine;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.partition.DetectionRoutingKey;
@@ -19,6 +20,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 
 /**
@@ -37,7 +39,7 @@ public class DetectionStateRecovery {
     private final Map<String, AtomicLong> snapshotCounters = new ConcurrentHashMap<>();
     private final Map<String, Map<Integer, Long>> snapshotOffsets = new ConcurrentHashMap<>();
     private final Map<String, DetectionStateOwnership.Lease> stateLeases = new ConcurrentHashMap<>();
-    private final Map<String, java.util.concurrent.locks.ReentrantLock> stateLeaseLocks = new ConcurrentHashMap<>();
+    private final Map<String, ReentrantLock> stateLeaseLocks = new ConcurrentHashMap<>();
     private final Set<Integer> revokedPartitions = ConcurrentHashMap.newKeySet();
     record RecoveryAssignment(Set<Integer> partitions) { }
     private final Object assignmentBoundary = new Object();
@@ -100,7 +102,7 @@ public class DetectionStateRecovery {
             assignment.set(new RecoveryAssignment(Set.copyOf(retained)));
         }
         for (String key : stateLeases.keySet()) {
-            java.util.concurrent.locks.ReentrantLock lock = stateLeaseLocks.get(key);
+            ReentrantLock lock = stateLeaseLocks.get(key);
             if (lock == null) continue;
             lock.lock();
             try {
@@ -117,7 +119,7 @@ public class DetectionStateRecovery {
 
     void releaseAllStateLeases() {
         for (String key : stateLeases.keySet()) {
-            java.util.concurrent.locks.ReentrantLock lock = stateLeaseLocks.get(key);
+            ReentrantLock lock = stateLeaseLocks.get(key);
             if (lock == null) continue;
             lock.lock();
             try {
@@ -149,7 +151,7 @@ public class DetectionStateRecovery {
         }
         int resolvedShard = normalizeShard(shard);
         String key = DetectionStateOwnership.unitKey(inputTopic, partition, resolvedShard);
-        java.util.concurrent.locks.ReentrantLock lock = stateLeaseLocks.computeIfAbsent(key, ignored -> new java.util.concurrent.locks.ReentrantLock());
+        ReentrantLock lock = stateLeaseLocks.computeIfAbsent(key, ignored -> new ReentrantLock());
         lock.lock();
         try {
             if (revokedPartitions.contains(partition)) {
@@ -215,7 +217,7 @@ public class DetectionStateRecovery {
 
     void releaseUnassignedStateLeases(Set<Integer> partitions) {
         for (String key : stateLeases.keySet()) {
-            java.util.concurrent.locks.ReentrantLock lock = stateLeaseLocks.get(key);
+            ReentrantLock lock = stateLeaseLocks.get(key);
             if (lock == null) continue;
             lock.lock();
             try {
@@ -392,18 +394,28 @@ public class DetectionStateRecovery {
     /** Capture from a known engine instance; used by its worker callback during a hot swap. */
     void snapshotAfterDurable(RuleEngine engine, SecurityEvent event,
                                       Integer partition, Long offset) {
+        snapshotAfterDurable(engine, event, partition, offset, 1);
+    }
+
+    /** Batch state and its scalar/vector watermarks must all describe the last durable event. */
+    void snapshotAfterDurable(RuleEngine engine, SecurityEvent event,
+                              Integer partition, Long offset, int processedEvents) {
+        if (processedEvents < 1 || processedEvents > RuleEngine.MAX_BATCH_EVENTS) {
+            throw new IllegalArgumentException("invalid checkpoint batch size");
+        }
         if (snapshotStore == null || event == null || engine == null) return;
         String tenant = event.requireTenantId();
         long every = Math.max(1L, snapshotEveryEvents);
         int shard = shardFor(event);
         String counterKey = engineKey(tenant, shard);
-        long count = snapshotCounters.computeIfAbsent(counterKey, ignored -> new AtomicLong()).incrementAndGet();
+        long before = snapshotCounters.computeIfAbsent(counterKey, ignored -> new AtomicLong()).getAndAdd(processedEvents);
+        long count = before + processedEvents;
         Map<Integer, Long> offsets = snapshotOffsets.computeIfAbsent(counterKey,
                 ignored -> new ConcurrentHashMap<>());
         if (partition != null && offset != null && partition >= 0 && offset >= 0) {
             offsets.merge(partition, offset, Math::max);
         }
-        if (count % every != 0) return;
+        if (before / every == count / every) return;
         long now = nanoTime.getAsLong();
         Long previous = snapshotAttempts.get(counterKey);
         long interval = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0L, snapshotMinIntervalMs));

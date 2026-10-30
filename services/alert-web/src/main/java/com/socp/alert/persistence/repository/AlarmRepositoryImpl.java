@@ -35,6 +35,35 @@ import java.util.Locale;
 @Repository
 public class AlarmRepositoryImpl implements AlarmRepositoryCustom {
 
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+
+    public AlarmRepositoryImpl(org.springframework.jdbc.core.JdbcTemplate jdbc) {
+        this.jdbc = jdbc;
+    }
+
+    @Override
+    public Creation insertIfAbsent(Alarm alarm) {
+        String tenant = com.socp.platform.tenant.context.TenantContext.require();
+        if (!tenant.equals(alarm.getTenantId())) throw new IllegalArgumentException("alarm tenant mismatch");
+        String id = java.util.UUID.randomUUID().toString();
+        var now = java.time.Instant.now();
+        boolean created = ConflictSafeInsert.insert(jdbc, "t_alarm", "uq_alarm_tenant_source_alert", List.of(
+                "id", "tenant_id", "source_alert_id", "rule_id", "rule_name", "title", "severity", "message",
+                "entity", "mitre", "ti_hits", "risk_score", "risk_level", "initial_risk_score", "initial_risk_level",
+                "enriched_at", "status", "occurred_at", "trigger_ingested_at", "alert_created_at", "processing_latency_ms",
+                "trigger_event_id", "detection_result_json", "created_at", "updated_at"),
+                List.of("tenant_id", "source_alert_id"),
+                id, tenant, alarm.getSourceAlertId(), alarm.getRuleId(), alarm.getRuleName(), alarm.getTitle(),
+                alarm.getSeverity() == null ? null : alarm.getSeverity().name(), alarm.getMessage(), alarm.getEntity(),
+                alarm.getMitre(), alarm.getTiHits(), alarm.getRiskScore(), alarm.getRiskLevel(), alarm.getInitialRiskScore(),
+                alarm.getInitialRiskLevel(), alarm.getEnrichedAt(), alarm.getStatus(), alarm.getOccurredAt(),
+                alarm.getTriggerIngestedAt(), alarm.getAlertCreatedAt(), alarm.getProcessingLatencyMs(),
+                alarm.getTriggerEventId(), alarm.getDetectionResultJson(), now, now);
+        Alarm saved = entityManager.createQuery("select a from Alarm a where a.tenantId=:tenant and a.sourceAlertId=:source", Alarm.class)
+                .setParameter("tenant", tenant).setParameter("source", alarm.getSourceAlertId()).getSingleResult();
+        return new Creation(saved, created);
+    }
+
     @PersistenceContext
     private EntityManager entityManager;
 

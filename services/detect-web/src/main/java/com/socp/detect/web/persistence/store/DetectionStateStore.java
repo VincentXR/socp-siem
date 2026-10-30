@@ -26,7 +26,13 @@ public interface DetectionStateStore {
     default boolean supportsBatchClaims() { return false; }
 
     /** Bounded durable admission only; evaluation and offset acknowledgement remain ordered. */
-    default List<DetectionEventClaim> claimBatch(List<Input> inputs) {
+    default List<DetectionEventClaim> preclaimBatch(List<Input> inputs) {
+        return inputs.stream().map(input -> claim(input.event(), input.topic(), input.partition(),
+                input.offset(), input.routingKey())).toList();
+    }
+
+    /** Atomic evaluation batches require a single tenant and distinct delivery identities. */
+    default List<DetectionEventClaim> claimBatch(List<DetectionEventInput> inputs) {
         return inputs.stream().map(input -> claim(input.event(), input.topic(), input.partition(),
                 input.offset(), input.routingKey())).toList();
     }

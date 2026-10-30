@@ -1,7 +1,9 @@
-import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import AlarmDispositionDrawer from '../src/components/AlarmDispositionDrawer.vue'
 import { ApiError } from '../src/api/core'
+
+enableAutoUnmount(afterEach)
 
 const mocks = vi.hoisted(() => ({
   listAlarmSuppressions: vi.fn().mockResolvedValue([]), recordAlarmSuppression: vi.fn(), releaseAlarmSuppression: vi.fn(),

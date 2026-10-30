@@ -64,9 +64,9 @@ class DetectEngineBatchTest {
                 try {
                     List<CompletableFuture<Void>> completions;
                     if (cancellation.equals("assignment")) {
-                        completions = service.ingestBatchFromKafkaAndAwait(input, active::get);
+                        completions = service.ingestOrderedBatchFromKafkaAndAwait(input, active::get);
                     } else if (cancellation.equals("batch-interrupt")) {
-                        completions = service.ingestBatchFromKafkaAndAwait(input);
+                        completions = service.ingestOrderedBatchFromKafkaAndAwait(input);
                     } else {
                         var row = input.getFirst();
                         completions = List.of(service.ingestFromKafkaAndAwait(row.event(), row.topic(), row.partition(), row.offset()));
@@ -122,7 +122,7 @@ class DetectEngineBatchTest {
         try {
             service.start();
             input.forEach(row -> journal.claim(row.event(), row.partition(), row.offset(), "host"));
-            var completions = service.ingestBatchFromKafkaAndAwait(input, () -> {
+            var completions = service.ingestOrderedBatchFromKafkaAndAwait(input, () -> {
                 if (checks.incrementAndGet() == 1) return true;
                 await(entered);
                 return false;
@@ -173,7 +173,7 @@ class DetectEngineBatchTest {
             inputs.forEach(input -> journal.claim(input.event(), input.partition(), input.offset(), "host"));
             List<CompletableFuture<Void>> completions;
             try (var caller = TenantContext.open("caller")) {
-                completions = service.ingestBatchFromKafkaAndAwait(inputs);
+                completions = service.ingestOrderedBatchFromKafkaAndAwait(inputs);
                 assertEquals("caller", TenantContext.require(), "batch tenant must not leak to the submitting caller");
             }
             assertEquals(32, completions.size());
@@ -217,14 +217,14 @@ class DetectEngineBatchTest {
         try {
             service.start();
             inputs.forEach(input -> journal.claim(input.event(), input.partition(), input.offset(), "host"));
-            var rejected = service.ingestBatchFromKafkaAndAwait(inputs);
+            var rejected = service.ingestOrderedBatchFromKafkaAndAwait(inputs);
             release.countDown();
             for (var completion : rejected) assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> completion.get(10, TimeUnit.SECONDS));
             assertEquals(1, publications.get(), "failed group successors must not publish past the gap");
             assertEquals(32, journal.pendingCount());
             fail.set(false);
-            var replayed = service.ingestBatchFromKafkaAndAwait(inputs);
+            var replayed = service.ingestOrderedBatchFromKafkaAndAwait(inputs);
             CompletableFuture.allOf(replayed.toArray(CompletableFuture[]::new)).get(10, TimeUnit.SECONDS);
             assertEquals(0, journal.pendingCount());
         } finally {
@@ -253,7 +253,7 @@ class DetectEngineBatchTest {
                 inputs(65));
         try (var caller = TenantContext.open("caller")) {
             for (var batch : invalid) {
-                assertThrows(IllegalArgumentException.class, () -> service.ingestBatchFromKafkaAndAwait(batch));
+                assertThrows(IllegalArgumentException.class, () -> service.ingestOrderedBatchFromKafkaAndAwait(batch));
                 assertEquals("caller", TenantContext.require());
             }
             assertEquals(0, journal.pendingCount());

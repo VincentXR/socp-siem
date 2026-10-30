@@ -28,6 +28,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -77,7 +78,7 @@ class KafkaEventConsumerTest {
     void preAdmissionIsBoundedAndNeverAcknowledgesOffsets() throws Exception {
         given(stateStore.supportsBatchClaims()).willReturn(true);
         List<Integer> sizes = new ArrayList<>();
-        given(stateStore.claimBatch(any())).willAnswer(call -> {
+        given(stateStore.preclaimBatch(any())).willAnswer(call -> {
             List<?> inputs = call.getArgument(0);
             sizes.add(inputs.size());
             return java.util.Collections.nCopies(inputs.size(), DetectionEventClaim.NEW);
@@ -106,7 +107,7 @@ class KafkaEventConsumerTest {
     @Test
     void failedPreclaimedAttemptRechecksTheJournalBeforeRetrying() throws Exception {
         given(stateStore.supportsBatchClaims()).willReturn(true);
-        given(stateStore.claimBatch(any())).willReturn(List.of(DetectionEventClaim.NEW));
+        given(stateStore.preclaimBatch(any())).willReturn(List.of(DetectionEventClaim.NEW));
         given(stateStore.claim(any(), anyString(), any(), any(), anyString())).willReturn(DetectionEventClaim.COMPLETED);
         given(engine.ingestFromKafkaAndAwait(any(), anyString(), any(), any())).willReturn(
                 CompletableFuture.failedFuture(new CannotCreateTransactionException("commit outcome unavailable")));
@@ -130,7 +131,7 @@ class KafkaEventConsumerTest {
     @Test
     void failedPreAdmissionLeavesTheWholePollForTheExistingRetryPath() throws Exception {
         given(stateStore.supportsBatchClaims()).willReturn(true);
-        given(stateStore.claimBatch(any())).willThrow(new CannotCreateTransactionException("database down"));
+        given(stateStore.preclaimBatch(any())).willThrow(new CannotCreateTransactionException("database down"));
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
         var record = new ConsumerRecord<>("socp-events", 0, 10L, "key",
                 "{\"eventId\":\"retry-poll\",\"tenantId\":\"default\"}");
@@ -140,6 +141,121 @@ class KafkaEventConsumerTest {
         assertTrue(receipts.isEmpty());
         assertEquals(0, completionsOf(consumer).size());
         verifyNoInteractions(engine);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    @Timeout(20)
+    @SuppressWarnings("unchecked")
+    void queuedSmallPollsCoalesceWithoutCrossingBarriersOrLosingByteOwnership(boolean revoke) throws Exception {
+        int limit = com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS;
+        int pollSize = limit / 16; // Keep the test inside the bounded lane queue.
+        var consumer = new KafkaEventConsumer(engine, stateStore);
+        var partition = new TopicPartition("socp-events", 0);
+        var retry = (PartitionRetryState) ReflectionTestUtils.getField(consumer, "retryState");
+        var lease = retry.acquire(partition);
+        ThreadPoolExecutor lane = ReflectionTestUtils.invokeMethod(consumer, "lane", 0);
+        CountDownLatch holdQueue = new CountDownLatch(1), entered = new CountDownLatch(1);
+        CompletableFuture<Void> durable = new CompletableFuture<>();
+        List<Integer> sizes = new java.util.concurrent.CopyOnWriteArrayList<>();
+        AtomicInteger barrier = new AtomicInteger();
+        given(engine.prepareBatchEvent(any(), anyString(), any(Integer.class), any(Long.class)))
+                .willAnswer(call -> new com.socp.rule.engine.RuleEngine.BatchEvent(call.getArgument(0),
+                        new com.socp.rule.engine.DetectionResult.InputPosition(call.getArgument(1),
+                                call.getArgument(2), call.getArgument(3)), com.socp.rule.engine.RuleExecutionScope.NOOP));
+        given(engine.batchGroups(any())).willAnswer(call -> List.of(List.copyOf(call.getArgument(0))));
+        given(stateStore.claimBatch(any())).willAnswer(call -> java.util.Collections.nCopies(
+                ((List<?>) call.getArgument(0)).size(), DetectionEventClaim.NEW));
+        given(engine.ingestBatchFromKafkaAndAwait(any())).willAnswer(call -> {
+            List<com.socp.rule.engine.RuleEngine.BatchEvent> batch = call.getArgument(0);
+            sizes.add(batch.size());
+            if (sizes.size() == 1) {
+                assertEquals(java.util.stream.LongStream.range(0, limit).boxed().toList(),
+                        batch.stream().map(e -> e.position().offset()).toList());
+                entered.countDown(); return durable;
+            }
+            assertEquals(1, barrier.get());
+            return CompletableFuture.completedFuture(null);
+        });
+        lane.execute(() -> { try { holdQueue.await(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); } });
+        try {
+            for (int first = 0; first < limit + pollSize; first += pollSize) {
+                if (first == limit) ReflectionTestUtils.invokeMethod(consumer, "dispatchOrDefer", null,
+                        partition, (Runnable) barrier::incrementAndGet, 1L);
+                var records = java.util.stream.IntStream.range(first, first + pollSize).mapToObj(n ->
+                        new ConsumerRecord<>("socp-events", 0, (long) n, "key",
+                                "{\"eventId\":\"coalesce-" + n + "\",\"tenantId\":\"default\"}")).toList();
+                consumer.dispatchBatch(null, partition, records, java.util.Collections.nCopies(pollSize, 1L), lease);
+            }
+            var bytes = ((Map<TopicPartition, AtomicLong>) ReflectionTestUtils.getField(consumer, "pendingBytes")).get(partition);
+            assertTrue(bytes.get() > 0);
+            holdQueue.countDown();
+            assertTrue(entered.await(3, TimeUnit.SECONDS));
+            assertEquals(List.of(limit), sizes);
+            assertEquals(0, completionsOf(consumer).size());
+            assertTrue(bytes.get() > 0, "absorbed tasks keep their byte reservations until completion");
+            if (revoke) consumer.revokePartitions(List.of(partition));
+            durable.complete(null);
+            if (revoke) assertTrue(lane.awaitTermination(3, TimeUnit.SECONDS));
+            else lane.submit(() -> {}).get(3, TimeUnit.SECONDS);
+            assertEquals(revoke ? List.of(limit) : List.of(limit, pollSize), sizes);
+            assertEquals(revoke ? 0 : limit + pollSize, completionsOf(consumer).size());
+            assertEquals(0, bytes.get());
+        } finally {
+            holdQueue.countDown(); durable.complete(null); consumer.stop();
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"complete", "revoked", "fenced"})
+    @Timeout(20)
+    void batchCompletionWaitsForDurabilityAndCurrentOwnership(String outcome) throws Exception {
+        CountDownLatch submitted = new CountDownLatch(2);
+        CompletableFuture<Void> durable = new CompletableFuture<>();
+        given(engine.prepareBatchEvent(any(SecurityEvent.class), anyString(), any(Integer.class), any(Long.class)))
+                .willAnswer(call -> new com.socp.rule.engine.RuleEngine.BatchEvent(call.getArgument(0),
+                        new com.socp.rule.engine.DetectionResult.InputPosition(call.getArgument(1),
+                                call.getArgument(2), call.getArgument(3)), com.socp.rule.engine.RuleExecutionScope.NOOP));
+        given(engine.batchGroups(any())).willAnswer(call -> {
+            List<com.socp.rule.engine.RuleEngine.BatchEvent> events = call.getArgument(0);
+            return events.stream().map(List::of).toList();
+        });
+        given(stateStore.claimBatch(any())).willReturn(List.of(DetectionEventClaim.NEW, DetectionEventClaim.NEW));
+        given(engine.ingestBatchFromKafkaAndAwait(any())).willAnswer(call -> {
+            submitted.countDown();
+            List<com.socp.rule.engine.RuleEngine.BatchEvent> events = call.getArgument(0);
+            return events.getFirst().position().offset() == 0 ? durable : CompletableFuture.completedFuture(null);
+        });
+        if ("fenced".equals(outcome)) {
+            org.mockito.Mockito.doAnswer(call -> {
+                SecurityEvent event = call.getArgument(0);
+                if (event.id().equals("batch-1")) throw new DetectionStateOwnership.StaleStateOwnerException("fenced batch");
+                return null;
+            }).when(engine).assertCurrentOwner(any(), eq(0));
+        }
+        KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
+        var partition = new TopicPartition("socp-events", 0);
+        var retry = (PartitionRetryState) ReflectionTestUtils.getField(consumer, "retryState");
+        var lease = retry.acquire(partition);
+        List<ConsumerRecord<String, String>> records = java.util.stream.IntStream.range(0, 2).mapToObj(n ->
+                new ConsumerRecord<>("socp-events", 0, (long) n, "key",
+                        "{\"eventId\":\"batch-" + n + "\",\"tenantId\":\"default\"}")).toList();
+        var work = CompletableFuture.runAsync(() -> consumer.processBatchWithRetry(records, List.of(1L, 1L), lease));
+        try {
+            assertTrue(submitted.await(2, TimeUnit.SECONDS));
+            assertEquals(0, completionsOf(consumer).size());
+            if ("revoked".equals(outcome)) consumer.revokePartitions(List.of(partition));
+            durable.complete(null);
+            work.get(3, TimeUnit.SECONDS);
+            assertEquals("complete".equals(outcome) ? 2 : 0, completionsOf(consumer).size());
+            verify(engine, times(2)).ingestBatchFromKafkaAndAwait(any());
+            verify(engine, never()).ingestFromKafkaAndAwait(any(), anyString(), any(), any());
+            if ("fenced".equals(outcome)) assertTrue(((java.util.concurrent.atomic.AtomicBoolean)
+                    ReflectionTestUtils.getField(consumer, "sessionRestartRequested")).get());
+        } finally {
+            durable.complete(null);
+            consumer.stop();
+        }
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -174,22 +290,26 @@ class KafkaEventConsumerTest {
                         "{\"eventId\":\"revoked-worker\",\"tenantId\":\"default\"}"), 1L);
             }
         };
-        CompletableFuture<Void> oldWorker = CompletableFuture.runAsync(delivery);
-        try {
-            assertTrue(entered.await(2, TimeUnit.SECONDS));
-            consumer.revokePartitions(List.of(partition));
-            delivery.run(); // New assignment progresses before the old call fails.
-            releaseFailure.countDown();
-            oldWorker.get(2, TimeUnit.SECONDS);
-            KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
-            given(kafka.assignment()).willReturn(java.util.Set.of(partition));
-            ReflectionTestUtils.invokeMethod(consumer, "applyPauseState", kafka);
-            verify(kafka, never()).pause(any());
-            assertEquals(2, claims.get(), "retired work must not retry in the next assignment");
-            assertEquals(pendingReplay ? 0 : 1, completionsOf(consumer).size());
-        } finally {
-            releaseFailure.countDown();
-            consumer.stop();
+        // This test deliberately interrupts its worker. A shared ForkJoin worker
+        // can carry that flag into the next test before its outer loop clears it.
+        try (var worker = Executors.newSingleThreadExecutor()) {
+            var oldWorker = worker.submit(delivery);
+            try {
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                consumer.revokePartitions(List.of(partition));
+                delivery.run(); // New assignment progresses before the old call fails.
+                releaseFailure.countDown();
+                oldWorker.get(2, TimeUnit.SECONDS);
+                KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
+                given(kafka.assignment()).willReturn(java.util.Set.of(partition));
+                ReflectionTestUtils.invokeMethod(consumer, "applyPauseState", kafka);
+                verify(kafka, never()).pause(any());
+                assertEquals(2, claims.get(), "retired work must not retry in the next assignment");
+                assertEquals(pendingReplay ? 0 : 1, completionsOf(consumer).size());
+            } finally {
+                releaseFailure.countDown();
+                consumer.stop();
+            }
         }
     }
 
@@ -211,21 +331,23 @@ class KafkaEventConsumerTest {
             throw new IllegalStateException("late broker failure");
         });
         TopicPartition partition = new TopicPartition("socp-events", 0);
-        CompletableFuture<Void> oldWorker = CompletableFuture.runAsync(() -> consumer.processWithRetry(
-                new ConsumerRecord<>("socp-events", 0, 10L, "key", "{bad-json"), 1L));
-        try {
-            assertTrue(entered.await(2, TimeUnit.SECONDS));
-            consumer.revokePartitions(List.of(partition));
-            releaseFailure.countDown();
-            oldWorker.get(2, TimeUnit.SECONDS);
-            KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
-            given(kafka.assignment()).willReturn(java.util.Set.of(partition));
-            ReflectionTestUtils.invokeMethod(consumer, "applyPauseState", kafka);
-            verify(kafka, never()).pause(any());
-            assertEquals(0, completionsOf(consumer).size(), "a revoked handoff cannot acknowledge the record");
-        } finally {
-            releaseFailure.countDown();
-            consumer.stop();
+        try (var worker = Executors.newSingleThreadExecutor()) {
+            var oldWorker = worker.submit(() -> consumer.processWithRetry(
+                    new ConsumerRecord<>("socp-events", 0, 10L, "key", "{bad-json"), 1L));
+            try {
+                assertTrue(entered.await(2, TimeUnit.SECONDS));
+                consumer.revokePartitions(List.of(partition));
+                releaseFailure.countDown();
+                oldWorker.get(2, TimeUnit.SECONDS);
+                KafkaConsumer<String, String> kafka = mock(KafkaConsumer.class);
+                given(kafka.assignment()).willReturn(java.util.Set.of(partition));
+                ReflectionTestUtils.invokeMethod(consumer, "applyPauseState", kafka);
+                verify(kafka, never()).pause(any());
+                assertEquals(0, completionsOf(consumer).size(), "a revoked handoff cannot acknowledge the record");
+            } finally {
+                releaseFailure.countDown();
+                consumer.stop();
+            }
         }
     }
 

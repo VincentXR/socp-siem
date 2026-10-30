@@ -4,6 +4,19 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_load_soak:
+        description: Run an additional one-hour 5 EPS load/soak verification
+        type: boolean
+        default: false
+      run_load_pressure:
+        description: Run 10,25,50,100 EPS pressure stages for five minutes each
+        type: boolean
+        default: false
+      run_load_capacity:
+        description: Run 250,500,1000,2000 canonical EPS stages for two minutes each
+        type: boolean
+        default: false
   schedule:
     - cron: "30 2 * * 1"
 
@@ -30,9 +43,20 @@ jobs:
       - id: scope
         name: Decide whether full-stack evidence is applicable
         env:
+          RUN_LOAD_SOAK: ${{ inputs.run_load_soak }}
+          RUN_LOAD_PRESSURE: ${{ inputs.run_load_pressure }}
+          RUN_LOAD_CAPACITY: ${{ inputs.run_load_capacity }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          load_modes=0
+          for enabled in "$RUN_LOAD_SOAK" "$RUN_LOAD_PRESSURE" "$RUN_LOAD_CAPACITY"; do
+            if [ "$enabled" = "true" ]; then load_modes=$((load_modes + 1)); fi
+          done
+          if [ "$load_modes" -gt 1 ]; then
+            echo "Choose only one of capacity, pressure or soak verification"
+            exit 1
+          fi
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "run_heavy=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -47,11 +71,12 @@ jobs:
           fi
 
   full-stack-heavy:
+    name: ${{ inputs.run_load_capacity && 'canonical-capacity' || 'full-stack-heavy' }}
     needs: changes
     if: needs.changes.outputs.run_heavy == 'true'
     runs-on: ubuntu-latest
     # Original full-stack budget plus the bounded patched Vector source build.
-    timeout-minutes: 130
+    timeout-minutes: ${{ (inputs.run_load_soak || inputs.run_load_pressure || inputs.run_load_capacity) && 200 || 130 }}
     env:
       SOCP_PG_USER: socp_runtime
       SOCP_PG_RUNTIME_USER: socp_runtime
@@ -77,10 +102,13 @@ jobs:
       # search-config also owns the Kafka-to-OpenSearch indexing worker. Kafka
       # client reinitialization after a broker outage needs more class metadata
       # headroom than the CRUD-oriented services, without increasing all JVMs.
-      SOCP_SEARCH_CONFIG_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      SOCP_SEARCH_CONFIG_JVM_OPTS: ${{ inputs.run_load_capacity && '-Xms128m -Xmx512m -XX:MaxMetaspaceSize=192m -XX:+UseG1GC -Dspring.datasource.hikari.maximum-pool-size=8' || '-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC' }}
       # Detection includes routing, JPA, Kafka and runtime OpenAPI generation;
       # the generic 128 MiB metadata cap exhausts Metaspace after startup.
-      SOCP_DETECT_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
+      SOCP_DETECT_WEB_JVM_OPTS: ${{ inputs.run_load_capacity && '-Xms128m -Xmx768m -XX:MaxMetaspaceSize=192m -XX:+UseG1GC -Dspring.datasource.hikari.maximum-pool-size=8' || '-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC' }}
+      # Exercise mixed-shard partition batches in both functional recovery and
+      # capacity runs. Source event shape and acceptance thresholds stay fixed.
+      SOCP_DETECT_STATE_SHARDS: "4"
       # Alert also loads enrichment, delivery, JPA and OpenAPI. Its first
       # paginated alarm request exceeds the generic metadata budget.
       SOCP_ALERT_WEB_JVM_OPTS: "-Xms16m -Xmx192m -XX:MaxMetaspaceSize=192m -XX:+UseSerialGC"
@@ -277,7 +305,7 @@ jobs:
           bash build/mvnw.sh
           -pl services/search-config,services/detect-web,services/ai-assistant
           -am test
-          -Dtest=VectorConfigRendererContainerTest,ConfiguredEventTimePersistenceTest,IngestionOutboxOrderingPersistenceTest,IngestionOutboxClaimPostgresTest,DetectionRouteOutboxPostgresTest,InvestigationAppendAuditPostgresTest
+          -Dtest=VectorConfigRendererContainerTest,ConfiguredEventTimePersistenceTest,IngestionOutboxOrderingPersistenceTest,IngestionOutboxClaimPostgresTest,DetectionBatchPostgresTest,PersistentWatchlistPostgresTest,DetectionRouteOutboxPostgresTest,InvestigationAppendAuditPostgresTest
           -Dsurefire.failIfNoSpecifiedTests=false
 
       - name: Boot every packaged service with a production-like context
@@ -431,18 +459,83 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
         working-directory: frontend/apps/workbench
 
-      - name: Run live log-source browser acceptance
+      - name: Run live workbench and log-source browser acceptance
         env:
           SOCP_LIVE_E2E: "true"
           SOCP_GATEWAY_URL: http://127.0.0.1:18092
           SOCP_E2E_USERNAME: admin
-        run: pnpm exec playwright test e2e/live-source-workflow.spec.ts
+        run: pnpm exec playwright test e2e/live-source-workflow.spec.ts e2e/live-workbench-acceptance.spec.ts --workers=1
         working-directory: frontend/apps/workbench
 
       - name: Run true event-pipeline verification
         run: python3 build/verify-pipeline.py
 
+      # A manual capacity run has its own bounded workload. The PR-triggered
+      # run still executes every chaos/rebalance/migration gate on the same SHA.
+      # Do not feed a new migration group the capacity dataset under the separate
+      # small-fixture oracle deadline. Keep API/browser/pipeline checks above.
+      - name: Start bounded capacity profiling
+        id: capacity_profile
+        if: ${{ inputs.run_load_capacity }}
+        run: |
+          mkdir -p .cache/capacity-profile
+          # Start from an empty event set: do not record environment variables,
+          # system properties, command lines, request bodies or credentials.
+          jfr configure --input none --output .cache/capacity-profile/events.jfc \
+            '+jdk.ExecutionSample#enabled=true' '+jdk.ExecutionSample#period=20ms' \
+            '+jdk.NativeMethodSample#enabled=true' '+jdk.NativeMethodSample#period=20ms' \
+            '+jdk.ThreadPark#enabled=true' '+jdk.ThreadPark#threshold=5ms' '+jdk.ThreadPark#stackTrace=true' \
+            '+jdk.JavaMonitorEnter#enabled=true' '+jdk.JavaMonitorEnter#threshold=5ms' '+jdk.JavaMonitorEnter#stackTrace=true' \
+            '+jdk.SocketRead#enabled=true' '+jdk.SocketRead#threshold=5ms' '+jdk.SocketRead#stackTrace=true' \
+            '+jdk.SocketWrite#enabled=true' '+jdk.SocketWrite#threshold=5ms' '+jdk.SocketWrite#stackTrace=true' \
+            '+jdk.FileWrite#enabled=true' '+jdk.FileWrite#threshold=5ms' '+jdk.FileWrite#stackTrace=true' \
+            '+jdk.GarbageCollection#enabled=true' '+jdk.CPULoad#enabled=true' '+jdk.CPULoad#period=1s' \
+            '+jdk.ThreadCPULoad#enabled=true' '+jdk.ThreadCPULoad#period=1s'
+          for service in search-config detect-web alert-web; do
+            pid=$(cat ".cache/$service.pid")
+            [[ "$pid" =~ ^[0-9]+$ ]]
+            jcmd "$pid" JFR.start name=capacity settings=.cache/capacity-profile/events.jfc maxsize=32m disk=true
+          done
+
+      - name: Run optional 2000 EPS capacity verification
+        if: ${{ inputs.run_load_capacity }}
+        timeout-minutes: 45
+        run: >-
+          python3 build/verify-load-soak.py --allow-local-fixture
+          --mode capacity --seconds 120 --stages 250,500,1000,2000
+          --warmup-eps 50 --warmup-seconds 120
+          --require-state-snapshot --report-dir .cache/load-capacity
+
+      - name: Save capacity profiles after success or failure
+        if: ${{ always() && steps.capacity_profile.outcome == 'success' }}
+        run: |
+          status=0
+          for service in search-config detect-web alert-web; do
+            pid=$(cat ".cache/$service.pid")
+            [[ "$pid" =~ ^[0-9]+$ ]]
+            jcmd "$pid" JFR.dump name=capacity filename="$PWD/.cache/capacity-profile/$service.jfr" || status=1
+            jcmd "$pid" JFR.stop name=capacity || status=1
+          done
+          exit "$status"
+
+      - name: Run optional one-hour load and soak verification
+        if: ${{ inputs.run_load_soak }}
+        timeout-minutes: 75
+        run: >-
+          python3 build/verify-load-soak.py --allow-local-fixture
+          --seconds 3600 --eps 5 --report-dir .cache/load-soak
+
+      - name: Run optional bounded pressure verification
+        if: ${{ inputs.run_load_pressure }}
+        timeout-minutes: 45
+        run: >-
+          python3 build/verify-load-soak.py --allow-local-fixture
+          --mode pressure --seconds 300 --stages 10,25,50,100
+          --require-state-snapshot
+          --report-dir .cache/load-pressure
+
       - name: Run Compose-backed dependency chaos evidence
+        if: ${{ !inputs.run_load_capacity }}
         run: |
           mkdir -p .cache/chaos
           python3 build/chaos-pipeline.py --scenario all \
@@ -452,14 +545,17 @@ jobs:
       # This demo stops the only canonical consumer. Run it before replacing
       # that generation with three routed consumers and their separate router.
       - name: Run Detection recovery demo
+        if: ${{ !inputs.run_load_capacity }}
         run: python3 build/demos/detection-recovery.py
 
       # This demo uses local HTTP Detection ingestion, whose shard must belong
       # to the contacted worker. Exercise it while one worker owns all shards.
       - name: Run attack scenario demo
+        if: ${{ !inputs.run_load_capacity }}
         run: python3 build/demos/attack-scenarios.py
 
       - name: Start fixed three-instance routed Detection cluster
+        if: ${{ !inputs.run_load_capacity }}
         env:
           SOCP_DETECT_PROFILE: pg
           SOCP_KAFKA_GROUP_ID: socp-detect
@@ -471,6 +567,7 @@ jobs:
         run: bash build/detection-cluster.sh start
 
       - name: Run weekly routed multi-instance chaos evidence
+        if: ${{ !inputs.run_load_capacity }}
         env:
           SOCP_DETECT_PROFILE: pg
           SOCP_KAFKA_GROUP_ID: socp-detect
@@ -490,6 +587,7 @@ jobs:
             --output .cache/chaos/multi-instance.json
 
       - name: Run routed migration and rollback evidence
+        if: ${{ !inputs.run_load_capacity }}
         env:
           SOCP_DETECT_PROFILE: pg
           SOCP_KAFKA_GROUP_ID: socp-detect
@@ -520,14 +618,28 @@ jobs:
             --output .cache/chaos/routing-rollback-pause-regression.json
 
       - name: Run Golden Demo
+        if: ${{ !inputs.run_load_capacity }}
         id: golden_demo
         env:
           GOLDEN_DEMO_DB_EVIDENCE: "true"
         run: python3 build/demos/golden-demo.py --transport vector --isolated-vector
 
       - name: Run dependency failure injection
-        if: ${{ !cancelled() && (steps.golden_demo.outcome == 'success' || steps.golden_demo.outcome == 'failure') }}
+        if: ${{ !inputs.run_load_capacity && !cancelled() && (steps.golden_demo.outcome == 'success' || steps.golden_demo.outcome == 'failure') }}
         run: python3 build/failure-tests.py
+
+      - name: Capture blocked service threads on failure
+        if: failure()
+        run: |
+          mkdir -p .cache/failure-threads
+          for service in search-config detect-web soar-web soar-web-secondary; do
+            if [ -f ".cache/$service.pid" ]; then
+              pid=$(cat ".cache/$service.pid")
+              if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+                timeout 15s jcmd "$pid" Thread.print -l > ".cache/failure-threads/$service.txt" 2>&1 || true
+              fi
+            fi
+          done
 
       - name: Collect logs
         if: always()
@@ -536,7 +648,9 @@ jobs:
           bash build/compose.sh --profile extra logs --no-color > .cache/compose.log 2>&1 || true
 
       - name: Collect commit-scoped full-stack evidence
-        if: always()
+        # Capacity has its own commit-bound final.json and reconciliation evidence.
+        # Only the complete suite can produce the required chaos attestations.
+        if: ${{ always() && !inputs.run_load_capacity }}
         run: |
           python3 build/collect-evidence.py --output .cache/evidence \
           --benchmark .cache/chaos/dependency-matrix.json \

@@ -16,6 +16,7 @@ import com.socp.alert.persistence.entity.AlarmBatchIdempotency;
 import com.socp.alert.persistence.repository.AlarmEvidenceRepository;
 import com.socp.alert.persistence.repository.AlarmBatchIdempotencyRepository;
 import com.socp.alert.persistence.repository.AlarmRepository;
+import com.socp.alert.persistence.repository.AlarmRepositoryCustom.Creation;
 import com.socp.alert.persistence.repository.OutboxRepository;
 
 
@@ -90,13 +91,14 @@ public class AlarmService {
                 enrichmentService, queryService, statisticsService, null, null, null, null);
     }
 
+    @Transactional
     public Alarm create(Alarm alarm) {
         return create(alarm, List.of());
     }
 
     @Transactional
     public Alarm create(Alarm alarm, List<AlarmEvidenceInput> evidence) {
-        return createInternal(alarm, evidence);
+        return createInternal(alarm, evidence).alarm();
     }
 
     /**
@@ -120,34 +122,39 @@ public class AlarmService {
         String requestHash = batchHash(requests);
         if (batchIdempotencyRepository != null) {
             var existing = batchIdempotencyRepository.findByTenantIdAndIdempotencyKey(tenant, key);
-            if (existing.isPresent()) {
-                AlarmBatchIdempotency row = existing.get();
-                if (!requestHash.equals(row.getRequestHash())) {
-                    throw com.socp.platform.error.exception.ApiException.of(
-                            409, "Idempotency-Key was already used with a different request");
-                }
-                return readBatchResponse(row.getResponseJson());
+            if (existing.isPresent()) return replayBatch(existing.get(), requestHash);
+            AlarmBatchIdempotency claim = new AlarmBatchIdempotency();
+            claim.setId(java.util.UUID.randomUUID().toString());
+            claim.setTenantId(tenant);
+            claim.setIdempotencyKey(key);
+            claim.setRequestHash(requestHash);
+            if (!batchIdempotencyRepository.claim(claim)) {
+                return replayBatch(batchIdempotencyRepository.findByTenantIdAndIdempotencyKey(tenant, key)
+                        .orElseThrow(() -> new IllegalStateException("batch claim winner is missing")), requestHash);
             }
         }
 
         List<String> accepted = new ArrayList<>();
         List<String> duplicates = new ArrayList<>();
         List<Map<String, Object>> alarms = new ArrayList<>();
-        for (CreateAlarmRequest request : requests) {
-            Alarm candidate = fromRequest(request);
-            boolean duplicate = candidate.getSourceAlertId() != null
-                    && !candidate.getSourceAlertId().isBlank()
-                    && repository.findByTenantIdAndSourceAlertId(tenant, candidate.getSourceAlertId()).isPresent();
-            Alarm saved = createInternal(candidate,
-                    request.evidence() == null ? List.of() : request.evidence());
+        List<Alarm> candidates = requests.stream().map(AlarmService::fromRequest).toList();
+        Creation[] results = new Creation[requests.size()];
+        // Overlapping batches acquire source-identity locks in the same order,
+        // including when clients submit [a,b] and [b,a]. Responses retain input order.
+        var order = java.util.stream.IntStream.range(0, requests.size()).boxed()
+                .sorted(java.util.Comparator.comparing(index -> candidates.get(index).getSourceAlertId(),
+                        java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder()))).toList();
+        for (int index : order) {
+            results[index] = createInternal(candidates.get(index), requests.get(index).evidence());
+        }
+        for (Creation result : results) {
+            Alarm saved = result.alarm();
             String alarmId = saved.getId();
-            if (alarmId != null) {
-                (duplicate ? duplicates : accepted).add(alarmId);
-            }
+            if (alarmId != null) (result.created() ? accepted : duplicates).add(alarmId);
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("id", alarmId);
             item.put("sourceAlertId", saved.getSourceAlertId());
-            item.put("duplicate", duplicate);
+            item.put("duplicate", !result.created());
             alarms.add(item);
         }
         Map<String, Object> response = new LinkedHashMap<>();
@@ -156,19 +163,22 @@ public class AlarmService {
         response.put("duplicates", List.copyOf(duplicates));
         response.put("count", requests.size());
         response.put("alarms", List.copyOf(alarms));
-        if (batchIdempotencyRepository != null) {
-            AlarmBatchIdempotency row = new AlarmBatchIdempotency();
-            row.setId(java.util.UUID.randomUUID().toString());
-            row.setTenantId(tenant);
-            row.setIdempotencyKey(key);
-            row.setRequestHash(requestHash);
-            row.setResponseJson(writeBatchResponse(response));
-            batchIdempotencyRepository.saveAndFlush(row);
+        if (batchIdempotencyRepository != null
+                && batchIdempotencyRepository.complete(tenant, key, writeBatchResponse(response), Instant.now()) != 1) {
+            throw new IllegalStateException("batch claim disappeared before completion");
         }
         return response;
     }
 
-    private Alarm createInternal(Alarm alarm, List<AlarmEvidenceInput> evidence) {
+    private static Map<String, Object> replayBatch(AlarmBatchIdempotency row, String requestHash) {
+        if (!requestHash.equals(row.getRequestHash())) {
+            throw com.socp.platform.error.exception.ApiException.of(
+                    409, "Idempotency-Key was already used with a different request");
+        }
+        return readBatchResponse(row.getResponseJson());
+    }
+
+    private Creation createInternal(Alarm alarm, List<AlarmEvidenceInput> evidence) {
         String tenant = AlarmQueryService.tenant();
         if (alarm.getTenantId() != null && !tenant.equals(alarm.getTenantId())) {
             throw new IllegalArgumentException("alarm tenant does not match authenticated tenant");
@@ -177,7 +187,7 @@ public class AlarmService {
         String sourceAlertId = alarm.getSourceAlertId();
         if (sourceAlertId != null && !sourceAlertId.isBlank()) {
             var existing = repository.findByTenantIdAndSourceAlertId(tenant, sourceAlertId);
-            if (existing.isPresent()) return existing.get();
+            if (existing.isPresent()) return new Creation(existing.get(), false);
         } else {
             // A keyless producer must still get a NOT NULL, collision-free identity so
             // the (tenant_id, source_alert_id) uniqueness contract holds after V20.
@@ -194,7 +204,9 @@ public class AlarmService {
                 && suppressionService.suppresses(tenant, alarm.getRuleId(), alarm.getEntity())) {
             alarm.setStatus(com.socp.alert.domain.AlarmState.SUPPRESSED.name());
         }
-        Alarm saved = repository.save(alarm);
+        Creation result = repository.insertIfAbsent(alarm);
+        if (!result.created()) return result;
+        Alarm saved = result.alarm();
 
         List<AlarmEvidenceInput> captured = evidence == null ? List.of() : evidence.stream()
                 .filter(java.util.Objects::nonNull)
@@ -206,7 +218,7 @@ public class AlarmService {
         deliveryRegistrar.register(tenant, saved.getId(), deliveryPayload);
         outboxRepository.save(pendingEvent(tenant, saved.getId(), deliveryPayload));
         scheduleOutboxTrigger();
-        return saved;
+        return result;
     }
 
     private static Alarm fromRequest(CreateAlarmRequest req) {

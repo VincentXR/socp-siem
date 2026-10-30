@@ -21,15 +21,16 @@ import java.time.Instant;
 public class DetectionEventEntity implements org.springframework.data.domain.Persistable<String> {
 
     @jakarta.persistence.Transient
-    private boolean newRecord = true;
+    private boolean newEntity = true;
 
-    @Override public String getId() { return storageId; }
-    @Override public boolean isNew() { return newRecord; }
+    @Override @com.fasterxml.jackson.annotation.JsonIgnore
+    public String getId() { return storageId; }
 
-    @jakarta.persistence.PostLoad
-    @jakarta.persistence.PostPersist
-    private void markPersisted() { newRecord = false; }
+    @Override @com.fasterxml.jackson.annotation.JsonIgnore
+    public boolean isNew() { return newEntity; }
 
+    @jakarta.persistence.PostLoad @jakarta.persistence.PostPersist
+    void persisted() { newEntity = false; }
 
     @Id
     @Column(name = "event_id", length = 128)

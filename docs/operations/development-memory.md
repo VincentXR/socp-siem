@@ -7,6 +7,20 @@ capacity guarantees or measurements of retained object memory. Production cache
 defaults are unchanged. OpenSearch uses `OPENSEARCH_JAVA_OPTS` with a 512 MiB
 heap and a 1024 MiB container limit.
 
+Kafka keeps its 512 MiB broker heap inside a 1280 MiB container budget for
+native allocations and the separate health-probe process. The topic-list probe
+overrides the inherited broker heap with `-Xms16m -Xmx64m`; otherwise a probe
+can add a second broker-sized JVM to the same container's memory charge.
+
+Compose explicitly sets `KAFKA_LOG_DIRS=/var/lib/kafka/data`, matching
+the `kafka-data` volume. Before recreating an existing broker, inspect its
+effective `log.dirs`. If it used the container-local `/tmp/kafka-logs`, stop
+that broker and copy its complete log directory, including KRaft metadata,
+into the retained volume first, preserving ownership for the image's appuser
+(UID 1000). Preserve the old container until cluster ID,
+topic offsets and sample records have been checked after recovery. Changing
+the environment alone does not migrate existing records.
+
 ## Preserve the existing environment
 
 Before starting services, inspect `docker context inspect`, `docker ps -a`,
@@ -40,6 +54,13 @@ MinIO and Temporal. Administrative UIs and observability tools are opt-in; see
 but a launcher timeout is not readiness evidence. Check each service and its
 required dependencies before recording the ready phase.
 
+If the three-instance Detection fixture misses its startup deadline,
+`detection-cluster.sh` captures loopback health responses and bounded `jcmd`
+platform/virtual thread dumps before stopping those processes. Evidence is
+retained under `.cache/detection-cluster/startup-failure-*`; missing attach
+support or a diagnostic timeout is recorded without converting startup failure
+into success. The startup readiness deadline is unchanged.
+
 Confirm OpenSearch's effective heap through the running JVM, for example:
 
 ```bash
@@ -56,6 +77,53 @@ JDK, and verify the cache environment inherited by that process without
 printing unrelated secrets.
 
 ## Measure phases and functional results
+
+For a sustained verification on a disposable local stack, run
+`python3 build/verify-load-soak.py --allow-local-fixture --seconds 3600 --eps 5`.
+The probe requires explicit collector, metrics, OpenSearch and ClickHouse
+fixture credentials and rejects non-loopback endpoints. It sends approximately
+1 KiB events with concurrent duplicate replay and issues bursts of ten gateway
+searches every ten seconds. A successful replay counts as an acknowledgement
+even when its concurrent primary request fails; that failed request still fails
+the zero-error gate. Every accepted event and expected alarm is reconciled
+across Kafka, PostgreSQL, OpenSearch and ClickHouse.
+Enabled notifications must be LOG or a WEBHOOK whose target exactly matches
+the explicitly supplied loopback `SOCP_WEBHOOK_FIXTURE_URL`; other enabled
+channels stop the probe before it submits load. This lets the manual workflow
+reuse its persistent local webhook fixture without allowing off-host delivery.
+
+The manual **Full Stack E2E** workflow has a `run_load_soak` boolean input for
+this additional one-hour check. It uses the job's isolated middleware and disk
+volumes, retains raw results under `.cache/load-soak`, and fails on request/query
+errors, incomplete duration, resource guards or reconciliation failures. Normal
+PR runs do not add this hour. These bounded fixture measurements do not establish
+production throughput, retention capacity or a 24-hour stability guarantee.
+
+For a pressure ramp without a soak, use
+`python3 build/verify-load-soak.py --allow-local-fixture --mode pressure --seconds 300 --stages 10,25,50,100`.
+The manual workflow's separate `run_load_pressure` input runs these four stages
+on the same isolated stack, retaining evidence under `.cache/load-pressure`.
+Choose either pressure or soak per workflow run. Each pressure stage is bounded
+to 60–600 seconds, with at most five increasing rates in 1–100 EPS and 100,000
+planned events including warmup. The first failed stage stops escalation; a
+detection lag above 1,000 also stops that stage's submissions. Previously
+acknowledged events are still drained and reconciled, and a failed stage retains
+a nonzero exit status. Warmup errors also fail the run. Each load phase must
+contain actual queries and sustain at least 98% of its target acknowledgement
+rate, including the time spent completing in-flight requests. Query concurrency
+remains ten per burst with a ten-second pause, not ten continuously active users.
+Report each stage's duration, actual rate, errors, latency, backlog and identity
+checks; the highest passing stage is an observed test result, not a production
+capacity commitment.
+
+The manual pressure run also requires a fresh `LATERAL-RDP` checkpoint for the
+canonical input topic, including serialized state and a partition offset vector.
+An asynchronous completion callback must install the event's validated tenant
+before entering the snapshot transaction, then restore its previous scope even
+when persistence fails. Without that scope the journal can remain correct while
+every periodic checkpoint is deferred; event/alert identity checks alone do not
+prove checkpoint persistence. Use `--require-state-snapshot` on a local fixture
+whose configured checkpoint interval will be reached by the chosen workload.
 
 Collect the following at a fixed interval, such as five seconds, from before
 startup through an idle observation period after the workload:

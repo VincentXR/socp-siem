@@ -391,6 +391,38 @@ Supported input formats are:
   explicitly and can unwrap the Vector envelope before parsing `message`.
 - `AUTO`: uses the built-in feature-based parser chain.
 
+CEF uses seven pipe-delimited header fields followed by extensions. Header
+`\|` and `\\` escapes are decoded; extension values continue until the next
+unescaped `key=` boundary, so `msg=connection denied by policy dpt=80` retains
+both the complete message and destination port. Extension `\=`, `\\`, `\n`,
+and `\r` escapes are decoded. Numeric severity maps 0–3 to LOW, 4–6 to MEDIUM,
+7–8 to HIGH, and 9–10 (or `Very-High`) to CRITICAL.
+
+LEEF 1.0 has `LEEF:1.0|Vendor|Product|Version|EventID|attributes`; attributes
+are separated by tabs, and `sev` is an attribute, not a header field. LEEF 2.0
+adds a delimiter field before attributes, accepting a literal character or
+hex such as `^`, `0x5E`, or `x09`. Values may contain spaces and equals signs.
+The numeric severity scale increases toward 10. Unknown attributes retain a
+`leef.` prefix. The former nonstandard Name/Severity header layout must be
+converted at the producer. AUTO also unwraps CEF/LEEF inside Vector JSON
+`message`, retaining the envelope's event identity.
+
+RFC5424 parses PROCID, MSGID and structured data separately from MSG; SD
+parameters are retained as `ecs["syslog.sd.<SD-ID>.<PARAM-NAME>"]`. Numeric
+PROCID also populates `process.pid`, while other PROCID values remain in
+`syslog.procid`. Syslog notice normalizes to MEDIUM. Malformed structured data
+is a parse failure and follows the existing durable quarantine path.
+
+RFC3164 and plain SSH auth timestamps lack a year and timezone. At ingestion,
+the source's configured timezone (UTC if absent) and trusted receipt time
+select the nearest valid date from the receipt year and its adjacent years.
+English month names, padded single-digit days, leap days and New Year rollover
+are supported; the normal future-skew guard still applies after inference.
+This cannot disambiguate archival logs from arbitrary past years. For such
+replays, supply an explicit ISO timestamp through the configured time field
+or convert the producer to RFC5424. Preview retains the yearless source text;
+year inference happens at the ingestion boundary.
+
 `filters` is intentionally a bounded, deterministic subset of Logstash
 filters. It supports `set`, `rename`, `copy`, `remove`/`delete`, `trim`,
 `lowercase`, `uppercase`, and `convert` (`string`, `integer`, `long`,

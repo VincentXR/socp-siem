@@ -20,6 +20,14 @@ default, optional attempt exhaustion, and its own terminal retention. Its
 source receipts and delivery identities are described in the
 [Detection state contract](../detection-state-semantics.md).
 
+SOAR dispatch uses its own version-fenced claim and stable Temporal workflow ID.
+Candidate claim/recovery scans skip locked rows. Once a claim is owned, its
+start check and success/failure acknowledgement wait for short row contention
+inside a five-second transaction, locking the run before the outbox and
+rechecking tenant, owner and version. A temporarily busy row must not look like
+a lost claim and leave work idle until lease expiry. Temporal calls still run
+outside these transactions; the claim token remains required before start and acknowledgement.
+
 Each claim atomically checks status, due time, retry limit, and the attempt
 count read by the scanner. The five operator-managed contexts below assign a
 fresh UUID `claim_token` to every successful claim. Completion, retry, and

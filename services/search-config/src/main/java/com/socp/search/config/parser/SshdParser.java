@@ -74,11 +74,16 @@ public final class SshdParser implements EventParser {
     }
 
     private static void putTimestamp(Map<String, String> out, String value) {
-        if (value == null || value.isBlank() || !value.contains("T")) return;
+        if (value == null || value.isBlank()) return;
+        if (!value.contains("T")) {
+            // The ingestion normalizer supplies the trusted receipt year and source timezone.
+            out.put("timestamp", value);
+            return;
+        }
         try {
             out.put("timestamp", Instant.parse(value).toString());
         } catch (Exception ignored) {
-            // The pipeline will use ingestion time when a legacy timestamp is ambiguous.
+            // Invalid ISO input keeps the existing no-timestamp fallback.
         }
     }
 }

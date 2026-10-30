@@ -12,6 +12,7 @@ import com.socp.alert.api.response.AlarmEvidenceResponse;
 import com.socp.alert.persistence.repository.AlarmEvidenceRepository;
 import com.socp.alert.persistence.repository.AlarmBatchIdempotencyRepository;
 import com.socp.alert.persistence.repository.AlarmRepository;
+import com.socp.alert.persistence.repository.AlarmRepositoryCustom.Creation;
 import com.socp.alert.persistence.repository.OutboxRepository;
 
 
@@ -110,9 +111,9 @@ class AlarmServiceTest {
         TenantContext.set("tenant-a");
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", null);
-        given(repository.save(alarm)).willAnswer(invocation -> {
+        given(repository.insertIfAbsent(alarm)).willAnswer(invocation -> {
             alarm.setId("alarm-tenant-a");
-            return alarm;
+            return new Creation(alarm, true);
         });
 
         Alarm saved = service.create(alarm);
@@ -170,7 +171,7 @@ class AlarmServiceTest {
         TenantContext.set("tenant-a");
         Alarm alarm = new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "failed login", "10.0.0.9");
-        given(repository.save(alarm)).willReturn(alarm);
+        given(repository.insertIfAbsent(alarm)).willReturn(new Creation(alarm, true));
         AlarmEvidenceInput input = new AlarmEvidenceInput("event-1", Instant.parse("2026-08-18T10:00:00Z"),
                 "auth", "host-1", "HIGH", "failed login for admin",
                 Map.of("user", "admin", "src_ip", "10.0.0.9"));
@@ -257,8 +258,8 @@ class AlarmServiceTest {
     void activeSuppressionWindowMarksTheNewAlarmSuppressedAtMaterialization() {
         TenantContext.set("tenant-a");
         given(suppressionService.suppresses("tenant-a", "AUTH-BRUTE", "host-1")).willReturn(true);
-        given(repository.save(org.mockito.ArgumentMatchers.any(Alarm.class)))
-                .willAnswer(invocation -> invocation.getArgument(0));
+        given(repository.insertIfAbsent(org.mockito.ArgumentMatchers.any(Alarm.class)))
+                .willAnswer(invocation -> new Creation(invocation.getArgument(0), true));
 
         Alarm alarm = service.create(new Alarm("AUTH-BRUTE", "SSH brute force", Severity.HIGH,
                 "5 failures", "host-1"));
@@ -296,9 +297,9 @@ class AlarmServiceTest {
         TenantContext.set("tenant-a");
         Alarm alarm = new Alarm("IOC-MATCH", "IOC match", Severity.HIGH,
                 "connection to 203.0.113.10", "203.0.113.10");
-        given(repository.save(alarm)).willAnswer(invocation -> {
+        given(repository.insertIfAbsent(alarm)).willAnswer(invocation -> {
             alarm.setId("alarm-tenant-a");
-            return alarm;
+            return new Creation(alarm, true);
         });
         service.create(alarm);
 
@@ -313,24 +314,32 @@ class AlarmServiceTest {
                 .willReturn(Optional.empty());
         given(repository.findByTenantIdAndSourceAlertId("tenant-a", "source-1"))
                 .willReturn(Optional.empty());
+        given(batchIdempotencyRepository.claim(org.mockito.ArgumentMatchers.any())).willReturn(true);
+        given(batchIdempotencyRepository.complete(org.mockito.ArgumentMatchers.eq("tenant-a"),
+                org.mockito.ArgumentMatchers.eq("batch-1"), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.any())).willReturn(1);
         AtomicInteger ids = new AtomicInteger();
-        given(repository.save(org.mockito.ArgumentMatchers.any(Alarm.class))).willAnswer(invocation -> {
+        given(repository.insertIfAbsent(org.mockito.ArgumentMatchers.any(Alarm.class))).willAnswer(invocation -> {
             Alarm alarm = invocation.getArgument(0);
             alarm.setId("alarm-" + ids.incrementAndGet());
-            return alarm;
+            return new Creation(alarm, true);
         });
 
         Map<String, Object> first = service.createBatch(List.of(request), "batch-1");
 
         assertEquals(List.of("alarm-1"), first.get("accepted"));
         ArgumentCaptor<AlarmBatchIdempotency> row = ArgumentCaptor.forClass(AlarmBatchIdempotency.class);
-        verify(batchIdempotencyRepository).saveAndFlush(row.capture());
+        verify(batchIdempotencyRepository).claim(row.capture());
+        var response = ArgumentCaptor.forClass(String.class);
+        verify(batchIdempotencyRepository).complete(org.mockito.ArgumentMatchers.eq("tenant-a"),
+                org.mockito.ArgumentMatchers.eq("batch-1"), response.capture(), org.mockito.ArgumentMatchers.any());
+        row.getValue().setResponseJson(response.getValue());
         given(batchIdempotencyRepository.findByTenantIdAndIdempotencyKey("tenant-a", "batch-1"))
                 .willReturn(Optional.of(row.getValue()));
 
         Map<String, Object> replay = service.createBatch(List.of(request), "batch-1");
         assertEquals(first, replay);
-        verify(repository, org.mockito.Mockito.times(1)).save(org.mockito.ArgumentMatchers.any(Alarm.class));
+        verify(repository, org.mockito.Mockito.times(1)).insertIfAbsent(org.mockito.ArgumentMatchers.any(Alarm.class));
     }
 
     @Test

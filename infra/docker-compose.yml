@@ -87,6 +87,8 @@ services:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: "broker,controller"
       KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      # Explicitly bind broker records and KRaft metadata to the named volume.
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
       # 两个 listener，因为两类客户端需要不同的宣告地址（broker 在握手后会要求客户端
       # 按 advertised 地址重连，宣告错了客户端就会连到不存在的地方）：
       #   PLAINTEXT      9092  advertised=localhost:9092
@@ -103,7 +105,7 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_KIND:PLAINTEXT"
       KAFKA_INTER_BROKER_LISTENER_NAME: "PLAINTEXT"
       KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
-      # 演示环境开 auto-create，避免容器重建后 topic 丢失需手动重建。
+      # 开发环境允许自动创建新 topic；已有 topic 由 kafka-data 卷保存。
       # 风险需知：infra/init-sql/kafka/create-topics.sh 没有预建事件主链与 *-dlq，
       # 关掉本开关即让死信 hand-off 直接失败。Compose 的 environment 是按键合并的，
       # 所以本值会泄进 docker-compose.prod.yml 的有效配置：叠加层必须显式重述该键
@@ -127,16 +129,17 @@ services:
     ports:
       - "9092:9092"
     volumes:
-      # KRaft 日志目录持久化（apache/kafka 镜像默认 log.dirs）
-      - kafka-data:/tmp/kraft-combined-logs
+      # Must match KAFKA_LOG_DIRS; the image's generated config need not use this path.
+      - kafka-data:/var/lib/kafka/data
     networks: [socp]
     deploy:
       resources:
         limits:
-          memory: 768M
-    mem_limit: 768m
+          # Budget broker native memory and the separate JVM used by probes.
+          memory: 1280M
+    mem_limit: 1280m
     healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS='-Xms16m -Xmx64m' /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
       interval: 15s
       timeout: 10s
       retries: 5

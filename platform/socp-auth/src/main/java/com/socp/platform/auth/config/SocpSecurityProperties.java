@@ -28,6 +28,10 @@ public class SocpSecurityProperties {
     /** JWKS 公钥端点；配置后优先于 issuer-uri 推导的地址 */
     private String jwkSetUri;
 
+    /** Bounded network budgets per JWKS attempt; the source retries once. */
+    private int jwksConnectTimeoutMs = 1000;
+    private int jwksReadTimeoutMs = 2000;
+
     /** HMAC 对称密钥（HS256），至少 32 字节；仅开发/单机用，生产走 issuer-uri */
     private String jwtSecret;
 
@@ -144,6 +148,21 @@ public class SocpSecurityProperties {
 
     public void setJwkSetUri(String jwkSetUri) {
         this.jwkSetUri = jwkSetUri;
+    }
+
+    public int getJwksConnectTimeoutMs() { return jwksConnectTimeoutMs; }
+    public void setJwksConnectTimeoutMs(int value) {
+        this.jwksConnectTimeoutMs = jwksTimeout(value);
+    }
+    public int getJwksReadTimeoutMs() { return jwksReadTimeoutMs; }
+    public void setJwksReadTimeoutMs(int value) {
+        this.jwksReadTimeoutMs = jwksTimeout(value);
+    }
+    private static int jwksTimeout(int value) {
+        if (value < 1 || value > 5000) {
+            throw new IllegalArgumentException("JWKS network timeout must be between 1 and 5000 ms");
+        }
+        return value;
     }
 
     public String getJwtSecret() {

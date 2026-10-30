@@ -6,6 +6,9 @@ ownership. It is intentionally higher-level than a class-by-class index.
 See the [service readiness matrix](production-readiness.md#service-readiness-matrix)
 for the explicit repository evidence and deployment-owned acceptance boundary.
 
+For module design choices, tool rationale, trade-offs, and production acceptance
+boundaries, see the [Chinese design guide](module-design-rationale.zh-CN.md).
+
 ## Repository layout
 
 | Path | Responsibility |

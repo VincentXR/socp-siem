@@ -41,7 +41,7 @@ public class TemporalExecutor {
     private final WorkflowClient workflowClient;
     private final boolean enabled;
     private final String target;
-    /** 可用性缓存：连接探测有 2s 网络等待，5s 内复用上次结果，避免每次编排都阻塞。 */
+    /** Namespace RPC has a 2s deadline; reuse its result for 5s. */
     private volatile Boolean cachedAvailable;
     private volatile long cachedAt;
 
@@ -61,7 +61,7 @@ public class TemporalExecutor {
         this.target = target;
     }
 
-    /** Temporal 可用性探测：开关关闭或连不上（blockUntilConnected）都视为不可用。 */
+    /** A listening socket alone cannot establish that the configured namespace is usable. */
     public boolean isAvailable() {
         if (!enabled) {
             return false;
@@ -71,15 +71,14 @@ public class TemporalExecutor {
         }
         boolean ok;
         try {
-            // 真实连接探测：TCP 连 Temporal 服务端（grpc 调用可能内部等待，TCP 探测 2s 内出结果）
-            String hp = target.trim();
-            int idx = hp.indexOf(':');
-            String host = idx > 0 ? hp.substring(0, idx) : hp;
-            int port = idx > 0 ? Integer.parseInt(hp.substring(idx + 1)) : 7233;
-            try (java.net.Socket s = new java.net.Socket()) {
-                s.connect(new java.net.InetSocketAddress(host, port), 2000);
-                ok = true;
-            }
+            String namespace = workflowClient.getOptions().getNamespace();
+            var response = workflowClient.getWorkflowServiceStubs().blockingStub()
+                    .withDeadlineAfter(2, java.util.concurrent.TimeUnit.SECONDS)
+                    .describeNamespace(io.temporal.api.workflowservice.v1.DescribeNamespaceRequest.newBuilder()
+                            .setNamespace(namespace).build());
+            ok = response.getNamespaceInfo().getName().equals(namespace)
+                    && response.getNamespaceInfo().getState()
+                    == io.temporal.api.enums.v1.NamespaceState.NAMESPACE_STATE_REGISTERED;
         } catch (Exception e) {
             log.debug("Temporal unavailable; SOAR durable dispatch remains queued: {}", e.getMessage());
             ok = false;
@@ -87,7 +86,7 @@ public class TemporalExecutor {
         cachedAvailable = ok;
         cachedAt = System.currentTimeMillis();
         if (!ok) {
-            log.warn("Temporal unavailable; SOAR durable dispatch remains queued (no repeated probe for 5s)");
+            log.warn("Temporal namespace unavailable at {}; SOAR durable dispatch remains queued (probe cached for 5s)", target);
         }
         return ok;
     }

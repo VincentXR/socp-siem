@@ -48,7 +48,10 @@ public final class RuleEngine implements AutoCloseable {
     private final RuleExecutionScope executionScope;
     private final Runnable durableCommitGuard;
     private final Map<String, String> stateCompatibilityVersions;
-    private final BlockingQueue<WorkItem> queue = new ArrayBlockingQueue<>(100_000);
+    private static final int QUEUE_CAPACITY = 100_000;
+    public static final int MAX_BATCH_EVENTS = 128;
+    private final BlockingQueue<WorkItem> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
+    private final java.util.concurrent.Semaphore queuedEvents = new java.util.concurrent.Semaphore(QUEUE_CAPACITY);
     private final Map<String, RuleCircuitState> ruleCircuits = new java.util.concurrent.ConcurrentHashMap<>();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
     private volatile boolean running = true;
@@ -115,10 +118,27 @@ public final class RuleEngine implements AutoCloseable {
     public record RoutingDimension(String declaredField, long reportIntervalSeconds) {
     }
 
+    public record BatchEvent(SecurityEvent event, DetectionResult.InputPosition position,
+                             RuleExecutionScope scope) {
+        public BatchEvent {
+            java.util.Objects.requireNonNull(event, "event");
+            java.util.Objects.requireNonNull(position, "position");
+            java.util.Objects.requireNonNull(scope, "scope");
+        }
+    }
+
     private record WorkItem(SecurityEvent event, CompletableFuture<Void> completion,
                             boolean durable, Runnable onDurable, Runnable durableCommitGuard,
                             DetectionResult.InputPosition inputPosition, RuleExecutionScope scope,
-                            OrderedBatch orderedBatch) {
+                            OrderedBatch orderedBatch, List<BatchEvent> batch) {
+        WorkItem(SecurityEvent event, CompletableFuture<Void> completion, boolean durable,
+                 Runnable onDurable, Runnable guard, DetectionResult.InputPosition position,
+                 RuleExecutionScope scope, OrderedBatch orderedBatch) {
+            this(event, completion, durable, onDurable, guard, position, scope, orderedBatch, List.of());
+        }
+        int weight() {
+            return event == POISON_EVENT || event == IDLE_BARRIER_EVENT ? 0 : Math.max(1, batch.size());
+        }
     }
 
     public RuleEngine(List<Rule> rules, List<AlertSink> sinks) {
@@ -226,6 +246,7 @@ public final class RuleEngine implements AutoCloseable {
         while (true) {
             try {
                 WorkItem item = carry == null ? queue.take() : carry;
+                if (carry == null) queuedEvents.release(item.weight());
                 carry = null;
                 if (item.event() == POISON_EVENT) break;
                 if (item.event() == IDLE_BARRIER_EVENT) {
@@ -243,7 +264,8 @@ public final class RuleEngine implements AutoCloseable {
                     continue;
                 }
                 try {
-                    process(item);
+                    if (item.batch().isEmpty()) process(item);
+                    else processAtomicBatch(item);
                     if (item.completion() != null) item.completion().complete(null);
                 } catch (Throwable ex) {
                     Throwable reported = failOrderedBatch(item, ex);
@@ -264,6 +286,7 @@ public final class RuleEngine implements AutoCloseable {
 
     private boolean batchEligible(WorkItem item) {
         return item.event() != POISON_EVENT && item.event() != IDLE_BARRIER_EVENT && item.durable()
+                && item.batch().isEmpty()
                 && (commitGuard(item) == null || commitGuard(item) instanceof OrderedCommitGuard)
                 && sinks.size() == 1 && sinks.getFirst() instanceof BatchEventAlertSink sink
                 && sink.supportsAtomicBatch();
@@ -320,6 +343,7 @@ public final class RuleEngine implements AutoCloseable {
                         || undoBytes >= COMMIT_BATCH_UNDO_BYTES) break;
                 WorkItem next = queue.poll(1, java.util.concurrent.TimeUnit.MILLISECONDS);
                 if (next == null) break;
+                queuedEvents.release(next.weight());
                 if (!batchEligible(next) || orderedFailure(next) != null) { carry = next; break; }
                 current = next;
             }
@@ -341,7 +365,8 @@ public final class RuleEngine implements AutoCloseable {
                 boolean acknowledged = false;
                 try {
                     sink.publishBatch(prepared.stream().map(item ->
-                            new BatchEventAlertSink.Entry(item.result(), commitGuard(item.item()))).toList());
+                            new BatchEventAlertSink.Entry(item.result(), commitGuard(item.item()),
+                                    item.item().scope())).toList());
                     acknowledged = true;
                 } finally {
                     RuleProcessingObserver.notifyOperation(observer, RuleProcessingObserver.Operation.BATCH_COMMIT,
@@ -407,6 +432,119 @@ public final class RuleEngine implements AutoCloseable {
             current.completion().completeExceptionally(reported);
         }
         return carry;
+    }
+
+    public boolean supportsAtomicBatch() {
+        return sinks.size() == 1 && sinks.getFirst() instanceof BatchEventAlertSink sink
+                && sink.supportsAtomicBatch();
+    }
+
+    /** Explicit batches retain one atomic boundary, including all suppression decisions. */
+    private void processAtomicBatch(WorkItem batchItem) {
+        List<Prepared> prepared = new ArrayList<>(batchItem.batch().size());
+        Map<StatefulRule, StateMutation> currentUndo = null;
+        boolean committed = false;
+        long undoBytes = 0;
+        stateLock.lock();
+        long preparationStarted = System.nanoTime();
+        boolean preparationRecorded = false;
+        try {
+            if (!supportsAtomicBatch()) throw new IllegalStateException("atomic batch sink unavailable");
+            for (BatchEvent input : batchItem.batch()) {
+                WorkItem item = new WorkItem(input.event(), null, true, null,
+                        batchItem.durableCommitGuard(), input.position(), input.scope(), null);
+                List<Rule> selected = rulesFor(input.event());
+                currentUndo = beginMutations(selected);
+                DetectionResult result;
+                try (RuleExecutionScope.Scope ignored = input.scope().open(input.event())) {
+                    List<Alert> candidates = evaluateRules(input.event(), currentUndo, selected);
+                    result = new DetectionResult(input.event(), input.position(), ruleVersions(selected),
+                            stateChanges(currentUndo, selected), candidates, candidates,
+                            DetectionResult.SuppressionDecision.none(candidates, candidates),
+                            DetectionDelivery.isRouted(input.event())
+                                    ? DetectionDelivery.deliveryId(input.event()) : input.event().scopedId());
+                }
+                for (StateMutation mutation : currentUndo.values()) {
+                    undoBytes += mutation.retainedBytes();
+                    mutation.detach();
+                }
+                prepared.add(new Prepared(item, result, currentUndo));
+                currentUndo = null;
+                if (undoBytes > COMMIT_BATCH_UNDO_BYTES) {
+                    throw new IllegalStateException("atomic batch exceeds the retained undo budget");
+                }
+            }
+            // Reserve all touched stripes in a fixed order only after evaluation.
+            // A failed durable transaction must not consume a suppression window.
+            List<Alert> candidates = prepared.stream().flatMap(item -> item.result().candidates().stream()).toList();
+            try (Suppressor.Transaction suppression = suppressor == null
+                    ? null : suppressor.beginTransaction(candidates)) {
+                List<BatchEventAlertSink.Entry> entries = new ArrayList<>(prepared.size());
+                for (Prepared item : prepared) {
+                    DetectionResult evaluated = item.result();
+                    try (RuleExecutionScope.Scope ignored = item.item().scope().open(evaluated.event());
+                         Suppressor.Batch reservation = suppressor == null ? null : suppressor.begin(evaluated.candidates())) {
+                        List<Alert> emitted = reservation == null ? evaluated.candidates() : reservation.alerts();
+                        suppressedCount.addAndGet(Math.max(0, evaluated.candidates().size() - emitted.size()));
+                        notifyEvaluationCompleted(evaluated.event(), emitted.size());
+                        DetectionResult result = new DetectionResult(evaluated.event(), evaluated.inputPosition(),
+                                evaluated.ruleVersions(), evaluated.stateChanges(), evaluated.candidates(), emitted,
+                                reservation == null ? DetectionResult.SuppressionDecision.none(evaluated.candidates(), emitted)
+                                        : DetectionResult.SuppressionDecision.window(evaluated.candidates(), emitted),
+                                evaluated.idempotencyKey());
+                        entries.add(new BatchEventAlertSink.Entry(result,
+                                entries.isEmpty() ? commitGuard(batchItem) : null, item.item().scope()));
+                        if (reservation != null) reservation.commit();
+                    }
+                }
+                RuleProcessingObserver.notifyOperation(observer, RuleProcessingObserver.Operation.BATCH_PREPARATION,
+                        prepared.size(), System.nanoTime() - preparationStarted, true);
+                preparationRecorded = true;
+                try (RuleExecutionScope.Scope ignored = batchItem.scope().open(batchItem.event())) {
+                    long commitStarted = System.nanoTime();
+                    boolean acknowledged = false;
+                    try {
+                        ((BatchEventAlertSink) sinks.getFirst()).publishBatch(List.copyOf(entries));
+                        acknowledged = true;
+                    } finally {
+                        RuleProcessingObserver.notifyOperation(observer, RuleProcessingObserver.Operation.BATCH_COMMIT,
+                                entries.size(), System.nanoTime() - commitStarted, acknowledged);
+                    }
+                }
+                committed = true;
+                if (suppression != null) suppression.commit();
+                for (BatchEventAlertSink.Entry entry : entries) {
+                    try (RuleExecutionScope.Scope ignored = entry.scope().open(entry.result().event())) {
+                        alertCount.addAndGet(entry.result().alerts().size());
+                        notifyDurableSinksCompleted(entry.result().event(), entry.result().alerts().size());
+                    }
+                }
+                if (batchItem.onDurable() != null) batchItem.onDurable().run();
+            }
+        } catch (RuntimeException | Error failure) {
+            if (!preparationRecorded) {
+                RuleProcessingObserver.notifyOperation(observer, RuleProcessingObserver.Operation.BATCH_PREPARATION,
+                        prepared.size(), System.nanoTime() - preparationStarted, false);
+            }
+            discardPendingAlerts();
+            if (committed) {
+                checkpointValid = false;
+            } else {
+                if (currentUndo != null) {
+                    try { restoreMutableStates(currentUndo); }
+                    catch (RuntimeException rollback) { failure.addSuppressed(rollback); }
+                }
+                for (int i = prepared.size() - 1; i >= 0; i--) {
+                    try { restoreMutableStates(prepared.get(i).undo()); }
+                    catch (RuntimeException rollback) { failure.addSuppressed(rollback); }
+                }
+            }
+            throw failure;
+        } finally {
+            if (currentUndo != null) currentUndo.values().forEach(StateMutation::close);
+            for (Prepared item : prepared) item.undo().values().forEach(StateMutation::close);
+            stateLock.unlock();
+        }
     }
 
     private void process(WorkItem item) {
@@ -838,6 +976,33 @@ public final class RuleEngine implements AutoCloseable {
         WorkItem item = new WorkItem(event, completion, durable, onDurable, durableCommitGuard,
                 inputPosition == null ? DetectionResult.InputPosition.unknown() : inputPosition,
                 executionScope.capture(), orderedBatch);
+        return enqueueItem(item);
+    }
+
+    /** One explicitly atomic batch; ordered admission groups may commit smaller prefixes. */
+    public CompletableFuture<Void> ingestBatchAndAwait(List<BatchEvent> events, Runnable onDurable,
+                                                       Runnable ownershipGuard) {
+        if (events == null || events.isEmpty() || events.size() > MAX_BATCH_EVENTS) {
+            throw new IllegalArgumentException("batch must contain 1.." + MAX_BATCH_EVENTS + " events");
+        }
+        if (!supportsAtomicBatch()) throw new IllegalStateException("atomic batch sink unavailable");
+        List<BatchEvent> batch = List.copyOf(events);
+        BatchEvent first = batch.getFirst();
+        var ids = new java.util.HashSet<String>();
+        for (BatchEvent input : batch) {
+            if (!first.event().requireTenantId().equals(input.event().requireTenantId())
+                    || !ids.add(DetectionDelivery.deliveryId(input.event()))) {
+                throw new IllegalArgumentException("batch requires one tenant and unique delivery identities");
+            }
+        }
+        CompletableFuture<Void> completion = new CompletableFuture<>();
+        return enqueueItem(new WorkItem(first.event(), completion, true, onDurable, ownershipGuard,
+                first.position(), first.scope(), null, batch)).completion();
+    }
+
+    private Submission enqueueItem(WorkItem item) {
+        CompletableFuture<Void> completion = item.completion();
+        boolean reserved = false;
         lifecycle.readLock().lock();
         try {
             if (!running) {
@@ -845,18 +1010,24 @@ public final class RuleEngine implements AutoCloseable {
                         new IllegalStateException("detection engine is closed")));
                 return new Submission(false, completion);
             }
-            if (queue.offer(item)) return new Submission(true, completion);
-            try {
-                if (queue.offer(item, 50, TimeUnit.MILLISECONDS)) {
-                    return new Submission(true, completion);
+            reserved = queuedEvents.tryAcquire(item.weight());
+            if (!reserved) {
+                try { reserved = queuedEvents.tryAcquire(item.weight(), 50, TimeUnit.MILLISECONDS); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+            }
+            if (reserved) {
+                if (queue.offer(item)) return new Submission(true, completion);
+                try {
+                    if (queue.offer(item, 50, TimeUnit.MILLISECONDS)) return new Submission(true, completion);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
             }
         } finally {
             lifecycle.readLock().unlock();
         }
-        dropCount.incrementAndGet();
+        if (reserved) queuedEvents.release(item.weight());
+        dropCount.addAndGet(item.weight());
         completion.completeExceptionally(failOrderedBatch(item, new IllegalStateException("detection queue full")));
         return new Submission(false, completion);
     }
@@ -879,8 +1050,7 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     public double queueLoad() {
-        int cap = queue.size() + queue.remainingCapacity();
-        return cap == 0 ? 0.0 : (double) queue.size() / cap;
+        return (double) (QUEUE_CAPACITY - queuedEvents.availablePermits()) / QUEUE_CAPACITY;
     }
 
     /**

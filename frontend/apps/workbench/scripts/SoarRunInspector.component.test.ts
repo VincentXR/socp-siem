@@ -1,9 +1,11 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ElDialog from 'element-plus/es/components/dialog/index.mjs'
 import { ElOption, ElSelect } from 'element-plus/es/components/select/index.mjs'
 import SoarCatalogPager from '../src/components/soar/SoarCatalogPager.vue'
 import SoarRunInspector from '../src/components/soar/SoarRunInspector.vue'
+
+enableAutoUnmount(afterEach)
 
 const mocks = vi.hoisted(() => ({
   listPlaybooks: vi.fn(), listVersions: vi.fn(), queueRun: vi.fn(),

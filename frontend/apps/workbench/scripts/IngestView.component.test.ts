@@ -1,10 +1,12 @@
-import { mount, flushPromises } from '@vue/test-utils'
+import { enableAutoUnmount, mount, flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import IngestView from '../src/views/IngestView.vue'
 import { WORKBENCH_STATE } from '../src/app/workbenchState'
 import { ApiError } from '../src/api/core'
+
+enableAutoUnmount(afterEach)
 
 const mocks = vi.hoisted(() => ({
   listSourcesPage: vi.fn().mockResolvedValue({ items: [], total: 0, page: 1, size: 20, totalPages: 0 }),

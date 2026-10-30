@@ -88,6 +88,109 @@ final class DetectionRecordProcessor {
         }
     }
 
+    /** Fast path for a contiguous partition prefix; unsupported input uses the existing single-record path. */
+    boolean processBatch(java.util.List<org.apache.kafka.clients.consumer.ConsumerRecord<String, String>> records) {
+        if (records == null || records.size() < 2 || records.size() > com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) return false;
+        var inputs = new java.util.ArrayList<com.socp.detect.web.persistence.store.DetectionEventInput>();
+        var prepared = new java.util.ArrayList<com.socp.rule.engine.RuleEngine.BatchEvent>();
+        for (var record : records) {
+            com.socp.platform.client.kafka.KafkaTrace.runConsumed("detect " + record.topic() + " receive",
+                    record.headers(), () -> {
+                        var normalized = parse(record.partition(), record.offset(), record.key(), record.value());
+                        inputs.add(new com.socp.detect.web.persistence.store.DetectionEventInput(normalized.event(),
+                                record.topic(), record.partition(), record.offset(), normalized.routingKey()));
+                        prepared.add(engine.prepareBatchEvent(normalized.event(), record.topic(), record.partition(), record.offset()));
+                    });
+        }
+        var groups = engine.batchGroups(prepared);
+        if (groups.isEmpty()) return false;
+        if (performanceMetrics != null) performanceMetrics.batchStateUnits(groups.size());
+        // Claim before dispatching any group. A later claim failure must not leave
+        // an earlier evaluation in flight when the caller starts record-level retry.
+        var tenants = new LinkedHashMap<String, java.util.List<com.socp.detect.web.persistence.store.DetectionEventInput>>();
+        for (var input : inputs) tenants.computeIfAbsent(input.event().requireTenantId(),
+                ignored -> new java.util.ArrayList<>()).add(input);
+        var pendingOffsets = new java.util.HashSet<Long>();
+        for (var tenantInputs : tenants.values()) {
+            SecurityEvent first = tenantInputs.getFirst().event();
+            try (var ignored = com.socp.platform.tenant.context.TenantContext.open(first.requireTenantId())) {
+                if (performanceMetrics != null) tenantInputs.forEach(input -> performanceMetrics.kafkaReceived(input.event()));
+                java.util.List<DetectionEventClaim> claims;
+                try { claims = stateStore.claimBatch(tenantInputs); }
+                catch (RuntimeException failure) { throw retryable(first, FailureStage.CLAIM, failure); }
+                if (claims.size() != tenantInputs.size()) throw new IllegalStateException("incomplete batch claim results");
+                for (int i = 0; i < tenantInputs.size(); i++) {
+                    var input = tenantInputs.get(i);
+                    if (performanceMetrics != null) performanceMetrics.journalCommitted(input.event());
+                    if (claims.get(i) == DetectionEventClaim.COMPLETED || claims.get(i) == DetectionEventClaim.DEAD_LETTERED) {
+                        if (performanceMetrics != null) performanceMetrics.terminalWithoutEvaluation(input.event(),
+                                claims.get(i).name().toLowerCase(Locale.ROOT));
+                    } else pendingOffsets.add(input.offset());
+                }
+            }
+        }
+        var completions = new java.util.ArrayList<CompletableFuture<Void>>();
+        for (var group : groups) {
+            var pending = group.stream().filter(input -> pendingOffsets.contains(input.position().offset())).toList();
+            if (pending.isEmpty()) continue;
+            SecurityEvent first = pending.getFirst().event();
+            try (var ignored = com.socp.platform.tenant.context.TenantContext.open(first.requireTenantId())) {
+                CompletableFuture<Void> completion = engine.ingestBatchFromKafkaAndAwait(pending);
+                if (completion == null) throw new IllegalStateException("missing batch completion");
+                completions.add(completion);
+            } catch (RuntimeException failure) {
+                completions.add(CompletableFuture.failedFuture(retryable(first, FailureStage.EVALUATION, failure)));
+                break;
+            }
+        }
+        // allOf waits for every submitted group, including when another group
+        // fails. Never fall back while a sibling can still commit its results.
+        CompletableFuture<Void> completion = CompletableFuture.allOf(completions.toArray(CompletableFuture[]::new));
+        SecurityEvent first = inputs.getFirst().event();
+        for (;;) {
+            try { completion.get(completionTimeoutMillis, TimeUnit.MILLISECONDS); break; }
+            catch (java.util.concurrent.TimeoutException timeout) {
+                log.warn("Detection groups still in flight partition={} firstOffset={} count={} groups={}",
+                        records.getFirst().partition(), records.getFirst().offset(), records.size(), groups.size());
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw retryable(first, FailureStage.ASYNC_EXECUTION, interrupted);
+            } catch (ExecutionException failed) {
+                throw retryable(first, FailureStage.ASYNC_EXECUTION, unwrapAsync(failed));
+            }
+        }
+        // All groups are durable before the partition can advance. Check each
+        // state-unit fence, including groups whose deliveries were already terminal.
+        for (var group : groups) {
+            var representative = group.getFirst();
+            try (var ignored = com.socp.platform.tenant.context.TenantContext.open(
+                    representative.event().requireTenantId())) {
+                awaitBatchFence(representative.event(), representative.position().partition());
+            }
+        }
+        return true;
+    }
+
+    private void awaitBatchFence(SecurityEvent event, int partition) {
+        long delay = 250L;
+        for (;;) {
+            try { engine.assertCurrentOwner(event, partition); return; }
+            catch (RuntimeException failure) {
+                if (classifyFailure(failure) == FailureCategory.OWNERSHIP_LOST) {
+                    throw retryable(event, FailureStage.MARK_COMPLETED, failure);
+                }
+                // Only retry observation: all result transactions already committed.
+                log.warn("Detection batch finalization deferred partition={}: {}", partition, failure.toString());
+                try { Thread.sleep(delay); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw retryable(event, FailureStage.MARK_COMPLETED, interrupted);
+                }
+                delay = Math.min(30_000L, delay * 2);
+            }
+        }
+    }
+
     void processNormalized(Integer partition, Long offset, String routingKey, SecurityEvent normalized) {
         processNormalized(null, partition, offset, routingKey, normalized);
     }
@@ -184,7 +287,7 @@ final class DetectionRecordProcessor {
                 performanceMetrics.journalCommitted(input.event());
             }
         }
-        return engine.ingestBatchFromKafkaAndAwait(inputs, assignmentActive);
+        return engine.ingestOrderedBatchFromKafkaAndAwait(inputs, assignmentActive);
     }
 
     /**

@@ -57,9 +57,15 @@ public final class RuleStateMap<V> {
 
     public V get(String key, Supplier<V> factory) {
         if (key == null || key.isBlank()) return null;
+        long now = System.nanoTime();
+        Entry<V> previous = entries.get(key);
+        // Incremental evaluation must not refresh expired evidence before cleanup.
+        boolean mayExpire = activeMutation != null || openMutations.get() == 0;
+        if (mayExpire && previous != null && previous.lastAccessNanos < now - idleNanos && remove(key, previous)) {
+            evictions.incrementAndGet();
+        }
         Mutation mutation = activeMutation;
         if (mutation != null) mutation.capture(key, entries.get(key));
-        long now = System.nanoTime();
         Entry<V> entry = entries.computeIfAbsent(key, ignored -> new Entry<>(factory.get(), now));
         entry.lastAccessNanos = now;
         long op = operations.incrementAndGet();
@@ -257,6 +263,9 @@ public final class RuleStateMap<V> {
         private void capture(String key, Entry<V> entry) {
             checkOwner();
             if (before.containsKey(key)) return;
+            if (before.size() >= maxKeys + 1L) {
+                throw new IllegalStateException("too many keys in one rule mutation");
+            }
             if (entry == null) {
                 before.put(key, new Before(null, null, 0, 0));
             } else {
@@ -302,11 +311,14 @@ public final class RuleStateMap<V> {
                     throw new IllegalStateException("unable to restore rule state key");
                 }
                 synchronized (cacheLock) {
-                    Entry<V> removed = entries.remove(item.getKey());
-                    if (removed != null && removed.serializedMember != null) {
-                        cacheBytes -= removed.serializedMember.length;
+                    Entry<V> current = entries.get(item.getKey());
+                    if (current != null && current.serializedMember != null) {
+                        cacheBytes -= current.serializedMember.length;
                     }
-                    if (restored != null) entries.put(item.getKey(), new Entry<>(restored, old.lastAccessNanos));
+                    // Replace in place: removing a surviving key can reorder a
+                    // collision bucket and change byte-identical checkpoint JSON.
+                    if (restored == null) entries.remove(item.getKey());
+                    else entries.put(item.getKey(), new Entry<>(restored, old.lastAccessNanos));
                 }
             }
         }

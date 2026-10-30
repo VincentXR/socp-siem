@@ -5,6 +5,10 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Transient;
+import jakarta.persistence.PostLoad;
+import jakarta.persistence.PostPersist;
+import org.springframework.data.domain.Persistable;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -12,18 +16,20 @@ import java.util.UUID;
 /** Durable Kafka publication intent created with the local search event. */
 @Entity
 @Table(name = "t_ingestion_outbox")
-public class IngestionOutboxEvent extends BaseEntity implements org.springframework.data.domain.Persistable<String> {
+public class IngestionOutboxEvent extends BaseEntity implements Persistable<String> {
 
-    @jakarta.persistence.Transient
-    private boolean newRecord = true;
+    // Assigned UUIDs do not mean that a publication already exists. Use persist
+    // for new intents so saveAll can batch inserts without an N-row merge lookup.
+    @Transient
+    private boolean newEntity = true;
 
+    @Override
     @com.fasterxml.jackson.annotation.JsonIgnore
-    @Override public boolean isNew() { return newRecord; }
+    public boolean isNew() { return newEntity; }
 
-    @jakarta.persistence.PostLoad
-    @jakarta.persistence.PostPersist
-    private void markPersisted() { newRecord = false; }
-
+    @PostLoad
+    @PostPersist
+    void markPersisted() { newEntity = false; }
 
     @Id
     private String id;

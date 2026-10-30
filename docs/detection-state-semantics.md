@@ -282,6 +282,10 @@ independent per-tenant event-rate, pending-byte, and active-routing-entity
 budgets. A rejected HTTP admission returns 503; a rejected Kafka admission
 remains retryable and leaves the partition offset pending. A tenant's budget is
 never charged to another tenant.
+If batch admission rejects a suffix before any event reaches the engine, the
+admitted prefix returns its rate tokens and pending bytes; entity reservations
+unwind in reverse order. Each permit settles once, so completion never refunds
+an already processed event and repeated rollback cannot create extra tokens.
 
 Rule evaluation has a per-rule circuit breaker. A malformed rule failure
 (`IllegalArgumentException`) is isolated immediately; repeated
@@ -384,15 +388,26 @@ the existing versioned JSON representation. Third-party `StatefulRule`
 implementations default to full-state rollback until they implement the mutation
 contract.
 
+Custom Java rules overriding the mutation SPI must be rebuilt for this
+`1.0.0-SNAPSHOT` change: `StatefulRule.beginMutation()` returns `StateMutation`
+in place of `RuleStateMutation`. Mutations use explicit `rollback()`; `close()`
+releases undo data rather than implicitly rolling back unless committed. The
+`RuleStateMap` mutation functions now encode and decode undo state, replacing
+the previous copy/encode pair. Rules that use the default full-snapshot fallback
+do not need their own mutation implementation. Existing overrides must adapt
+and verify successful commit, rollback, TTL and capacity eviction before upgrade;
+an old type alias cannot preserve these lifecycle semantics. This is a Java
+extension SPI change, not a checkpoint JSON or HTTP/event schema migration.
+
 New built-in audit entries include `digestScope: affected-keys-merkle-v1`.
 Their SHA-256 digests cover sorted affected keys and length-framed before/after
 Merkle fingerprints, with a distinct marker for an absent key. Tree fingerprints
 separate maps, ordered lists and scalar values; map keys are sorted and immutable
 evidence fingerprints are reused. Undo trees copy mutable containers while sharing
-immutable evidence, avoiding full evidence JSON serialization per event. They are not full-checkpoint checksums. An
-absent `digestScope` retains the historical `full-state-v1` interpretation; the
-older `affected-keys-v1` scope remains readable. Old
-journal rows and checkpoints require no migration. Consumers comparing digests
+immutable evidence, avoiding full evidence JSON serialization per event. These
+are not full-checkpoint checksums. An absent `digestScope` retains the historical
+`full-state-v1` interpretation; the older `affected-keys-v1` scope remains readable.
+Old journal rows and checkpoints require no migration. Consumers comparing digests
 must compare like scopes. Undo records remain private and are discarded after
 processing; raw state is not added to audit records. Immutable evidence JSON is
 reused across windows under a process-wide 4,096-entry / 8 MiB weight limit;
@@ -402,8 +417,8 @@ immutable event instance identity, avoiding repeated field-map hashing. Equal
 events reconstructed during replay may occupy separate entries within the same
 bound; durable delivery identities and checkpoint content are unchanged.
 
-The primary sink commits queued results in event order, in batches of up to
-32 events (`-Dsocp.rule.commit-batch-size`, hard maximum 64). Collection waits at
+The ordered worker path commits queued results in event order, in adaptive
+batches of up to 32 events (`-Dsocp.rule.commit-batch-size`, hard maximum 64). Collection waits at
 most 1 ms for the next queued event and stops after the first alert candidate
 or a 4 MiB estimated undo budget (one event may exceed that threshold). This
 preserves suppression ordering. Journal completions and alert outbox writes
@@ -460,6 +475,38 @@ Java 21 virtual threads to release their carrier while waiting. Using a JVM
 monitor around those waits can starve all carriers during a checkpoint even
 when the database and heap have spare capacity.
 
+The explicit atomic-batch API accepts at most 128 events and commits them in
+one sink transaction. Its per-event undo records are retained until that commit;
+exceeding the 4 MiB estimated undo budget rejects and rolls back the whole batch
+before the sink is called. Unlike adaptive batches, it does not commit a prefix.
+Atomic batches evaluate their events in order and capture each event's audit
+diff before evaluating the next. Once all candidates are known, suppression
+reserves only their affected lock stripes in a fixed order. The reservation
+lasts through the result transaction and is committed only after its durable
+acknowledgement. A failed transaction discards staged suppression decisions;
+an alert-free batch takes no suppression locks. Unrelated tenants or shards
+therefore do not wait behind a process-wide suppression lock during database I/O.
+
+A bounded Kafka partition prefix may contain several tenants or state shards.
+Such mixed-state prefixes use the explicit atomic path per state unit; a
+single-state prefix retains ordered adaptive batching. The consumer claims the journal rows per tenant, then submits one ordered atomic
+batch per state unit to its own engine without awaiting the preceding unit.
+The partition prefix remains unacknowledged until every submitted future has
+settled successfully and every unit's ownership fence is current. A synchronous
+admission error also waits for already submitted units before record-level retry;
+timeouts retain the original futures. Completed sibling receipts survive another
+unit's rollback and are skipped on replay. Each engine records only its own
+partition-offset vector, so a faster shard cannot checkpoint a slower shard's state.
+
+`socp.detect.state.shards` controls the independent engine count per tenant.
+Checkpoint compatibility fingerprints include the shard count, routing
+hash version and rule semantics. Changing the layout invalidates those snapshots
+and rebuilds from the retained journal. Legacy checkpoints with no layout
+fingerprint also require full retained-journal replay, including on a single-shard
+deployment; their original shard count cannot be inferred. Apply one shard count
+consistently to the cluster and drain/restart it when changing the layout; canonical cross-field
+limitations still require the routed delivery contract.
+
 For Kafka records, the durable sink evaluates the current state-unit fence
 inside that transaction before the Outbox/journal commit. Checkpoint rows also
 store a partition-to-owner-epoch vector; `JpaDetectionStateSnapshotStore`
@@ -494,6 +541,12 @@ This distinction prevents a PostgreSQL timeout or broker outage from being
 silently converted into a committed offset.
 
 ## Recovery and rebalance
+
+Kafka event, route-source, rule-change and secondary-alarm consumers start on
+`ApplicationReadyEvent`, after Spring singleton initialization and application
+runners finish. Starting replay from a bean initialization callback can publish
+transaction events that resolve another bean while the main thread holds the
+singleton lock. Repeated ready notifications must not create a second poller.
 
 At startup and `onPartitionsAssigned`, Detection rebuilds rule windows only
 from `COMPLETED` journal rows belonging to the current assignment. Replayed

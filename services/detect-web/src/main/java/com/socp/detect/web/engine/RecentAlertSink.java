@@ -1,6 +1,5 @@
 package com.socp.detect.web.engine;
 
-import com.socp.rule.engine.EventAlertSink;
 import com.socp.rule.engine.DetectionResult;
 import com.socp.rule.model.Alert;
 import com.socp.rule.model.SecurityEvent;
@@ -27,6 +26,27 @@ public class RecentAlertSink implements com.socp.rule.engine.BatchEventAlertSink
     private final boolean primaryOutput;
     private final Set<String> publishedIds = new LinkedHashSet<>();
     private final Object viewLock = new Object();
+
+    @Override
+    public void publishBatch(List<DetectionResult> results, List<com.socp.rule.engine.RuleExecutionScope> scopes,
+                             Runnable durableCommitGuard) {
+        if (!supportsAtomicBatch()) throw new IllegalStateException("atomic primary sink unavailable");
+        forwarder.forwardBatch(results, scopes, durableCommitGuard);
+        // The transaction has committed. A transient SSE/view error must never
+        // tell the engine to undo state whose durable receipts already exist.
+        for (DetectionResult result : results) {
+            for (Alert alert : result.alerts()) {
+                try {
+                    if (alert != null && alert.id() != null && remember(alert) && streamHub != null) {
+                        streamHub.broadcast(tenantOf(alert), alert);
+                    }
+                } catch (RuntimeException viewFailure) {
+                    org.slf4j.LoggerFactory.getLogger(RecentAlertSink.class)
+                            .warn("Committed alert view update deferred: {}", viewFailure.toString());
+                }
+            }
+        }
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     public RecentAlertSink(AlertForwarder forwarder, AlertStreamHub streamHub,

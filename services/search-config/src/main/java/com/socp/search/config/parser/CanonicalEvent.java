@@ -102,7 +102,7 @@ public final class CanonicalEvent {
             Map.entry("duser", USER_NAME), Map.entry("act", EVENT_ACTION),
             Map.entry("rt", "timestamp"), Map.entry("msg", EVENT_MESSAGE));
 
-    /** CEF Extension KV（key=value）转 canonical；未知 key 保留原名。 */
+    /** CEF Extension KV（key=value）转 canonical；未知 key 加 cef. 前缀。 */
     public static Map<String, String> cefExt(Map<String, String> kv) {
         Map<String, String> out = new LinkedHashMap<>();
         for (var en : kv.entrySet()) {
@@ -110,8 +110,7 @@ public final class CanonicalEvent {
             if (canonical != null) {
                 putIf(out, canonical, en.getValue());
             } else if (CANONICAL_KEYS.contains(en.getKey())) {
-                // KvParser canonicalizes aliases before CEF gets the extension.
-                // Preserve those keys instead of producing cef.event.message or
+                // Preserve already-canonical extension keys instead of producing cef.event.message or
                 // cef.network.protocol, which would silently break detections.
                 putIf(out, en.getKey(), en.getValue());
             } else {

@@ -49,12 +49,12 @@ class KafkaEventBatchTest {
         var submitted = new CountDownLatch(1);
         List<CompletableFuture<Void>> futures = List.of(new CompletableFuture<>(), new CompletableFuture<>(),
                 new CompletableFuture<>(), new CompletableFuture<>());
-        when(store.claimBatch(any())).thenAnswer(call -> {
+        when(store.preclaimBatch(any())).thenAnswer(call -> {
             List<DetectionStateStore.Input> inputs = call.getArgument(0);
             assertEquals(List.of(0L, 1L, 2L, 3L), inputs.stream().map(DetectionStateStore.Input::offset).toList());
             return java.util.Collections.nCopies(inputs.size(), DetectionEventClaim.NEW);
         });
-        when(engine.ingestBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
+        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
             List<DetectEngineService.KafkaInput> inputs = call.getArgument(0);
             assertEquals(List.of(0L, 1L, 2L, 3L), inputs.stream().map(DetectEngineService.KafkaInput::offset).toList());
             submitted.countDown();
@@ -78,10 +78,49 @@ class KafkaEventBatchTest {
             assertEquals(0, counter.get());
             assertEquals(0, aggregate(consumer, "totalPendingBytes"));
             assertEquals(0, aggregate(consumer, "totalPendingRecords"));
-            verify(store, times(1)).claimBatch(any());
-            verify(engine, times(1)).ingestBatchFromKafkaAndAwait(anyList(), any());
+            verify(store, times(1)).preclaimBatch(any());
+            verify(engine, times(1)).ingestOrderedBatchFromKafkaAndAwait(anyList(), any());
             verify(engine, never()).ingestFromKafkaAndAwait(any(), anyString(), any(), any());
         } finally { releaseLane.countDown(); consumer.stop(); }
+    }
+
+    @Test
+    void mixedStatePollKeepsParallelSiblingsInsideTheGlobalReservation() throws Exception {
+        KafkaEventConsumer consumer = consumer();
+        doAnswer(call -> {
+            var event = (com.socp.rule.model.SecurityEvent) call.getArgument(0);
+            return new DetectEngineService.BatchKey(event.requireTenantId(), event.id().equals("a") ? 0 : 1);
+        }).when(engine).batchKey(any());
+        when(engine.prepareBatchEvent(any(), anyString(), anyInt(), anyLong())).thenAnswer(call ->
+                new com.socp.rule.engine.RuleEngine.BatchEvent(call.getArgument(0),
+                        new com.socp.rule.engine.DetectionResult.InputPosition(call.getArgument(1),
+                                call.getArgument(2), call.getArgument(3)), com.socp.rule.engine.RuleExecutionScope.NOOP));
+        when(engine.batchGroups(any())).thenAnswer(call -> {
+            List<com.socp.rule.engine.RuleEngine.BatchEvent> events = call.getArgument(0);
+            return events.stream().map(List::of).toList();
+        });
+        when(store.claimBatch(any())).thenReturn(List.of(DetectionEventClaim.NEW, DetectionEventClaim.NEW));
+        CompletableFuture<Void> first = new CompletableFuture<>();
+        CountDownLatch submitted = new CountDownLatch(2);
+        when(engine.ingestBatchFromKafkaAndAwait(anyList())).thenAnswer(call -> {
+            List<com.socp.rule.engine.RuleEngine.BatchEvent> events = call.getArgument(0);
+            submitted.countDown();
+            return events.getFirst().event().id().equals("a") ? first : CompletableFuture.completedFuture(null);
+        });
+        try {
+            dispatch(consumer, List.of(record(0, "a"), record(1, "b")));
+            assertTrue(submitted.await(2, TimeUnit.SECONDS), "a blocked shard must not prevent its sibling submission");
+            assertTrue(completions(consumer).isEmpty(), "the partition cannot pass an unfinished sibling");
+            assertEquals(2, aggregate(consumer, "totalPendingRecords"));
+            assertTrue(aggregate(consumer, "totalPendingBytes") > 0);
+            first.complete(null);
+            drainLane(consumer);
+            assertEquals(2, completions(consumer).size());
+            assertEquals(0, aggregate(consumer, "totalPendingRecords"));
+            assertEquals(0, aggregate(consumer, "totalPendingBytes"));
+            verify(engine, never()).ingestOrderedBatchFromKafkaAndAwait(anyList(), any());
+            verify(store, never()).preclaimBatch(any());
+        } finally { first.complete(null); consumer.stop(); }
     }
 
     @Test
@@ -90,9 +129,9 @@ class KafkaEventBatchTest {
         CountDownLatch releaseLane = blockLane(consumer);
         List<String> order = new ArrayList<>();
         consumer.setDlqSink((id, raw) -> order.add("dlq"));
-        when(store.claimBatch(any())).thenAnswer(call ->
+        when(store.preclaimBatch(any())).thenAnswer(call ->
                 java.util.Collections.nCopies(((List<?>) call.getArgument(0)).size(), DetectionEventClaim.NEW));
-        when(engine.ingestBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
+        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
             List<DetectEngineService.KafkaInput> inputs = call.getArgument(0);
             order.add(inputs.stream().map(input -> input.event().id()).toList().toString());
             return java.util.Collections.nCopies(inputs.size(), CompletableFuture.completedFuture(null));
@@ -120,15 +159,19 @@ class KafkaEventBatchTest {
         ReflectionTestUtils.setField(consumer, "processingBatchSize", configuredLimit);
         CountDownLatch releaseLane = blockLane(consumer);
         List<List<Long>> claims = new ArrayList<>();
-        when(store.claimBatch(any())).thenAnswer(call -> {
+        when(store.preclaimBatch(any())).thenAnswer(call -> {
             List<DetectionStateStore.Input> inputs = call.getArgument(0);
             claims.add(inputs.stream().map(DetectionStateStore.Input::offset).toList());
             return java.util.Collections.nCopies(inputs.size(), DetectionEventClaim.NEW);
         });
-        when(engine.ingestBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call ->
+        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call ->
                 java.util.Collections.nCopies(((List<?>) call.getArgument(0)).size(), CompletableFuture.completedFuture(null)));
         try {
-            for (int i = 0; i < effectiveLimit + 2; i++) dispatch(consumer, List.of(record(i, "e-" + i)));
+            // Two records per poll fill the hard 64-event batch without requiring
+            // more than the production lane's 32 queued tasks; overflow stays deferred.
+            for (int i = 0; i < effectiveLimit + 2; i += 2) {
+                dispatch(consumer, List.of(record(i, "e-" + i), record(i + 1, "e-" + (i + 1))));
+            }
             AtomicLong counter = pendingCounter(consumer);
             releaseLane.countDown();
             drainLane(consumer);
@@ -148,7 +191,7 @@ class KafkaEventBatchTest {
         ReflectionTestUtils.setField(consumer, "partitionMaxPendingBytes", partitionLimit);
         CountDownLatch releaseLane = blockLane(consumer);
         List<Integer> claimSizes = new ArrayList<>();
-        when(store.claimBatch(any())).thenAnswer(call -> {
+        when(store.preclaimBatch(any())).thenAnswer(call -> {
             List<?> inputs = call.getArgument(0);
             claimSizes.add(inputs.size());
             return java.util.Collections.nCopies(inputs.size(), DetectionEventClaim.NEW);
@@ -167,7 +210,7 @@ class KafkaEventBatchTest {
             assertEquals(List.of(1, 1, 1), claimSizes);
             assertEquals(3, completions(consumer).size());
             assertEquals(0, counter.get());
-            verify(engine, never()).ingestBatchFromKafkaAndAwait(anyList(), any());
+            verify(engine, never()).ingestOrderedBatchFromKafkaAndAwait(anyList(), any());
         } finally { releaseLane.countDown(); consumer.stop(); }
     }
 
@@ -181,8 +224,8 @@ class KafkaEventBatchTest {
         var admissionGuard = new java.util.concurrent.atomic.AtomicReference<java.util.function.BooleanSupplier>();
         List<CompletableFuture<Void>> futures = List.of(new CompletableFuture<>(), new CompletableFuture<>(),
                 new CompletableFuture<>(), new CompletableFuture<>());
-        when(store.claimBatch(any())).thenReturn(java.util.Collections.nCopies(4, DetectionEventClaim.NEW));
-        when(engine.ingestBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
+        when(store.preclaimBatch(any())).thenReturn(java.util.Collections.nCopies(4, DetectionEventClaim.NEW));
+        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
             assertEquals(4, ((List<?>) call.getArgument(0)).size());
             admissionGuard.set(call.getArgument(1));
             submitted.countDown();
@@ -213,7 +256,7 @@ class KafkaEventBatchTest {
             assertEquals(0, counter.get(), "cleanup must not release any reservation twice");
             assertEquals(0, aggregate(consumer, "totalPendingBytes"));
             assertEquals(0, aggregate(consumer, "totalPendingRecords"));
-            verify(store, times(1)).claimBatch(any());
+            verify(store, times(1)).preclaimBatch(any());
         } finally { releaseLane.countDown(); consumer.stop(); }
     }
 
@@ -225,14 +268,14 @@ class KafkaEventBatchTest {
         var submitted = new CountDownLatch(1);
         List<CompletableFuture<Void>> futures = new ArrayList<>();
         for (int i = 0; i < 32; i++) futures.add(new CompletableFuture<>());
-        when(store.claimBatch(any())).thenAnswer(call -> {
+        when(store.preclaimBatch(any())).thenAnswer(call -> {
             claimEntered.countDown();
             assertTrue(releaseClaim.await(5, TimeUnit.SECONDS));
             List<?> inputs = call.getArgument(0);
             assertEquals(32, inputs.size());
             return java.util.Collections.nCopies(inputs.size(), DetectionEventClaim.NEW);
         });
-        when(engine.ingestBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
+        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
             assertEquals(32, ((List<?>) call.getArgument(0)).size());
             submitted.countDown();
             return futures;
@@ -258,8 +301,8 @@ class KafkaEventBatchTest {
         CountDownLatch releaseLane = blockLane(consumer);
         var submitted = new CountDownLatch(1);
         var last = new CompletableFuture<Void>();
-        when(store.claimBatch(any())).thenReturn(java.util.Collections.nCopies(3, DetectionEventClaim.NEW));
-        when(engine.ingestBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
+        when(store.preclaimBatch(any())).thenReturn(java.util.Collections.nCopies(3, DetectionEventClaim.NEW));
+        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
             submitted.countDown();
             return List.of(CompletableFuture.completedFuture(null),
                     CompletableFuture.failedFuture(new IllegalStateException("commit response lost")), last);
@@ -292,12 +335,12 @@ class KafkaEventBatchTest {
     void duplicateDeliveryCreatesASerialReceiptBarrier() throws Exception {
         KafkaEventConsumer consumer = consumer();
         var seen = new HashSet<String>();
-        when(store.claimBatch(any())).thenAnswer(call -> {
+        when(store.preclaimBatch(any())).thenAnswer(call -> {
             List<DetectionStateStore.Input> inputs = call.getArgument(0);
             return inputs.stream().map(input -> seen.add(input.event().id())
                     ? DetectionEventClaim.NEW : DetectionEventClaim.COMPLETED).toList();
         });
-        when(engine.ingestBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call ->
+        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call ->
                 java.util.Collections.nCopies(((List<?>) call.getArgument(0)).size(), CompletableFuture.completedFuture(null)));
         when(engine.ingestFromKafkaAndAwait(any(), anyString(), any(), any()))
                 .thenReturn(CompletableFuture.completedFuture(null));
@@ -305,7 +348,7 @@ class KafkaEventBatchTest {
             dispatch(consumer, List.of(record(0, "a"), record(1, "b"), record(2, "a"), record(3, "c")));
             drainLane(consumer);
             assertEquals(4, completions(consumer).size());
-            verify(engine, times(1)).ingestBatchFromKafkaAndAwait(anyList(), any());
+            verify(engine, times(1)).ingestOrderedBatchFromKafkaAndAwait(anyList(), any());
             verify(engine, times(1)).ingestFromKafkaAndAwait(argThat(e -> e.id().equals("c")), anyString(), any(), any());
         } finally { consumer.stop(); }
     }
@@ -316,8 +359,8 @@ class KafkaEventBatchTest {
         var submitted = new CountDownLatch(1);
         var first = new CompletableFuture<Void>();
         var second = new CompletableFuture<Void>();
-        when(store.claimBatch(any())).thenReturn(List.of(DetectionEventClaim.NEW, DetectionEventClaim.NEW));
-        when(engine.ingestBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
+        when(store.preclaimBatch(any())).thenReturn(List.of(DetectionEventClaim.NEW, DetectionEventClaim.NEW));
+        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
             submitted.countDown(); return List.of(first, second);
         });
         try {
@@ -335,8 +378,8 @@ class KafkaEventBatchTest {
     void ownershipLossStopsTheFailedSuffixAndRetiresQueuedWork() throws Exception {
         KafkaEventConsumer consumer = consumer();
         CountDownLatch releaseLane = blockLane(consumer);
-        when(store.claimBatch(any())).thenReturn(List.of(DetectionEventClaim.NEW, DetectionEventClaim.NEW));
-        when(engine.ingestBatchFromKafkaAndAwait(anyList(), any())).thenReturn(List.of(
+        when(store.preclaimBatch(any())).thenReturn(List.of(DetectionEventClaim.NEW, DetectionEventClaim.NEW));
+        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenReturn(List.of(
                 CompletableFuture.failedFuture(new IllegalStateException("batch failed")),
                 CompletableFuture.failedFuture(new IllegalStateException("predecessor failed"))));
         when(store.claim(any(), anyString(), any(), any(), anyString())).thenThrow(
@@ -353,7 +396,7 @@ class KafkaEventBatchTest {
             assertFalse(retry.active(retry.acquire(PARTITION)), "polling must not resurrect the retired lease");
             dispatch(consumer, List.of(record(2, "c")));
             drainLane(consumer);
-            verify(store, times(1)).claimBatch(any());
+            verify(store, times(1)).preclaimBatch(any());
             assertEquals(0, counter.get());
         } finally { releaseLane.countDown(); consumer.stop(); }
     }
@@ -397,7 +440,14 @@ class KafkaEventBatchTest {
 
     private static void drainLane(KafkaEventConsumer consumer) throws Exception {
         ThreadPoolExecutor lane = ReflectionTestUtils.invokeMethod(consumer, "lane", 0);
-        lane.submit(() -> { }).get(5, TimeUnit.SECONDS);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (System.nanoTime() < deadline) {
+            ReflectionTestUtils.invokeMethod(consumer, "drainDeferred", (Object) null);
+            if (aggregate(consumer, "totalPendingRecords") == 0
+                    && lane.getActiveCount() == 0 && lane.getQueue().isEmpty()) return;
+            Thread.sleep(5);
+        }
+        fail("bounded partition work did not drain within the test deadline");
     }
 
     private static Queue<?> completions(KafkaEventConsumer consumer) {

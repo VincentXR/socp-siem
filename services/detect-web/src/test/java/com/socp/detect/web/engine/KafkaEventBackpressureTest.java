@@ -41,9 +41,9 @@ class KafkaEventBackpressureTest {
         when(store.supportsBatchClaims()).thenReturn(true);
         when(engine.completesJournal(store)).thenReturn(true);
         when(engine.batchKey(any())).thenReturn(new DetectEngineService.BatchKey("tenant-a", 0));
-        when(store.claimBatch(any())).thenAnswer(call ->
+        when(store.preclaimBatch(any())).thenAnswer(call ->
                 java.util.Collections.nCopies(((List<?>) call.getArgument(0)).size(), DetectionEventClaim.NEW));
-        when(engine.ingestBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call ->
+        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call ->
                 java.util.Collections.nCopies(((List<?>) call.getArgument(0)).size(), CompletableFuture.completedFuture(null)));
         when(engine.ingestFromKafkaAndAwait(any(), anyString(), any(), any()))
                 .thenReturn(CompletableFuture.completedFuture(null));

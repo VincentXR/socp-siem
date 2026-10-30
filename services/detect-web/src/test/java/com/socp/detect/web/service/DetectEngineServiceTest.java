@@ -529,6 +529,72 @@ class DetectEngineServiceTest {
     }
 
     @Test
+    void rejectedBatchLeavesTheInitialBurstAvailableToSingleRecordFallback() throws Exception {
+        when(store.list("tenant-a")).thenReturn(List.of());
+        when(store.tenant()).thenReturn("tenant-a");
+        var durableState = new InMemoryDetectionStateStore();
+        var durableForwarder = new AlertForwarder(store, null, null, durableState);
+        var service = new DetectEngineService(store, new RecentAlertSink(10, durableForwarder, null),
+                durableState, performanceMetrics, null);
+        ReflectionTestUtils.setField(service, "tenantMaxEventsPerSecond", 1L);
+        ReflectionTestUtils.setField(service, "tenantRateBurst", 31L);
+        try (var ignored = TenantContext.open("tenant-a")) {
+            var batch = java.util.stream.IntStream.range(0, 32).mapToObj(n -> {
+                SecurityEvent input = event("tenant-a", "batch-limited-" + n);
+                durableState.claim(input);
+                return service.prepareBatchEvent(input, "socp-events", 0, n);
+            }).toList();
+            var rejected = org.junit.jupiter.api.Assertions.assertThrows(
+                    com.socp.detect.web.engine.TenantAdmission.RejectedException.class,
+                    () -> service.ingestBatchFromKafkaAndAwait(batch));
+            assertEquals(com.socp.detect.web.engine.TenantAdmission.RejectionReason.RATE, rejected.reason());
+            assertEquals(0L, service.stats().get("eventCount"));
+            for (var input : batch.subList(0, 31)) {
+                service.ingestFromKafkaAndAwait(input.event(), "socp-events", 0, input.position().offset())
+                        .get(3, TimeUnit.SECONDS);
+            }
+            assertEquals(31L, service.stats().get("eventCount"));
+        } finally { service.stop(); }
+    }
+
+    @Test
+    void batchCheckpointCapturesWholeStateWithTheLastOffsetOnly() throws Exception {
+        when(store.list("tenant-a")).thenReturn(List.of(thresholdRule()));
+        when(snapshotStore.supportsAtomicBatch()).thenReturn(true);
+        var durableState = new InMemoryDetectionStateStore();
+        var durableForwarder = new AlertForwarder(store, null, null, durableState);
+        var service = new DetectEngineService(store, new RecentAlertSink(10, durableForwarder, null),
+                durableState, performanceMetrics, snapshotStore);
+        ReflectionTestUtils.setField(state(service), "snapshotEveryEvents", 2L);
+        try (var ignored = TenantContext.open("tenant-a")) {
+            var batch = java.util.stream.IntStream.range(0, 4).mapToObj(n -> {
+                SecurityEvent input = event("tenant-a", "batch-checkpoint-" + n);
+                durableState.claim(input);
+                return service.prepareBatchEvent(input, "socp-events", 0, 10L + n);
+            }).toList();
+            doAnswer(call -> {
+                assertEquals("tenant-a", TenantContext.require());
+                return null;
+            }).when(snapshotStore).saveAll(org.mockito.ArgumentMatchers.anyList());
+            assertTrue(service.canBatch(batch));
+            service.ingestBatchFromKafkaAndAwait(batch).get(3, TimeUnit.SECONDS);
+            var captured = org.mockito.ArgumentCaptor.forClass(List.class);
+            verify(snapshotStore).saveAll(captured.capture());
+            List<DetectionStateSnapshot> snapshots = captured.getValue();
+            var snapshot = snapshots.stream().filter(s -> "THRESHOLD".equals(s.ruleId())).findFirst().orElseThrow();
+            assertEquals(13L, snapshot.lastProcessedOffset());
+            assertEquals(Map.of(0, 13L), snapshot.partitionOffsets());
+            var restored = (StatefulRule) new RuleSpec(thresholdRule()).toRule();
+            restored.restoreState(snapshot.serializedState());
+            restored.accept(event("tenant-a", "fifth-event"));
+            assertEquals(1, restored.drain().size(),
+                    "checkpoint must contain all four events, so the fifth crosses the threshold");
+        } finally {
+            service.stop();
+        }
+    }
+
+    @Test
     void snapshotCheckpointUsesAtomicGenerationWhenStoreSupportsIt() {
         when(store.list(org.mockito.ArgumentMatchers.anyString())).thenReturn(List.of(thresholdRule()));
         when(stateStore.supportsCheckpointReplay()).thenReturn(false);
@@ -747,6 +813,6 @@ class DetectEngineServiceTest {
     private static String thresholdRuleVersion() {
         RuleSpec spec = new RuleSpec(thresholdRule());
         StatefulRule stateful = (StatefulRule) spec.toRule();
-        return stateful.stateVersion() + ":" + spec.stateSemanticsFingerprint();
+        return DetectionEngineFactory.stateVersion(stateful.stateVersion() + ":" + spec.stateSemanticsFingerprint(), 1);
     }
 }

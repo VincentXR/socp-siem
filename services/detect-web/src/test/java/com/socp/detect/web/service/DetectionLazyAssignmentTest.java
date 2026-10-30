@@ -273,7 +273,8 @@ class DetectionLazyAssignmentTest {
         var spec = new RuleSpec(threshold());
         var rule = (StatefulRule) spec.toRule();
         for (int i = 0; i < events; i++) rule.accept(event(tenant, "checkpoint-" + i));
-        return new DetectionStateSnapshot("THRESHOLD", rule.stateVersion() + ":" + spec.stateSemanticsFingerprint(),
+        return new DetectionStateSnapshot("THRESHOLD", DetectionEngineFactory.stateVersion(
+                rule.stateVersion() + ":" + spec.stateSemanticsFingerprint(), 1),
                 tenant, 0, 8L, rule.snapshotState(), TIME, Map.of(2, 8L));
     }
 }
