@@ -16,8 +16,9 @@ import java.util.Set;
 
 /** Recent alert view plus the durable Detection -> Alert hand-off. */
 @Component
-public class RecentAlertSink implements EventAlertSink {
+public class RecentAlertSink implements com.socp.rule.engine.BatchEventAlertSink {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(RecentAlertSink.class);
     private static final int DEDUP_CAPACITY = 100_000;
     private final Deque<Alert> recent = new ArrayDeque<>();
     private final int capacity;
@@ -52,6 +53,30 @@ public class RecentAlertSink implements EventAlertSink {
     }
 
     @Override
+    public boolean supportsAtomicBatch() { return ownsFencedTransaction(); }
+
+    @Override
+    public void publishBatch(List<com.socp.rule.engine.BatchEventAlertSink.Entry> entries) {
+        if (!supportsAtomicBatch()) throw new IllegalStateException("sink does not own journal commit");
+        forwarder.forwardBatch(entries);
+        for (var entry : entries) {
+            for (Alert alert : entry.result().alerts()) {
+                if (alert == null || alert.id() == null || !remember(alert)) continue;
+                broadcastCommitted(alert);
+            }
+        }
+    }
+
+    @Override
+    public boolean ownsFencedTransaction() {
+        return primaryOutput && forwarder != null && forwarder.ownsJournalTransaction();
+    }
+
+    public boolean completesJournal(com.socp.detect.web.persistence.store.DetectionStateStore store) {
+        return primaryOutput && forwarder != null && forwarder.completesJournal(store);
+    }
+
+    @Override
     public void publish(Alert alert) {
         publish(null, alert == null ? List.of() : List.of(alert));
     }
@@ -76,7 +101,7 @@ public class RecentAlertSink implements EventAlertSink {
         }
         for (Alert alert : safe) {
             if (alert == null || alert.id() == null || !remember(alert)) continue;
-            if (primaryOutput && streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
+            if (primaryOutput) broadcastCommitted(alert);
         }
         // The guard is executed exactly once above or inside the primary forwarder.
     }
@@ -96,9 +121,19 @@ public class RecentAlertSink implements EventAlertSink {
             // Shadow mode must not push phantom alerts to the live SSE stream
             // either: only the formal output path broadcasts (same gate as the
             // durable forwarder above and the publish(event, alerts, guard) path).
-            if (primaryOutput && streamHub != null) streamHub.broadcast(tenantOf(alert), alert);
+            if (primaryOutput) broadcastCommitted(alert);
         }
         // The guard is executed exactly once above or inside the primary forwarder.
+    }
+
+    /** A transient SSE failure must not roll back already committed rule state. */
+    private void broadcastCommitted(Alert alert) {
+        if (streamHub == null) return;
+        try {
+            streamHub.broadcast(tenantOf(alert), alert);
+        } catch (RuntimeException failure) {
+            log.warn("Committed alert stream notification failed alertId={}", alert.id(), failure);
+        }
     }
 
     public List<Alert> recent() {

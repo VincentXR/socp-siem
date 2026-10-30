@@ -155,38 +155,41 @@ public final class CorrelationRule extends AbstractRule implements StatefulRule 
 
     @Override
     public byte[] snapshotState() {
-        return states.snapshot(state -> {
-            Map<String, Object> value = new java.util.LinkedHashMap<>();
-            value.put("step", state.step);
-            value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
-            value.put("lastTs", state.lastTs == null ? null : state.lastTs.toString());
-            value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
-            return value;
-        });
+        return states.snapshot(this::encodeState);
     }
 
+    @Override
+    public com.socp.rule.state.StateMutation beginMutation() {
+        return states.beginMutation(this::encodeState, this::decodeState);
+    }
+
+    private Object encodeState(State state) {
+        Map<String, Object> value = new java.util.LinkedHashMap<>();
+        value.put("step", state.step);
+        value.put("firstTs", state.firstTs == null ? null : state.firstTs.toString());
+        value.put("lastTs", state.lastTs == null ? null : state.lastTs.toString());
+        value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
+        return value;
+    }
 
     @Override
     public void restoreState(byte[] serializedState) {
-        Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
-        states.clear();
-        snapshot.forEach((key, raw) -> {
-            // A blank grouping key cannot exist in state produced by accept();
-            // skip corrupt checkpoint content instead of failing the restore.
-            if (key == null || key.isBlank() || !(raw instanceof Map<?, ?> values)) return;
-            State state = states.get(key, State::new);
-            synchronized (state) {
-                state.step = values.get("step") instanceof Number n ? n.intValue() : 0;
-                state.firstTs = parseInstant(values.get("firstTs"));
-                state.lastTs = parseInstant(values.get("lastTs"));
-                state.evidence.clear();
-                Object evidence = values.get("evidence");
-                if (evidence instanceof List<?> items) {
-                    items.stream().map(StateSnapshotCodec::event).filter(java.util.Objects::nonNull)
-                            .limit(Math.max(1, steps.size())).forEach(state.evidence::add);
-                }
-            }
-        });
+        states.restore(serializedState, this::decodeState);
+    }
+
+    private State decodeState(Object raw) {
+        if (!(raw instanceof Map<?, ?> values)) return null;
+        State state = new State();
+        state.step = values.get("step") instanceof Number n ? n.intValue() : 0;
+        state.firstTs = parseInstant(values.get("firstTs"));
+        state.lastTs = parseInstant(values.get("lastTs"));
+        state.evidence.clear();
+        Object evidence = values.get("evidence");
+        if (evidence instanceof List<?> items) {
+            items.stream().map(StateSnapshotCodec::event).filter(java.util.Objects::nonNull)
+                    .limit(Math.max(1, steps.size())).forEach(state.evidence::add);
+        }
+        return state;
     }
 
     private static Instant parseInstant(Object value) {

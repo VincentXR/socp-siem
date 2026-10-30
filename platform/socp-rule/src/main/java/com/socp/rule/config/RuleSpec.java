@@ -272,8 +272,8 @@ public final class RuleSpec {
         Predicate<SecurityEvent> required = and(match);
         Predicate<SecurityEvent> matched = required;
         if (!matchAny.isEmpty()) {
-            Predicate<SecurityEvent> alternatives = e -> matchAny.stream()
-                    .map(this::and)
+            List<Predicate<SecurityEvent>> compiledAlternatives = matchAny.stream().map(this::and).toList();
+            Predicate<SecurityEvent> alternatives = e -> compiledAlternatives.stream()
                     .anyMatch(predicate -> predicate.test(e));
             matched = required.and(alternatives);
         }

@@ -204,44 +204,47 @@ public final class BaselineRule extends AbstractRule implements StatefulRule {
 
     @Override
     public byte[] snapshotState() {
-        return states.snapshot(state -> {
-            Map<String, Object> value = new java.util.LinkedHashMap<>();
-            value.put("bucketIdx", state.bucketIdx);
-            value.put("count", state.count);
-            value.put("alerted", state.alerted);
-            value.put("history", new ArrayList<>(state.history));
-            value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
-            return value;
-        });
+        return states.snapshot(this::encodeState);
     }
 
     @Override
-    @SuppressWarnings("unchecked")
+    public com.socp.rule.state.StateMutation beginMutation() {
+        return states.beginMutation(this::encodeState, this::decodeState);
+    }
+
+    private Object encodeState(State state) {
+        Map<String, Object> value = new java.util.LinkedHashMap<>();
+        value.put("bucketIdx", state.bucketIdx);
+        value.put("count", state.count);
+        value.put("alerted", state.alerted);
+        value.put("history", new ArrayList<>(state.history));
+        value.put("evidence", state.evidence.stream().map(StateSnapshotCodec::event).toList());
+        return value;
+    }
+
+    @Override
     public void restoreState(byte[] serializedState) {
-        Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
-        states.clear();
-        snapshot.forEach((key, raw) -> {
-            // A blank grouping key cannot exist in state produced by accept();
-            // skip corrupt checkpoint content instead of failing the restore.
-            if (key == null || key.isBlank() || !(raw instanceof Map<?, ?> values)) return;
-            State state = states.get(key, State::new);
-            synchronized (state) {
-                state.bucketIdx = number(values.get("bucketIdx"), Long.MIN_VALUE);
-                state.count = (int) number(values.get("count"), 0);
-                state.alerted = Boolean.TRUE.equals(values.get("alerted"));
-                state.history.clear();
-                Object history = values.get("history");
-                if (history instanceof List<?> items) {
-                    items.forEach(item -> state.history.addLast((int) number(item, 0)));
-                }
-                state.evidence.clear();
-                Object evidence = values.get("evidence");
-                if (evidence instanceof List<?> items) {
-                    items.stream().map(StateSnapshotCodec::event).filter(java.util.Objects::nonNull)
-                            .limit(MAX_EVIDENCE).forEach(state.evidence::addLast);
-                }
-            }
-        });
+        states.restore(serializedState, this::decodeState);
+    }
+
+    private State decodeState(Object raw) {
+        if (!(raw instanceof Map<?, ?> values)) return null;
+        State state = new State();
+        state.bucketIdx = number(values.get("bucketIdx"), Long.MIN_VALUE);
+        state.count = (int) number(values.get("count"), 0);
+        state.alerted = Boolean.TRUE.equals(values.get("alerted"));
+        state.history.clear();
+        Object history = values.get("history");
+        if (history instanceof List<?> items) {
+            items.forEach(item -> state.history.addLast((int) number(item, 0)));
+        }
+        state.evidence.clear();
+        Object evidence = values.get("evidence");
+        if (evidence instanceof List<?> items) {
+            items.stream().map(StateSnapshotCodec::event).filter(java.util.Objects::nonNull)
+                    .limit(MAX_EVIDENCE).forEach(state.evidence::addLast);
+        }
+        return state;
     }
 
     private static long number(Object value, long fallback) {

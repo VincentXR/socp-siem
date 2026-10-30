@@ -41,6 +41,8 @@ public class AlertForwarder {
     private final EntityRiskStore riskStore;
     private final DetectionAlertOutboxService outbox;
     private final DetectionStateStore stateStore;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.socp.detect.web.metrics.DetectionPerformanceMetrics performanceMetrics;
 
     @org.springframework.beans.factory.annotation.Autowired
     public AlertForwarder(RuleSpecStore ruleStore, EntityRiskStore riskStore,
@@ -55,6 +57,52 @@ public class AlertForwarder {
     public AlertForwarder(RuleSpecStore ruleStore, EntityRiskStore riskStore,
                           DetectionAlertOutboxService outbox) {
         this(ruleStore, riskStore, outbox, null);
+    }
+
+    public boolean ownsJournalTransaction() { return stateStore != null; }
+
+    /** Successful publication includes the journal in the outbox transaction. */
+    public boolean completesJournal(DetectionStateStore expectedStore) {
+        return stateStore != null && stateStore == expectedStore;
+    }
+
+    /** Lock all state units in checkpoint order, then commit the entire bounded batch. */
+    @Transactional
+    public void forwardBatch(List<com.socp.rule.engine.BatchEventAlertSink.Entry> entries) {
+        if (entries == null || entries.isEmpty()) return;
+        if (entries.size() > 64) throw new IllegalArgumentException("detection batch exceeds 64 entries");
+        String tenant = entries.getFirst().result().event().requireTenantId();
+        for (var entry : entries) {
+            if (!tenant.equals(entry.result().event().requireTenantId())) {
+                throw new IllegalArgumentException("a detection batch must belong to one tenant");
+            }
+            if (entry.guard() != null && !(entry.guard() instanceof com.socp.rule.engine.OrderedCommitGuard)) {
+                throw new IllegalArgumentException("batch guard requires a stable lock order");
+            }
+        }
+        try (TenantContext.Scope ignored = TenantContext.open(tenant)) {
+            var guards = entries.stream().map(com.socp.rule.engine.BatchEventAlertSink.Entry::guard)
+                    .filter(java.util.Objects::nonNull)
+                    .map(com.socp.rule.engine.OrderedCommitGuard.class::cast).toList();
+            int stateUnits = (int) guards.stream().map(com.socp.rule.engine.OrderedCommitGuard::lockKey)
+                    .filter(key -> !key.isEmpty()).distinct().count();
+            long fenceStarted = System.nanoTime();
+            boolean fenced = false;
+            try {
+                com.socp.rule.engine.OrderedCommitGuard.runAll(guards);
+                fenced = true;
+            } finally {
+                com.socp.rule.engine.RuleProcessingObserver.notifyOperation(performanceMetrics,
+                        com.socp.rule.engine.RuleProcessingObserver.Operation.FENCING,
+                        stateUnits, System.nanoTime() - fenceStarted, fenced);
+            }
+            if (stateStore == null) throw new IllegalStateException("batch publication requires a durable journal");
+            for (var entry : entries) {
+                validateAlertTenants(entry.result().alerts(), tenant);
+                for (Alert alert : entry.result().alerts()) forwardOne(alert, entry.result(), tenant);
+            }
+            stateStore.markCompletedBatch(entries.stream().map(com.socp.rule.engine.BatchEventAlertSink.Entry::result).toList());
+        }
     }
 
     /** Persist before the detection worker continues; remote delivery is retried asynchronously. */

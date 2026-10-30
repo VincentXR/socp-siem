@@ -30,9 +30,13 @@ public final class RuleStateMap<V> {
 
     private final ConcurrentHashMap<String, Entry<V>> entries = new ConcurrentHashMap<>();
     private final Object cacheLock = new Object();
+    private final Object mutationBoundary = new Object();
     private final long cacheLimit = Math.max(0, Math.min(64L * 1024 * 1024,
             Long.getLong("socp.rule.snapshot-cache.max-bytes", 8L * 1024 * 1024)));
     private long cacheBytes;
+    private volatile Mutation activeMutation;
+    private volatile Thread mutationOwner;
+    private final java.util.concurrent.atomic.AtomicInteger openMutations = new java.util.concurrent.atomic.AtomicInteger();
     private final int maxKeys;
     private final int evictionBatch;
     private final long idleNanos;
@@ -53,6 +57,8 @@ public final class RuleStateMap<V> {
 
     public V get(String key, Supplier<V> factory) {
         if (key == null || key.isBlank()) return null;
+        Mutation mutation = activeMutation;
+        if (mutation != null) mutation.capture(key, entries.get(key));
         long now = System.nanoTime();
         Entry<V> entry = entries.computeIfAbsent(key, ignored -> new Entry<>(factory.get(), now));
         entry.lastAccessNanos = now;
@@ -83,7 +89,10 @@ public final class RuleStateMap<V> {
 
     /** Remove every state key, used when restoring a complete snapshot. */
     public void clear() {
-        synchronized (cacheLock) { entries.clear(); cacheBytes = 0; }
+        synchronized (mutationBoundary) {
+            if (openMutations.get() != 0) throw new IllegalStateException("cannot clear state during evaluation");
+            synchronized (cacheLock) { entries.clear(); cacheBytes = 0; }
+        }
     }
 
     public Map<String, Object> stats() {
@@ -106,8 +115,8 @@ public final class RuleStateMap<V> {
 
     /**
      * Compose the original JSON object in the same map iteration order. Only unchanged
-     * per-key JSON members are reused; before/after rollback snapshots and digest bytes
-     * are still complete independent byte arrays. Eviction/restore releases cache data.
+     * per-key JSON members are reused. Event rollback uses detached trees and
+     * Merkle fingerprints independently of this cache. Eviction/restore releases cache data.
      */
     public byte[] snapshot(Function<V, Object> encode) {
         cleanup(System.nanoTime());
@@ -152,6 +161,8 @@ public final class RuleStateMap<V> {
     private long cachedBytes() { synchronized (cacheLock) { return cacheBytes; } }
 
     private boolean remove(String key, Entry<V> entry) {
+        Mutation mutation = activeMutation;
+        if (mutation != null) mutation.capture(key, entry);
         synchronized (cacheLock) {
             if (!entries.remove(key, entry)) return false;
             if (entry.serializedMember != null) cacheBytes -= entry.serializedMember.length;
@@ -161,10 +172,15 @@ public final class RuleStateMap<V> {
     }
 
     private void cleanup(long now) {
-        long cutoff = now - idleNanos;
-        entries.forEach((key, entry) -> {
-            if (entry.lastAccessNanos < cutoff && remove(key, entry)) evictions.incrementAndGet();
-        });
+        // Keep the check and cleanup atomic with opening an undo boundary.
+        // UI/stats readers must not start eviction just before evaluation opens it.
+        synchronized (mutationBoundary) {
+            if (openMutations.get() != 0 && mutationOwner != Thread.currentThread()) return;
+            long cutoff = now - idleNanos;
+            entries.forEach((key, entry) -> {
+                if (entry.lastAccessNanos < cutoff && remove(key, entry)) evictions.incrementAndGet();
+            });
+        }
     }
 
     /**
@@ -190,6 +206,150 @@ public final class RuleStateMap<V> {
             if (remove(candidate.getKey(), candidate.getValue())) evictions.incrementAndGet();
         }
     }
+
+    /**
+     * Capture only keys touched by this event, including capacity/idle evictions.
+     * The engine serializes a tenant/shard's evaluation and owns this scope.
+     * Checkpoints keep the original full JSON format; audit digests explicitly
+     * identify their affected-key scope instead of pretending to hash full state.
+     */
+    public StateMutation beginMutation(Function<V, Object> encode, Function<Object, V> decode) {
+        synchronized (mutationBoundary) {
+            if (activeMutation != null || (openMutations.get() != 0 && mutationOwner != Thread.currentThread())) {
+                throw new IllegalStateException("overlapping rule state mutation");
+            }
+            Mutation mutation = new Mutation(encode, decode);
+            mutationOwner = Thread.currentThread();
+            openMutations.incrementAndGet();
+            activeMutation = mutation;
+            return mutation;
+        }
+    }
+
+    public void restore(byte[] serializedState, Function<Object, V> decode) {
+        Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
+        clear();
+        snapshot.forEach((key, raw) -> {
+            if (key == null || key.isBlank()) return;
+            V value = decode.apply(raw);
+            if (value != null) get(key, () -> value);
+        });
+    }
+
+    private final class Mutation implements StateMutation {
+        private final Thread owner = Thread.currentThread();
+        private final Function<V, Object> encode;
+        private final Function<Object, V> decode;
+        private final Map<String, Before> before = new java.util.LinkedHashMap<>();
+        private boolean closed;
+
+        private Mutation(Function<V, Object> encode, Function<Object, V> decode) {
+            this.encode = Objects.requireNonNull(encode);
+            this.decode = Objects.requireNonNull(decode);
+        }
+
+        private void checkOwner() {
+            if (closed || owner != Thread.currentThread()) {
+                throw new IllegalStateException("rule mutation must stay on its evaluation thread");
+            }
+        }
+
+        private void capture(String key, Entry<V> entry) {
+            checkOwner();
+            if (before.containsKey(key)) return;
+            if (entry == null) {
+                before.put(key, new Before(null, null, 0, 0));
+            } else {
+                synchronized (entry.value) {
+                    Object tree = StateSnapshotCodec.freeze(encode.apply(entry.value));
+                    before.put(key, new Before(tree, StateSnapshotCodec.fingerprint(tree),
+                            entry.lastAccessNanos, StateSnapshotCodec.retainedBytes(tree)));
+                }
+            }
+        }
+
+        @Override
+        public com.socp.rule.engine.DetectionResult.StateChange change(String ruleId) {
+            checkOwner();
+            // Sorted keys and length-framed bytes make the scope independent of
+            // hash-map order and unambiguous for missing versus present values.
+            java.security.MessageDigest original = digest();
+            java.security.MessageDigest current = digest();
+            boolean changed = false;
+            for (String key : new java.util.TreeSet<>(before.keySet())) {
+                byte[] old = before.get(key).fingerprint;
+                Entry<V> entry = entries.get(key);
+                byte[] value = null;
+                if (entry != null) {
+                    synchronized (entry.value) { value = StateSnapshotCodec.fingerprint(encode.apply(entry.value)); }
+                }
+                update(original, key, old);
+                update(current, key, value);
+                changed |= !java.util.Arrays.equals(old, value);
+            }
+            return new com.socp.rule.engine.DetectionResult.StateChange(ruleId,
+                    java.util.HexFormat.of().formatHex(original.digest()),
+                    java.util.HexFormat.of().formatHex(current.digest()), changed, "affected-keys-merkle-v1");
+        }
+
+        @Override
+        public void rollback() {
+            checkOwner();
+            for (Map.Entry<String, Before> item : before.entrySet()) {
+                Before old = item.getValue();
+                V restored = old.value == null ? null : decode.apply(old.value);
+                if (old.value != null && restored == null) {
+                    throw new IllegalStateException("unable to restore rule state key");
+                }
+                synchronized (cacheLock) {
+                    Entry<V> removed = entries.remove(item.getKey());
+                    if (removed != null && removed.serializedMember != null) {
+                        cacheBytes -= removed.serializedMember.length;
+                    }
+                    if (restored != null) entries.put(item.getKey(), new Entry<>(restored, old.lastAccessNanos));
+                }
+            }
+        }
+
+        @Override
+        public void detach() {
+            checkOwner();
+            if (activeMutation != this) throw new IllegalStateException("mutation is not active");
+            activeMutation = null;
+        }
+
+        @Override
+        public long retainedBytes() {
+            return before.entrySet().stream().mapToLong(entry -> 128L + 2L * entry.getKey().length()
+                    + entry.getValue().retainedBytes).sum();
+        }
+
+        @Override
+        public void close() {
+            checkOwner();
+            synchronized (mutationBoundary) {
+                if (activeMutation == this) activeMutation = null;
+                before.clear();
+                closed = true;
+                if (openMutations.decrementAndGet() == 0) mutationOwner = null;
+            }
+        }
+    }
+
+    private static java.security.MessageDigest digest() {
+        try { return java.security.MessageDigest.getInstance("SHA-256"); }
+        catch (java.security.NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+    }
+
+    private static void update(java.security.MessageDigest digest, String key, byte[] value) {
+        byte[] name = key.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        digest.update(java.nio.ByteBuffer.allocate(4).putInt(name.length).array());
+        digest.update(name);
+        digest.update(java.nio.ByteBuffer.allocate(4).putInt(value == null ? -1 : value.length).array());
+        if (value != null) digest.update(value);
+    }
+
+    private record Before(Object value, byte[] fingerprint, long lastAccessNanos, long retainedBytes) { }
 
     private static final class Entry<V> {
         private final V value;

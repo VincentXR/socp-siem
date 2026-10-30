@@ -38,11 +38,13 @@ class RuleEngineSerializationBenchmarkTest {
     void measureDurableThresholdSerializationAtBoundedCardinalities() throws Exception {
         List<Map<String, Object>> scenarios = new ArrayList<>();
         for (int keys : new int[]{100, 1_000, 5_000}) {
-            scenarios.add(measure(keys, false));
-            scenarios.add(measure(keys, true));
+            for (boolean matching : new boolean[]{false, true}) {
+                scenarios.add(measure(keys, matching, false));
+                scenarios.add(measure(keys, matching, true));
+            }
         }
         Map<String, Object> report = new LinkedHashMap<>();
-        report.put("schemaVersion", 2);
+        report.put("schemaVersion", 3);
         report.put("snapshotCacheMaxBytes", Long.getLong("socp.rule.snapshot-cache.max-bytes", 8L * 1024 * 1024));
         report.put("javaVersion", System.getProperty("java.version"));
         report.put("os", System.getProperty("os.name"));
@@ -59,13 +61,13 @@ class RuleEngineSerializationBenchmarkTest {
         System.out.println("Durable state serialization evidence: " + output);
     }
 
-    private Map<String, Object> measure(int keys, boolean matching) throws Exception {
+    private Map<String, Object> measure(int keys, boolean matching, boolean incremental) throws Exception {
         ThresholdRule delegate = new ThresholdRule("benchmark-threshold", "benchmark",
                 event -> "true".equals(event.get("match")), event -> event.get("entity"),
                 10_000, Duration.ofMinutes(10), Severity.HIGH, "benchmark");
         for (int key = 0; key < keys; key++) delegate.accept(event("seed-" + key, key, true));
         assertEquals(keys, delegate.stats().get("stateKeys"));
-        TimedStatefulRule rule = new TimedStatefulRule(delegate);
+        TimedStatefulRule rule = new TimedStatefulRule(delegate, incremental);
         VerifyingSink sink = new VerifyingSink(matching);
         long[] latencies = new long[MEASURED_EVENTS];
         long elapsed;
@@ -91,14 +93,17 @@ class RuleEngineSerializationBenchmarkTest {
         // This count is a correctness guard for the measured implementation,
         // not a performance threshold. Change it deliberately if the contract
         // evolves, then compare like-for-like workload results.
-        assertEquals(MEASURED_EVENTS * 2L, rule.snapshotCalls);
+        assertEquals(incremental ? 0 : MEASURED_EVENTS * 2L, rule.snapshotCalls);
         assertEquals(MEASURED_EVENTS, sink.results);
         assertEquals(MEASURED_EVENTS, rule.acceptCalls);
         assertEquals(keys, delegate.stats().get("stateKeys"));
-        assertTrue(rule.snapshotBytes > 0);
+        if (incremental) assertEquals(0, rule.snapshotBytes);
+        else assertTrue(rule.snapshotBytes > 0);
         Arrays.sort(latencies);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("stateKeys", keys);
+        result.put("mutationMode", incremental ? "affected-keys" : "full-state");
+        result.put("serializedBytesScope", "complete snapshots only; excludes affected-key encoding");
         result.put("matching", matching);
         result.put("initialStateBytes", initialStateBytes);
         result.put("finalStateBytes", delegate.snapshotState().length);
@@ -123,13 +128,20 @@ class RuleEngineSerializationBenchmarkTest {
 
     private static final class TimedStatefulRule implements StatefulRule {
         private final StatefulRule delegate;
+        private final boolean incremental;
         private long snapshotCalls;
         private long snapshotBytes;
         private long snapshotNanos;
         private long acceptCalls;
         private long acceptNanos;
 
-        private TimedStatefulRule(StatefulRule delegate) { this.delegate = delegate; }
+        private TimedStatefulRule(StatefulRule delegate, boolean incremental) {
+            this.delegate = delegate;
+            this.incremental = incremental;
+        }
+        @Override public com.socp.rule.state.StateMutation beginMutation() {
+            return incremental ? delegate.beginMutation() : StatefulRule.super.beginMutation();
+        }
         @Override public String id() { return delegate.id(); }
         @Override public String name() { return delegate.name(); }
         @Override public String stateVersion() { return delegate.stateVersion(); }

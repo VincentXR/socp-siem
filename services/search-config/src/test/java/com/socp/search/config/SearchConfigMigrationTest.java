@@ -22,12 +22,13 @@ class SearchConfigMigrationTest {
              var statement = connection.prepareStatement(
                      "SELECT COUNT(*) FROM INFORMATION_SCHEMA.INDEXES "
                              + "WHERE INDEX_NAME IN "
-                             + "('IDX_INGESTION_OUTBOX_DUE_V2',"
+                             + "('IDX_INGESTION_OUTBOX_DUE_COVERING',"
+                             + "'IDX_INGESTION_OUTBOX_STATE_KEY_ORDER',"
                              + "'IDX_INGESTION_OUTBOX_TENANT_DUE',"
                              + "'IDX_SEARCH_EVENT_RETENTION')");
             var result = statement.executeQuery()) {
             result.next();
-            assertEquals(3, result.getInt(1));
+            assertEquals(4, result.getInt(1));
 
             try (var quarantine = connection.prepareStatement(
                     "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "

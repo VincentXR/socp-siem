@@ -140,6 +140,11 @@ public class DetectEngineService {
 
     public Set<Integer> assignedPartitions() { return state.assignedPartitions(); }
 
+    /** Valid only after the ingestion future succeeds, including its ownership callback. */
+    public boolean completesJournal(DetectionStateStore expectedStore) {
+        return expectedStore == stateStore && sink.completesJournal(expectedStore);
+    }
+
     /** Journal finalization must use the same ownership fence as durable rule effects. */
     public void assertCurrentOwner(SecurityEvent event, Integer partition) {
         lifecycle.readLock().lock();
@@ -186,7 +191,7 @@ public class DetectEngineService {
             submission.completion().whenComplete((ignored, failure) -> {
                 tenantAdmission.release(permit);
                 if (failure == null) {
-                    stateStore.markCompleted(ev);
+                    if (!completesJournal(stateStore)) stateStore.markCompleted(ev);
                     snapshotAfterDurable(ev, null, -1L);
                 }
             });
@@ -216,11 +221,96 @@ public class DetectEngineService {
         return ingestFromKafkaAndAwait(ev, state.inputTopic(), partition, offset);
     }
 
+    /** Internal Kafka admission identity; all members must target one pinned worker. */
+    public record BatchKey(String tenant, int shard) { }
+
+    public record KafkaInput(SecurityEvent event, String topic, Integer partition, Long offset,
+                             org.apache.kafka.common.header.Headers headers) {
+        public KafkaInput(SecurityEvent event, String topic, Integer partition, Long offset) {
+            this(event, topic, partition, offset, null);
+        }
+    }
+
+    public BatchKey batchKey(SecurityEvent event) {
+        return new BatchKey(event.requireTenantId(), state.shardFor(event));
+    }
+
+    /**
+     * Submit a bounded, ordered partition group while pinning one engine generation.
+     * A failed member cancels uncommitted successors; callers must settle the whole
+     * group before retrying its failed suffix from fresh journal receipts.
+     */
+    public java.util.List<CompletableFuture<Void>> ingestBatchFromKafkaAndAwait(java.util.List<KafkaInput> inputs) {
+        return ingestBatchFromKafkaAndAwait(inputs, () -> true);
+    }
+
+    /** Revalidate the caller's exact assignment after waiting for engine replacement. */
+    public java.util.List<CompletableFuture<Void>> ingestBatchFromKafkaAndAwait(
+            java.util.List<KafkaInput> inputs, java.util.function.BooleanSupplier assignmentActive) {
+        java.util.Objects.requireNonNull(assignmentActive, "assignmentActive");
+        if (inputs == null || inputs.isEmpty() || inputs.size() > 64) {
+            throw new IllegalArgumentException("Kafka admission batch must contain 1..64 events");
+        }
+        KafkaInput first = inputs.getFirst();
+        BatchKey key = batchKey(first.event());
+        java.util.Set<String> deliveries = new java.util.HashSet<>();
+        long previousOffset = -1L;
+        for (KafkaInput input : inputs) {
+            if (input.partition() == null || input.partition() < 0 || input.offset() == null || input.offset() < 0
+                    || input.topic() == null || input.topic().isBlank()
+                    || !java.util.Objects.equals(first.topic(), input.topic())
+                    || !java.util.Objects.equals(first.partition(), input.partition())
+                    || !key.equals(batchKey(input.event())) || input.offset() <= previousOffset
+                    || !deliveries.add(com.socp.rule.partition.DetectionDelivery.deliveryId(input.event()))) {
+                throw new IllegalArgumentException("Kafka batch requires one tenant, shard, partition and ordered distinct deliveries");
+            }
+            previousOffset = input.offset();
+        }
+        RuleEngine.OrderedBatch ordered = new RuleEngine.OrderedBatch();
+        java.util.List<CompletableFuture<Void>> completions = new java.util.ArrayList<>(inputs.size());
+        lifecycle.readLock().lock();
+        try (var tenantScope = com.socp.platform.tenant.context.TenantContext.open(key.tenant())) {
+            for (KafkaInput input : inputs) {
+                CompletableFuture<Void> completion;
+                try {
+                    if (ordered.failure() == null && (Thread.currentThread().isInterrupted()
+                            || !assignmentActive.getAsBoolean())) {
+                        ordered.fail(new RuntimeUnavailableException("Kafka admission assignment is no longer active"));
+                    }
+                    completion = ordered.failure() == null
+                            ? com.socp.platform.client.kafka.KafkaTrace.callConsumed("detect " + input.topic() + " receive",
+                                    input.headers(), () -> ingestFromKafkaAndAwait(input.event(), input.topic(),
+                                            input.partition(), input.offset(), ordered))
+                            : CompletableFuture.failedFuture(ordered.failure());
+                } catch (RuntimeException admissionFailure) {
+                    ordered.fail(admissionFailure);
+                    completion = CompletableFuture.failedFuture(ordered.failure());
+                }
+                completion.whenComplete((ignored, failure) -> {
+                    if (failure != null) ordered.fail(failure);
+                });
+                completions.add(completion);
+            }
+            return java.util.List.copyOf(completions);
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
     /** Kafka ingestion carrying the source topic into the durable result envelope. */
     public CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev, String topic,
                                                            Integer partition, Long offset) {
+        return ingestFromKafkaAndAwait(ev, topic, partition, offset, null);
+    }
+
+    private CompletableFuture<Void> ingestFromKafkaAndAwait(SecurityEvent ev, String topic,
+                                                           Integer partition, Long offset,
+                                                           RuleEngine.OrderedBatch ordered) {
         lifecycle.readLock().lock();
         try {
+            if (Thread.currentThread().isInterrupted()) {
+                return CompletableFuture.failedFuture(new RuntimeUnavailableException("Kafka admission interrupted"));
+            }
             if (!lifecycle.workerRole()) {
                 return CompletableFuture.failedFuture(
                         new RuntimeUnavailableException("detection runtime role is " + lifecycle.runtimeRole()));
@@ -241,8 +331,11 @@ public class DetectEngineService {
                 RuleEngine target = lifecycle.engineFor(ev.tenantId(), shard);
                 int statePartition = partition == null ? -1 : partition;
                 Runnable ownershipGuard = state.durableGuardFor(statePartition, shard);
+                boolean atomicallyFenced = sink.completesJournal(stateStore);
                 Runnable durablePosition = () -> {
-                    ownershipGuard.run();
+                    // The primary transaction already held the owner row through commit.
+                    // Checkpoints acquire their own fence; this callback records memory only.
+                    if (!atomicallyFenced) ownershipGuard.run();
                     state.recordDurablePosition(ev, partition, offset);
                 };
                 com.socp.rule.engine.DetectionResult.InputPosition inputPosition =
@@ -251,7 +344,7 @@ public class DetectEngineService {
                                 : new com.socp.rule.engine.DetectionResult.InputPosition(
                                 topic, partition, offset);
                 CompletableFuture<Void> durable = target.ingestAndAwait(
-                        ev, inputPosition, durablePosition, ownershipGuard);
+                        ev, inputPosition, durablePosition, ownershipGuard, ordered);
                 // Keep the snapshot tied to the engine instance that processed
                 // the event. A concurrent hot reload can replace the map entry
                 // before the caller observes completion; looking the engine up

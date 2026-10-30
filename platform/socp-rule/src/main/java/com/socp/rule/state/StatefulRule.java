@@ -10,6 +10,23 @@ import com.socp.rule.rules.Rule;
  */
 public interface StatefulRule extends Rule {
 
+    /** Legacy implementations retain full-state rollback and audit digests. */
+    default StateMutation beginMutation() {
+        byte[] before = snapshotState();
+        return new StateMutation() {
+            @Override public com.socp.rule.engine.DetectionResult.StateChange change(String ruleId) {
+                byte[] after = snapshotState();
+                return new com.socp.rule.engine.DetectionResult.StateChange(ruleId,
+                        com.socp.rule.engine.DetectionResult.digest(before),
+                        com.socp.rule.engine.DetectionResult.digest(after),
+                        !java.util.Arrays.equals(before, after));
+            }
+            @Override public long retainedBytes() { return before.length; }
+            @Override public void rollback() { restoreState(before); }
+            @Override public void close() { }
+        };
+    }
+
     String stateVersion();
 
     byte[] snapshotState();

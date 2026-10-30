@@ -118,6 +118,74 @@ public class DetectionEventJournal implements DetectionStateStore {
         this(repository, retention, replayPageSize, "7d", "90d");
     }
 
+    @jakarta.persistence.PersistenceContext
+    private jakarta.persistence.EntityManager entityManager;
+
+    @Override
+    public boolean supportsBatchClaims() { return entityManager != null; }
+
+    @Override
+    @Transactional
+    public List<DetectionEventClaim> claimBatch(List<DetectionStateStore.Input> inputs) {
+        if (inputs == null || inputs.size() > 64) throw new IllegalArgumentException("journal batch limit is 64");
+        Map<String, java.util.List<DetectionStateStore.Input>> tenants = new java.util.TreeMap<>();
+        for (var input : inputs) {
+            if (input.event() == null || input.event().id() == null || input.event().id().isBlank()) {
+                throw new IllegalArgumentException("event id is required");
+            }
+            tenants.computeIfAbsent(input.event().requireTenantId(), ignored -> new java.util.ArrayList<>()).add(input);
+        }
+        Map<String, DetectionEventClaim> claims = new java.util.HashMap<>();
+        org.hibernate.Session session = entityManager.unwrap(org.hibernate.Session.class);
+        Integer previousBatchSize = session.getJdbcBatchSize();
+        session.setJdbcBatchSize(32);
+        try {
+            for (var tenant : tenants.entrySet()) {
+                try (var ignored = com.socp.platform.tenant.context.TenantContext.open(tenant.getKey())) {
+                    var deliveries = new java.util.TreeMap<String, DetectionStateStore.Input>();
+                    tenant.getValue().forEach(input -> deliveries.putIfAbsent(DetectionDelivery.deliveryId(input.event()), input));
+                    var existing = new java.util.HashMap<String, DetectionEventEntity>();
+                    repository.findByTenantIdAndDeliveryIdIn(tenant.getKey(), deliveries.keySet())
+                            .forEach(row -> existing.put(row.getDeliveryId(), row));
+                    for (var delivery : deliveries.entrySet()) {
+                        var row = existing.get(delivery.getKey());
+                        if (row == null) {
+                            var input = delivery.getValue();
+                            repository.save(journalRow(input.event(), input.topic(), input.partition(), input.offset(), input.routingKey()));
+                        }
+                        claims.put(tenant.getKey() + "|" + delivery.getKey(), row == null ? DetectionEventClaim.NEW : claimOf(row));
+                    }
+                    repository.flush();
+                }
+            }
+        } finally {
+            session.setJdbcBatchSize(previousBatchSize);
+        }
+        java.util.Set<String> issued = new java.util.HashSet<>();
+        return inputs.stream().map(input -> {
+            String key = input.event().requireTenantId() + "|" + DetectionDelivery.deliveryId(input.event());
+            DetectionEventClaim claim = claims.get(key);
+            return claim == DetectionEventClaim.NEW && !issued.add(key) ? DetectionEventClaim.PENDING : claim;
+        }).toList();
+    }
+
+    private DetectionEventEntity journalRow(SecurityEvent event, String deliveryTopic,
+                                            Integer partition, Long offset, String routingKey) {
+        try {
+            String fields = com.socp.rule.util.Json.mapper().writeValueAsString(event.fields());
+            return new DetectionEventEntity(event.requireTenantId(), DetectionDelivery.deliveryId(event),
+                    DetectionDelivery.sourceEventId(event), DetectionDelivery.routingVersion(event),
+                    safe(event.source(), "unknown", 128), safe(event.host(), "unknown", 255),
+                    safe(event.raw(), "", 8192), fields,
+                    event.severity() == null ? Severity.INFO.name() : event.severity().name(),
+                    event.timestamp() == null ? Instant.now() : event.timestamp(),
+                    DetectionDelivery.sourceTopic(event), DetectionDelivery.sourcePartition(event),
+                    DetectionDelivery.sourceOffset(event), deliveryTopic, partition, offset, routingKey);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+            throw new IllegalStateException("unable to encode detection journal event", failure);
+        }
+    }
+
     @Override
     @Transactional
     public DetectionEventClaim claim(SecurityEvent event) {
@@ -144,18 +212,7 @@ public class DetectionEventJournal implements DetectionStateStore {
         if (existing.isPresent()) return claimOf(existing.get());
 
         try {
-            String fields = com.socp.rule.util.Json.mapper().writeValueAsString(
-                    event.fields() == null ? Map.of() : event.fields());
-            repository.saveAndFlush(new DetectionEventEntity(
-                    tenant, deliveryId, DetectionDelivery.sourceEventId(event),
-                    DetectionDelivery.routingVersion(event),
-                    safe(event.source(), "unknown", 128),
-                    safe(event.host(), "unknown", 255), safe(event.raw(), "", 8192),
-                    fields, event.severity() == null ? Severity.INFO.name() : event.severity().name(),
-                    event.timestamp() == null ? Instant.now() : event.timestamp(),
-                    DetectionDelivery.sourceTopic(event),
-                    DetectionDelivery.sourcePartition(event), DetectionDelivery.sourceOffset(event),
-                    deliveryTopic, partition, offset, routingKey));
+            repository.saveAndFlush(journalRow(event, deliveryTopic, partition, offset, routingKey));
             return DetectionEventClaim.NEW;
         } catch (DataIntegrityViolationException duplicate) {
             // The primary key is the final arbiter when two consumers race.
@@ -197,10 +254,60 @@ public class DetectionEventJournal implements DetectionStateStore {
                 DetectionDelivery.deliveryId(result.event()), result);
     }
 
+    @Override
+    @Transactional
+    public void markCompletedBatch(List<DetectionResult> results) {
+        if (results == null || results.size() > 64) throw new IllegalArgumentException("completion batch limit is 64");
+        if (results.isEmpty()) return;
+        String tenant = results.getFirst().event().requireTenantId();
+        if (results.stream().anyMatch(result -> !tenant.equals(result.event().requireTenantId()))) {
+            throw new IllegalArgumentException("completion batch must belong to one tenant");
+        }
+        var summaries = results.stream().map(result -> {
+            try { return com.socp.rule.util.Json.mapper().writeValueAsString(result.auditSummary()); }
+            catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+                throw new IllegalStateException("unable to encode detection result", failure);
+            }
+        }).toList();
+        entityManager.flush();
+        entityManager.unwrap(org.hibernate.Session.class).doWork(connection -> {
+            // Keep the unique delivery identity as the lookup predicate. A status
+            // predicate can choose a tiny estimated PENDING index and scan a large
+            // newly admitted backlog before statistics catch up.
+            String sql = "update t_detection_event set "
+                    + "completed_at=case when status='PENDING' then ? else completed_at end, "
+                    + "status_reason=case when status='PENDING' then null else status_reason end, "
+                    + "result_json=case when status='PENDING' then ? else result_json end, "
+                    + "status=case when status='PENDING' then 'COMPLETED' else status end "
+                    + "where tenant_id=? and delivery_id=?";
+            try (var statement = connection.prepareStatement(sql)) {
+                for (int i = 0; i < results.size(); i++) {
+                    statement.setTimestamp(1, java.sql.Timestamp.from(Instant.now()));
+                    statement.setString(2, summaries.get(i));
+                    statement.setString(3, tenant);
+                    statement.setString(4, DetectionDelivery.deliveryId(results.get(i).event()));
+                    statement.addBatch();
+                }
+                for (int changed : statement.executeBatch()) {
+                    if (changed != 1) throw new java.sql.SQLException("missing detection journal receipt during completion");
+                }
+            }
+        });
+    }
+
     private void markCompletedInternal(String tenantId, String eventId, DetectionResult result) {
         if (eventId == null || eventId.isBlank()) return;
+        if (result != null) {
+            try {
+                String summary = com.socp.rule.util.Json.mapper().writeValueAsString(result.auditSummary());
+                if (repository.completeResult(tenantId, eventId, summary, Instant.now()) == 1) return;
+            } catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
+                throw new IllegalStateException("unable to persist detection result summary", failure);
+            }
+        }
         repository.findByTenantIdAndDeliveryId(tenantId, eventId).ifPresent(row -> {
             if (DetectionEventStatus.DEAD_LETTERED.name().equals(row.getStatus())) return;
+            if (DetectionEventStatus.COMPLETED.name().equals(row.getStatus())) return;
             Instant now = Instant.now();
             row.setStatus(DetectionEventStatus.COMPLETED.name());
             row.setCompletedAt(now);
@@ -448,6 +555,22 @@ public class DetectionEventJournal implements DetectionStateStore {
     }
 
     @Override
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    public boolean replayRecoveryTenants(Set<Integer> partitions, Duration window, Consumer<String> consumer) {
+        String tenant = TenantContext.isSystemScope() ? null : TenantContext.require();
+        Instant after = cutoff(window);
+        for (int page = 0; ; page++) {
+            var request = org.springframework.data.domain.PageRequest.of(page, 32);
+            List<String> tenants = readReplayPage(() -> partitions == null || partitions.isEmpty()
+                    ? repository.recoveryTenants(DetectionEventStatus.COMPLETED.name(), inputTopic, after, tenant, request)
+                    : repository.recoveryTenantsForPartitions(DetectionEventStatus.COMPLETED.name(), inputTopic,
+                            after, tenant, partitions, request));
+            tenants.forEach(consumer);
+            if (tenants.size() < 32) return true;
+        }
+    }
+
+    @Override
     public String recoveryWindow() {
         return retention.toString();
     }
@@ -495,22 +618,22 @@ public class DetectionEventJournal implements DetectionStateStore {
             return;
         }
         if (tenantId == null || tenantId.isBlank() || batchConsumer == null) return;
-        Set<Integer> owned = partitions == null ? Set.of() : Set.copyOf(partitions);
-        for (int page = 0; ; page++) {
-            org.springframework.data.domain.Pageable request =
-                    org.springframework.data.domain.PageRequest.of(page, replayPageSize);
-            List<DetectionEventEntity> rows = readReplayPage(() -> owned.isEmpty()
-                    ? repository.findByTenantStatusTopicOrderByKafkaPosition(
-                            tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, request)
-                    : repository.findByTenantStatusTopicPartitionsOrderByKafkaPosition(
-                            tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, owned, request));
-            List<DetectionEventEntity> tail = rows.stream()
-                    .filter(row -> row.getKafkaPartition() != null && row.getKafkaOffset() != null)
-                    .filter(row -> row.getKafkaOffset() > offsets.getOrDefault(row.getKafkaPartition(), -1L))
-                    .toList();
-            List<SecurityEvent> events = fromRows(tail);
-            if (!events.isEmpty()) batchConsumer.accept(events);
-            if (rows.size() < replayPageSize) break;
+        Set<Integer> owned = partitions == null || partitions.isEmpty()
+                ? new java.util.TreeSet<>(readReplayPage(() -> repository.completedPartitions(
+                        tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic)))
+                : new java.util.TreeSet<>(partitions);
+        // Push the checkpoint cut into SQL. Reading every payload and filtering
+        // in Java makes a nearly current checkpoint as expensive as full replay.
+        for (int partition : owned) {
+            long cut = offsets.getOrDefault(partition, -1L);
+            for (int page = 0; ; page++) {
+                var request = org.springframework.data.domain.PageRequest.of(page, replayPageSize);
+                List<DetectionEventEntity> rows = readReplayPage(() -> repository.partitionTail(
+                        tenantId, DetectionEventStatus.COMPLETED.name(), inputTopic, partition, cut, request));
+                List<SecurityEvent> events = fromRows(rows);
+                if (!events.isEmpty()) batchConsumer.accept(events);
+                if (rows.size() < replayPageSize) break;
+            }
         }
     }
 
@@ -597,7 +720,7 @@ public class DetectionEventJournal implements DetectionStateStore {
         }
     }
 
-    private List<DetectionEventEntity> readReplayPage(Supplier<List<DetectionEventEntity>> reader) {
+    private <T> List<T> readReplayPage(Supplier<List<T>> reader) {
         // Directly constructed policy/unit-test stores have no persistence context.
         return replayPageTransaction == null ? reader.get()
                 : replayPageTransaction.execute(ignored -> reader.get());

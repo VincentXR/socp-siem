@@ -19,6 +19,14 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class TenantAdmission {
 
+    private final java.util.function.LongSupplier clock;
+
+    public TenantAdmission() { this(System::nanoTime); }
+
+    TenantAdmission(java.util.function.LongSupplier clock) {
+        this.clock = java.util.Objects.requireNonNull(clock);
+    }
+
     private volatile Limits limits = Limits.defaults();
     private final Map<String, TenantState> tenants = new ConcurrentHashMap<>();
 
@@ -36,9 +44,9 @@ public final class TenantAdmission {
         String entity = DetectionRoutingKey.forEvent(event);
         long bytes = Math.max(1L, estimatedBytes);
         Limits configured = limits;
-        TenantState state = tenants.computeIfAbsent(tenant, ignored -> new TenantState(configured));
+        TenantState state = tenants.computeIfAbsent(tenant, ignored -> new TenantState(configured, clock.getAsLong()));
         synchronized (state) {
-            long now = System.nanoTime();
+            long now = clock.getAsLong();
             state.pruneEntities(now, configured.entityIdleTtl().toNanos());
             state.refill(now, configured);
 
@@ -63,6 +71,8 @@ public final class TenantAdmission {
 
             if (configured.eventsPerSecond() > 0) state.tokens -= 1.0;
             state.pendingBytes = safeAdd(state.pendingBytes, bytes);
+            // Keep insertion order equal to last successful admission time.
+            state.entities.remove(entity);
             state.entities.put(entity, now);
             return Decision.admitted(new Permit(tenant, entity, newEntity, now, bytes));
         }
@@ -100,7 +110,7 @@ public final class TenantAdmission {
                     "maxActiveEntities", limits.maxActiveEntities());
         }
         synchronized (state) {
-            state.pruneEntities(System.nanoTime(), limits.entityIdleTtl().toNanos());
+            state.pruneEntities(clock.getAsLong(), limits.entityIdleTtl().toNanos());
             return Map.of("pendingBytes", state.pendingBytes,
                     "activeEntities", state.entities.size(),
                     "ratePerSecond", limits.eventsPerSecond(),
@@ -211,15 +221,16 @@ public final class TenantAdmission {
         private double tokens;
         private long lastRefillNanos;
         private long pendingBytes;
-        private final Map<String, Long> entities = new ConcurrentHashMap<>();
+        // Every access is protected by this TenantState's monitor.
+        private final Map<String, Long> entities = new LinkedHashMap<>();
         private long rateRejections;
         private long byteRejections;
         private long entityRejections;
         private long invalidRejections;
 
-        private TenantState(Limits limits) {
+        private TenantState(Limits limits, long now) {
             this.tokens = limits.burst();
-            this.lastRefillNanos = System.nanoTime();
+            this.lastRefillNanos = now;
         }
 
         private void refill(long now, Limits limits) {
@@ -231,7 +242,11 @@ public final class TenantAdmission {
         }
 
         private void pruneEntities(long now, long idleNanos) {
-            entities.entrySet().removeIf(entry -> now - entry.getValue() > idleNanos);
+            var iterator = entities.entrySet().iterator();
+            while (iterator.hasNext()) {
+                if (now - iterator.next().getValue() <= idleNanos) break;
+                iterator.remove();
+            }
         }
     }
 }

@@ -51,6 +51,26 @@ class TenantAdmissionTest {
         assertTrue(controller.tryAcquire(event("tenant-b", "host-b"), 1).admitted());
     }
 
+    @Test
+    void expiryFollowsLastSuccessfulTouchAndRollbackDoesNotRemoveANewerAdmission() {
+        var time = new java.util.concurrent.atomic.AtomicLong();
+        TenantAdmission controller = new TenantAdmission(time::get);
+        controller.configure(0, 1, 0, 2, 1_000);
+        var first = controller.tryAcquire(event("tenant-a", "a"), 1);
+        time.set(100_000_000L);
+        controller.tryAcquire(event("tenant-a", "b"), 1);
+        time.set(900_000_000L);
+        controller.tryAcquire(event("tenant-a", "a"), 1);
+        controller.rollback(first.permit());
+        assertEquals(2, controller.stats("tenant-a").get("activeEntities"));
+        time.set(1_200_000_000L);
+        assertTrue(controller.tryAcquire(event("tenant-a", "c"), 1).admitted(),
+                "the expired b must be pruned even after a was refreshed");
+        assertEquals(TenantAdmission.RejectionReason.ACTIVE_ENTITIES,
+                controller.tryAcquire(event("tenant-a", "d"), 1).reason());
+        assertTrue(controller.tryAcquire(event("tenant-a", "a"), 1).admitted());
+    }
+
     private static SecurityEvent event(String tenant, String host) {
         return new SecurityEvent("id-" + tenant + '-' + host, Instant.now(), "auth", host,
                 "payload", Map.of("tenant_id", tenant), Severity.INFO);

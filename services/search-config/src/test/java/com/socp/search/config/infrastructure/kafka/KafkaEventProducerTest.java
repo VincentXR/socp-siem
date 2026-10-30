@@ -7,6 +7,7 @@ import io.opentelemetry.context.propagation.ContextPropagators;
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.junit.jupiter.api.AfterEach;
@@ -17,10 +18,13 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
@@ -93,10 +97,64 @@ class KafkaEventProducerTest {
     @Test
     void failedSendDoesNotReportDelivery() throws Exception {
         KafkaEventProducer producer = producerWith(true);
-        given(kafka.send(any(ProducerRecord.class))).willReturn(
-                CompletableFuture.failedFuture(new IllegalStateException("broker unreachable")));
+        doAnswer(invocation -> {
+            var failure = new IllegalStateException("broker unreachable");
+            invocation.<Callback>getArgument(1).onCompletion(null, failure);
+            return CompletableFuture.failedFuture(failure);
+        }).when(kafka).send(any(ProducerRecord.class), any(Callback.class));
 
         assertThat(producer.sendAndAwait("rk-1", "{}", STORED)).isFalse();
+    }
+
+    @Test
+    void asynchronousReceiptWaitsForTheActualCallbackAndMeasuresBothBoundaries() {
+        KafkaEventProducer producer = producerWith(true);
+        var registry = new SimpleMeterRegistry();
+        producer.configureMetrics(registry);
+        var callback = new AtomicReference<Callback>();
+        doAnswer(invocation -> {
+            callback.set(invocation.getArgument(1));
+            return new CompletableFuture<RecordMetadata>();
+        }).when(kafka).send(any(ProducerRecord.class), any(Callback.class));
+
+        var receipt = producer.sendAsync("rk-1", "{}", STORED);
+
+        assertThat(receipt).isNotDone();
+        assertThat(registry.get("socp.ingestion.kafka.duration")
+                .tags("operation", "submit", "outcome", "success").timer().count()).isEqualTo(1);
+        assertThat(registry.get("socp.ingestion.kafka.duration")
+                .tags("operation", "ack", "outcome", "success").timer().count()).isZero();
+        callback.get().onCompletion(mock(RecordMetadata.class), null);
+        assertThat(receipt.join()).isTrue();
+        assertThat(registry.get("socp.ingestion.kafka.duration")
+                .tags("operation", "ack", "outcome", "success").timer().count()).isEqualTo(1);
+    }
+
+    @Test
+    void timedOutReceiptCannotBecomeSuccessfulWhenTheCallbackArrivesLate() throws Exception {
+        KafkaProperties properties = new KafkaProperties();
+        ReflectionTestUtils.setField(properties, "enabled", true);
+        KafkaEventProducer producer = new KafkaEventProducer(properties) {
+            @Override long acknowledgementTimeoutMillis() { return 10; }
+        };
+        ReflectionTestUtils.setField(producer, "producer", kafka);
+        var registry = new SimpleMeterRegistry();
+        producer.configureMetrics(registry);
+        var callback = new AtomicReference<Callback>();
+        doAnswer(invocation -> {
+            callback.set(invocation.getArgument(1));
+            return new CompletableFuture<RecordMetadata>();
+        }).when(kafka).send(any(ProducerRecord.class), any(Callback.class));
+
+        var receipt = producer.sendAsync("rk-1", "{}", STORED);
+
+        assertThat(receipt.get(1, TimeUnit.SECONDS)).isFalse();
+        callback.get().onCompletion(mock(RecordMetadata.class), null);
+        assertThat(receipt.join()).isFalse();
+        assertThat(registry.get("socp.ingestion.kafka.duration")
+                .tags("operation", "ack", "outcome", "failure").timer().count()).isEqualTo(1);
+        assertThat(registry.get("socp.ingestion.kafka.duration")
+                .tags("operation", "ack", "outcome", "success").timer().count()).isZero();
     }
 
     private KafkaEventProducer producerWith(boolean enabled) {
@@ -104,8 +162,11 @@ class KafkaEventProducerTest {
         ReflectionTestUtils.setField(properties, "enabled", enabled);
         KafkaEventProducer producer = new KafkaEventProducer(properties);
         ReflectionTestUtils.setField(producer, "producer", kafka);
-        given(kafka.send(any(ProducerRecord.class)))
-                .willReturn(CompletableFuture.completedFuture(mock(RecordMetadata.class)));
+        doAnswer(invocation -> {
+            RecordMetadata metadata = mock(RecordMetadata.class);
+            invocation.<Callback>getArgument(1).onCompletion(metadata, null);
+            return CompletableFuture.completedFuture(metadata);
+        }).when(kafka).send(any(ProducerRecord.class), any(Callback.class));
         return producer;
     }
 
@@ -113,7 +174,7 @@ class KafkaEventProducerTest {
     private String traceparentOf(KafkaEventProducer producer) {
         ArgumentCaptor<ProducerRecord<String, String>> captor =
                 ArgumentCaptor.forClass(ProducerRecord.class);
-        verify(kafka).send(captor.capture());
+        verify(kafka).send(captor.capture(), any(Callback.class));
         return new String(captor.getValue().headers().lastHeader("traceparent").value(),
                 StandardCharsets.UTF_8);
     }

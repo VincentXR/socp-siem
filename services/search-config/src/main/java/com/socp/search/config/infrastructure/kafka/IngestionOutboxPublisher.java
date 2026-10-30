@@ -8,10 +8,12 @@ import com.socp.search.config.config.IngestRuntimeProperties;
 import com.socp.search.config.config.SearchRuntimeRole;
 import com.socp.search.config.domain.IngestionOutboxEvent;
 import com.socp.search.config.persistence.repository.IngestionOutboxRepository;
+import com.socp.search.config.service.IngestionOutboxBatchService;
 import com.socp.search.config.service.port.IngestionPublicationTrigger;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.platform.tenant.persistence.TenantSystemJob;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,11 +41,21 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
     private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
     private static final Duration DISCARDED_RETENTION = Duration.ofDays(30);
     private static final int MAX_ERROR_LENGTH = 1024;
+    private static final int INDEPENDENT_COHORT_CONCURRENCY = 2;
+
+    private enum Operation {
+        SELECTION("selection"), EXHAUSTED("exhausted"), STALE("stale"),
+        BACKLOG_METRICS("backlog_metrics"), RECEIPT_WAIT("receipt_wait"), DRAIN("drain");
+        private final String label;
+        Operation(String label) { this.label = label; }
+    }
 
     private final IngestionOutboxRepository repository;
     private final KafkaEventProducer producer;
     private final MeterRegistry meterRegistry;
+    private final Timer[][] operationTimers = new Timer[Operation.values().length][2];
     private final OutboxDeliveryExecutor executor;
+    private final OutboxDeliveryExecutor cohortExecutor;
     private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
@@ -51,6 +63,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
     private final int cleanupMaxBatches;
     private final int maxDrainRounds;
     private final long maxDrainDurationNanos;
+    private IngestionOutboxBatchService batchService;
     private final AtomicInteger claimBatchSizeGauge = new AtomicInteger();
     private final AtomicLong pendingCountGauge = new AtomicLong();
     private final AtomicLong oldestPendingAgeSecondsGauge = new AtomicLong();
@@ -96,6 +109,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         this.meterRegistry = meterRegistry;
         int bounded = Math.max(1, Math.min(32, concurrency));
         this.executor = new OutboxDeliveryExecutor("ingestion-outbox-", bounded);
+        this.cohortExecutor = new OutboxDeliveryExecutor("ingestion-outbox-cohort-", INDEPENDENT_COHORT_CONCURRENCY);
         this.triggerExecutor = Executors.newSingleThreadExecutor(
                 Thread.ofVirtual().name("ingestion-outbox-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
@@ -120,11 +134,28 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                     drainRoundsGauge, AtomicInteger::get).register(meterRegistry);
             io.micrometer.core.instrument.Gauge.builder("socp.ingestion.outbox.drain.duration.milliseconds",
                     drainDurationMsGauge, AtomicLong::get).register(meterRegistry);
+            for (Operation operation : Operation.values()) {
+                for (int outcome = 0; outcome < 2; outcome++) {
+                    try {
+                        operationTimers[operation.ordinal()][outcome] = meterRegistry.timer(
+                                "socp.ingestion.outbox.operation.duration", "operation", operation.label,
+                                "outcome", outcome == 0 ? "success" : "failure");
+                    } catch (RuntimeException metricsFailure) {
+                        log.debug("Ingestion outbox operation timer unavailable: {}", metricsFailure.getMessage());
+                    }
+                }
+            }
         }
     }
 
     private final java.util.concurrent.atomic.AtomicBoolean activeDrain = new java.util.concurrent.atomic.AtomicBoolean(false);
     private final java.util.concurrent.atomic.AtomicBoolean activeTrigger = new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicBoolean stopping = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    @Autowired
+    void configureBatchService(IngestionOutboxBatchService batchService) {
+        this.batchService = batchService;
+    }
 
     IngestionOutboxPublisher(IngestionOutboxRepository repository, KafkaEventProducer producer) {
         this(repository, producer, null, 1, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_MS, 1_000, 10);
@@ -132,7 +163,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
 
     /** Triggers an immediate asynchronous ingestion outbox publication cycle on transaction commit. */
     public void triggerAsync() {
-        if (!producer.isEnabled()) return;
+        if (stopping.get() || !producer.isEnabled()) return;
         if (activeTrigger.compareAndSet(false, true)) {
             triggerExecutor.execute(() -> {
                 try {
@@ -150,6 +181,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
             initialDelayString = "${socp.ingest.outbox.initial-delay-ms:1000}")
     @TenantSystemJob
     public void publish() {
+        if (stopping.get()) return;
         if (!producer.isEnabled()) {
             updateBacklogMetrics(0, Instant.now());
             return;
@@ -161,18 +193,21 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         long admissionDeadline = 0;
         java.util.Set<String> attempted = new java.util.HashSet<>();
         java.util.Set<String> blockedKeys = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        boolean drainSucceeded = false;
         try {
-            Instant now = Instant.now();
-            int recovered = recoverStaleIfDue(now);
+            Instant maintenanceAt = Instant.now();
+            int recovered = recoverStaleIfDue(maintenanceAt);
             if (recovered > 0) lifecycle("recovered", recovered);
-            int exhausted = repository.markExhaustedBatch(maxAttempts, "retry limit reached", now, 100);
+            int exhausted = timed(Operation.EXHAUSTED,
+                    () -> repository.markExhaustedBatch(maxAttempts, "retry limit reached", maintenanceAt, 100));
             if (exhausted > 0) {
                 log.error("Ingestion outbox rows moved to DEAD after retry limit count={}", exhausted);
                 lifecycle("dead", exhausted);
             }
             while (rounds < maxDrainRounds && (rounds == 0 || System.nanoTime() < admissionDeadline)) {
-                now = Instant.now();
-                List<IngestionOutboxEvent> pending = repository.findDueOrderedBatch(now).stream()
+                Instant selectionAt = Instant.now();
+                List<IngestionOutboxEvent> pending = timed(Operation.SELECTION,
+                        () -> repository.findDueOrderedBatch(selectionAt)).stream()
                         .filter(event -> attempted.add(event.getId())).toList();
                 lastBatchSize = pending.size();
                 if (pending.isEmpty()) break;
@@ -182,27 +217,200 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                 // Subsequent scans still consume this same admission budget.
                 if (rounds == 0) admissionDeadline = System.nanoTime() + maxDrainDurationNanos;
                 rounds++;
-                executor.deliverKeyed(pending, admissionDeadline,
-                        event -> event.getTenantId() + "\u0000" + event.getRoutingKey(),
-                        event -> {
-                            String key = event.getTenantId() + "\u0000" + event.getRoutingKey();
-                            if (!blockedKeys.contains(key)
-                                    && !TenantContext.callWith(event.getTenantId(), () -> deliver(event))) {
-                                blockedKeys.add(key);
-                            }
-                        });
+                if (batchService != null && independentKeys(pending)) {
+                    deliverIndependent(pending, admissionDeadline, blockedKeys);
+                } else {
+                    deliverOrdered(pending, admissionDeadline, blockedKeys);
+                }
                 // Each selection admits at most 16 rows per key and 200 overall.
                 // Per-row durable claims still fence every predecessor; a failed
                 // head stops the rest of that key's local batch for this drain.
                 // Never attempt the same row twice in one drain (lost claims or
                 // retries must yield instead of becoming a database busy loop).
             }
+            drainSucceeded = true;
         } catch (Exception failure) {
             log.warn("Ingestion outbox scan failed; next scan will retry: {}", failure.toString());
         } finally {
             activeDrain.set(false);
-            updateBacklogMetrics(lastBatchSize, Instant.now());
+            boolean backlogSucceeded = updateBacklogMetrics(lastBatchSize, Instant.now());
             recordDrain(rounds, System.nanoTime() - started);
+            recordOperation(Operation.DRAIN, started, drainSucceeded && backlogSucceeded);
+        }
+    }
+
+    private static String deliveryKey(IngestionOutboxEvent event) {
+        return event.getTenantId() + "\u0000" + event.getRoutingKey();
+    }
+
+    private static boolean independentKeys(List<IngestionOutboxEvent> events) {
+        var keys = new java.util.HashSet<String>();
+        return events.stream().allMatch(event -> keys.add(deliveryKey(event)));
+    }
+
+    private void deliverOrdered(List<IngestionOutboxEvent> pending, long deadline,
+                                java.util.Set<String> blockedKeys) {
+        executor.deliverKeyed(pending, deadline, IngestionOutboxPublisher::deliveryKey, event -> {
+            String key = deliveryKey(event);
+            if (!blockedKeys.contains(key)
+                    && !TenantContext.callWith(event.getTenantId(), () -> deliver(event))) {
+                blockedKeys.add(key);
+            }
+        });
+    }
+
+    private void deliverIndependent(List<IngestionOutboxEvent> candidates, long deadline,
+                                    java.util.Set<String> blockedKeys) {
+        var tenants = new java.util.LinkedHashMap<String, java.util.List<IngestionOutboxEvent>>();
+        for (IngestionOutboxEvent event : candidates) {
+            if (!blockedKeys.contains(deliveryKey(event))) {
+                tenants.computeIfAbsent(event.getTenantId(), ignored -> new java.util.ArrayList<>()).add(event);
+            }
+        }
+        var cohorts = new java.util.ArrayList<List<IngestionOutboxEvent>>();
+        for (var events : tenants.values()) {
+            for (int start = 0; start < events.size(); start += IngestionOutboxBatchService.MAX_BATCH_SIZE) {
+                cohorts.add(List.copyOf(events.subList(start,
+                        Math.min(events.size(), start + IngestionOutboxBatchService.MAX_BATCH_SIZE))));
+            }
+        }
+        // Admit at most two cohorts across all tenants before acquiring any
+        // durable claims. The shared submission executor retains its own bound.
+        // Every admitted cohort joins its receipts and settles claims before
+        // this call returns, including when admission expires or a peer fails.
+        cohortExecutor.deliver(cohorts, deadline, cohort -> {
+            if (stopping.get() || Thread.currentThread().isInterrupted() || System.nanoTime() >= deadline) return;
+            TenantContext.runWith(cohort.getFirst().getTenantId(), () -> deliverCohort(cohort, deadline, blockedKeys));
+        });
+    }
+
+    private void deliverCohort(List<IngestionOutboxEvent> candidates, long deadline,
+                               java.util.Set<String> blockedKeys) {
+        String token = java.util.UUID.randomUUID().toString();
+        List<IngestionOutboxEvent> claimed;
+        long claimStarted = System.nanoTime();
+        long deliveryDeadline = claimStarted + deliveryAdmissionBudgetNanos();
+        try {
+            claimed = batchService.claimIndependent(candidates, token, maxAttempts, Instant.now());
+            recordBatch("claim", claimed.size(), claimStarted, true);
+        } catch (RuntimeException failedClaim) {
+            recordBatch("claim", 0, claimStarted, false);
+            // No batch receipts returned. Re-enter the per-row CAS path so even
+            // an ambiguous commit is rechecked before any publication attempt.
+            log.debug("Independent outbox claim batch fell back to individual claims: {}", failedClaim.toString());
+            deliverOrdered(candidates, deadline, blockedKeys);
+            return;
+        }
+        var acknowledged = new java.util.ArrayList<IngestionOutboxEvent>();
+        var receipts = new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Boolean>>();
+        var publicationStarted = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        try {
+            // The bounded cohort was admitted before claiming. All returned claims
+            // must now finish or be released, even if the drain deadline expired.
+            // Limit potentially blocking submissions with the configured executor,
+            // but let up to 32 independent receipts await Kafka concurrently.
+            // Claim latency consumes the 35s admission budget; each started
+            // submission retains its 3s metadata + 30s acknowledgement budget.
+            executor.deliver(claimed, deliveryDeadline, event -> TenantContext.runWith(event.getTenantId(), () -> {
+                try {
+                    publicationStarted.add(event.getId());
+                    receipts.put(event.getId(), java.util.Objects.requireNonNull(producer.sendAsync(
+                            event.getRoutingKey(), event.getPayload(), event.getTraceparent())));
+                } catch (RuntimeException failure) {
+                    receipts.put(event.getId(), java.util.concurrent.CompletableFuture.completedFuture(false));
+                }
+            }));
+        } finally {
+            // The executor joins all admitted submissions, including on shutdown.
+            // Join every resulting receipt before retry/finalization. Callbacks
+            // only complete receipts; all database writes retain this tenant scope.
+            long waitStarted = System.nanoTime();
+            boolean waitSucceeded = false;
+            try {
+                waitSucceeded = java.util.concurrent.CompletableFuture.allOf(receipts.values().toArray(
+                        java.util.concurrent.CompletableFuture[]::new)).handle((ignored, failure) -> failure == null).join();
+            } finally {
+                recordOperation(Operation.RECEIPT_WAIT, waitStarted, waitSucceeded);
+            }
+            for (IngestionOutboxEvent event : claimed) {
+                var receipt = receipts.get(event.getId());
+                if (receipt != null) {
+                    boolean success;
+                    try { success = Boolean.TRUE.equals(receipt.join()); }
+                    catch (RuntimeException failedReceipt) { success = false; }
+                    if (success) acknowledged.add(event);
+                    else {
+                        scheduleRetry(event, token, "Kafka broker did not acknowledge the event");
+                        blockedKeys.add(deliveryKey(event));
+                    }
+                } else if (!publicationStarted.contains(event.getId())) {
+                    releaseUnsentClaim(event, token);
+                    blockedKeys.add(deliveryKey(event));
+                } else {
+                    // A started submission without a receipt is ambiguous, never
+                    // an unsent claim whose reserved attempt can be returned.
+                    scheduleRetry(event, token, "publication submission did not return a receipt");
+                    blockedKeys.add(deliveryKey(event));
+                }
+            }
+            if (!acknowledged.isEmpty()) {
+                List<IngestionOutboxEvent> completed = List.copyOf(acknowledged);
+                long finalizeStarted = System.nanoTime();
+                try {
+                    int published = batchService.markAcknowledged(completed, token, Instant.now());
+                    recordBatch("finalize", published, finalizeStarted, true);
+                    if (published != completed.size()) {
+                        completed.forEach(event -> blockedKeys.add(deliveryKey(event)));
+                        log.warn("Ingestion outbox ownership changed after batch broker acknowledgement expected={} published={}",
+                                completed.size(), published);
+                    }
+                } catch (RuntimeException failedFinalization) {
+                    recordBatch("finalize", 0, finalizeStarted, false);
+                    for (IngestionOutboxEvent event : completed) {
+                        scheduleRetry(event, token, "acknowledgement persistence failed: " + failedFinalization.getMessage());
+                        blockedKeys.add(deliveryKey(event));
+                    }
+                }
+            }
+        }
+    }
+
+    long deliveryAdmissionBudgetNanos() {
+        return java.util.concurrent.TimeUnit.SECONDS.toNanos(35);
+    }
+
+    private <T> T timed(Operation operation, java.util.function.Supplier<T> action) {
+        long started = System.nanoTime();
+        boolean succeeded = false;
+        try {
+            T result = action.get();
+            succeeded = true;
+            return result;
+        } finally {
+            recordOperation(operation, started, succeeded);
+        }
+    }
+
+    private void recordOperation(Operation operation, long started, boolean success) {
+        Timer timer = operationTimers[operation.ordinal()][success ? 0 : 1];
+        if (timer == null) return;
+        try {
+            timer.record(Math.max(0L, System.nanoTime() - started), java.util.concurrent.TimeUnit.NANOSECONDS);
+        } catch (RuntimeException metricsFailure) {
+            log.debug("Ingestion outbox operation measurement unavailable: {}", metricsFailure.getMessage());
+        }
+    }
+
+    private void recordBatch(String operation, int items, long started, boolean success) {
+        if (meterRegistry == null) return;
+        try {
+            String outcome = success ? "success" : "failure";
+            meterRegistry.timer("socp.ingestion.outbox.batch.duration", "operation", operation, "outcome", outcome)
+                    .record(Math.max(0L, System.nanoTime() - started), java.util.concurrent.TimeUnit.NANOSECONDS);
+            meterRegistry.summary("socp.ingestion.outbox.batch.items", "operation", operation, "outcome", outcome)
+                    .record(items);
+        } catch (RuntimeException metricsFailure) {
+            log.debug("Ingestion outbox batch metrics unavailable: {}", metricsFailure.getMessage());
         }
     }
 
@@ -212,8 +420,10 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         drainDurationMsGauge.set(Math.max(0L, Duration.ofNanos(durationNanos).toMillis()));
     }
 
-    private void updateBacklogMetrics(int claimBatchSize, Instant now) {
-        if (meterRegistry == null) return;
+    private boolean updateBacklogMetrics(int claimBatchSize, Instant now) {
+        if (meterRegistry == null) return true;
+        long started = System.nanoTime();
+        boolean succeeded = false;
         claimBatchSizeGauge.set(claimBatchSize);
         try {
             pendingCountGauge.set(repository.countByStatus("PENDING"));
@@ -224,14 +434,19 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
             Instant oldestDead = repository.findOldestUpdatedAtByStatus("DEAD");
             oldestDeadAgeSecondsGauge.set(oldestDead == null
                     ? 0 : Math.max(0, Duration.between(oldestDead, now).toSeconds()));
+            succeeded = true;
         } catch (RuntimeException failure) {
             log.warn("Ingestion outbox backlog metrics deferred: {}", failure.toString());
+        } finally {
+            recordOperation(Operation.BACKLOG_METRICS, started, succeeded);
         }
+        return succeeded;
     }
 
     private int recoverStaleIfDue(Instant now) {
         if (now.isBefore(nextRecoveryAt)) return 0;
-        int recovered = repository.recoverStaleBatch(now.minus(Duration.ofMinutes(2)), now, 100);
+        int recovered = timed(Operation.STALE,
+                () -> repository.recoverStaleBatch(now.minus(Duration.ofMinutes(2)), now, 100));
         nextRecoveryAt = now.plus(Duration.ofSeconds(30));
         return recovered;
     }
@@ -293,6 +508,16 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         }
     }
 
+    private void releaseUnsentClaim(IngestionOutboxEvent event, String token) {
+        try {
+            repository.releaseUnsentClaim(event.getId(), event.getTenantId(), Instant.now(), token);
+        } catch (RuntimeException stateFailure) {
+            // Unconfirmed releases remain PROCESSING for fenced stale-claim recovery.
+            log.warn("Ingestion outbox unstarted claim release deferred id={}: {}",
+                    event.getId(), stateFailure.getMessage());
+        }
+    }
+
     @Scheduled(fixedDelayString = "${socp.ingest.outbox.cleanup-interval-ms:3600000}",
             initialDelayString = "${socp.ingest.outbox.cleanup-initial-delay-ms:60000}")
     @TenantSystemJob
@@ -339,7 +564,9 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
 
     @PreDestroy
     void stop() {
+        stopping.set(true);
         triggerExecutor.shutdownNow();
+        cohortExecutor.close();
         executor.close();
     }
 }

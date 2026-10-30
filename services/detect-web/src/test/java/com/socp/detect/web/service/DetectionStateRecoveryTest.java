@@ -48,6 +48,20 @@ class DetectionStateRecoveryTest {
     @Mock RuleEngine engine;
 
     @Test
+    void durableGuardsBatchOnlyTheSameRecoveryAuthority() {
+        var state = state(ownership);
+        when(ownership.acquire(anyString(), anyInt(), anyInt())).thenAnswer(invocation ->
+                new DetectionStateOwnership.Lease(invocation.getArgument(0), invocation.getArgument(1),
+                        invocation.getArgument(2), "worker-a", 17L, Instant.MAX));
+        var guards = List.of(2, 0, 1).stream()
+                .map(partition -> (com.socp.rule.engine.OrderedCommitGuard) state.durableGuardFor(partition, 0)).toList();
+        com.socp.rule.engine.OrderedCommitGuard.runAll(guards);
+        verify(ownership).assertCurrentBatch(org.mockito.ArgumentMatchers.argThat(leases ->
+                leases.stream().map(DetectionStateOwnership.Lease::partition).toList().equals(List.of(0, 1, 2))));
+        verify(ownership, never()).assertCurrent(any());
+    }
+
+    @Test
     void leasesBelongToKafkaPartitionsAndShardsAndOnlyUnassignedUnitsAreReleased() {
         var state = state(ownership);
         ReflectionTestUtils.setField(state, "stateShardCount", 2);
@@ -151,6 +165,10 @@ class DetectionStateRecoveryTest {
                 new DetectionStateOwnership.Lease(invocation.getArgument(0), invocation.getArgument(1),
                         invocation.getArgument(2), "worker-a", 17L, Instant.MAX));
         when(snapshots.supportsAtomicBatch()).thenReturn(true);
+        doAnswer(invocation -> {
+            assertEquals("tenant-a", com.socp.platform.tenant.context.TenantContext.require());
+            return null;
+        }).when(snapshots).saveAll(any());
         when(engine.captureStateSnapshot(any())).thenAnswer(invocation -> {
             Function<Map<String, RuleEngine.RuleState>, List<DetectionStateSnapshot>> capture = invocation.getArgument(0);
             return capture.apply(Map.of(
@@ -161,7 +179,9 @@ class DetectionStateRecoveryTest {
         state.recordDurablePosition(input, 1, 10L);
         state.recordDurablePosition(input, 1, 8L);
 
+        com.socp.platform.tenant.context.TenantContext.clear();
         state.snapshotAfterDurable(engine, input, 2, 20L);
+        org.junit.jupiter.api.Assertions.assertNull(com.socp.platform.tenant.context.TenantContext.get());
 
         ArgumentCaptor<List<DetectionStateSnapshot>> captured = ArgumentCaptor.forClass(List.class);
         verify(snapshots).saveAll(captured.capture());
@@ -173,6 +193,48 @@ class DetectionStateRecoveryTest {
                 && row.partitionOwnerEpochs().equals(Map.of(1, 17L, 2, 17L))
                 && row.inputTopic().equals("socp-events")));
         verify(snapshots, never()).save(any());
+    }
+
+    @Test
+    void checkpointsCoalesceWithoutLosingTheLatestDurableOffset() {
+        var state = state(DetectionStateOwnership.noop());
+        var metrics = org.mockito.Mockito.mock(com.socp.detect.web.metrics.DetectionPerformanceMetrics.class);
+        ReflectionTestUtils.setField(state, "performanceMetrics", metrics);
+        ReflectionTestUtils.setField(state, "snapshotEveryEvents", 1L);
+        var clock = new java.util.concurrent.atomic.AtomicLong();
+        ReflectionTestUtils.setField(state, "nanoTime", (java.util.function.LongSupplier) clock::get);
+        when(engine.captureStateSnapshot(any())).thenReturn(List.of());
+        var input = event("tenant-a", "alice");
+        state.snapshotAfterDurable(engine, input, 2, 1L);
+        clock.set(java.util.concurrent.TimeUnit.SECONDS.toNanos(4));
+        state.snapshotAfterDurable(engine, input, 2, 2L);
+        verify(engine, times(1)).captureStateSnapshot(any());
+        clock.set(java.util.concurrent.TimeUnit.SECONDS.toNanos(5));
+        state.snapshotAfterDurable(engine, input, 2, 3L);
+        verify(engine, times(2)).captureStateSnapshot(any());
+        state.forgetCheckpoint(DetectionStateRecovery.engineKey("tenant-a", 0));
+        state.snapshotAfterDurable(engine, input, 2, 4L);
+        verify(engine, times(3)).captureStateSnapshot(any());
+        verify(metrics, times(3)).operationCompleted(
+                eq(com.socp.rule.engine.RuleProcessingObserver.Operation.CHECKPOINT),
+                eq(1), org.mockito.ArgumentMatchers.anyLong(), eq(true));
+    }
+
+    @Test
+    void narrowerAssignmentRejectsMixedPartitionSnapshotAndScopesFallbackToTenant() {
+        var state = state(DetectionStateOwnership.noop());
+        when(journal.supportsCheckpointReplay()).thenReturn(true);
+        when(engine.statefulRuleIds()).thenReturn(List.of("rule-a"));
+        when(snapshots.latest("tenant-a", "rule-a", 0)).thenReturn(Optional.of(
+                snapshot("rule-a", Instant.now(), Map.of(2, 9L, 3, 10L), Map.of(), "socp-events")));
+        doAnswer(invocation -> {
+            assertEquals("tenant-a", com.socp.platform.tenant.context.TenantContext.require());
+            return null;
+        }).when(journal).replayRecentForPartitions(eq(Set.of(2)), any(), any());
+        com.socp.platform.tenant.context.TenantContext.runAsSystem(() ->
+                state.restoreState("tenant-a", engine, Set.of(2), 0));
+        verify(engine, never()).restoreStates(any());
+        verify(journal, never()).replayCompletedAfter(anyString(), any(), any(), any(), any());
     }
 
     private DetectionStateRecovery state(DetectionStateOwnership leases) {

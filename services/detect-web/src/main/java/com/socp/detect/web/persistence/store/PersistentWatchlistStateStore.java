@@ -68,8 +68,9 @@ public class PersistentWatchlistStateStore implements WatchlistStateStore {
         transactions.setTimeout(5);
     }
 
+    // Cache hits must not open a transaction. The miss is one tenant-scoped
+    // repository SELECT; write paths still own their explicit transactions.
     @Override
-    @Transactional(readOnly = true)
     public State find(String tenantId, String name) {
         Key key = new Key(tenantId, name);
         long now = System.currentTimeMillis();

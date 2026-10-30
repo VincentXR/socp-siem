@@ -30,18 +30,28 @@ public class DetectionStateRecovery {
     private final DetectionStateStore stateStore;
     private final DetectionStateSnapshotStore snapshotStore;
     private final DetectionStateOwnership stateOwnership;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.socp.detect.web.metrics.DetectionPerformanceMetrics performanceMetrics;
+    private final Map<String, Long> snapshotAttempts = new ConcurrentHashMap<>();
+    private java.util.function.LongSupplier nanoTime = System::nanoTime;
     private final Map<String, AtomicLong> snapshotCounters = new ConcurrentHashMap<>();
     private final Map<String, Map<Integer, Long>> snapshotOffsets = new ConcurrentHashMap<>();
     private final Map<String, DetectionStateOwnership.Lease> stateLeases = new ConcurrentHashMap<>();
-    private final Map<String, Object> stateLeaseLocks = new ConcurrentHashMap<>();
+    private final Map<String, java.util.concurrent.locks.ReentrantLock> stateLeaseLocks = new ConcurrentHashMap<>();
     private final Set<Integer> revokedPartitions = ConcurrentHashMap.newKeySet();
-    private final AtomicReference<Set<Integer>> assignedPartitions = new AtomicReference<>(Set.of());
+    record RecoveryAssignment(Set<Integer> partitions) { }
+    private final Object assignmentBoundary = new Object();
+    private final AtomicReference<RecoveryAssignment> assignment =
+            new AtomicReference<>(new RecoveryAssignment(Set.of()));
 
     @Value("${socp.detect.input-topic:${socp.kafka.topic:socp-events}}")
     private String inputTopic = "socp-events";
 
     @Value("${socp.detect.state.snapshot-every-events:500}")
     private long snapshotEveryEvents = 500L;
+
+    @Value("${socp.detect.state.snapshot-min-interval-ms:5000}")
+    private long snapshotMinIntervalMs = 5000L;
 
     /** Number of independent in-process state shards. One preserves the
      * historical single-engine behaviour; larger values route by the same
@@ -66,45 +76,55 @@ public class DetectionStateRecovery {
     boolean snapshotsEnabled() { return snapshotStore != null; }
 
     void assign(Set<Integer> partitions) {
-        revokedPartitions.removeAll(partitions);
-        assignedPartitions.set(partitions);
+        synchronized (assignmentBoundary) {
+            revokedPartitions.removeAll(partitions);
+            assignment.set(new RecoveryAssignment(Set.copyOf(partitions)));
+        }
     }
 
     void clearAssignment() {
-        revokedPartitions.clear();
-        assignedPartitions.set(Set.of());
+        synchronized (assignmentBoundary) {
+            revokedPartitions.clear();
+            assignment.set(new RecoveryAssignment(Set.of()));
+        }
     }
 
     /** Release only the fencing rows owned by this process on partition revoke. */
     void releaseForPartitions(Set<Integer> partitions) {
         if (partitions == null || partitions.isEmpty()) return;
         Set<Integer> revoked = Set.copyOf(partitions);
-        revokedPartitions.addAll(revoked);
-        assignedPartitions.updateAndGet(current -> {
-            Set<Integer> retained = new java.util.HashSet<>(current);
+        synchronized (assignmentBoundary) {
+            revokedPartitions.addAll(revoked);
+            Set<Integer> retained = new java.util.HashSet<>(assignment.get().partitions());
             retained.removeAll(revoked);
-            return Set.copyOf(retained);
-        });
+            assignment.set(new RecoveryAssignment(Set.copyOf(retained)));
+        }
         for (String key : stateLeases.keySet()) {
-            Object lock = stateLeaseLocks.get(key);
+            java.util.concurrent.locks.ReentrantLock lock = stateLeaseLocks.get(key);
             if (lock == null) continue;
-            synchronized (lock) {
+            lock.lock();
+            try {
                 DetectionStateOwnership.Lease lease = stateLeases.get(key);
                 if (lease != null && revoked.contains(lease.partition())
                         && stateLeases.remove(key, lease)) {
                     stateOwnership.release(lease);
                 }
+            } finally {
+                lock.unlock();
             }
         }
     }
 
     void releaseAllStateLeases() {
         for (String key : stateLeases.keySet()) {
-            Object lock = stateLeaseLocks.get(key);
+            java.util.concurrent.locks.ReentrantLock lock = stateLeaseLocks.get(key);
             if (lock == null) continue;
-            synchronized (lock) {
+            lock.lock();
+            try {
                 DetectionStateOwnership.Lease lease = stateLeases.remove(key);
                 if (lease != null) stateOwnership.release(lease);
+            } finally {
+                lock.unlock();
             }
         }
     }
@@ -129,31 +149,58 @@ public class DetectionStateRecovery {
         }
         int resolvedShard = normalizeShard(shard);
         String key = DetectionStateOwnership.unitKey(inputTopic, partition, resolvedShard);
-        Object lock = stateLeaseLocks.computeIfAbsent(key, ignored -> new Object());
-        synchronized (lock) {
+        java.util.concurrent.locks.ReentrantLock lock = stateLeaseLocks.computeIfAbsent(key, ignored -> new java.util.concurrent.locks.ReentrantLock());
+        lock.lock();
+        try {
             if (revokedPartitions.contains(partition)) {
                 throw new DetectionStateOwnership.StaleStateOwnerException(
                         "Kafka partition is no longer assigned: " + partition);
             }
             DetectionStateOwnership.Lease current = stateLeases.get(key);
-            if (current != null) {
-                try {
-                    stateOwnership.assertCurrent(current);
-                    return current;
-                } catch (DetectionStateOwnership.StaleStateOwnerException stale) {
-                    stateLeases.remove(key, current);
-                }
-            }
+            // A cached lease is an epoch token, not cached authorization.
+            // Every durable boundary validates it against the database.
+            if (current != null) return current;
             DetectionStateOwnership.Lease acquired = stateOwnership.acquire(
                     inputTopic, partition, resolvedShard);
             stateLeases.put(key, acquired);
             return acquired;
+        } finally {
+            lock.unlock();
         }
     }
 
     Runnable durableGuardFor(int partition, int shard) {
         DetectionStateOwnership.Lease lease = stateLeaseFor(partition, shard);
-        return lease == null ? () -> { } : () -> stateOwnership.assertCurrent(lease);
+        return lease == null ? new com.socp.rule.engine.OrderedCommitGuard("", () -> { })
+                : new com.socp.rule.engine.OrderedCommitGuard(lease.unitKey(), new LeaseGuard(lease));
+    }
+
+    private final class LeaseGuard implements com.socp.rule.engine.OrderedCommitGuard.BatchCheck {
+        private final DetectionStateOwnership.Lease lease;
+        private LeaseGuard(DetectionStateOwnership.Lease lease) { this.lease = lease; }
+        @Override public Object batchOwner() { return DetectionStateRecovery.this; }
+        @Override public void run() {
+            try { stateOwnership.assertCurrent(lease); }
+            catch (DetectionStateOwnership.StaleStateOwnerException stale) {
+                stateLeases.remove(lease.unitKey(), lease);
+                throw stale;
+            }
+        }
+        @Override public void runBatch(java.util.List<com.socp.rule.engine.OrderedCommitGuard.BatchCheck> checks) {
+            var leases = checks.stream().map(check -> {
+                if (!(check instanceof LeaseGuard guard) || guard.batchOwner() != batchOwner()) {
+                    throw new IllegalArgumentException("incompatible detection state authority");
+                }
+                return guard.lease;
+            }).toList();
+            try { stateOwnership.assertCurrentBatch(leases); }
+            catch (DetectionStateOwnership.StaleStateOwnerException stale) {
+                // A failed batch has no durable results. Drop its cached tokens
+                // so the ordered retry reacquires authoritative epochs.
+                leases.forEach(token -> stateLeases.remove(token.unitKey(), token));
+                throw stale;
+            }
+        }
     }
 
     void acquireStateLeases(Set<Integer> partitions) {
@@ -161,16 +208,17 @@ public class DetectionStateRecovery {
         for (Integer partition : partitions) {
             if (partition == null || partition < 0) continue;
             for (int shard = 0; shard < effectiveShardCount(); shard++) {
-                stateLeaseFor(partition, shard);
+                durableGuardFor(partition, shard).run();
             }
         }
     }
 
     void releaseUnassignedStateLeases(Set<Integer> partitions) {
         for (String key : stateLeases.keySet()) {
-            Object lock = stateLeaseLocks.get(key);
+            java.util.concurrent.locks.ReentrantLock lock = stateLeaseLocks.get(key);
             if (lock == null) continue;
-            synchronized (lock) {
+            lock.lock();
+            try {
                 DetectionStateOwnership.Lease lease = stateLeases.get(key);
                 boolean retained = lease != null && partitions != null
                         && partitions.contains(lease.partition())
@@ -178,6 +226,8 @@ public class DetectionStateRecovery {
                 if (!retained && lease != null && stateLeases.remove(key, lease)) {
                     stateOwnership.release(lease);
                 }
+            } finally {
+                lock.unlock();
             }
         }
     }
@@ -201,7 +251,8 @@ public class DetectionStateRecovery {
         return marker <= 1 ? null : key.substring(0, marker - 1);
     }
 
-    void restoreState(String tenant, RuleEngine replacement, Set<Integer> partitions, int shard) {
+    /** Whether a compatible checkpoint or owned journal history was restored. */
+    boolean restoreState(String tenant, RuleEngine replacement, Set<Integer> partitions, int shard) {
         if (snapshotStore != null && stateStore.supportsCheckpointReplay()) {
             List<String> statefulRuleIds = replacement.statefulRuleIds();
             Map<String, RuleEngine.RuleState> snapshots = new LinkedHashMap<>();
@@ -240,6 +291,11 @@ public class DetectionStateRecovery {
                     coherent = false;
                 }
             }
+            // A snapshot containing revoked partitions cannot be split back into
+            // per-partition state. Rebuild the owned window on a narrower assignment.
+            if (partitions != null && !partitions.isEmpty()
+                    && (referenceOffsets == null || referenceOffsets.isEmpty()
+                        || !partitions.containsAll(referenceOffsets.keySet()))) coherent = false;
             if (complete && coherent && checkpoint != null) {
                 if (referenceOffsets != null) checkpointOffsets.putAll(referenceOffsets);
                 List<String> restored = replacement.restoreStates(snapshots);
@@ -265,7 +321,7 @@ public class DetectionStateRecovery {
                     org.slf4j.LoggerFactory.getLogger(DetectionStateRecovery.class).info(
                             "Detection state restored from snapshots tenant={} rules={} checkpoint={} partitions={}",
                             tenant, restored.size(), checkpoint, checkpointOffsets.size());
-                    return;
+                    return true;
                 }
             }
             // A missing, incompatible, or corrupt rule snapshot must never be
@@ -273,23 +329,48 @@ public class DetectionStateRecovery {
             // instead so every stateful rule sees the same history boundary.
             snapshotOffsets.remove(engineKey(tenant, normalizeShard(shard)));
         }
+        java.util.concurrent.atomic.AtomicBoolean restored = new java.util.concurrent.atomic.AtomicBoolean();
         if (partitions == null || partitions.isEmpty()) {
-            stateStore.replayRecentForTenant(tenant, configuredRecoveryWindow(), events -> replacement.restore(
-                    events.stream().filter(event -> shardFor(event) == normalizeShard(shard)).toList()));
+            stateStore.replayRecentForTenant(tenant, configuredRecoveryWindow(), events -> {
+                List<SecurityEvent> owned = events.stream()
+                        .filter(event -> shardFor(event) == normalizeShard(shard)).toList();
+                if (!owned.isEmpty()) {
+                    replacement.restore(owned);
+                    restored.set(true);
+                }
+            });
         } else {
-            stateStore.replayRecentForPartitions(
+            try (var scope = com.socp.platform.tenant.context.TenantContext.open(tenant)) {
+                stateStore.replayRecentForPartitions(
                     partitions, configuredRecoveryWindow(), events -> {
                         List<SecurityEvent> owned = events.stream()
                                 .filter(event -> tenant.equals(event.tenantId()))
                                 .filter(event -> shardFor(event) == normalizeShard(shard))
                                 .toList();
-                        if (!owned.isEmpty()) replacement.restore(owned);
+                        if (!owned.isEmpty()) {
+                            replacement.restore(owned);
+                            restored.set(true);
+                        }
                     });
+            }
         }
+        return restored.get();
     }
 
-    Set<Integer> assignedPartitions() {
-        return assignedPartitions.get();
+    Set<Integer> assignedPartitions() { return assignment.get().partitions(); }
+
+    RecoveryAssignment recoveryAssignment() { return assignment.get(); }
+
+    boolean isCurrentAssignment(RecoveryAssignment captured) { return assignment.get() == captured; }
+
+    /** Publish a restored engine atomically with respect to assignment changes. */
+    void publishForAssignment(RecoveryAssignment captured, Runnable publish) {
+        synchronized (assignmentBoundary) {
+            if (assignment.get() != captured || Thread.currentThread().isInterrupted()) {
+                throw new DetectionStateOwnership.StaleStateOwnerException("assignment changed during state restoration");
+            }
+            publish.run();
+        }
     }
 
     /**
@@ -323,7 +404,15 @@ public class DetectionStateRecovery {
             offsets.merge(partition, offset, Math::max);
         }
         if (count % every != 0) return;
-        try {
+        long now = nanoTime.getAsLong();
+        Long previous = snapshotAttempts.get(counterKey);
+        long interval = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0L, snapshotMinIntervalMs));
+        if (previous != null && now - previous < interval) return;
+        // Bound failed attempts too. Journal durability is independent of checkpoints.
+        snapshotAttempts.put(counterKey, now);
+        long checkpointStarted = System.nanoTime();
+        boolean acknowledged = false;
+        try (var scope = com.socp.platform.tenant.context.TenantContext.open(tenant)) {
             // Snapshot writes are also a durable side effect. Do not let a
             // revoked worker overwrite the replacement owner's checkpoint.
             durableGuardFor(partition == null ? -1 : partition, shard).run();
@@ -340,11 +429,16 @@ public class DetectionStateRecovery {
             });
             if (snapshotStore.supportsAtomicBatch()) snapshotStore.saveAll(snapshots);
             else snapshots.forEach(snapshotStore::save);
+            acknowledged = true;
         } catch (RuntimeException failure) {
             // Checkpoints are an optimization. The durable journal remains the
             // source of truth when a snapshot write is temporarily unavailable.
             org.slf4j.LoggerFactory.getLogger(DetectionStateRecovery.class).warn(
                     "Detection state snapshot deferred tenant={}: {}", tenant, failure.getMessage());
+        } finally {
+            com.socp.rule.engine.RuleProcessingObserver.notifyOperation(performanceMetrics,
+                    com.socp.rule.engine.RuleProcessingObserver.Operation.CHECKPOINT,
+                    1, System.nanoTime() - checkpointStarted, acknowledged);
         }
     }
 
@@ -363,7 +457,7 @@ public class DetectionStateRecovery {
 
     void assertCurrentOwner(SecurityEvent event, Integer partition) {
         if (event == null || partition == null || partition < 0) return;
-        if (revokedPartitions.contains(partition) || !assignedPartitions.get().contains(partition)) {
+        if (revokedPartitions.contains(partition) || !assignedPartitions().contains(partition)) {
             throw new DetectionStateOwnership.StaleStateOwnerException(
                     "Kafka partition is no longer assigned: " + partition);
         }
@@ -372,12 +466,18 @@ public class DetectionStateRecovery {
 
     void clearCheckpoints() {
         snapshotCounters.clear();
+        snapshotAttempts.clear();
         snapshotOffsets.clear();
     }
 
     void forgetCheckpoint(String key) {
         snapshotCounters.remove(key);
+        snapshotAttempts.remove(key);
         snapshotOffsets.remove(key);
+    }
+
+    boolean restoreTenants(Set<Integer> partitions, Consumer<String> restoreTenant) {
+        return stateStore.replayRecoveryTenants(partitions, configuredRecoveryWindow(), restoreTenant);
     }
 
     void replayRecent(Set<Integer> partitions, Consumer<List<SecurityEvent>> restoreBatch) {
@@ -390,7 +490,8 @@ public class DetectionStateRecovery {
 
     Map<String, Object> snapshotStats() {
         return Map.of("store", snapshotStore == null ? "disabled" : snapshotStore.getClass().getSimpleName(),
-                "everyEvents", Math.max(1L, snapshotEveryEvents), "shards", effectiveShardCount());
+                "everyEvents", Math.max(1L, snapshotEveryEvents),
+                "minIntervalMs", Math.max(0L, snapshotMinIntervalMs), "shards", effectiveShardCount());
     }
 
     void describeReplay(Map<String, Object> stats) {

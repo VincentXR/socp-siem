@@ -135,31 +135,34 @@ public final class RareValueRule extends AbstractRule implements StatefulRule {
 
     @Override
     public byte[] snapshotState() {
-        return states.snapshot(state -> {
-            return Map.of("seen", List.copyOf(state.seen), "observed", state.observed);
-        });
+        return states.snapshot(this::encodeState);
     }
 
+    @Override
+    public com.socp.rule.state.StateMutation beginMutation() {
+        return states.beginMutation(this::encodeState, this::decodeState);
+    }
+
+    private Object encodeState(State state) {
+        return Map.of("seen", List.copyOf(state.seen), "observed", state.observed);
+    }
 
     @Override
     public void restoreState(byte[] serializedState) {
-        Map<String, Object> snapshot = StateSnapshotCodec.read(serializedState);
-        states.clear();
-        snapshot.forEach((key, raw) -> {
-            // A blank grouping key cannot exist in state produced by accept();
-            // skip corrupt checkpoint content instead of failing the restore.
-            if (key == null || key.isBlank() || !(raw instanceof Map<?, ?> values)) return;
-            State state = states.get(key, State::new);
-            synchronized (state) {
-                state.seen.clear();
-                Object seen = values.get("seen");
-                if (seen instanceof List<?> items) {
-                    items.stream().map(String::valueOf).limit(MAX_SEEN).forEach(state.seen::add);
-                }
-                Object observed = values.get("observed");
-                state.observed = observed instanceof Number n ? n.longValue() : 0L;
-            }
-        });
+        states.restore(serializedState, this::decodeState);
+    }
+
+    private State decodeState(Object raw) {
+        if (!(raw instanceof Map<?, ?> values)) return null;
+        State state = new State();
+        state.seen.clear();
+        Object seen = values.get("seen");
+        if (seen instanceof List<?> items) {
+            items.stream().map(String::valueOf).limit(MAX_SEEN).forEach(state.seen::add);
+        }
+        Object observed = values.get("observed");
+        state.observed = observed instanceof Number n ? n.longValue() : 0L;
+        return state;
     }
 
     @Override

@@ -6,6 +6,8 @@ import com.socp.search.config.config.KafkaProperties;
 import com.socp.search.config.config.SearchRuntimeRole;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -17,6 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.Properties;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -32,6 +35,7 @@ public class KafkaEventProducer {
     private final KafkaProperties properties;
 
     private volatile KafkaProducer<String, String> producer;
+    private volatile TransportTimers timers;
 
     public KafkaEventProducer() {
         this(new KafkaProperties());
@@ -40,6 +44,15 @@ public class KafkaEventProducer {
     @Autowired
     public KafkaEventProducer(KafkaProperties properties) {
         this.properties = properties;
+    }
+
+    @Autowired
+    void configureMetrics(MeterRegistry registry) {
+        timers = new TransportTimers(
+                registry.timer("socp.ingestion.kafka.duration", "operation", "submit", "outcome", "success"),
+                registry.timer("socp.ingestion.kafka.duration", "operation", "submit", "outcome", "failure"),
+                registry.timer("socp.ingestion.kafka.duration", "operation", "ack", "outcome", "success"),
+                registry.timer("socp.ingestion.kafka.duration", "operation", "ack", "outcome", "failure"));
     }
 
     private KafkaProducer<String, String> producer() {
@@ -76,7 +89,17 @@ public class KafkaEventProducer {
      * The caller must not mark the outbox row published before this returns true.
      */
     public boolean sendAndAwait(String routingKey, String payload, String traceparent) {
-        if (!properties.isEnabled()) return false;
+        return sendAsync(routingKey, payload, traceparent).join();
+    }
+
+    /**
+     * Submits one record and returns its bounded acknowledgement receipt. Callers
+     * must bound outstanding receipts and join them before advancing durable state.
+     * The submission may block for Kafka's metadata/buffer budget; acknowledgement
+     * completion never writes database state or inherits a caller's tenant scope.
+     */
+    CompletableFuture<Boolean> sendAsync(String routingKey, String payload, String traceparent) {
+        if (!properties.isEnabled()) return CompletableFuture.completedFuture(false);
         // The outbox row carries the trace context captured at ingest time,
         // because this thread never saw the producing request. Publishing under
         // a PRODUCER span parented to it makes the publish a real child of the
@@ -85,21 +108,52 @@ public class KafkaEventProducer {
         // own in between.
         Span span = TracePropagation.startSpan("kafka publish " + properties.getTopic(),
                 SpanKind.PRODUCER, TracePropagation.contextFrom(traceparent));
-        Throwable failure = null;
+        long started = System.nanoTime();
+        var brokerAcknowledgement = new CompletableFuture<Void>();
+        var receipt = brokerAcknowledgement.handle((ignored, failure) -> {
+            recordDuration(false, failure == null, started);
+            TracePropagation.finish(span, failure);
+            if (failure != null) {
+                log.warn("Kafka canonical event publish failed routingKey={}: {}",
+                        routingKey, failure.getMessage());
+            }
+            return failure == null;
+        });
+        boolean submitted = false;
         try {
             ProducerRecord<String, String> record = new ProducerRecord<>(properties.getTopic(), routingKey, payload);
             KafkaTrace.inject(KafkaTrace.contextOf(span), record.headers());
-            producer().send(record).get(30, TimeUnit.SECONDS);
-            return true;
+            producer().send(record, (metadata, failure) -> {
+                if (failure == null) brokerAcknowledgement.complete(null);
+                else brokerAcknowledgement.completeExceptionally(failure);
+            });
+            submitted = true;
         } catch (Exception publishFailure) {
-            failure = publishFailure;
-            log.warn("Kafka canonical event publish failed routingKey={}: {}",
-                    routingKey, publishFailure.getMessage());
-            return false;
+            brokerAcknowledgement.completeExceptionally(publishFailure);
         } finally {
-            TracePropagation.finish(span, failure);
+            recordDuration(true, submitted, started);
+        }
+        // Each receipt owns its timeout; joining a cohort cannot multiply it
+        // by the number of records. A late callback cannot replace a timeout.
+        brokerAcknowledgement.orTimeout(acknowledgementTimeoutMillis(), TimeUnit.MILLISECONDS);
+        return receipt;
+    }
+
+    long acknowledgementTimeoutMillis() { return 30_000; }
+
+    private void recordDuration(boolean submission, boolean success, long started) {
+        TransportTimers current = timers;
+        if (current == null) return;
+        try {
+            Timer timer = submission ? (success ? current.submitSuccess : current.submitFailure)
+                    : (success ? current.ackSuccess : current.ackFailure);
+            timer.record(Math.max(0, System.nanoTime() - started), TimeUnit.NANOSECONDS);
+        } catch (RuntimeException metricsFailure) {
+            log.debug("Kafka publication metrics unavailable: {}", metricsFailure.getMessage());
         }
     }
+
+    private record TransportTimers(Timer submitSuccess, Timer submitFailure, Timer ackSuccess, Timer ackFailure) { }
 
     boolean isEnabled() {
         return properties.isEnabled();

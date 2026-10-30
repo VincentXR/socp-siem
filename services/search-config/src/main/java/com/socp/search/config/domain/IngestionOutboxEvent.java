@@ -12,7 +12,18 @@ import java.util.UUID;
 /** Durable Kafka publication intent created with the local search event. */
 @Entity
 @Table(name = "t_ingestion_outbox")
-public class IngestionOutboxEvent extends BaseEntity {
+public class IngestionOutboxEvent extends BaseEntity implements org.springframework.data.domain.Persistable<String> {
+
+    @jakarta.persistence.Transient
+    private boolean newRecord = true;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Override public boolean isNew() { return newRecord; }
+
+    @jakarta.persistence.PostLoad
+    @jakarta.persistence.PostPersist
+    private void markPersisted() { newRecord = false; }
+
 
     @Id
     private String id;

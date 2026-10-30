@@ -289,25 +289,48 @@ delivery can take longer. A failed/contended head is not repeatedly attempted
 within the same drain. Durable predecessor fencing, claim tokens and retry
 backoff remain in force across worker replicas.
 
-Selection ranks pending rows by tenant/routing key and sequence, admitting at
-most 16 candidates per key and 200 overall. A key whose oldest row is backing
-off or whose row is already processing is not admitted. Candidates for each
-key are delivered sequentially, and a failed claim, send or completion stops
-the remainder of that key's local batch for the drain. Every row still needs
-its own durable predecessor/claim check and broker acknowledgement; selecting
-a batch never owns or publishes its successors in advance.
-V17 adds `(status,tenant_id,routing_key,sequence_no)` so that ranking
-only scans the active state; claim-time predecessor probes use the same index.
-It supersedes the equivalent key-first equality-probe index added in V16.
-For an existing large PostgreSQL outbox, prebuild both V16's
-`idx_ingestion_outbox_key_state_sequence` on `(tenant_id,routing_key,status,sequence_no)`
-and V17's `idx_ingestion_outbox_state_key_sequence` on
-`(status,tenant_id,routing_key,sequence_no)` with
-`CREATE INDEX CONCURRENTLY` outside a transaction,
-verify that both are valid, then run the normal migrations. They skip the
-existing indexes and V17 removes the superseded V16 index. Otherwise plan the
-normal index builds in a maintenance window;
-do not delete outbox history or reset delivery state to accelerate the upgrade.
+Selection first finds up to 200 eligible tenant/routing-key heads in due-time
+and sequence order, then expands each selected key's first 16 pending sequence
+positions. A delayed successor still occupies a position; due-time filtering
+runs after the per-key rank limit. The final result contains at most 200 rows,
+ordered by head due time, head sequence, and member sequence. Identity breaks
+otherwise equal sequence ties, including legacy duplicate sequences. A key
+whose oldest row is backing off or whose row is already processing is not
+admitted, including legacy processing rows without a lease key. Candidates for
+each key are delivered sequentially, and a failed claim, send or completion
+stops the remainder of that key's local batch for the drain. Every row still
+needs its durable predecessor/claim check and broker acknowledgement; selection
+does not own or publish successors.
+
+The selector ranks selected keys instead of windowing the entire pending
+backlog, and joins payloads only after the final 200-identity limit. Scalar
+status expressions preserve scoped member and processing-blocker lookups when
+PostgreSQL statistics still describe an empty queue. The blocker subquery keeps
+sequence/identity order with `OFFSET 0` so its existence check can use the
+covering state/key index instead of scanning retained payloads. This also
+covers legacy processing rows without a lease key. Pathological legacy sequence
+ties can expand intermediate candidates, but the per-key result remains capped
+at 16.
+`IngestionOutboxClaimPostgresTest` covers retained hot-key history, a 20,000-key
+burst with stale statistics, ordering, and receipt-preserving index upgrades.
+
+V18 introduced ordered due and state/key indexes. V19 replaces the due index
+with `idx_ingestion_outbox_due_covering` on
+`(status,next_attempt_at,sequence_no,id,tenant_id,routing_key)` so head selection
+can read tenant/key fields in due order without fetching payloads. This avoids
+preferring the covering state/key index and sorting the entire pending queue
+when statistics still estimate an empty queue. The state/key index remains
+`idx_ingestion_outbox_state_key_order` on
+`(status,tenant_id,routing_key,sequence_no,id,next_attempt_at)`. V19 preserves
+receipt data and the final index count; it does not change ordering or claims.
+
+For a large PostgreSQL outbox upgrading from V18, prebuild the exact V19 index
+with `CREATE INDEX CONCURRENTLY` outside a transaction, verify that it is valid,
+then run migrations. V19 skips an existing index and removes the superseded
+index. Otherwise schedule the index build in a maintenance window. Earlier
+upgrades also execute the V16–V18 index builds; account for those intermediate
+builds. Do not alter applied migration checksums, delete outbox history, or
+reset delivery state to accelerate the upgrade.
 
 The rendered Vector envelope contains a stable `source_id`. The request
 credential still determines the tenant and trusted collector identity; body
@@ -484,3 +507,74 @@ One scheduler invocation may run several bounded rounds, controlled by
 `SOCP_SEARCH_EVENT_CLEANUP_MAX_RUN_MS`, and
 `SOCP_SEARCH_EVENT_CLEANUP_CATCHUP_PAUSE_MS`. These bounds keep catch-up from
 turning into one long transaction or a tight loop against live ingest.
+
+### Bounded ingress persistence batches
+
+Canonical search events and their publication intents remain one atomic
+transaction. The ingress commit uses JDBC batches of 32 and flushes both entity
+sets before acknowledging the request. The session's previous batch setting is
+restored afterward. New Outbox entities explicitly use `persist`, avoiding a
+redundant existence query per assigned UUID. Existing identities still use the
+bulk tenant-scoped lookup and content-conflict checks; duplicate delivery does
+not create another intent. A failed Outbox batch rolls back the canonical event
+batch and does not populate the search cache or trigger publication.
+Bulk identity lookups keep the tenant parameter in a scalar subquery so
+PostgreSQL can use the existing tenant/event-ID composite indexes even before
+a new tenant appears in its statistics. They remain one query per repository
+and return only that tenant's matching identities.
+
+Outbox acknowledgement and retry updates keep the ID lookup separate from the
+combined status/token fence. Batch claim and completion include tenant checks
+inside that conditional fence, preventing a newly active tenant's stale
+cardinality estimate from replacing the bounded ID lookup with a tenant-wide
+scan. Predecessor checks keep the tenant/routing/sequence lookup separate from
+conditional pending/processing status checks. They retain legacy claims with
+null lease keys while avoiding an estimated-empty status-index scan. This
+keeps point updates bounded when PostgreSQL statistics lag a publication burst;
+claim tokens, cross-replica key ordering and broker acknowledgements remain required.
+
+### Independent-key Outbox batches
+
+When a selected Outbox round contains independent routing keys, the publisher
+partitions it into cohorts of up to 32 same-tenant rows. A shared admission limit
+allows at most two cohorts across all tenants to claim and complete concurrently;
+capacity is acquired before a cohort claims any rows. Every admitted cohort is
+joined before another selection or completion of the drain. Database batch size
+is independent of configured submission concurrency (8 by default), shared by
+both cohorts. Those slots bound potentially blocking Kafka submission calls.
+A submitted record releases its slot while its acknowledgement remains pending,
+with at most 32 outstanding receipts per cohort and 64 across the publisher.
+Claims preserve predecessor, attempt,
+lease and unique processing-key checks; a failed claim transaction publishes
+none of its rows.
+All admitted receipts are joined before retry or finalization; only acknowledged
+IDs are finalized by the cohort's tenant and claim token. Kafka callbacks only
+complete receipts and never write database state.
+Repeated-key selections retain serial claim/send/finalize ordering. Expired
+drain deadlines or shutdown prevent waiting cohorts from acquiring claims and
+spending attempts, while already admitted claims still settle. The separate 35-second
+send admission budget starts before the claim transaction, so database latency
+cannot extend it. Each submitted record retains a 30-second acknowledgement
+timeout after the transport's bounded metadata wait; cohort waits do not multiply
+that timeout by record count. Late callbacks cannot reverse a timed-out receipt.
+Expired admission or shutdown releases unsent claims through a fenced state update.
+An unstarted publication uses a separate tenant/identity/token-fenced release:
+it restores `PENDING` and returns the claim's reserved attempt without spending
+the retry budget. Once publication starts, failures retain the normal retry
+and exhaustion rules; a stale owner cannot return another owner's attempt.
+Shutdown closes new admission; the active drain joins submitted receipts while
+the process remains alive. The shutdown hook itself does not wait for that drain.
+Process termination still relies on fenced stale-claim recovery and replay.
+
+`socp.ingestion.outbox.batch.duration` and `.items` use bounded
+`operation=claim|finalize` and `outcome=success|failure` labels. They count
+physical cohort calls, independently of per-event lifecycle counters.
+Concurrent cohorts overlap these intervals; their cumulative durations must not
+be interpreted as mutually exclusive drain wall time.
+
+`socp.ingestion.kafka.duration` records cached timers with fixed
+`operation=submit|ack` and `outcome=success|failure` labels. Submission measures
+the producer call, including metadata/buffer waits. Acknowledgement measures
+from submission entry through callback or timeout; these intervals overlap and
+must not be added together. A successful submission alone does not mean the
+broker acknowledged the record. Neither metric labels tenant or record IDs.
