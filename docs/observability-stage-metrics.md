@@ -10,10 +10,54 @@ per event:
   `socp.ingestion.outbox.lifecycle{outcome=...}` covers claim, retry, publish,
   dead-letter and retention cleanup.  The same `pending.count`/`oldest.*`
   naming is used by the alert and detection outboxes.
+* `socp.ingestion.outbox.batch.duration{operation=claim|finalize,outcome}`
+  measures database cohort operations; the matching `batch.items` distribution
+  exposes effective cohort size. `socp.ingestion.kafka.duration` uses
+  `operation=submit|ack` and `outcome=success|failure`: submit measures the
+  producer call, including metadata or buffer waiting; ack measures entry to
+  broker callback or timeout. These intervals overlap and must not be added.
+  Compare them with pending age to distinguish database cost from broker
+  waiting. Neither timer proves durable end-to-end throughput.
+* `socp.ingestion.outbox.operation.duration{operation,outcome}` records cached
+  timers with fixed `outcome=success|failure` and these operation labels:
+  `selection` includes every due-row query, including empty results;
+  `exhausted` and `stale` count actual maintenance queries (a skipped stale
+  recovery interval produces no measurement); `backlog_metrics` covers the
+  complete backlog refresh; `receipt_wait` covers only the cohort join after
+  all submission calls return; `drain` accumulates the complete accepted drain,
+  including its final backlog refresh. `receipt_wait` failure means an
+  exceptional receipt/join, while a normally completed negative acknowledgement
+  remains a Kafka acknowledgement failure. Drain failure includes scan or
+  backlog-refresh exceptions, not a verdict that every record failed.
+  Drain time includes the other operation timers and claim/finalize time: do
+  not add these nested intervals. Up to two independent cohorts run concurrently,
+  so claim, finalize and receipt-wait intervals also overlap across cohorts;
+  their sum can exceed drain wall time and is not a serial-time attribution.
+  Kafka acknowledgement time can overlap both
+  submission and receipt waiting. Backlog refresh runs after the drain admission
+  flag is released and can overlap another drain, so summing cumulative drain
+  time does not reconstruct exact scheduling gaps. Timer failures cannot change
+  publication state. No operation labels include tenant or event identities.
 * `socp.opensearch.indexer.records{stage=consume|write|fail|drop|dlq|commit}`
   reconcile Kafka input with durable OpenSearch/DLQ outcomes.
-* `socp.detection.event.stage{stage=...}` records Kafka queue, journal,
-  evaluation and durable completion latency.
+* `socp.detection.event.stage{stage=...}` records per-event latency. The
+  `kafka_queue` interval ends when a partition lane starts processing and
+  includes upstream outbox, broker, preclaim and lane waiting. The `journal`
+  interval excludes preclaim I/O. `durable_completion` includes audit/result
+  construction, batching and the sink transaction; it is not database-only
+  time. Summed event intervals overlap within a batch.
+* `socp.detection.operation{stage,outcome}` records each physical invocation
+  once: `journal_preclaim`, `batch_preparation`, `batch_commit`, `fencing`, or `checkpoint`.
+  `socp.detection.operation.items` records the corresponding item count
+  (events for batches, one checkpoint generation for checkpoints). Divide its
+  sum by count to inspect actual batch size. Preparation includes rule work,
+  undo/audit encoding and batch wait; commit includes fencing and durable sink
+  writes; `fencing` measures ownership checks inside commit and must not be
+  added to commit time; checkpoints include state capture and persistence. These timers also
+  include failed invocations. The legacy `socp.detection.db.transactions`
+  event counters count logical receipts, not physical database transactions.
+  Per-event lifecycle timing uses tenant plus delivery identity, so routed
+  copies of one source event remain independent.
 * `socp.detection.alert.stage{stage=...}` records alert-outbox age, HTTP round
   trip and downstream acknowledgement.
 * `socp.detection.dlq.handoff{outcome=committed|retry_round_exhausted}`

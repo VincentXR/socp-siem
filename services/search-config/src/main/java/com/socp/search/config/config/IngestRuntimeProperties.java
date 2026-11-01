@@ -28,7 +28,7 @@ public class IngestRuntimeProperties {
     }
 
     public static class Outbox {
-        private int deliveryConcurrency = 32;
+        private int deliveryConcurrency = 8;
         private int maxAttempts = 12;
         private long retentionMs = 2_592_000_000L;
         private int cleanupBatchSize = 1_000;

@@ -39,6 +39,9 @@ public class IngestionCommitService {
             .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
             .configure(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS, true);
 
+    @jakarta.persistence.PersistenceContext
+    private jakarta.persistence.EntityManager entityManager;
+
     private final SearchEventRepository eventRepository;
     private final IngestionOutboxRepository outboxRepository;
     private final SearchStore searchStore;
@@ -107,15 +110,7 @@ public class IngestionCommitService {
             }
         }
 
-        if (!newEvents.isEmpty()) {
-            eventRepository.saveAll(newEvents.stream().map(SearchStore::toEntity).toList());
-        }
-        if (!outboxEvents.isEmpty()) {
-            outboxRepository.saveAll(outboxEvents.stream().map(event -> IngestionOutboxEvent.pending(
-                    event.eventId(),
-                    DetectionRoutingKey.forSearchEvent(event.source(), event.host(), event.fields()),
-                    serialize(event), traceparent)).toList());
-        }
+        persistBatch(newEvents, outboxEvents, traceparent);
 
         Runnable afterCommitHook = () -> {
             if (!newEvents.isEmpty()) searchStore.rememberBatch(newEvents);
@@ -135,6 +130,28 @@ public class IngestionCommitService {
         }
         return new CommitResult(events.size(), newEvents.size(), events.size() - newEvents.size(),
                 Math.max(0, outboxEvents.size() - newEvents.size()));
+    }
+
+    private void persistBatch(List<SearchEvent> newEvents, List<SearchEvent> outboxEvents, String traceparent) {
+        // Keep batching local to this atomic ingress transaction. Manually
+        // constructed unit-test adapters retain their repository-only behavior.
+        org.hibernate.Session session = entityManager == null ? null : entityManager.unwrap(org.hibernate.Session.class);
+        Integer previousBatchSize = session == null ? null : session.getJdbcBatchSize();
+        if (session != null) session.setJdbcBatchSize(32);
+        try {
+            if (!newEvents.isEmpty()) {
+                eventRepository.saveAll(newEvents.stream().map(SearchStore::toEntity).toList());
+            }
+            if (!outboxEvents.isEmpty()) {
+                outboxRepository.saveAll(outboxEvents.stream().map(event -> IngestionOutboxEvent.pending(
+                        event.eventId(),
+                        DetectionRoutingKey.forSearchEvent(event.source(), event.host(), event.fields()),
+                        serialize(event), traceparent)).toList());
+            }
+            if (entityManager != null) entityManager.flush();
+        } finally {
+            if (session != null) session.setJdbcBatchSize(previousBatchSize);
+        }
     }
 
     private static void requireIdentity(SearchEvent event) {

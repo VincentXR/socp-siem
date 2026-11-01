@@ -13,11 +13,26 @@ import java.time.Instant;
 import java.util.Optional;
 
 /** Database-side compare-and-set operations for Detection state ownership. */
-public interface DetectionStateOwnerRepository extends JpaRepository<DetectionStateOwnerEntity, String> {
+public interface DetectionStateOwnerRepository extends JpaRepository<DetectionStateOwnerEntity, String>, DetectionStateOwnerLocks {
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select o from DetectionStateOwnerEntity o where o.ownerKey = :ownerKey")
     Optional<DetectionStateOwnerEntity> findByOwnerKeyForUpdate(@Param("ownerKey") String ownerKey);
+
+    /** Scalar rows bypass potentially stale entities already in the persistence context. */
+    interface LockedFence {
+        String getOwnerKey();
+        String getOwnerId();
+        long getFencingEpoch();
+    }
+
+    /** Caller must have locked and validated every requested owner in the same transaction. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.MANDATORY)
+    @Query("update DetectionStateOwnerEntity o set o.leaseUntil = :leaseUntil, o.updatedAt = :now "
+            + "where o.ownerKey in :ownerKeys")
+    int renewLockedFences(@Param("ownerKeys") java.util.Collection<String> ownerKeys,
+                          @Param("now") Instant now, @Param("leaseUntil") Instant leaseUntil);
 
     /** Explicit insert avoids JpaRepository.save treating a manual id as merge. */
     @Modifying(flushAutomatically = true)

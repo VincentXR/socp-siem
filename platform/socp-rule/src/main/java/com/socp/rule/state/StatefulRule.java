@@ -1,7 +1,6 @@
 package com.socp.rule.state;
 
 import com.socp.rule.rules.Rule;
-import com.socp.rule.engine.DetectionResult;
 
 /**
  * Optional rule capability for durable state checkpoints.  Stateless rules
@@ -11,34 +10,26 @@ import com.socp.rule.engine.DetectionResult;
  */
 public interface StatefulRule extends Rule {
 
+    /** Legacy implementations retain full-state rollback and audit digests. */
+    default StateMutation beginMutation() {
+        byte[] before = snapshotState();
+        return new StateMutation() {
+            @Override public com.socp.rule.engine.DetectionResult.StateChange change(String ruleId) {
+                byte[] after = snapshotState();
+                return new com.socp.rule.engine.DetectionResult.StateChange(ruleId,
+                        com.socp.rule.engine.DetectionResult.digest(before),
+                        com.socp.rule.engine.DetectionResult.digest(after),
+                        !java.util.Arrays.equals(before, after));
+            }
+            @Override public long retainedBytes() { return before.length; }
+            @Override public void rollback() { restoreState(before); }
+            @Override public void close() { }
+        };
+    }
+
     String stateVersion();
 
     byte[] snapshotState();
 
     void restoreState(byte[] serializedState);
-
-    /** Compatibility path for rules without entity-level copy-on-write state. */
-    default RuleStateMutation beginMutation() {
-        byte[] before = snapshotState();
-        return new RuleStateMutation() {
-            private boolean committed;
-            private boolean closed;
-
-            @Override
-            public DetectionResult.StateChange change(String ruleId) {
-                byte[] after = snapshotState();
-                return new DetectionResult.StateChange(ruleId,
-                        DetectionResult.digest(before), DetectionResult.digest(after),
-                        !java.util.Arrays.equals(before, after));
-            }
-
-            @Override public void rollback() { restoreState(before); }
-            @Override public void commit() { committed = true; }
-            @Override public void close() {
-                if (closed) return;
-                closed = true;
-                if (!committed) rollback();
-            }
-        };
-    }
 }

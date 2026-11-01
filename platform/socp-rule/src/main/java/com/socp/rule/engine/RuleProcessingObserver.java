@@ -11,6 +11,20 @@ public interface RuleProcessingObserver {
     RuleProcessingObserver NOOP = new RuleProcessingObserver() {
     };
 
+    /** Physical operations, counted once per invocation rather than once per overlapping event. */
+    enum Operation { JOURNAL_PRECLAIM, BATCH_PREPARATION, BATCH_COMMIT, FENCING, CHECKPOINT }
+
+    default void operationCompleted(Operation operation, int items, long nanos, boolean success) {
+    }
+
+    /** Instrumentation must never change acknowledgement, rollback or retry behavior. */
+    static void notifyOperation(RuleProcessingObserver observer, Operation operation,
+                                int items, long nanos, boolean success) {
+        if (observer == null) return;
+        try { observer.operationCompleted(operation, items, nanos, success); }
+        catch (RuntimeException ignored) { }
+    }
+
     default void evaluationCompleted(SecurityEvent event, int emittedAlerts) {
     }
 

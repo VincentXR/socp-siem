@@ -40,6 +40,9 @@ public class DetectionEngineLifecycle {
     private final Suppressor suppressor = new Suppressor(Duration.ofMinutes(5));
     private final DetectionEngineFactory engineFactory;
     private final Map<String, RuleEngine> engines = new ConcurrentHashMap<>();
+    /** Acquired only after the lifecycle lock; cold restores never run concurrently. */
+    private final java.util.concurrent.locks.ReentrantLock coldRestore = new java.util.concurrent.locks.ReentrantLock();
+    private volatile boolean lazyAssignmentRecovery;
     private final Map<String, Long> engineLastAccess = new ConcurrentHashMap<>();
     private final AtomicLong warmedWithoutHistory = new AtomicLong();
     // Process-wide rebuilds and tenant/shard rebuilds intentionally have different gates.
@@ -232,24 +235,48 @@ public class DetectionEngineLifecycle {
         String resolved = resolveTenant(tenant);
         int resolvedShard = state.normalizeShard(shard);
         String key = engineKey(resolved, resolvedShard);
+        var assignment = state.recoveryAssignment();
         engineLifecycle.readLock().lock();
         try {
-            RuleEngine engine = engines.computeIfAbsent(key, ignored -> {
+            RuleEngine engine = engines.get(key);
+            if (engine == null) {
                 try {
-                    RuleEngine created = engineFactory.build(key, resolved, List.of(), null);
-                    state.restoreState(resolved, created, state.assignedPartitions(), resolvedShard);
-                    created.start();
-                    engineRecovery.remove(key);
-                    pendingRebuilds.remove(key);
-                    return created;
-                } catch (RuntimeException recoveryFailure) {
-                    // A lazily created engine that cannot be restored must not
-                    // look healthy: only this key is held shut, and the recovery
-                    // schedule retries it.
-                    markKeyDegraded(resolved, resolvedShard, recoveryFailure);
-                    throw recoveryFailure;
+                    coldRestore.lockInterruptibly();
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new DetectEngineService.RuntimeUnavailableException("cold state restoration interrupted");
                 }
-            });
+                try {
+                    engine = engines.get(key);
+                    if (engine == null) {
+                        if (!state.isCurrentAssignment(assignment) || Thread.currentThread().isInterrupted()) {
+                            throw new com.socp.detect.web.persistence.store.DetectionStateOwnership.StaleStateOwnerException(
+                                    "assignment changed while waiting for state restoration");
+                        }
+                        RuleEngine created = null;
+                        try {
+                            created = engineFactory.build(key, resolved, List.of(), null);
+                            state.restoreState(resolved, created, assignment.partitions(), resolvedShard);
+                            RuleEngine restored = created;
+                            state.publishForAssignment(assignment, () -> {
+                                restored.start();
+                                engines.put(key, restored);
+                                engineRecovery.remove(key);
+                                pendingRebuilds.remove(key);
+                            });
+                            engine = created;
+                        } catch (RuntimeException failure) {
+                            if (created != null) created.close();
+                            if (state.isCurrentAssignment(assignment) && !Thread.currentThread().isInterrupted()) {
+                                markKeyDegraded(resolved, resolvedShard, failure);
+                            }
+                            throw failure;
+                        }
+                    }
+                } finally {
+                    coldRestore.unlock();
+                }
+            }
             engineLastAccess.put(key, System.currentTimeMillis());
             return engine;
         } finally {
@@ -344,7 +371,7 @@ public class DetectionEngineLifecycle {
      */
     @Scheduled(fixedDelayString = "${socp.detect.recovery.retry-interval-ms:30000}",
             initialDelayString = "${socp.detect.recovery.retry-initial-delay-ms:30000}")
-    void retryDegradedEngines() {
+    synchronized void retryDegradedEngines() {
         if (!workerRole()) return;
         if (pendingRebuilds.isEmpty() && engineRecovery.isEmpty()
                 && recoveryStatus.get() == RecoveryStatus.READY) return;
@@ -359,6 +386,7 @@ public class DetectionEngineLifecycle {
                 // rebuild; that rebuild replaces every engine, so retry it as a
                 // whole rather than one key at a time.
                 try {
+                    state.acquireStateLeases(state.assignedPartitions());
                     replaceAllEnginesFromState(state.assignedPartitions());
                     state.releaseUnassignedStateLeases(state.assignedPartitions());
                     markReady();
@@ -446,6 +474,7 @@ public class DetectionEngineLifecycle {
             engines.values().forEach(RuleEngine::close);
             engines.clear();
             engineLastAccess.clear();
+            lazyAssignmentRecovery = false;
             state.clearCheckpoints();
             engineFactory.clearIsolation();
             java.util.function.Consumer<List<SecurityEvent>> restoreBatch = events -> {
@@ -463,22 +492,36 @@ public class DetectionEngineLifecycle {
                     engineLastAccess.put(key, System.currentTimeMillis());
                 });
             };
-            state.replayRecent(partitions, restoreBatch);
-            // Keep an empty default shard warm when no history exists. Do not
-            // call engineFor() here: that path restores the journal again and
-            // would double the replay cost after the full replay above.
-            // Other tenant/shard engines are started only when their first
-            // event is admitted, avoiding an O(tenants × shards) startup storm.
-            if (engines.isEmpty()) {
-                // The full-window replay above is authoritative: this engine has
-                // no journaled state at all. Say so, instead of letting a warm
-                // empty engine look like a checkpoint-restored one.
-                warmedWithoutHistory.incrementAndGet();
-                org.slf4j.LoggerFactory.getLogger(DetectionEngineLifecycle.class).info(
-                        "Detection state rebuild found no journaled history; warming an empty"
-                                + " default engine partitions={}", partitions);
+            boolean[] hasHistory = {false};
+            boolean deferHistorical = partitions != null && !partitions.isEmpty();
+            boolean restoredByTenant = state.restoreTenants(partitions, tenant -> {
+                hasHistory[0] = true;
+                if (deferHistorical) return;
+                for (int shard = 0; shard < state.effectiveShardCount(); shard++) {
+                    String key = engineKey(tenant, shard);
+                    RuleEngine replacement = engineFactory.build(key, tenant, List.of(), null);
+                    engines.put(key, replacement);
+                    state.restoreState(tenant, replacement, partitions, shard);
+                    engineLastAccess.put(key, System.currentTimeMillis());
+                }
+            });
+            lazyAssignmentRecovery = deferHistorical && restoredByTenant;
+            if (!restoredByTenant) state.replayRecent(partitions, restoreBatch);
+            // Discovery is payload-free, but an older default checkpoint may
+            // survive beyond the journal window. Inspect it before calling this
+            // a history-free warmup. Historical tenants otherwise stay cold.
+            if (engines.isEmpty() && (!lazyAssignmentRecovery || !hasHistory[0])) {
                 String key = engineKey("default", 0);
-                engines.put(key, engineFactory.build(key, "default", List.of(), null));
+                RuleEngine empty = engineFactory.build(key, "default", List.of(), null);
+                boolean restoredDefault = lazyAssignmentRecovery
+                        && state.restoreState("default", empty, partitions, 0);
+                if (!restoredDefault) {
+                    warmedWithoutHistory.incrementAndGet();
+                    org.slf4j.LoggerFactory.getLogger(DetectionEngineLifecycle.class).info(
+                            "Detection state rebuild found no journaled history; warming an empty"
+                                    + " default engine partitions={}", partitions);
+                }
+                engines.put(key, empty);
                 engineLastAccess.put(key, System.currentTimeMillis());
             }
             engines.values().forEach(RuleEngine::start);
@@ -486,6 +529,7 @@ public class DetectionEngineLifecycle {
             engines.values().forEach(RuleEngine::close);
             engines.clear();
             engineLastAccess.clear();
+            lazyAssignmentRecovery = false;
             state.clearCheckpoints();
             engineFactory.clearIsolation();
             throw failure;
@@ -543,13 +587,11 @@ public class DetectionEngineLifecycle {
 
     List<RuleEngine> tenantEngines(String tenant) {
         String prefix = tenant + "\u0000shard-";
-        List<RuleEngine> result = engines.entrySet().stream()
+        // Stats are observational, including before Kafka's first assignment.
+        // Only admission or explicit recovery may materialize a cold engine.
+        return engines.entrySet().stream()
                 .filter(entry -> entry.getKey().startsWith(prefix))
                 .map(Map.Entry::getValue).toList();
-        if (result.isEmpty() && workerRole() && readyFor(tenant, 0)) {
-            return List.of(engineFor(tenant, 0));
-        }
-        return result;
     }
 
     int isolatedCount(String tenant) {
@@ -578,6 +620,10 @@ public class DetectionEngineLifecycle {
         recovery.put("scope", "replica-local");
         recovery.put("rebuildRetries", rebuildRetries.get());
         recovery.put("warmedWithoutHistory", warmedWithoutHistory.get());
+        long materialized = engines.keySet().stream().filter(key -> key.startsWith(keyPrefix)).count();
+        recovery.put("materializedShards", materialized);
+        recovery.put("restorationMode", lazyAssignmentRecovery ? "on-first-event" : "eager");
+        recovery.put("deferredUntilEvent", workerRole() && materialized == 0 && readyFor(tenant, 0));
 
         state.describeReplay(recovery);
         return recovery;

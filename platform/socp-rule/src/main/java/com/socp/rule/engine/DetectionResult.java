@@ -60,11 +60,7 @@ public record DetectionResult(
         position.put("offset", inputPosition.offset());
         out.put("inputPosition", position);
         out.put("ruleVersions", ruleVersions);
-        out.put("stateChanges", stateChanges.stream().map(change -> Map.of(
-                "ruleId", change.ruleId(),
-                "beforeDigest", change.beforeDigest(),
-                "afterDigest", change.afterDigest(),
-                "changed", change.changed())).toList());
+        out.put("stateChanges", stateChanges.stream().map(StateChange::auditSummary).toList());
         out.put("candidateAlertIds", alertIds(candidates));
         out.put("emittedAlertIds", alertIds(alerts));
         out.put("suppression", Map.of(
@@ -111,17 +107,32 @@ public record DetectionResult(
         }
     }
 
-    /**
-     * Digest-only before/after state evidence; state payloads stay in snapshots.
-     * Unprefixed SHA-256 values describe legacy full snapshots. Values prefixed
-     * entity-delta-v1:sha256: describe the sorted projection of keys touched by
-     * this event (including removals), and cannot be compared to checkpoint hashes.
-     */
-    public record StateChange(String ruleId, String beforeDigest, String afterDigest, boolean changed) {
+    /** Digest-only before/after state evidence; state payloads stay in snapshots. */
+    public record StateChange(String ruleId, String beforeDigest, String afterDigest, boolean changed,
+                              String digestScope) {
+        public StateChange(String ruleId, String beforeDigest, String afterDigest, boolean changed) {
+            this(ruleId, beforeDigest, afterDigest, changed, "full-state-v1");
+        }
+
         public StateChange {
             if (ruleId == null || ruleId.isBlank()) throw new IllegalArgumentException("ruleId is required");
             beforeDigest = normalizeDigest(beforeDigest);
             afterDigest = normalizeDigest(afterDigest);
+            if (!"full-state-v1".equals(digestScope) && !"affected-keys-v1".equals(digestScope)
+                    && !"affected-keys-merkle-v1".equals(digestScope)) {
+                throw new IllegalArgumentException("unknown state digest scope");
+            }
+        }
+
+        private Map<String, Object> auditSummary() {
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("ruleId", ruleId);
+            summary.put("beforeDigest", beforeDigest);
+            summary.put("afterDigest", afterDigest);
+            summary.put("changed", changed);
+            // Absence retains the historical full-state interpretation.
+            if (!"full-state-v1".equals(digestScope)) summary.put("digestScope", digestScope);
+            return Map.copyOf(summary);
         }
 
         private static String normalizeDigest(String digest) {

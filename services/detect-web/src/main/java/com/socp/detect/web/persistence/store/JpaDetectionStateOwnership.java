@@ -20,9 +20,10 @@ import java.util.concurrent.ConcurrentHashMap;
 public class JpaDetectionStateOwnership implements DetectionStateOwnership {
 
     private final DetectionStateOwnerRepository repository;
+    private final Object transactionFenceKey = new Object();
     private final String ownerId;
     private final Duration leaseDuration;
-    private final ConcurrentHashMap<String, Object> unitLocks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, java.util.concurrent.locks.ReentrantLock> unitLocks = new ConcurrentHashMap<>();
 
     @org.springframework.beans.factory.annotation.Autowired
     public JpaDetectionStateOwnership(
@@ -43,11 +44,13 @@ public class JpaDetectionStateOwnership implements DetectionStateOwnership {
     @Override
     public Lease acquire(String inputTopic, int partition, int shard) {
         String key = DetectionStateOwnership.unitKey(inputTopic, partition, shard);
-        Object lock = unitLocks.computeIfAbsent(key, ignored -> new Object());
-        synchronized (lock) {
+        java.util.concurrent.locks.ReentrantLock lock = unitLocks.computeIfAbsent(key, ignored -> new java.util.concurrent.locks.ReentrantLock());
+        lock.lock();
+        try {
             for (int attempt = 0; attempt < 3; attempt++) {
                 Instant now = Instant.now();
                 Instant leaseUntil = now.plus(leaseDuration);
+                invalidateTransactionFence(key);
                 int updated = repository.claimExisting(key, ownerId, now, leaseUntil);
                 if (updated == 1) return readLease(key, inputTopic, partition, shard);
 
@@ -63,6 +66,8 @@ public class JpaDetectionStateOwnership implements DetectionStateOwnership {
                     // expired row can be taken over without blind overwrite.
                 }
             }
+        } finally {
+            lock.unlock();
         }
         throw new IllegalStateException("detection state unit is owned by another live instance: " + key);
     }
@@ -70,6 +75,9 @@ public class JpaDetectionStateOwnership implements DetectionStateOwnership {
     @Override
     public void assertCurrent(Lease lease) {
         if (lease == null) throw new StaleStateOwnerException("detection state lease is missing");
+        var checked = transactionFences();
+        FenceIdentity identity = new FenceIdentity(lease.unitKey(), lease.ownerId(), lease.fencingEpoch());
+        if (checked != null && checked.contains(identity)) return;
         Instant now = Instant.now();
         int updated = repository.touch(lease.unitKey(), lease.ownerId(), lease.fencingEpoch(),
                 now, now.plus(leaseDuration));
@@ -77,11 +85,99 @@ public class JpaDetectionStateOwnership implements DetectionStateOwnership {
             throw new StaleStateOwnerException("detection state lease was fenced: " + lease.unitKey()
                     + " epoch=" + lease.fencingEpoch());
         }
+        if (checked != null) checked.add(identity);
+    }
+
+    private record FenceIdentity(String unitKey, String ownerId, long epoch) { }
+
+    @Override
+    @org.springframework.transaction.annotation.Transactional
+    public void assertCurrentBatch(java.util.List<Lease> leases) {
+        if (leases == null || leases.size() > 64) throw new IllegalArgumentException("ownership batch limit is 64");
+        var requested = new java.util.TreeMap<String, Lease>();
+        for (Lease lease : leases) {
+            if (lease == null) throw new StaleStateOwnerException("detection state lease is missing");
+            Lease previous = requested.putIfAbsent(lease.unitKey(), lease);
+            if (previous != null && (!previous.ownerId().equals(lease.ownerId())
+                    || previous.fencingEpoch() != lease.fencingEpoch())) {
+                throw new StaleStateOwnerException("conflicting detection state leases: " + lease.unitKey());
+            }
+        }
+        var checked = transactionFences();
+        if (checked != null) requested.values().removeIf(lease -> checked.contains(
+                new FenceIdentity(lease.unitKey(), lease.ownerId(), lease.fencingEpoch())));
+        // A scalar UPDATE is cheaper for one or two owners. Standalone callers
+        // without a transaction cannot retain SELECT FOR UPDATE row locks.
+        if (requested.size() < 3 || checked == null) {
+            requested.values().forEach(this::assertCurrent);
+            return;
+        }
+        var rows = repository.lockFences(requested.keySet());
+        if (rows.size() != requested.size()) throw new StaleStateOwnerException("detection state owner is missing");
+        var validated = new java.util.HashSet<String>();
+        for (var row : rows) {
+            Lease lease = requested.get(row.getOwnerKey());
+            if (lease == null || !validated.add(row.getOwnerKey())
+                    || !lease.ownerId().equals(row.getOwnerId()) || lease.fencingEpoch() != row.getFencingEpoch()) {
+                throw new StaleStateOwnerException("detection state lease was fenced: " + row.getOwnerKey());
+            }
+        }
+        // Exclusive owner-row locks survive through the outer outbox/journal
+        // commit. No other replica can change these tokens between validation
+        // and renewal, or before the caller's durable writes are acknowledged.
+        Instant now = Instant.now();
+        if (repository.renewLockedFences(requested.keySet(), now, now.plus(leaseDuration)) != requested.size()) {
+            throw new StaleStateOwnerException("detection state owner disappeared during renewal");
+        }
+        requested.values().forEach(lease -> checked.add(
+                new FenceIdentity(lease.unitKey(), lease.ownerId(), lease.fencingEpoch())));
+    }
+
+    /**
+     * The first UPDATE or batch lock holds the owner row until this exact transaction ends.
+     * Rechecking the same epoch inside it cannot observe a new owner. Never
+     * reuse this fact outside that transaction or across REQUIRES_NEW scopes.
+     */
+    @SuppressWarnings("unchecked")
+    private java.util.Set<FenceIdentity> transactionFences() {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()
+                || !org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            return null;
+        }
+        var existing = (java.util.Set<FenceIdentity>) org.springframework.transaction.support.TransactionSynchronizationManager
+                .getResource(transactionFenceKey);
+        if (existing != null) return existing;
+        java.util.Set<FenceIdentity> checked = new java.util.HashSet<>();
+        org.springframework.transaction.support.TransactionSynchronizationManager.bindResource(transactionFenceKey, checked);
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override public void suspend() {
+                        org.springframework.transaction.support.TransactionSynchronizationManager.unbindResource(transactionFenceKey);
+                    }
+                    @Override public void resume() {
+                        org.springframework.transaction.support.TransactionSynchronizationManager.bindResource(transactionFenceKey, checked);
+                    }
+                    @Override public void savepointRollback(Object savepoint) {
+                        checked.clear();
+                    }
+                    @Override public void afterCompletion(int status) {
+                        org.springframework.transaction.support.TransactionSynchronizationManager.unbindResourceIfPossible(transactionFenceKey);
+                    }
+                });
+        return checked;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void invalidateTransactionFence(String unitKey) {
+        var checked = (java.util.Set<FenceIdentity>) org.springframework.transaction.support.TransactionSynchronizationManager
+                .getResource(transactionFenceKey);
+        if (checked != null) checked.removeIf(identity -> identity.unitKey().equals(unitKey));
     }
 
     @Override
     public void release(Lease lease) {
         if (lease == null) return;
+        invalidateTransactionFence(lease.unitKey());
         repository.release(lease.unitKey(), lease.ownerId(), lease.fencingEpoch(), Instant.now());
     }
 

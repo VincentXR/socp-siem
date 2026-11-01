@@ -14,6 +14,27 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 class RecentAlertSinkTest {
 
     @Test
+    void streamFailureCannotRejectAnAlreadyCommittedBatch() {
+        var forwarder = org.mockito.Mockito.mock(AlertForwarder.class);
+        org.mockito.Mockito.when(forwarder.ownsJournalTransaction()).thenReturn(true);
+        var hub = new AlertStreamHub() {
+            @Override public void broadcast(String tenant, Alert alert) {
+                throw new IllegalStateException("subscriber disconnected");
+            }
+        };
+        var event = new SecurityEvent("ev", Instant.EPOCH, "auth", "host", "raw",
+                java.util.Map.of("tenant_id", "tenant-a"), Severity.INFO);
+        var alert = new Alert("rule", "Rule", Severity.HIGH, "message", "host", List.of(event));
+        var result = new com.socp.rule.engine.DetectionResult(event, null, java.util.Map.of(),
+                List.of(), List.of(alert), List.of(alert), null, null);
+        var entries = List.of(new com.socp.rule.engine.BatchEventAlertSink.Entry(result, null));
+        var sink = new RecentAlertSink(forwarder, hub);
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> sink.publishBatch(entries));
+        org.mockito.Mockito.verify(forwarder).forwardBatch(entries);
+        assertEquals(List.of(alert), sink.recent());
+    }
+
+    @Test
     void keepsABoundedNewestFirstWriteOptimizedWindowAndSuppressesDuplicates() {
         RecentAlertSink sink = new RecentAlertSink(10, null, null);
         List<Alert> alerts = IntStream.range(0, 20)

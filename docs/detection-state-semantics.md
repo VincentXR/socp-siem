@@ -258,13 +258,26 @@ unchanged; counter storage uses V31 as described below.
 
 ## Backpressure
 
-Each partition tracks estimated UTF-8 payload bytes across in-flight, lane
-queued, and deferred work in addition to the 1,000-item lane bound. When the
-configured `SOCP_DETECT_PARTITION_MAX_PENDING_BYTES` budget is reached, only
-that partition is paused and its already-fetched records are drained through a
-bounded deferred batch; other partitions continue polling. A single oversized
-record is admitted when a partition is idle so the partition cannot deadlock.
-The byte count is an admission estimate. Detection additionally applies
+The consumer reserves estimated UTF-8 payload/header bytes and record counts
+across in-flight, lane-queued, and deferred work. Process-wide defaults are
+8 MiB (`SOCP_DETECT_MAX_PENDING_BYTES`) and 4,096 records
+(`SOCP_DETECT_MAX_PENDING_RECORDS`), independent of partition and batch count.
+Reaching either bound pauses all assigned partitions; heartbeat polls continue.
+The one poll already returned by Kafka (at most 200 records) is retained and
+drained without dropping records or advancing incomplete offsets. Consumption
+resumes only after both totals fall to half their limits. Reservations survive
+rebalance until each running or discarded task releases them exactly once.
+
+Each partition also has `SOCP_DETECT_PARTITION_MAX_PENDING_BYTES` (16 MiB by
+default) and a 1,000-task lane bound. Its pause clears only when deferred work
+is empty, retained bytes fall to half the partition limit, and queued tasks
+fall to 500 or fewer. Moving a deferred batch into a lane does not return its
+reservation. Retry pauses remain independent of these limits. Already-fetched
+oversized records can drain while consumption is paused. These are admission
+estimates, not measured heap usage or a throughput guarantee: rule state,
+Kafka fetch buffers and object overhead need separate headroom. Aggregate
+`socp.detection.consumer.pending.bytes` and `.records` gauges expose retained
+reservations without tenant or partition labels. Detection additionally applies
 independent per-tenant event-rate, pending-byte, and active-routing-entity
 budgets. A rejected HTTP admission returns 503; a rejected Kafka admission
 remains retryable and leaves the partition offset pending. A tenant's budget is
@@ -350,10 +363,11 @@ completion tracker
 commit only the contiguous partition offset
 ```
 
-`COMPLETED` is also marked idempotently by the consumer after the completion
-Future. This covers source-compatible sinks and zero-alert events; the
-event-aware Detection sink performs the Outbox plus completion update in one
-database transaction.
+The primary Detection sink commits the Outbox and journal completion in one
+transaction, including zero-alert events. After its completion future and
+ownership callback succeed, the consumer does not repeat the journal write.
+Shadow and source-compatible sinks retain explicit consumer finalization.
+Repeated compatibility finalization preserves the original completion timestamp.
 
 The rule worker creates one immutable `DetectionResult` before entering the
 sink. It contains the canonical input event and Kafka position, the executable
@@ -362,11 +376,109 @@ alert lists, suppression decision, and `tenant|eventId` idempotency key. The
 Alert Outbox stores this metadata beside each emitted alert; state bytes remain
 in the versioned snapshot store. A failed durable commit therefore never
 publishes a result whose in-memory state is treated as successful. That
-rollback restores serialized state **and** discards the candidate alerts each
+rollback restores changed state **and** discards the candidate alerts each
 rule had accumulated for the failed event, because pending alerts are not part
 of the serialized snapshot; without it a rolled back event would deliver its
 alerts against the next event's result.
 
+Built-in stateful rules use an event-local undo log for affected keys, including
+new keys and keys removed by idle/capacity eviction. Evaluation cost therefore
+does not include copying every unrelated entity window. Full checkpoints retain
+the existing versioned JSON representation. Third-party `StatefulRule`
+implementations default to full-state rollback until they implement the mutation
+contract.
+
+Custom Java rules overriding the mutation SPI must be rebuilt for this
+`1.0.0-SNAPSHOT` change: `StatefulRule.beginMutation()` returns `StateMutation`
+in place of `RuleStateMutation`. Mutations use explicit `rollback()`; `close()`
+releases undo data rather than implicitly rolling back unless committed. The
+`RuleStateMap` mutation functions now encode and decode undo state, replacing
+the previous copy/encode pair. Rules that use the default full-snapshot fallback
+do not need their own mutation implementation. Existing overrides must adapt
+and verify successful commit, rollback, TTL and capacity eviction before upgrade;
+an old type alias cannot preserve these lifecycle semantics. This is a Java
+extension SPI change, not a checkpoint JSON or HTTP/event schema migration.
+
+New built-in audit entries include `digestScope: affected-keys-merkle-v1`.
+Their SHA-256 digests cover sorted affected keys and length-framed before/after
+Merkle fingerprints, with a distinct marker for an absent key. Tree fingerprints
+separate maps, ordered lists and scalar values; map keys are sorted and immutable
+evidence fingerprints are reused. Undo trees copy mutable containers while sharing
+immutable evidence, avoiding full evidence JSON serialization per event. These
+are not full-checkpoint checksums. An absent `digestScope` retains the historical
+`full-state-v1` interpretation; the older `affected-keys-v1` scope remains readable.
+Old journal rows and checkpoints require no migration. Consumers comparing digests
+must compare like scopes. Undo records remain private and are discarded after
+processing; raw state is not added to audit records. Immutable evidence JSON is
+reused across windows under a process-wide 4,096-entry / 8 MiB weight limit;
+this is a cache budget, not a measurement of live heap. Eviction affects only
+encoding work and preserves the existing checkpoint bytes. Cache lookup uses
+immutable event instance identity, avoiding repeated field-map hashing. Equal
+events reconstructed during replay may occupy separate entries within the same
+bound; durable delivery identities and checkpoint content are unchanged.
+
+The ordered worker path commits queued results in event order, in adaptive
+batches of up to 32 events (`-Dsocp.rule.commit-batch-size`, hard maximum 64). Collection waits at
+most 1 ms for the next queued event and stops after the first alert candidate
+or a 4 MiB estimated undo budget (one event may exceed that threshold). This
+preserves suppression ordering. Journal completions and alert outbox writes
+share one transaction; failure rolls back every prepared event in reverse
+order. Every committed position is recorded before any completion future can
+trigger a checkpoint. A failed post-commit position callback blocks checkpoints
+until state recovery. Owner rows are locked once per transaction, in sorted
+order shared with checkpoint writes; this cache never survives transaction
+completion or suspension into a nested transaction.
+
+Three or more uncached ownership checks can share a fresh scalar row-lock
+query and a bulk lease renewal in the same transaction. Every owner/epoch is
+validated before renewal. Parameterized ordinal ordering matches the single
+guard/checkpoint lock order independently of database collation. Smaller sets
+retain point updates; failed or rolled-back checks do not populate the cache.
+
+Kafka polls reserve bounded partition work without waiting for database I/O.
+Each serial lane pre-admits its group using bounded JDBC insert batches (maximum
+64 records per transaction). The existing-delivery lookup keeps its tenant
+parameter in a scalar subquery, preserving tenant/delivery index bounds when
+PostgreSQL statistics do not yet include a new tenant. It returns only that
+tenant's receipts. This does not acknowledge an offset. A lane admits
+up to 32 events (`socp.kafka.processing-batch-size`, maximum 64), also bounded
+by 1 MiB and the partition byte budget; one oversized event may proceed alone.
+Before admission, the lane can combine adjacent work already queued by earlier
+polls under the same assignment, within those limits. It adds no collection
+delay, stops at replay/task barriers, and retains every combined task's byte
+reservation until processing finishes or the assignment is revoked.
+Only consecutive NEW receipts with one tenant, engine shard and partition,
+and distinct delivery IDs, share an ordered submission group. The service pins
+one engine generation and preserves each event's tenant and Kafka trace.
+After acquiring the generation lock and before each submission, admission
+rechecks the caller's exact assignment and interruption status. A revoked lane
+waiting for replacement cannot enter the replacement engine with old receipts.
+
+The worker still evaluates state in order. A failed atomic sub-batch cancels
+unevaluated successors in its submission group before completing futures;
+an already committed prefix remains durable. The lane waits for every original
+future to settle before retrying failed entries through fresh journal checks.
+Malformed records, existing receipts and duplicate IDs remain serial barriers.
+Ownership loss retires the assignment immediately until revoke/reassignment;
+late work cannot acknowledge it. Contiguous offset tracking remains authoritative.
+The legacy `socp.detection.db.transactions`
+event counters count logical durable boundaries, not physical SQL transactions.
+
+Watchlist cache hits do not open database transactions. Cache misses retain the
+existing tenant-scoped SELECT, refresh interval, weight bound, and cross-instance
+visibility policy; writes still use explicit durable transactions. Checkpoint
+callbacks install the source event's tenant explicitly before accessing the
+snapshot store, including callbacks running after the worker scope has closed.
+
+State and ownership locks that span database I/O use `ReentrantLock`, allowing
+Java 21 virtual threads to release their carrier while waiting. Using a JVM
+monitor around those waits can starve all carriers during a checkpoint even
+when the database and heap have spare capacity.
+
+The explicit atomic-batch API accepts at most 128 events and commits them in
+one sink transaction. Its per-event undo records are retained until that commit;
+exceeding the 4 MiB estimated undo budget rejects and rolls back the whole batch
+before the sink is called. Unlike adaptive batches, it does not commit a prefix.
 Atomic batches evaluate their events in order and capture each event's audit
 diff before evaluating the next. Once all candidates are known, suppression
 reserves only their affected lock stripes in a fixed order. The reservation
@@ -376,7 +488,8 @@ an alert-free batch takes no suppression locks. Unrelated tenants or shards
 therefore do not wait behind a process-wide suppression lock during database I/O.
 
 A bounded Kafka partition prefix may contain several tenants or state shards.
-The consumer claims the journal rows per tenant, then submits one ordered atomic
+Such mixed-state prefixes use the explicit atomic path per state unit; a
+single-state prefix retains ordered adaptive batching. The consumer claims the journal rows per tenant, then submits one ordered atomic
 batch per state unit to its own engine without awaiting the preceding unit.
 The partition prefix remains unacknowledged until every submitted future has
 settled successfully and every unit's ownership fence is current. A synchronous
@@ -390,8 +503,8 @@ Checkpoint compatibility fingerprints include the shard count, routing
 hash version and rule semantics. Changing the layout invalidates those snapshots
 and rebuilds from the retained journal. Legacy checkpoints with no layout
 fingerprint also require full retained-journal replay, including on a single-shard
-deployment; their original shard count cannot be inferred. Apply one shard count consistently to
-the cluster and drain/restart it when changing the layout; canonical cross-field
+deployment; their original shard count cannot be inferred. Apply one shard count
+consistently to the cluster and drain/restart it when changing the layout; canonical cross-field
 limitations still require the routed delivery contract.
 
 For Kafka records, the durable sink evaluates the current state-unit fence
@@ -664,3 +777,40 @@ The current design does not claim:
 
 These boundaries keep the contract testable without presenting a local
 consumer-group implementation as a general-purpose stream processor.
+
+### Checkpoint scheduling and startup recovery
+
+Checkpoints require both `socp.detect.state.snapshot-every-events` (default 500)
+and `socp.detect.state.snapshot-min-interval-ms` (default 5000). The first eligible
+checkpoint can run immediately; subsequent attempts, including failed writes,
+are coalesced within the interval. `SOCP_DETECT_STATE_SNAPSHOT_MIN_INTERVAL_MS`
+overrides the interval; zero retains event-count-only scheduling. This bounds
+checkpoint work during bursts without delaying journal completion or acknowledging
+uncommitted work. A longer interval increases the journal tail replayed on restart.
+
+Kafka assignment recovery first acquires the partition leases and enumerates
+journal tenant IDs in bounded pages without decoding their payloads. Historical
+tenant/shard engines stay absent until their first event or bounded pending-row
+replay needs them. Cold restoration is serialized and uses the coherent
+snapshot-plus-tail path before evaluation; publication rechecks the exact
+assignment, so a revoked restore cannot become a replacement engine. No rule
+watermarks, journal rows, or active engine state are discarded to reduce memory.
+
+Stats never materialize cold engines, including before the first Kafka assignment
+and on compatibility paths. Configured rule counts still come from the rule
+store. `stateRecovery.restorationMode` is `on-first-event` after lazy assignment,
+`materializedShards` counts this tenant's live engines, and `deferredUntilEvent`
+identifies an absent worker engine whose admission is ready. READY means admission
+can perform this restoration, not that every historical tenant is resident. A
+history-free default warmup first checks the normal checkpoint/replay path; a
+restored checkpoint is not counted as `warmedWithoutHistory`. Explicit
+`restoreAll` and stores without tenant discovery keep the eager compatibility
+path. Existing process startup readiness before the first Kafka assignment does
+not establish partition ownership; assignment must be observed separately.
+
+Missing,
+corrupt, incompatible or mixed-partition snapshots fall back to a tenant-scoped
+journal replay. An assignment cannot restore a snapshot containing a revoked
+partition. Checkpoint tails filter tenant, topic, status, partition and offset in
+SQL, so already checkpointed payloads are not decoded again. Checkpoint JSON
+versions and durable event identities remain unchanged.

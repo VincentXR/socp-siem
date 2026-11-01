@@ -16,7 +16,14 @@ final class PartitionRetryState {
     }
 
     synchronized boolean active(Lease lease) {
-        return lease == null || assignments.get(lease.partition) == lease;
+        return lease == null || (assignments.get(lease.partition) == lease && !lease.retired);
+    }
+
+    /** Keep a tombstone until reassignment so a late poll cannot recreate this owner. */
+    synchronized boolean retire(Lease lease) {
+        if (lease == null || !active(lease)) return false;
+        lease.retired = true;
+        return true;
     }
 
     synchronized boolean block(Lease lease, String category) {
@@ -63,6 +70,7 @@ final class PartitionRetryState {
         private final TopicPartition partition;
         private long blockedSince;
         private String category;
+        private boolean retired;
 
         private Lease(TopicPartition partition) {
             this.partition = partition;

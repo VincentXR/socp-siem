@@ -31,6 +31,11 @@ class SearchConfigPostgresMigrationTest {
                 .withEnv("POSTGRES_USER", "socp")
                 .withEnv("POSTGRES_PASSWORD", "socp-test")
                 .withExposedPorts(5432)
+                .withCreateContainerCmdModifier(command -> command.getHostConfig()
+                        .withMemory(512L * 1024 * 1024).withMemorySwap(512L * 1024 * 1024)
+                        .withPortBindings(new com.github.dockerjava.api.model.PortBinding(
+                                com.github.dockerjava.api.model.Ports.Binding.bindIpAndPort("127.0.0.1", 0),
+                                new com.github.dockerjava.api.model.ExposedPort(5432))))
                 .waitingFor(Wait.forLogMessage(".*database system is ready to accept connections.*\\n", 2))) {
             postgres.start();
             String url = "jdbc:postgresql://" + postgres.getHost() + ":"
@@ -78,13 +83,13 @@ class SearchConfigPostgresMigrationTest {
                         EXPLAIN (ANALYZE, BUFFERS)
                         SELECT * FROM t_ingestion_outbox
                         WHERE status = 'PENDING' AND next_attempt_at <= CURRENT_TIMESTAMP
-                        ORDER BY next_attempt_at ASC, created_at ASC
+                        ORDER BY next_attempt_at ASC, sequence_no ASC, id ASC
                         LIMIT 200
                         """)) {
                     while (rows.next()) plan.append(rows.getString(1)).append('\n');
                 }
                 String explain = plan.toString();
-                assertTrue(explain.contains("idx_ingestion_outbox_due_v2"), explain);
+                assertTrue(explain.contains("idx_ingestion_outbox_due_covering"), explain);
                 assertFalse(explain.contains("Seq Scan on t_ingestion_outbox"), explain);
                 assertFalse(explain.contains("Sort  ("), explain);
 
@@ -157,6 +162,11 @@ class SearchConfigPostgresMigrationTest {
                 .withEnv("POSTGRES_USER", "socp")
                 .withEnv("POSTGRES_PASSWORD", "socp-test")
                 .withExposedPorts(5432)
+                .withCreateContainerCmdModifier(command -> command.getHostConfig()
+                        .withMemory(512L * 1024 * 1024).withMemorySwap(512L * 1024 * 1024)
+                        .withPortBindings(new com.github.dockerjava.api.model.PortBinding(
+                                com.github.dockerjava.api.model.Ports.Binding.bindIpAndPort("127.0.0.1", 0),
+                                new com.github.dockerjava.api.model.ExposedPort(5432))))
                 .waitingFor(Wait.forLogMessage(".*database system is ready to accept connections.*\\n", 2))) {
             postgres.start();
             String url = "jdbc:postgresql://" + postgres.getHost() + ":"

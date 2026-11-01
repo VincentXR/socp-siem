@@ -18,6 +18,12 @@ public interface DetectionStateOwnership {
     /** Renew the lease and fail closed when another owner has fenced it. */
     void assertCurrent(Lease lease);
 
+    /** Validate a bounded group before any result in its transaction becomes durable. */
+    default void assertCurrentBatch(java.util.List<Lease> leases) {
+        if (leases == null || leases.size() > 64) throw new IllegalArgumentException("ownership batch limit is 64");
+        leases.stream().sorted(java.util.Comparator.comparing(Lease::unitKey)).forEach(this::assertCurrent);
+    }
+
     /** Release a lease only when its owner and fencing token still match. */
     void release(Lease lease);
 

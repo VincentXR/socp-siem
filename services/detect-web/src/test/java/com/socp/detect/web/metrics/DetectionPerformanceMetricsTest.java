@@ -6,6 +6,8 @@ import com.socp.platform.client.http.ServiceCall;
 import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.model.SecurityEvent;
 import com.socp.rule.model.Severity;
+import com.socp.rule.partition.DetectionDelivery;
+import com.socp.rule.partition.DetectionRoutingKey;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -27,6 +29,22 @@ class DetectionPerformanceMetricsTest {
 
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
 
+    @Test
+    void physicalOperationCountsDoNotMultiplyBatchDurationByEventCount() {
+        DetectionPerformanceMetrics metrics = new DetectionPerformanceMetrics(registry);
+        var stage = com.socp.rule.engine.RuleProcessingObserver.Operation.BATCH_COMMIT;
+        metrics.operationCompleted(stage, 6, 2_000_000L, true);
+        metrics.operationCompleted(stage, 2, 1_000_000L, false);
+        var timer = registry.find("socp.detection.operation")
+                .tags("stage", "batch_commit", "outcome", "success").timer();
+        assertEquals(1, timer.count());
+        assertEquals(2, timer.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS), 0.001);
+        assertEquals(6, registry.find("socp.detection.operation.items")
+                .tags("stage", "batch_commit", "outcome", "success").summary().totalAmount());
+        assertEquals(1, registry.find("socp.detection.operation")
+                .tags("stage", "batch_commit", "outcome", "failure").timer().count());
+    }
+
     @AfterEach
     void closeRegistry() {
         registry.close();
@@ -41,7 +59,7 @@ class DetectionPerformanceMetricsTest {
                 "socp_bench_ingest_time", ingest.toString()));
 
         metrics.kafkaReceived(event);
-        metrics.journalCommitted(event);
+        metrics.journalCommitted(event.scopedId());
         metrics.evaluationCompleted(event, 1);
         metrics.durableSinksCompleted(event, 1);
 
@@ -72,7 +90,7 @@ class DetectionPerformanceMetricsTest {
         SecurityEvent event = event("event-terminal", Map.of("tenant_id", "tenant-metrics"));
 
         metrics.kafkaReceived(event);
-        metrics.terminalWithoutEvaluation(event, "malformed");
+        metrics.terminalWithoutEvaluation(event.scopedId(), "malformed");
         metrics.terminalWithoutEvaluation((SecurityEvent) null, "ignored");
         metrics.processingFailed(null, new IllegalStateException("dependency"));
         metrics.processingFailed(event, new IllegalStateException("dependency"));
@@ -81,6 +99,57 @@ class DetectionPerformanceMetricsTest {
                 .tag("outcome", "malformed").counter().count(), 0.001);
         assertEquals(2, registry.find("socp.detection.event.completed")
                 .tag("outcome", "failed").counter().count(), 0.001);
+    }
+
+    @Test
+    void overlappingRoutedCopiesKeepIndependentEventTimings() {
+        DetectionPerformanceMetrics metrics = new DetectionPerformanceMetrics(registry);
+        SecurityEvent host = routedEvent("host", "host-1");
+        SecurityEvent user = routedEvent("user", "alice");
+        assertEquals(host.scopedId(), user.scopedId());
+        metrics.kafkaReceived(host);
+        metrics.kafkaReceived(user);
+        metrics.journalCommitted(host);
+        metrics.journalCommitted(user);
+        metrics.evaluationCompleted(host, 0);
+        metrics.durableSinksCompleted(host, 0);
+        metrics.evaluationCompleted(user, 1);
+        metrics.durableSinksCompleted(user, 1);
+
+        assertEquals(2, registry.find("socp.detection.event.stage")
+                .tag("stage", "consumer_to_durable").timer().count());
+        assertEquals(2, registry.find("socp.detection.event.stage")
+                .tag("stage", "rule_evaluation").timer().count());
+        assertEquals(2, registry.find("socp.detection.db.transactions")
+                .tag("operation", "journal_claim").counter().count(), 0.001);
+        assertEquals(1, registry.find("socp.detection.event.completed")
+                .tag("outcome", "no_alert").counter().count(), 0.001);
+        assertEquals(1, registry.find("socp.detection.event.completed")
+                .tag("outcome", "alert").counter().count(), 0.001);
+        metrics.durableSinksCompleted(host, 0);
+        metrics.durableSinksCompleted(user, 1);
+        assertEquals(2, registry.find("socp.detection.event.stage")
+                .tag("stage", "consumer_to_durable").timer().count());
+    }
+
+    @Test
+    void terminalAndFailureCleanupDoNotRemoveSiblingDeliveryTimings() {
+        DetectionPerformanceMetrics metrics = new DetectionPerformanceMetrics(registry);
+        SecurityEvent host = routedEvent("host", "host-1");
+        SecurityEvent user = routedEvent("user", "alice");
+        for (boolean failed : new boolean[]{false, true}) {
+            metrics.kafkaReceived(host);
+            metrics.kafkaReceived(user);
+            if (failed) metrics.processingFailed(host, new IllegalStateException("dependency unavailable"));
+            else metrics.terminalWithoutEvaluation(host, "completed");
+            metrics.journalCommitted(user);
+            metrics.evaluationCompleted(user, 0);
+            metrics.durableSinksCompleted(user, 0);
+        }
+        assertEquals(2, registry.find("socp.detection.event.stage")
+                .tag("stage", "consumer_to_durable").timer().count());
+        assertEquals(2, registry.find("socp.detection.event.completed")
+                .tag("outcome", "no_alert").counter().count(), 0.001);
     }
 
     @Test
@@ -309,5 +378,29 @@ class DetectionPerformanceMetricsTest {
 
     private static SecurityEvent event(String id, Map<String, String> fields) {
         return new SecurityEvent(id, Instant.now(), "auth", "host-1", "raw", fields, Severity.HIGH);
+    }
+
+    private static SecurityEvent routedEvent(String dimension, String value) {
+        String tenant = "tenant-metrics";
+        String sourceId = "shared-source-event";
+        Map<String, String> fields = new java.util.LinkedHashMap<>();
+        fields.put("tenant_id", tenant);
+        fields.put(DetectionDelivery.SCHEMA_VERSION_FIELD, DetectionDelivery.SCHEMA_VERSION);
+        fields.put(DetectionDelivery.ROUTING_VERSION_FIELD, DetectionDelivery.ROUTING_VERSION);
+        fields.put(DetectionDelivery.PLAN_VERSION_FIELD, "plan-1");
+        fields.put(DetectionDelivery.SOURCE_EVENT_ID_FIELD, sourceId);
+        fields.put(DetectionDelivery.SOURCE_TOPIC_FIELD, "socp-events");
+        fields.put(DetectionDelivery.SOURCE_PARTITION_FIELD, "0");
+        fields.put(DetectionDelivery.SOURCE_OFFSET_FIELD, "42");
+        fields.put(DetectionDelivery.KIND_FIELD, DetectionDelivery.Kind.STATEFUL.name());
+        fields.put(DetectionDelivery.DIMENSION_FIELD, dimension);
+        fields.put(DetectionDelivery.VALUE_FIELD, value);
+        fields.put(DetectionRoutingKey.ROUTING_FIELD, dimension);
+        fields.put(DetectionRoutingKey.ROUTING_VALUE, value);
+        fields.put(DetectionDelivery.DELIVERY_ID_FIELD, DetectionDelivery.deliveryId(tenant, sourceId,
+                DetectionDelivery.ROUTING_VERSION, DetectionDelivery.Kind.STATEFUL, dimension, value));
+        SecurityEvent event = event(sourceId, fields);
+        DetectionDelivery.validate(event);
+        return event;
     }
 }

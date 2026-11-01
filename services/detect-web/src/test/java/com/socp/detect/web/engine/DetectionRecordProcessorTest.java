@@ -359,6 +359,26 @@ class DetectionRecordProcessorTest {
     }
 
     @Test
+    void atomicJournalSinkAvoidsSecondFinalizationOnlyAfterSuccessfulCompletion() {
+        DetectEngineService engine = mock(DetectEngineService.class);
+        DetectionStateStore store = mock(DetectionStateStore.class);
+        given(store.claim(any(SecurityEvent.class), any(), any(), any(), anyString()))
+                .willReturn(DetectionEventClaim.NEW);
+        given(engine.completesJournal(store)).willReturn(true);
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(CompletableFuture.completedFuture(null));
+        var processor = new DetectionRecordProcessor(engine, store, null);
+        processor.process("socp-events", 2, 42L, "default|src_ip|198.51.100.10", EVENT_PAYLOAD);
+        verify(store, org.mockito.Mockito.never()).markCompleted(any(SecurityEvent.class));
+        given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))
+                .willReturn(CompletableFuture.failedFuture(new IllegalStateException("commit failed")));
+        assertThrows(DetectionRecordProcessor.RetryableDetectionFailure.class,
+                () -> processor.process("socp-events", 2, 43L,
+                        "default|src_ip|198.51.100.10", EVENT_PAYLOAD));
+        verify(store, org.mockito.Mockito.never()).markCompleted(any(SecurityEvent.class));
+    }
+
+    @Test
     void admissionBackpressureIsTypedAndRetryable() {
         DetectEngineService engine = mock(DetectEngineService.class);
         given(engine.ingestFromKafkaAndAwait(any(SecurityEvent.class), anyString(), any(), any()))

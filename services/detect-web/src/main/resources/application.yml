@@ -88,6 +88,10 @@ socp:
       max-tenants: ${SOCP_DETECT_ENGINE_MAX_TENANTS:1000}
       cleanup-interval-ms: ${SOCP_DETECT_ENGINE_CLEANUP_INTERVAL_MS:60000}
     backpressure:
+      # Aggregate raw record reservations across all Kafka partitions. These
+      # admission estimates exclude rule state and are not measured heap usage.
+      max-pending-bytes: ${SOCP_DETECT_MAX_PENDING_BYTES:8388608}
+      max-pending-records: ${SOCP_DETECT_MAX_PENDING_RECORDS:4096}
       # Count the in-flight, lane-queued and deferred payload bytes per Kafka
       # partition; one oversized record is admitted so a partition can drain.
       partition-max-bytes: ${SOCP_DETECT_PARTITION_MAX_PENDING_BYTES:16777216}

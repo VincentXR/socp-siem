@@ -14,55 +14,63 @@ import java.util.List;
 import java.util.Optional;
 
 public interface IngestionOutboxRepository extends TenantScopedRepository<IngestionOutboxEvent, String> {
-    /** Aggregate pending heads before locking; a locked/uncommitted head still blocks every successor. */
-    @org.springframework.data.jpa.repository.QueryHints(
-            @jakarta.persistence.QueryHint(name = "jakarta.persistence.query.timeout", value = "5000"))
-    @Query(value = "select queued.* from t_ingestion_outbox queued "
-            + "where queued.status = 'PENDING' and queued.next_attempt_at <= :now and queued.attempts < :maxAttempts "
-            + "and (queued.tenant_id, queued.routing_key, queued.sequence_no) in "
-            + "(select tenant_id, routing_key, min(sequence_no) from t_ingestion_outbox "
-            + "where status = 'PENDING' group by tenant_id, routing_key) "
-            + "and not exists (select 1 from t_ingestion_outbox blocker "
-            + "where blocker.tenant_id = queued.tenant_id and blocker.routing_key = queued.routing_key "
-            + "and blocker.status = 'PROCESSING') "
-            + "order by queued.next_attempt_at, queued.sequence_no limit :limit for update skip locked", nativeQuery = true)
-    List<IngestionOutboxEvent> findDueHeadsForUpdate(@Param("now") Instant now,
-                                                   @Param("maxAttempts") int maxAttempts, @Param("limit") int limit);
-
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Transactional
-    @Query("update IngestionOutboxEvent e set e.status = 'PROCESSING', e.claimToken = :token, "
-            + "e.processingKey = concat(concat(e.tenantId, ':'), e.routingKey), e.claimedAt = :now, "
-            + "e.updatedAt = :now, e.attempts = e.attempts + 1 where e.id in :ids and e.status = 'PENDING' "
-            + "and e.nextAttemptAt <= :now and e.attempts < :maxAttempts "
-            + "and not exists (select blocker.id from IngestionOutboxEvent blocker "
-            + "where blocker.tenantId = e.tenantId and blocker.routingKey = e.routingKey "
-            + "and (blocker.status = 'PROCESSING' or (blocker.status = 'PENDING' and blocker.sequenceNo < e.sequenceNo)))")
-    int claimHeadBatch(@Param("ids") Collection<String> ids, @Param("now") Instant now,
-                       @Param("maxAttempts") int maxAttempts, @Param("token") String token);
-
-    @Modifying(clearAutomatically = true, flushAutomatically = true)
-    @Transactional
-    @Query("update IngestionOutboxEvent e set e.status = 'PUBLISHED', e.claimToken = null, "
-            + "e.processingKey = null, e.claimedAt = null, e.publishedAt = :now, e.lastError = null, "
-            + "e.updatedAt = :now where e.id in :ids and e.status = 'PROCESSING' and e.claimToken = :token")
-    int markBatchPublished(@Param("ids") Collection<String> ids, @Param("now") Instant now, @Param("token") String token);
     List<IngestionOutboxEvent> findByTenantId(String tenantId);
     Optional<IngestionOutboxEvent> findByIdAndTenantId(String id, String tenantId);
-    List<IngestionOutboxEvent> findByTenantIdAndEventIdIn(String tenantId, Collection<String> eventIds);
+    // Preserve the composite identity lookup for tenants missing from statistics;
+    // PostgreSQL evaluates this scalar tenant once as an InitPlan.
+    @Query(value = "select e.* from t_ingestion_outbox e "
+            + "where e.tenant_id = (select cast(:tenantId as varchar)) and e.event_id in (:eventIds)", nativeQuery = true)
+    List<IngestionOutboxEvent> findByTenantIdAndEventIdIn(@Param("tenantId") String tenantId,
+                                                       @Param("eventIds") Collection<String> eventIds);
 
     @org.springframework.data.jpa.repository.QueryHints(
             @jakarta.persistence.QueryHint(name = "jakarta.persistence.query.timeout", value = "5000"))
-    @Query(value = "select ranked.* from ("
-            + "select queued.*, row_number() over (partition by tenant_id, routing_key order by sequence_no) as key_position, "
-            + "first_value(next_attempt_at) over (partition by tenant_id, routing_key order by sequence_no) as head_due, "
-            + "first_value(sequence_no) over (partition by tenant_id, routing_key order by sequence_no) as head_sequence "
-            + "from t_ingestion_outbox queued where status = 'PENDING') ranked "
-            + "where ranked.key_position <= 16 and ranked.head_due <= :now and ranked.next_attempt_at <= :now "
-            + "and not exists (select 1 from t_ingestion_outbox blocker "
-            + "where blocker.tenant_id = ranked.tenant_id and blocker.routing_key = ranked.routing_key "
-            + "and blocker.status = 'PROCESSING') "
-            + "order by ranked.head_due, ranked.head_sequence, ranked.sequence_no limit 200", nativeQuery = true)
+    // Find eligible heads in index order before expanding their first 16
+    // sequence positions. Rank only selected keys, then fetch at most 200 payloads.
+    // The ID tie-break keeps legacy duplicate sequences within the same limits.
+    // Scalar statuses avoid estimated-empty global scans while stats lag.
+    // Retain blocker order with OFFSET 0 so EXISTS uses the covering key index
+    // instead of repeatedly filtering retained payloads or choosing a heap scan.
+    @Query(value = """
+            with heads as (
+                select head.id as head_id, head.tenant_id, head.routing_key,
+                       head.next_attempt_at as head_due, head.sequence_no as head_sequence
+                from t_ingestion_outbox head
+                where head.status = 'PENDING' and head.next_attempt_at <= :now
+                  and head.id = (
+                      select first_pending.id from t_ingestion_outbox first_pending
+                      where first_pending.tenant_id = head.tenant_id
+                        and first_pending.routing_key = head.routing_key and first_pending.status = (select cast('PENDING' as varchar))
+                      order by first_pending.sequence_no, first_pending.id fetch first 1 row only)
+                  and not exists (
+                      select 1 from t_ingestion_outbox blocker
+                      where blocker.tenant_id = head.tenant_id and blocker.routing_key = head.routing_key
+                        and blocker.status = (select cast('PROCESSING' as varchar))
+                      order by blocker.sequence_no, blocker.id offset 0)
+                order by head.next_attempt_at, head.sequence_no, head.id
+                limit 200
+            ), selected as (
+                select pending.id, pending.sequence_no, pending.next_attempt_at,
+                       heads.head_due, heads.head_sequence, heads.head_id,
+                       row_number() over (partition by heads.tenant_id, heads.routing_key
+                                          order by pending.sequence_no, pending.id) as key_position
+                from heads join t_ingestion_outbox pending
+                  on pending.tenant_id = heads.tenant_id and pending.routing_key = heads.routing_key
+                 and pending.status = (select cast('PENDING' as varchar))
+                 and pending.sequence_no <= coalesce((
+                     select cutoff.sequence_no from t_ingestion_outbox cutoff
+                     where cutoff.tenant_id = heads.tenant_id and cutoff.routing_key = heads.routing_key
+                       and cutoff.status = (select cast('PENDING' as varchar))
+                     order by cutoff.sequence_no, cutoff.id offset 15 rows fetch first 1 row only
+                 ), 9223372036854775807)
+            ), due as (
+                select id, head_due, head_sequence, head_id, sequence_no from selected
+                where key_position <= 16 and next_attempt_at <= :now
+                order by head_due, head_sequence, sequence_no, head_id, id limit 200
+            )
+            select queued.* from due join t_ingestion_outbox queued on queued.id = due.id
+            order by due.head_due, due.head_sequence, due.sequence_no, due.head_id, due.id
+            """, nativeQuery = true)
     List<IngestionOutboxEvent> findDueOrderedBatch(@Param("now") Instant now);
 
     long countByStatus(String status);
@@ -76,43 +84,75 @@ public interface IngestionOutboxRepository extends TenantScopedRepository<Ingest
     @Query("select min(e.updatedAt) from IngestionOutboxEvent e where e.status = :status")
     Instant findOldestUpdatedAtByStatus(@Param("status") String status);
 
+    // Conditional status fences keep stale estimates from turning one ID/key
+    // lookup into a scan of the complete pending queue.
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update IngestionOutboxEvent e set e.status = 'PROCESSING', e.claimToken = :token, "
             + "e.processingKey = concat(concat(e.tenantId, ':'), e.routingKey), "
             + "e.updatedAt = :now, e.claimedAt = :now, "
-            + "e.attempts = e.attempts + 1 where e.id = :id and e.status = 'PENDING' "
-            + "and e.nextAttemptAt <= :now and e.attempts < :maxAttempts and e.attempts = :expectedAttempts "
+            + "e.attempts = e.attempts + 1 where e.id = :id "
+            + "and case when e.status = 'PENDING' then e.attempts else null end = :expectedAttempts "
+            + "and e.nextAttemptAt <= :now and e.attempts < :maxAttempts "
             + "and not exists (select blocker.id from IngestionOutboxEvent blocker "
             + "where blocker.tenantId = e.tenantId and blocker.routingKey = e.routingKey "
-            + "and blocker.status = 'PROCESSING') "
+            + "and case when blocker.status = 'PROCESSING' then 1 else 0 end = 1) "
             + "and not exists (select blocker.id from IngestionOutboxEvent blocker "
             + "where blocker.tenantId = e.tenantId and blocker.routingKey = e.routingKey "
-            + "and blocker.status = 'PENDING' and blocker.sequenceNo < e.sequenceNo)")
+            + "and case when blocker.status = 'PENDING' then 1 else 0 end = 1 "
+            + "and blocker.sequenceNo < e.sequenceNo)")
     int claim(@Param("id") String id, @Param("now") Instant now, @Param("maxAttempts") int maxAttempts, @Param("expectedAttempts") int expectedAttempts, @Param("token") String token);
 
+    // Keep the status/token fence as one conditional predicate. PostgreSQL can
+    // otherwise prefer an estimated-empty status index over the unique ID,
+    // scanning every active claim for each acknowledgement while stats lag.
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update IngestionOutboxEvent e set e.status = 'PUBLISHED', e.claimToken = null, "
             + "e.processingKey = null, e.claimedAt = null, "
             + "e.publishedAt = :now, e.lastError = null, e.updatedAt = :now "
-            + "where e.id = :id and e.status = 'PROCESSING' and e.claimToken = :token")
+            + "where e.id = :id and case when e.status = 'PROCESSING' then e.claimToken else null end = :token")
     int markPublished(@Param("id") String id, @Param("now") Instant now, @Param("token") String token);
+
+    // A newly active tenant can also be estimated empty: retain its fence inside
+    // the conditional so the bounded identity set remains the index condition.
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update IngestionOutboxEvent e set e.status = 'PUBLISHED', e.claimToken = null, "
+            + "e.processingKey = null, e.claimedAt = null, "
+            + "e.publishedAt = :now, e.lastError = null, e.updatedAt = :now "
+            + "where e.id in :ids "
+            + "and case when e.tenantId = :tenantId and e.status = 'PROCESSING' "
+            + "then e.claimToken else null end = :token")
+    int markPublishedBatch(@Param("tenantId") String tenantId, @Param("ids") Collection<String> ids,
+                           @Param("now") Instant now, @Param("token") String token);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update IngestionOutboxEvent e set e.status = 'PENDING', e.claimToken = null, "
             + "e.processingKey = null, e.claimedAt = null, "
             + "e.nextAttemptAt = :nextAttemptAt, e.lastError = :error, e.updatedAt = :now "
-            + "where e.id = :id and e.status = 'PROCESSING' and e.claimToken = :token")
+            + "where e.id = :id and case when e.status = 'PROCESSING' then e.claimToken else null end = :token")
     int scheduleRetry(@Param("id") String id, @Param("nextAttemptAt") Instant nextAttemptAt, @Param("error") String error, @Param("now") Instant now, @Param("token") String token);
+
+    /** Return an unstarted publication without spending its reserved attempt. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update IngestionOutboxEvent e set e.status = 'PENDING', e.claimToken = null, "
+            + "e.processingKey = null, e.claimedAt = null, "
+            + "e.attempts = case when e.attempts > 0 then e.attempts - 1 else 0 end, "
+            + "e.nextAttemptAt = :now, e.updatedAt = :now "
+            + "where e.id = :id and e.tenantId = :tenantId "
+            + "and case when e.status = 'PROCESSING' then e.claimToken else null end = :token")
+    int releaseUnsentClaim(@Param("id") String id, @Param("tenantId") String tenantId,
+                           @Param("now") Instant now, @Param("token") String token);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
     @Query("update IngestionOutboxEvent e set e.status = 'DEAD', e.claimToken = null, "
             + "e.processingKey = null, e.claimedAt = null, "
             + "e.lastError = :error, e.updatedAt = :now "
-            + "where e.id = :id and e.status = 'PROCESSING' and e.claimToken = :token")
+            + "where e.id = :id and case when e.status = 'PROCESSING' then e.claimToken else null end = :token")
     int markDead(@Param("id") String id, @Param("error") String error, @Param("now") Instant now, @Param("token") String token);
 
     // The locking CTE fixes a bounded candidate set and skips competing owners.

@@ -14,8 +14,22 @@ import java.util.List;
 import java.util.Set;
 
 public interface DetectionEventRepository extends TenantScopedRepository<DetectionEventEntity, String> {
-    List<DetectionEventEntity> findByTenantIdAndDeliveryIdIn(String tenantId, java.util.Collection<String> deliveryIds);
+    @org.springframework.data.jpa.repository.Modifying(flushAutomatically = true)
+    @Query("update DetectionEventEntity e set e.completedAt = case when e.status = 'PENDING' then :completedAt else e.completedAt end, "
+            + "e.statusReason = case when e.status = 'PENDING' then null else e.statusReason end, "
+            + "e.resultJson = case when e.status = 'PENDING' then :result else e.resultJson end, "
+            + "e.status = case when e.status = 'PENDING' then 'COMPLETED' else e.status end "
+            + "where e.tenantId = :tenant and e.deliveryId = :deliveryId")
+    int completeResult(@Param("tenant") String tenant, @Param("deliveryId") String deliveryId,
+                       @Param("result") String result, @Param("completedAt") Instant completedAt);
+
     List<DetectionEventEntity> findByTenantId(String tenantId);
+    // Keep both identity bounds in the index when a new tenant is absent from
+    // PostgreSQL statistics; a tenant-only scan grows with its retained journal.
+    @Query(value = "select * from t_detection_event where tenant_id = (select cast(:tenantId as varchar)) "
+            + "and delivery_id in (:deliveryIds)", nativeQuery = true)
+    List<DetectionEventEntity> findByTenantIdAndDeliveryIdIn(
+            @Param("tenantId") String tenantId, @Param("deliveryIds") java.util.Collection<String> deliveryIds);
     java.util.Optional<DetectionEventEntity> findByStorageIdAndTenantId(String storageId, String tenantId);
 
     List<DetectionEventEntity> findByStatusAndOccurredAtAfterOrderByOccurredAtAscSourceEventIdAsc(
@@ -178,6 +192,31 @@ public interface DetectionEventRepository extends TenantScopedRepository<Detecti
     List<DetectionEventEntity> findByTenantStatusTopicPartitionsOrderByKafkaPosition(
             @Param("tenant") String tenantId, @Param("status") String status,
             @Param("topic") String deliveryTopic, @Param("partitions") Set<Integer> partitions,
+            Pageable pageable);
+
+    @Query("select distinct e.tenantId from DetectionEventEntity e where e.status = :status "
+            + "and e.deliveryTopic = :topic and e.occurredAt > :after "
+            + "and (:tenant is null or e.tenantId = :tenant) order by e.tenantId")
+    List<String> recoveryTenants(@Param("status") String status, @Param("topic") String topic,
+            @Param("after") Instant after, @Param("tenant") String tenant, Pageable pageable);
+
+    @Query("select distinct e.tenantId from DetectionEventEntity e where e.status = :status "
+            + "and e.deliveryTopic = :topic and e.occurredAt > :after and e.kafkaPartition in :partitions "
+            + "and (:tenant is null or e.tenantId = :tenant) order by e.tenantId")
+    List<String> recoveryTenantsForPartitions(@Param("status") String status, @Param("topic") String topic,
+            @Param("after") Instant after, @Param("tenant") String tenant,
+            @Param("partitions") Set<Integer> partitions, Pageable pageable);
+
+    @Query("select distinct e.kafkaPartition from DetectionEventEntity e where e.tenantId = :tenant "
+            + "and e.status = :status and e.deliveryTopic = :topic and e.kafkaPartition is not null")
+    List<Integer> completedPartitions(@Param("tenant") String tenant, @Param("status") String status,
+            @Param("topic") String topic);
+
+    @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
+            + "and e.deliveryTopic = :topic and e.kafkaPartition = :partition and e.kafkaOffset > :offset "
+            + "order by e.kafkaOffset, e.completedAt, e.deliveryId")
+    List<DetectionEventEntity> partitionTail(@Param("tenant") String tenant, @Param("status") String status,
+            @Param("topic") String topic, @Param("partition") int partition, @Param("offset") long offset,
             Pageable pageable);
 
 }

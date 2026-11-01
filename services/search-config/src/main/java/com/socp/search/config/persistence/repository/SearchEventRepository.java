@@ -18,7 +18,12 @@ import java.time.Instant;
 public interface SearchEventRepository extends TenantScopedRepository<SearchEventEntity, String> {
     long countByTenantId(String tenantId);
     List<SearchEventEntity> findByTenantIdOrderByTimestampDesc(String tenantId, Pageable pageable);
-    List<SearchEventEntity> findByTenantIdAndEventIdIn(String tenantId, Collection<String> eventIds);
+    // The scalar tenant becomes an InitPlan in PostgreSQL, keeping stale tenant
+    // statistics from replacing the composite identity lookup with a tenant scan.
+    @Query(value = "select e.* from t_search_event e "
+            + "where e.tenant_id = (select cast(:tenantId as varchar)) and e.event_id in (:eventIds)", nativeQuery = true)
+    List<SearchEventEntity> findByTenantIdAndEventIdIn(@Param("tenantId") String tenantId,
+                                                     @Param("eventIds") Collection<String> eventIds);
 
     @Modifying
     @Transactional
