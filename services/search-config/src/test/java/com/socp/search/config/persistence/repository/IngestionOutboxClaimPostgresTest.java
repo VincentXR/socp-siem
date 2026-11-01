@@ -258,7 +258,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                 """);
         // Model retained, vacuumed history rather than a just-created heap;
         // visibility information lets PostgreSQL cost the covering index.
-        jdbc.execute("VACUUM (ANALYZE) t_ingestion_outbox");
+        vacuumFixture(true);
         String sql = IngestionOutboxRepository.class
                 .getMethod("findDueOrderedBatch", java.time.Instant.class)
                 .getAnnotation(Query.class).value()
@@ -354,7 +354,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                     """);
             // Visibility can be current while ANALYZE still reports no pending
             // rows. This made the old unordered covering index win before LIMIT.
-            jdbc.execute("VACUUM t_ingestion_outbox");
+            vacuumFixture(false);
             String sql = IngestionOutboxRepository.class
                     .getMethod("findDueOrderedBatch", java.time.Instant.class)
                     .getAnnotation(Query.class).value()
@@ -421,7 +421,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                        timestamp '2026-09-01 00:00:00'
                 from generate_series(?, ?) as n order by n
                 """, start, start + 9999);
-        jdbc.execute("VACUUM (ANALYZE) t_ingestion_outbox");
+        vacuumFixture(true);
         String sql = IngestionOutboxRepository.class
                 .getMethod("findDueOrderedBatch", java.time.Instant.class)
                 .getAnnotation(Query.class).value()
@@ -455,5 +455,17 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                 "next-owner", 12, BASE);
         assertEquals(new java.util.HashSet<>(nextIds),
                 next.stream().map(row -> row.getId()).collect(java.util.stream.Collectors.toSet()));
+    }
+
+    private void vacuumFixture(boolean analyze) throws java.sql.SQLException {
+        // Heap maintenance is fixture preparation, not the measured selector.
+        // A separate connection keeps its budget out of the repository pool.
+        try (var connection = java.sql.DriverManager.getConnection(jdbcUrl(), "socp", "socp-test");
+             var statement = connection.createStatement()) {
+            statement.execute("SET statement_timeout = '60s'");
+            statement.execute(analyze ? "VACUUM (ANALYZE) t_ingestion_outbox" : "VACUUM t_ingestion_outbox");
+        }
+        assertEquals("5s", jdbc.queryForObject("SHOW statement_timeout", String.class),
+                "fixture maintenance must preserve the repository statement timeout");
     }
 }
