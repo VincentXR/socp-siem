@@ -33,6 +33,16 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 class IngestionCommitServiceTest {
 
+    @Test
+    void persistedContentFingerprintRetainsItsPreviousEncoding() {
+        var event = new SearchEvent("event-a", Instant.parse("2026-10-29T00:00:00Z"),
+                "auth", "host-a", "HIGH", "Failed password",
+                Map.of("tenant_id", "tenant-a", "src_ip", "198.51.100.7", "ingested_at", "ignored"),
+                Map.of("event.action", "auth_failed"));
+        assertEquals("ac6b34c2a515aab82395183f3c06a974ccdc145dc1ffbf34c3cca789b65647d7",
+                IngestionEventIdentity.fingerprint(event));
+    }
+
     @BeforeEach
     void setTenant() {
         TenantContext.set("default");

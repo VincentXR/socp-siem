@@ -437,16 +437,22 @@ retain point updates; failed or rolled-back checks do not populate the cache.
 
 Kafka polls reserve bounded partition work without waiting for database I/O.
 Each serial lane pre-admits its group using bounded JDBC insert batches (maximum
-64 records per transaction). The existing-delivery lookup keeps its tenant
+64 records per transaction). The PostgreSQL profile enables
+`reWriteBatchedInserts` so these inserts execute as multi-row server statements;
+receipt uniqueness and whole-transaction rollback still apply. The existing-delivery
+lookup keeps its tenant
 parameter in a scalar subquery, preserving tenant/delivery index bounds when
 PostgreSQL statistics do not yet include a new tenant. It returns only that
 tenant's receipts. This does not acknowledge an offset. A lane admits
-up to 32 events (`socp.kafka.processing-batch-size`, maximum 64), also bounded
+up to 128 events (`socp.kafka.processing-batch-size`, maximum 128), also bounded
 by 1 MiB and the partition byte budget; one oversized event may proceed alone.
 Before admission, the lane can combine adjacent work already queued by earlier
 polls under the same assignment, within those limits. It adds no collection
 delay, stops at replay/task barriers, and retains every combined task's byte
 reservation until processing finishes or the assignment is revoked.
+Mixed state-unit batches use the existing 128-event atomic API. Single-unit
+serial admission retains 64-event journal transactions and generation-pinned
+submission groups, even when the polled prefix contains more records.
 Only consecutive NEW receipts with one tenant, engine shard and partition,
 and distinct delivery IDs, share an ordered submission group. The service pins
 one engine generation and preserves each event's tenant and Kafka trace.
@@ -487,12 +493,37 @@ acknowledgement. A failed transaction discards staged suppression decisions;
 an alert-free batch takes no suppression locks. Unrelated tenants or shards
 therefore do not wait behind a process-wide suppression lock during database I/O.
 
+Journal completion uses one bounded SQL `MERGE` over the batch's delivery IDs,
+timestamps and result summaries on both PostgreSQL and H2. The tenant/delivery
+unique identity selects each row; its existing status decides whether to write
+the result. Terminal receipts remain unchanged, missing receipts fail the whole
+transaction, and per-event microsecond timestamps preserve evaluation order
+during replay. This avoids executing a separate server UPDATE for every event
+inside a JDBC batch; the transaction still includes alert outbox writes and all
+ownership fences.
+
+Already queued atomic batches for the same tenant and engine can share one
+transaction, with at most 128 events and 64 original ownership guards. The
+worker preserves queue order and every original atomic boundary; different
+tenants, repeated delivery identities, non-ordered guards and queue barriers
+stop collection. Every original guard remains attached to its batch's first
+result. All durable position callbacks finish before any caller's future can
+trigger a checkpoint. Combined failures roll back all prepared state and
+suppression. If combining otherwise valid batches exceeds the 4 MiB undo
+budget, the worker first restores all state, then processes the original
+batches separately. No extra batching delay is introduced for a quiet queue.
+
 A bounded Kafka partition prefix may contain several tenants or state shards.
 Such mixed-state prefixes use the explicit atomic path per state unit; a
 single-state prefix retains ordered adaptive batching. The consumer claims the journal rows per tenant, then submits one ordered atomic
 batch per state unit to its own engine without awaiting the preceding unit.
 The partition prefix remains unacknowledged until every submitted future has
 settled successfully and every unit's ownership fence is current. A synchronous
+post-commit observation groups at most 64 same-tenant units in one ownership
+transaction with the existing global lock order; it still checks assignment
+and every persisted epoch, including already-terminal deliveries. Transient
+observation failures retry only these checks, without evaluating or completing
+the journal again. A synchronous
 admission error also waits for already submitted units before record-level retry;
 timeouts retain the original futures. Completed sibling receipts survive another
 unit's rollback and are skipped on replay. Each engine records only its own
@@ -601,6 +632,10 @@ before the local write response. A failed rebuild still follows the recovery
 path; other workers reload asynchronously from the durable rule-change outbox.
 Process-wide recovery remains reserved for startup and a full Kafka assignment
 rebuild.
+
+HTTP and Kafka completion callbacks checkpoint the exact engine instance that
+processed their events. They do not reacquire the lifecycle read lock to look it
+up while hot reload holds the write lock and waits for those callbacks to drain.
 
 On owner loss, the old worker fails the fence before the durable sink or
 transactional checkpoint. Any result that completed before the takeover is

@@ -161,20 +161,30 @@ final class DetectionRecordProcessor {
         }
         // All groups are durable before the partition can advance. Check each
         // state-unit fence, including groups whose deliveries were already terminal.
+        var observations = new LinkedHashMap<String, java.util.List<com.socp.rule.engine.RuleEngine.BatchEvent>>();
         for (var group : groups) {
             var representative = group.getFirst();
+            observations.computeIfAbsent(representative.event().requireTenantId(),
+                    ignored -> new java.util.ArrayList<>()).add(representative);
+        }
+        for (var tenantUnits : observations.values()) {
             try (var ignored = com.socp.platform.tenant.context.TenantContext.open(
-                    representative.event().requireTenantId())) {
-                awaitBatchFence(representative.event(), representative.position().partition());
+                    tenantUnits.getFirst().event().requireTenantId())) {
+                for (int start = 0; start < tenantUnits.size(); start += 64) {
+                    awaitBatchFences(java.util.List.copyOf(tenantUnits.subList(start,
+                            Math.min(tenantUnits.size(), start + 64))));
+                }
             }
         }
         return true;
     }
 
-    private void awaitBatchFence(SecurityEvent event, int partition) {
+    private void awaitBatchFences(java.util.List<com.socp.rule.engine.RuleEngine.BatchEvent> representatives) {
+        var event = representatives.getFirst().event();
+        int partition = representatives.getFirst().position().partition();
         long delay = 250L;
         for (;;) {
-            try { engine.assertCurrentOwner(event, partition); return; }
+            try { engine.assertCurrentOwners(representatives); return; }
             catch (RuntimeException failure) {
                 if (classifyFailure(failure) == FailureCategory.OWNERSHIP_LOST) {
                     throw retryable(event, FailureStage.MARK_COMPLETED, failure);

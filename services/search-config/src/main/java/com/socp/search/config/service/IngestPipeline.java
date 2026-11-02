@@ -228,9 +228,7 @@ public class IngestPipeline {
                     + "|" + (collector == null || collector.isBlank() ? "unknown" : collector);
             byte[] bytes = digest.digest((namespace + "|" + raw)
                     .getBytes(java.nio.charset.StandardCharsets.UTF_8));
-            StringBuilder fingerprint = new StringBuilder(bytes.length * 2);
-            for (byte value : bytes) fingerprint.append(String.format("%02x", value & 0xff));
-            return key + ":" + lineNumber + ":" + fingerprint;
+            return key + ":" + lineNumber + ":" + java.util.HexFormat.of().formatHex(bytes);
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("SHA-256 is unavailable", impossible);
         }

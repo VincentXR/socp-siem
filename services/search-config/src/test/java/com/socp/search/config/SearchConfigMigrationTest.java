@@ -30,6 +30,14 @@ class SearchConfigMigrationTest {
             result.next();
             assertEquals(4, result.getInt(1));
 
+            try (var legacy = connection.prepareStatement(
+                    "SELECT COUNT(*) FROM INFORMATION_SCHEMA.INDEXES "
+                            + "WHERE INDEX_NAME = 'IDX_INGESTION_OUTBOX_KEY_SEQUENCE'");
+                 var indexes = legacy.executeQuery()) {
+                indexes.next();
+                assertEquals(0, indexes.getInt(1));
+            }
+
             try (var quarantine = connection.prepareStatement(
                     "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES "
                             + "WHERE TABLE_NAME = 'T_INGEST_PARSE_FAILURE'");

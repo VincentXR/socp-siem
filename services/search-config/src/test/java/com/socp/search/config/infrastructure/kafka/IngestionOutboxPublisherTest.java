@@ -21,6 +21,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -135,14 +136,15 @@ class IngestionOutboxPublisherTest {
         verify(batches, org.mockito.Mockito.times(3)).markAcknowledged(any(), anyString(), any());
     }
 
-    @Test
-    void independentCohortsShareTwoPermitsAcrossTenantsAndJoinBeforeTheNextSelection() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 2})
+    void independentCohortsShareTwoPermitsAcrossTenantsAndJoinBeforeTheNextSelection(int rowsPerKey) throws Exception {
         var repository = mock(IngestionOutboxRepository.class);
         var producer = mock(KafkaEventProducer.class);
         var batches = mock(com.socp.search.config.service.IngestionOutboxBatchService.class);
-        var rows = java.util.stream.IntStream.range(0, 96).mapToObj(i -> {
+        var rows = java.util.stream.IntStream.range(0, 96 * rowsPerKey).mapToObj(i -> {
             var row = pending("parallel-" + i, "key-" + i % 32, "payload-" + i, null);
-            row.setTenantId("tenant-" + i / 32);
+            row.setTenantId("tenant-" + i / (32 * rowsPerKey));
             return row;
         }).toList();
         when(producer.isEnabled()).thenReturn(true);
@@ -155,12 +157,13 @@ class IngestionOutboxPublisherTest {
         var releaseClaims = new java.util.concurrent.CountDownLatch(1);
         var otherCohortsFinalized = new java.util.concurrent.CountDownLatch(2);
         var firstReceipt = new java.util.concurrent.CompletableFuture<Boolean>();
+        var blockedKeyReceipts = new java.util.concurrent.CountDownLatch(32);
         var published = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
-        when(batches.claimIndependent(any(), anyString(), anyInt(), any())).thenAnswer(invocation -> {
+        org.mockito.stubbing.Answer<List<IngestionOutboxEvent>> claim = invocation -> {
             List<IngestionOutboxEvent> cohort = invocation.getArgument(0);
             String tenant = cohort.getFirst().getTenantId();
             assertEquals(tenant, TenantContext.require());
-            assertEquals(32, cohort.size());
+            assertEquals(32 * rowsPerKey, cohort.size());
             claims.add(tenant);
             tokens.put(tenant, invocation.getArgument(1));
             peakCohorts.accumulateAndGet(activeCohorts.incrementAndGet(), Math::max);
@@ -168,14 +171,18 @@ class IngestionOutboxPublisherTest {
                 firstTwoClaims.countDown();
                 assertTrue(releaseClaims.await(2, java.util.concurrent.TimeUnit.SECONDS));
             }
+            if (tenant.equals("tenant-1")) assertTrue(blockedKeyReceipts.await(2, java.util.concurrent.TimeUnit.SECONDS));
             return cohort;
-        });
+        };
+        when(batches.claimIndependent(any(), anyString(), anyInt(), any())).thenAnswer(claim);
+        when(batches.claimOrderedPrefixes(any(), anyString(), anyInt(), any())).thenAnswer(claim);
         when(producer.sendAsync(any(), any(), any())).thenAnswer(invocation -> {
             int index = Integer.parseInt(((String) invocation.getArgument(1)).substring("payload-".length()));
-            assertEquals("tenant-" + index / 32, TenantContext.require());
+            assertEquals("tenant-" + index / (32 * rowsPerKey), TenantContext.require());
+            if (index < 32) blockedKeyReceipts.countDown();
             return index < 32 ? firstReceipt : java.util.concurrent.CompletableFuture.completedFuture(true);
         });
-        when(batches.markAcknowledged(any(), anyString(), any())).thenAnswer(invocation -> {
+        org.mockito.stubbing.Answer<Integer> finalizeClaim = invocation -> {
             List<IngestionOutboxEvent> cohort = invocation.getArgument(0);
             String tenant = cohort.getFirst().getTenantId();
             assertEquals(tenant, TenantContext.require());
@@ -184,7 +191,9 @@ class IngestionOutboxPublisherTest {
             activeCohorts.decrementAndGet();
             if (!tenant.equals("tenant-0")) otherCohortsFinalized.countDown();
             return cohort.size();
-        });
+        };
+        when(batches.markAcknowledged(any(), anyString(), any())).thenAnswer(finalizeClaim);
+        when(batches.markOrderedAcknowledged(any(), anyString(), any())).thenAnswer(finalizeClaim);
         publisher = new IngestionOutboxPublisher(repository, producer, null, 8, 12, 60_000, 100, 1, 2, 5_000);
         publisher.configureBatchService(batches);
         try (var runner = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
@@ -194,7 +203,7 @@ class IngestionOutboxPublisherTest {
                 assertEquals(2, claims.size());
                 releaseClaims.countDown();
                 assertTrue(otherCohortsFinalized.await(2, java.util.concurrent.TimeUnit.SECONDS));
-                assertEquals(64, published.size());
+                assertEquals(64 * rowsPerKey, published.size());
                 assertFalse(drain.isDone());
                 TenantContext.runAsSystem(publisher::publish);
                 verify(repository).findDueOrderedBatch(any());
@@ -207,7 +216,7 @@ class IngestionOutboxPublisherTest {
         }
         assertEquals(2, peakCohorts.get());
         assertEquals(0, activeCohorts.get());
-        assertEquals(96, published.size());
+        assertEquals(96 * rowsPerKey, published.size());
         verify(repository, org.mockito.Mockito.times(2)).findDueOrderedBatch(any());
     }
 
@@ -517,26 +526,198 @@ class IngestionOutboxPublisherTest {
     }
 
     @Test
-    void repeatedRoutingKeysRetainTheOrderedSingleRowPath() {
+    void repeatedRoutingKeysShareOneClaimAndCompletionButWaitForEachKeysBrokerReceipt() throws Exception {
         var repository = mock(IngestionOutboxRepository.class);
         var producer = mock(KafkaEventProducer.class);
         var batches = mock(com.socp.search.config.service.IngestionOutboxBatchService.class);
-        var rows = List.of(pending("a", "key", "a", null), pending("b", "key", "b", null));
+        // The capacity fixture reuses 32 hosts. A selected backlog therefore
+        // contains repeated keys even though 32 heads can progress together.
+        var rows = java.util.stream.IntStream.range(0, 192)
+                .mapToObj(i -> pending("ordered-" + i, "key-" + i % 32, "payload-" + i, null)).toList();
+        var published = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        var acknowledged = java.util.concurrent.ConcurrentHashMap.<Integer>newKeySet();
+        var sent = java.util.concurrent.ConcurrentHashMap.<Integer>newKeySet();
+        var heldReceipt = new java.util.concurrent.CompletableFuture<Boolean>();
+        var peersCompleted = new java.util.concurrent.CountDownLatch(186);
+        var sizes = new java.util.concurrent.CopyOnWriteArrayList<Integer>();
         when(producer.isEnabled()).thenReturn(true);
         when(repository.findDueOrderedBatch(any())).thenReturn(rows);
-        when(repository.claim(any(), any(), anyInt(), anyInt(), anyString())).thenReturn(1);
-        when(producer.sendAndAwait(any(), any(), any())).thenReturn(true);
-        when(repository.markPublished(any(), any(), anyString())).thenReturn(1);
-        publisher = new IngestionOutboxPublisher(repository, producer);
+        when(batches.claimOrderedPrefixes(any(), anyString(), anyInt(), any())).thenAnswer(invocation -> {
+            List<IngestionOutboxEvent> prefix = invocation.getArgument(0);
+            sizes.add(prefix.size());
+            return prefix;
+        });
+        when(producer.sendAsync(any(), any(), any())).thenAnswer(invocation -> {
+            int position = Integer.parseInt(((String) invocation.getArgument(1)).substring("payload-".length()));
+            if (position >= 32) assertTrue(acknowledged.contains(position - 32),
+                    "A key must not send its successor before the preceding Kafka acknowledgement");
+            assertTrue(sent.add(position));
+            if (position == 0) return heldReceipt.thenApply(success -> { acknowledged.add(0); return success; });
+            acknowledged.add(position);
+            if (position % 32 != 0) peersCompleted.countDown();
+            return java.util.concurrent.CompletableFuture.completedFuture(true);
+        });
+        when(batches.markOrderedAcknowledged(any(), anyString(), any())).thenAnswer(invocation -> {
+            List<IngestionOutboxEvent> heads = invocation.getArgument(0);
+            assertEquals(192, acknowledged.size());
+            heads.forEach(row -> assertTrue(published.add(row.getEventId())));
+            return heads.size();
+        });
+        publisher = new IngestionOutboxPublisher(repository, producer, null, 8, 12, 60_000, 100, 1, 1, 5_000);
         publisher.configureBatchService(batches);
 
-        publisher.publish();
+        try (var worker = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var drain = worker.submit(() -> TenantContext.runAsSystem(publisher::publish));
+            try {
+                assertTrue(peersCompleted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                assertFalse(sent.contains(32));
+                assertTrue(published.isEmpty(), "claims cannot finalize while an admitted receipt remains unresolved");
+                assertFalse(drain.isDone());
+            } finally { heldReceipt.complete(true); }
+            drain.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
 
-        org.mockito.Mockito.verifyNoInteractions(batches);
-        var order = org.mockito.Mockito.inOrder(producer, repository);
-        order.verify(producer).sendAndAwait("key", "a", null);
-        order.verify(repository).markPublished(eq(rows.getFirst().getId()), any(), anyString());
-        order.verify(producer).sendAndAwait("key", "b", null);
+        assertEquals(192, published.size());
+        assertEquals(List.of(192), sizes);
+        verify(batches).markOrderedAcknowledged(any(), anyString(), any());
+        verify(repository).findDueOrderedBatch(any());
+        verify(repository, never()).claim(any(), any(), anyInt(), anyInt(), anyString());
+        verify(repository, never()).markPublished(any(), any(), anyString());
+        verify(producer, never()).sendAndAwait(any(), any(), any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"unclaimed", "nack", "throw-send", "exceptional-receipt", "stale-finalize", "failed-finalize"})
+    void failedOrderedPrefixesBlockFurtherClaimsWhileAnotherTenantProgresses(String failure) {
+        var repository = mock(IngestionOutboxRepository.class);
+        var producer = mock(KafkaEventProducer.class);
+        var batches = mock(com.socp.search.config.service.IngestionOutboxBatchService.class);
+        var rows = java.util.stream.IntStream.range(0, 6).mapToObj(i -> {
+            var row = pending("head-" + i, "same-host", "payload-" + i, null);
+            row.setTenantId(i % 2 == 0 ? "blocked" : "healthy");
+            return row;
+        }).toList();
+        var offered = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        var published = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        var later = pending("later", "same-host", "payload-later", null);
+        later.setTenantId("blocked");
+        when(producer.isEnabled()).thenReturn(true);
+        when(repository.findDueOrderedBatch(any())).thenReturn(rows, List.of(later));
+        when(batches.claimOrderedPrefixes(any(), anyString(), anyInt(), any())).thenAnswer(invocation -> {
+            List<IngestionOutboxEvent> heads = invocation.getArgument(0);
+            assertEquals(3, heads.size());
+            var head = heads.getFirst();
+            assertEquals(head.getTenantId(), TenantContext.require());
+            heads.forEach(row -> offered.add(row.getEventId()));
+            return head.getTenantId().equals("blocked") && failure.equals("unclaimed") ? List.of() : heads;
+        });
+        when(producer.sendAsync(any(), any(), any())).thenAnswer(invocation -> {
+            if (TenantContext.require().equals("blocked")) {
+                if (failure.equals("throw-send")) throw new IllegalStateException("submission failed");
+                if (failure.equals("exceptional-receipt")) return java.util.concurrent.CompletableFuture.failedFuture(
+                        new IllegalStateException("receipt failed"));
+            }
+            return java.util.concurrent.CompletableFuture.completedFuture(
+                    !TenantContext.require().equals("blocked") || !failure.equals("nack"));
+        });
+        when(batches.markOrderedAcknowledged(any(), anyString(), any())).thenAnswer(invocation -> {
+            List<IngestionOutboxEvent> heads = invocation.getArgument(0);
+            if (TenantContext.require().equals("blocked")) {
+                if (failure.equals("failed-finalize")) throw new IllegalStateException("completion unavailable");
+                return 0;
+            }
+            heads.forEach(row -> published.add(row.getEventId()));
+            return heads.size();
+        });
+        publisher = new IngestionOutboxPublisher(repository, producer, null, 8, 12, 60_000, 100, 1, 2, 5_000);
+        publisher.configureBatchService(batches);
+
+        TenantContext.runAsSystem(publisher::publish);
+
+        assertEquals(java.util.Set.of("head-0", "head-1", "head-2", "head-3", "head-4", "head-5"), offered);
+        assertEquals(java.util.Set.of("head-1", "head-3", "head-5"), published);
+        boolean failedReceipt = java.util.Set.of("nack", "throw-send", "exceptional-receipt").contains(failure);
+        if (failure.equals("unclaimed") || failedReceipt) {
+            verify(producer, never()).sendAsync(any(), eq("payload-2"), any());
+            verify(producer, never()).sendAsync(any(), eq("payload-4"), any());
+        } else {
+            verify(producer).sendAsync(any(), eq("payload-2"), any());
+            verify(producer).sendAsync(any(), eq("payload-4"), any());
+        }
+        if (failedReceipt) {
+            verify(repository).releaseUnsentClaim(eq(rows.get(2).getId()), eq("blocked"), any(), anyString());
+            verify(repository).releaseUnsentClaim(eq(rows.get(4).getId()), eq("blocked"), any(), anyString());
+        }
+        verify(repository, never()).claim(any(), any(), anyInt(), anyInt(), anyString());
+        verify(batches, never()).claimIndependent(any(), anyString(), anyInt(), any());
+        verify(producer, never()).sendAsync(any(), eq("payload-later"), any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void orderedPrefixStopsAdmissionButJoinsTheStartedReceiptAndReleasesItsUnsentSuffix(boolean shutdown) throws Exception {
+        var repository = mock(IngestionOutboxRepository.class);
+        var producer = mock(KafkaEventProducer.class);
+        var batches = mock(com.socp.search.config.service.IngestionOutboxBatchService.class);
+        var rows = java.util.stream.IntStream.range(0, 3)
+                .mapToObj(i -> pending("prefix-" + i, "same-key", "payload-" + i, null)).toList();
+        var receipt = new java.util.concurrent.CompletableFuture<Boolean>();
+        var submitted = new java.util.concurrent.CountDownLatch(1);
+        when(producer.isEnabled()).thenReturn(true);
+        when(repository.findDueOrderedBatch(any())).thenReturn(rows);
+        when(batches.claimOrderedPrefixes(any(), anyString(), anyInt(), any())).thenReturn(rows);
+        when(producer.sendAsync(any(), any(), any())).thenAnswer(invocation -> { submitted.countDown(); return receipt; });
+        when(batches.markOrderedAcknowledged(eq(List.of(rows.getFirst())), anyString(), any())).thenReturn(1);
+        publisher = new IngestionOutboxPublisher(repository, producer, null, 8, 12, 60_000, 100, 1, 1, 5_000) {
+            @Override long deliveryAdmissionBudgetNanos() { return java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(500); }
+        };
+        publisher.configureBatchService(batches);
+        try (var worker = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var drain = worker.submit(() -> TenantContext.runAsSystem(publisher::publish));
+            try {
+                assertTrue(submitted.await(3, java.util.concurrent.TimeUnit.SECONDS));
+                if (shutdown) publisher.stop();
+                else Thread.sleep(550);
+                assertFalse(drain.isDone(), "shutdown/deadline cannot abandon an admitted Kafka receipt");
+            } finally { receipt.complete(true); }
+            drain.get(3, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        verify(producer).sendAsync(any(), eq("payload-0"), any());
+        verify(producer, never()).sendAsync(any(), eq("payload-1"), any());
+        verify(producer, never()).sendAsync(any(), eq("payload-2"), any());
+        verify(batches).markOrderedAcknowledged(eq(List.of(rows.getFirst())), anyString(), any());
+        for (var row : rows.subList(1, 3)) {
+            verify(repository).releaseUnsentClaim(eq(row.getId()), eq(row.getTenantId()), any(), anyString());
+        }
+        verify(repository, never()).scheduleRetry(any(), any(), any(), any(), any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void failedPrefixClaimRechecksRowOwnershipWithoutRecursivelyAcquiringCohortPermits(boolean ambiguousCommit) {
+        var repository = mock(IngestionOutboxRepository.class);
+        var producer = mock(KafkaEventProducer.class);
+        var batches = mock(com.socp.search.config.service.IngestionOutboxBatchService.class);
+        var rows = java.util.stream.IntStream.range(0, 6).mapToObj(i -> {
+            var row = pending("fallback-" + i, "shared-key", "payload-" + i, null);
+            row.setTenantId(i % 2 == 0 ? "tenant-a" : "tenant-b");
+            return row;
+        }).toList();
+        when(producer.isEnabled()).thenReturn(true);
+        when(repository.findDueOrderedBatch(any())).thenReturn(rows);
+        when(batches.claimOrderedPrefixes(any(), anyString(), anyInt(), any())).thenThrow(new IllegalStateException("claim receipt unavailable"));
+        when(repository.claim(any(), any(), anyInt(), anyInt(), anyString())).thenReturn(ambiguousCommit ? 0 : 1);
+        when(producer.sendAndAwait(any(), any(), any())).thenReturn(true);
+        when(repository.markPublished(any(), any(), anyString())).thenReturn(1);
+        publisher = new IngestionOutboxPublisher(repository, producer, null, 8, 12, 60_000, 100, 1, 1, 5_000);
+        publisher.configureBatchService(batches);
+
+        TenantContext.runAsSystem(publisher::publish);
+
+        verify(batches, times(2)).claimOrderedPrefixes(any(), anyString(), anyInt(), any());
+        verify(repository, times(ambiguousCommit ? 2 : 6)).claim(any(), any(), anyInt(), anyInt(), anyString());
+        verify(producer, times(ambiguousCommit ? 0 : 6)).sendAndAwait(any(), any(), any());
+        verify(producer, never()).sendAsync(any(), any(), any());
     }
 
     @Test

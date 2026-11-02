@@ -263,9 +263,12 @@ public final class RuleEngine implements AutoCloseable {
                     carry = processBatch(item);
                     continue;
                 }
+                if (!item.batch().isEmpty()) {
+                    processAtomicBatches(item);
+                    continue;
+                }
                 try {
-                    if (item.batch().isEmpty()) process(item);
-                    else processAtomicBatch(item);
+                    process(item);
                     if (item.completion() != null) item.completion().complete(null);
                 } catch (Throwable ex) {
                     Throwable reported = failOrderedBatch(item, ex);
@@ -439,9 +442,75 @@ public final class RuleEngine implements AutoCloseable {
                 && sink.supportsAtomicBatch();
     }
 
+    /** Coalesce queued atomic work without splitting any caller's atomic boundary. */
+    private void processAtomicBatches(WorkItem first) {
+        var batches = new ArrayList<WorkItem>();
+        batches.add(first);
+        int events = first.batch().size();
+        if (atomicBatchMergeable(first)) {
+            String tenant = first.event().requireTenantId();
+            var identities = new java.util.HashSet<String>();
+            first.batch().forEach(input -> identities.add(DetectionDelivery.deliveryId(input.event())));
+            // Each original batch contributes at most one guard. Keep the same
+            // 64-guard and 128-event bounds as the sink and engine contracts.
+            while (batches.size() < 64 && events < MAX_BATCH_EVENTS) {
+                WorkItem next = queue.peek();
+                if (next == null || !atomicBatchMergeable(next)
+                        || !tenant.equals(next.event().requireTenantId())
+                        || events + next.batch().size() > MAX_BATCH_EVENTS
+                        || next.batch().stream().anyMatch(input ->
+                                identities.contains(DetectionDelivery.deliveryId(input.event())))) break;
+                if (!queue.remove(next)) break;
+                queuedEvents.release(next.weight());
+                batches.add(next);
+                events += next.batch().size();
+                next.batch().forEach(input -> identities.add(DetectionDelivery.deliveryId(input.event())));
+            }
+        }
+        completeAtomicBatches(batches);
+    }
+
+    private boolean atomicBatchMergeable(WorkItem item) {
+        return !item.batch().isEmpty()
+                && (commitGuard(item) == null || commitGuard(item) instanceof OrderedCommitGuard);
+    }
+
+    private void completeAtomicBatches(List<WorkItem> batches) {
+        try {
+            processAtomicBatch(batches);
+            // All durable position callbacks run before the first completion
+            // can checkpoint the engine state shared by the combined commit.
+            batches.forEach(item -> item.completion().complete(null));
+        } catch (AtomicUndoBudgetExceeded budget) {
+            if (batches.size() > 1 && budget.getSuppressed().length == 0) {
+                // No sink ran and all state was restored. Individually valid
+                // batches must not fail merely because their combined undo grew.
+                batches.forEach(item -> completeAtomicBatches(List.of(item)));
+            } else {
+                failAtomicBatches(batches, budget);
+            }
+        } catch (Throwable failure) {
+            failAtomicBatches(batches, failure);
+        }
+    }
+
+    private void failAtomicBatches(List<WorkItem> batches, Throwable failure) {
+        for (WorkItem item : batches) {
+            Throwable reported = failOrderedBatch(item, failure);
+            notifyFailure(item.event(), reported);
+            item.completion().completeExceptionally(reported);
+        }
+    }
+
+    private static final class AtomicUndoBudgetExceeded extends IllegalStateException {
+        private AtomicUndoBudgetExceeded() { super("atomic batch exceeds the retained undo budget"); }
+    }
+
     /** Explicit batches retain one atomic boundary, including all suppression decisions. */
-    private void processAtomicBatch(WorkItem batchItem) {
-        List<Prepared> prepared = new ArrayList<>(batchItem.batch().size());
+    private void processAtomicBatch(List<WorkItem> batchItems) {
+        WorkItem batchItem = batchItems.getFirst();
+        List<Prepared> prepared = new ArrayList<>();
+        List<Runnable> guards = new ArrayList<>();
         Map<StatefulRule, StateMutation> currentUndo = null;
         boolean committed = false;
         long undoBytes = 0;
@@ -450,28 +519,31 @@ public final class RuleEngine implements AutoCloseable {
         boolean preparationRecorded = false;
         try {
             if (!supportsAtomicBatch()) throw new IllegalStateException("atomic batch sink unavailable");
-            for (BatchEvent input : batchItem.batch()) {
-                WorkItem item = new WorkItem(input.event(), null, true, null,
-                        batchItem.durableCommitGuard(), input.position(), input.scope(), null);
-                List<Rule> selected = rulesFor(input.event());
-                currentUndo = beginMutations(selected);
-                DetectionResult result;
-                try (RuleExecutionScope.Scope ignored = input.scope().open(input.event())) {
-                    List<Alert> candidates = evaluateRules(input.event(), currentUndo, selected);
-                    result = new DetectionResult(input.event(), input.position(), ruleVersions(selected),
-                            stateChanges(currentUndo, selected), candidates, candidates,
-                            DetectionResult.SuppressionDecision.none(candidates, candidates),
-                            DetectionDelivery.isRouted(input.event())
-                                    ? DetectionDelivery.deliveryId(input.event()) : input.event().scopedId());
-                }
-                for (StateMutation mutation : currentUndo.values()) {
-                    undoBytes += mutation.retainedBytes();
-                    mutation.detach();
-                }
-                prepared.add(new Prepared(item, result, currentUndo));
-                currentUndo = null;
-                if (undoBytes > COMMIT_BATCH_UNDO_BYTES) {
-                    throw new IllegalStateException("atomic batch exceeds the retained undo budget");
+            for (WorkItem source : batchItems) {
+                boolean first = true;
+                for (BatchEvent input : source.batch()) {
+                    guards.add(first ? commitGuard(source) : null);
+                    first = false;
+                    WorkItem item = new WorkItem(input.event(), null, true, null,
+                            source.durableCommitGuard(), input.position(), input.scope(), null);
+                    List<Rule> selected = rulesFor(input.event());
+                    currentUndo = beginMutations(selected);
+                    DetectionResult result;
+                    try (RuleExecutionScope.Scope ignored = input.scope().open(input.event())) {
+                        List<Alert> candidates = evaluateRules(input.event(), currentUndo, selected);
+                        result = new DetectionResult(input.event(), input.position(), ruleVersions(selected),
+                                stateChanges(currentUndo, selected), candidates, candidates,
+                                DetectionResult.SuppressionDecision.none(candidates, candidates),
+                                DetectionDelivery.isRouted(input.event())
+                                        ? DetectionDelivery.deliveryId(input.event()) : input.event().scopedId());
+                    }
+                    for (StateMutation mutation : currentUndo.values()) {
+                        undoBytes += mutation.retainedBytes();
+                        mutation.detach();
+                    }
+                    prepared.add(new Prepared(item, result, currentUndo));
+                    currentUndo = null;
+                    if (undoBytes > COMMIT_BATCH_UNDO_BYTES) throw new AtomicUndoBudgetExceeded();
                 }
             }
             // Reserve all touched stripes in a fixed order only after evaluation.
@@ -493,7 +565,7 @@ public final class RuleEngine implements AutoCloseable {
                                         : DetectionResult.SuppressionDecision.window(evaluated.candidates(), emitted),
                                 evaluated.idempotencyKey());
                         entries.add(new BatchEventAlertSink.Entry(result,
-                                entries.isEmpty() ? commitGuard(batchItem) : null, item.item().scope()));
+                                guards.get(entries.size()), item.item().scope()));
                         if (reservation != null) reservation.commit();
                     }
                 }
@@ -519,7 +591,11 @@ public final class RuleEngine implements AutoCloseable {
                         notifyDurableSinksCompleted(entry.result().event(), entry.result().alerts().size());
                     }
                 }
-                if (batchItem.onDurable() != null) batchItem.onDurable().run();
+                for (WorkItem source : batchItems) {
+                    try (RuleExecutionScope.Scope ignored = source.scope().open(source.event())) {
+                        if (source.onDurable() != null) source.onDurable().run();
+                    }
+                }
             }
         } catch (RuntimeException | Error failure) {
             if (!preparationRecorded) {

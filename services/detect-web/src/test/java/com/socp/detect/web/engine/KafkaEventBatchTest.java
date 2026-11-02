@@ -153,32 +153,41 @@ class KafkaEventBatchTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"32,32", "1000,64"})
+    @CsvSource({"0,128", "32,32", "1000,128"})
     void coalescingKeepsConfiguredAndHardCountBounds(int configuredLimit, int effectiveLimit) throws Exception {
         KafkaEventConsumer consumer = consumer();
-        ReflectionTestUtils.setField(consumer, "processingBatchSize", configuredLimit);
+        if (configuredLimit > 0) ReflectionTestUtils.setField(consumer, "processingBatchSize", configuredLimit);
         CountDownLatch releaseLane = blockLane(consumer);
         List<List<Long>> claims = new ArrayList<>();
-        when(store.preclaimBatch(any())).thenAnswer(call -> {
-            List<DetectionStateStore.Input> inputs = call.getArgument(0);
-            claims.add(inputs.stream().map(DetectionStateStore.Input::offset).toList());
+        doAnswer(call -> {
+            var event = (com.socp.rule.model.SecurityEvent) call.getArgument(0);
+            return new DetectEngineService.BatchKey(event.requireTenantId(), event.id().hashCode() & 1);
+        }).when(engine).batchKey(any());
+        when(engine.prepareBatchEvent(any(), anyString(), anyInt(), anyLong())).thenAnswer(call ->
+                new com.socp.rule.engine.RuleEngine.BatchEvent(call.getArgument(0),
+                        new com.socp.rule.engine.DetectionResult.InputPosition(call.getArgument(1),
+                                call.getArgument(2), call.getArgument(3)), com.socp.rule.engine.RuleExecutionScope.NOOP));
+        when(engine.batchGroups(any())).thenAnswer(call -> List.of(List.copyOf(call.getArgument(0))));
+        when(store.claimBatch(any())).thenAnswer(call -> {
+            List<com.socp.detect.web.persistence.store.DetectionEventInput> inputs = call.getArgument(0);
+            claims.add(inputs.stream().map(com.socp.detect.web.persistence.store.DetectionEventInput::offset).toList());
             return java.util.Collections.nCopies(inputs.size(), DetectionEventClaim.NEW);
         });
-        when(engine.ingestOrderedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call ->
-                java.util.Collections.nCopies(((List<?>) call.getArgument(0)).size(), CompletableFuture.completedFuture(null)));
+        when(engine.ingestBatchFromKafkaAndAwait(anyList())).thenReturn(CompletableFuture.completedFuture(null));
         try {
-            // Two records per poll fill the hard 64-event batch without requiring
+            // Eight records per poll fill the hard 128-event batch without requiring
             // more than the production lane's 32 queued tasks; overflow stays deferred.
-            for (int i = 0; i < effectiveLimit + 2; i += 2) {
-                dispatch(consumer, List.of(record(i, "e-" + i), record(i + 1, "e-" + (i + 1))));
+            for (int i = 0; i < effectiveLimit + 8; i += 8) {
+                dispatch(consumer, java.util.stream.IntStream.range(i, i + 8)
+                        .mapToObj(n -> record(n, "e-" + n)).toList());
             }
             AtomicLong counter = pendingCounter(consumer);
             releaseLane.countDown();
             drainLane(consumer);
-            assertEquals(List.of(effectiveLimit, 2), claims.stream().map(List::size).toList());
-            assertEquals(java.util.stream.LongStream.range(0, effectiveLimit + 2).boxed().toList(),
+            assertEquals(List.of(effectiveLimit, 8), claims.stream().map(List::size).toList());
+            assertEquals(java.util.stream.LongStream.range(0, effectiveLimit + 8).boxed().toList(),
                     claims.stream().flatMap(List::stream).toList());
-            assertEquals(effectiveLimit + 2, completions(consumer).size());
+            assertEquals(effectiveLimit + 8, completions(consumer).size());
             assertEquals(0, counter.get());
         } finally { releaseLane.countDown(); consumer.stop(); }
     }

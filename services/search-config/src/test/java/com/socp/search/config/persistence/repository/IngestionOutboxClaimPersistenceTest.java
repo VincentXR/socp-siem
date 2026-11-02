@@ -47,6 +47,69 @@ class IngestionOutboxClaimPersistenceTest {
         TenantContext.clear();
     }
 
+    @Test void orderedPrefixesRetainOneLeasePerKeyAndStaleCompletionRollsBackAsAWhole() {
+        for (int i = 0; i < 8; i++) insert(0, "prefix-key");
+        var rows = repository.findDueOrderedBatch(BASE);
+        assertEquals(8, batches.claimOrderedPrefixes(rows, "prefix-owner", 12, BASE).size());
+        assertEquals(1, jdbc.queryForObject("select count(*) from t_ingestion_outbox where processing_key is not null", Integer.class));
+        assertEquals(8, repository.countByStatus("PROCESSING"));
+        assertTrue(batches.claimOrderedPrefixes(rows, "competing-owner", 12, BASE).isEmpty());
+        jdbc.update("update t_ingestion_outbox set claim_token='other-owner' where id=?", rows.getFirst().getId());
+        assertThrows(IllegalStateException.class, () -> batches.markOrderedAcknowledged(rows, "prefix-owner", BASE));
+        assertEquals(0, repository.countByStatus("PUBLISHED"), "a partial ownership receipt must roll back every completion");
+        assertEquals(8, repository.recoverStaleBatch(BASE.plusSeconds(1), BASE.plusSeconds(2), 100));
+        var recovered = repository.findDueOrderedBatch(BASE.plusSeconds(3));
+        assertEquals(8, batches.claimOrderedPrefixes(recovered, "recovered-owner", 12, BASE.plusSeconds(3)).size());
+        assertThrows(IllegalStateException.class, () -> batches.markOrderedAcknowledged(rows, "prefix-owner", BASE));
+        assertEquals(8, batches.markOrderedAcknowledged(recovered, "recovered-owner", BASE.plusSeconds(4)));
+        assertEquals(8, repository.countByStatus("PUBLISHED"));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"missing", "delayed", "exhausted", "tenant"})
+    void orderedClaimsStopAtAnUnclaimablePredecessor(String blocker) {
+        for (int i = 0; i < 4; i++) insert(0, "prefix-key");
+        var rows = repository.findDueOrderedBatch(BASE);
+        String middle = rows.get(1).getId();
+        var offered = new java.util.ArrayList<>(rows);
+        switch (blocker) {
+            case "missing" -> offered.remove(1);
+            case "delayed" -> jdbc.update("update t_ingestion_outbox set next_attempt_at=? where id=?", Timestamp.from(BASE.plusSeconds(60)), middle);
+            case "exhausted" -> jdbc.update("update t_ingestion_outbox set attempts=12 where id=?", middle);
+            case "tenant" -> jdbc.update("update t_ingestion_outbox set tenant_id='tenant-b' where id=?", middle);
+            default -> throw new AssertionError(blocker);
+        }
+        var claimed = batches.claimOrderedPrefixes(offered, "prefix-owner", 12, BASE);
+        var expected = blocker.equals("tenant") ? List.of(rows.get(0).getId(), rows.get(2).getId(), rows.get(3).getId())
+                : List.of(rows.getFirst().getId());
+        assertEquals(expected, claimed.stream().map(IngestionOutboxEvent::getId).toList());
+        assertEquals("PENDING", jdbc.queryForObject("select status from t_ingestion_outbox where id=?", String.class, middle));
+        assertEquals(1, jdbc.queryForObject("select count(*) from t_ingestion_outbox where processing_key is not null", Integer.class));
+    }
+
+    @Test void orderedClaimRollbackIncludesItsAnchorAndEveryReservedAttempt() {
+        for (int i = 0; i < 4; i++) insert(0, "prefix-key");
+        var rows = repository.findDueOrderedBatch(BASE);
+        String last = rows.getLast().getId();
+        jdbc.execute("alter table t_ingestion_outbox add constraint reject_prefix_claim check (id <> '" + last + "' or status <> 'PROCESSING')");
+        try {
+            assertThrows(RuntimeException.class, () -> batches.claimOrderedPrefixes(rows, "rollback-owner", 12, BASE));
+            assertEquals(4, repository.countByStatus("PENDING"));
+            assertEquals(0, jdbc.queryForObject("select sum(attempts) from t_ingestion_outbox", Integer.class));
+            assertEquals(0, jdbc.queryForObject("select count(*) from t_ingestion_outbox where claim_token is not null or processing_key is not null", Integer.class));
+        } finally { jdbc.execute("alter table t_ingestion_outbox drop constraint reject_prefix_claim"); }
+    }
+
+    @Test void orderedPrefixesRejectCrossTenantAndOversizedReservationsBeforeWriting() {
+        for (int i = 0; i < 17; i++) insert(0, "prefix-key");
+        var rows = repository.findByTenantId("tenant-a");
+        assertThrows(IllegalArgumentException.class, () -> batches.claimOrderedPrefixes(rows, "owner", 12, BASE));
+        try (var ignored = TenantContext.open("tenant-b")) {
+            assertThrows(IllegalArgumentException.class, () -> batches.claimOrderedPrefixes(rows.subList(0, 16), "owner", 12, BASE));
+        }
+        assertEquals(17, repository.countByStatus("PENDING"));
+    }
+
     @Test void independentClaimsCommitTogetherAndOnlyAcknowledgedRowsCanAdvance() {
         var ids = new java.util.ArrayList<String>();
         for (int i = 0; i < 32; i++) ids.add(insert(0));
@@ -451,9 +514,9 @@ class IngestionOutboxClaimPersistenceTest {
             Instant due = i == 0 ? BASE.minusSeconds(20) : i == 1 ? BASE.plusSeconds(60) : BASE.minusSeconds(100);
             selectorRow("hot-" + i, "tenant-a", "hot-key", 100 + i, due, "PENDING");
         }
-        var expected = new java.util.ArrayList<>(List.of("foreign-shared", "cold-earlier", "foreign-delayed", "hot-0"));
+        var expected = new java.util.ArrayList<>(List.of("foreign-shared", "cold-earlier", "foreign-delayed", "hot-0",
+                "foreign-hot", "cold-middle", "cold-last"));
         for (int i = 2; i < 16; i++) expected.add("hot-" + i);
-        expected.addAll(List.of("foreign-hot", "cold-middle", "cold-last"));
 
         TenantContext.runAsSystem(() -> assertEquals(expected, repository.findDueOrderedBatch(BASE).stream()
                 .map(com.socp.search.config.domain.IngestionOutboxEvent::getId).toList()));
@@ -476,11 +539,11 @@ class IngestionOutboxClaimPersistenceTest {
             Instant due = i == 5 ? BASE.plusSeconds(60) : i == 19 ? BASE.minusSeconds(30) : BASE;
             selectorRow(String.format("tie-%02d", i), "tenant-a", "tied-key", 100, due, "PENDING");
         }
-        var expected = new java.util.ArrayList<>(List.of("middle-00", "other-00"));
-        for (int i = 0; i < 16; i++) if (i != 5) expected.add(String.format("tie-%02d", i));
-        // Equal head due/sequence must still compare member sequence before
-        // head ID: sequence 101 follows all 100s and precedes sequence 102.
-        expected.addAll(List.of("other-01", "middle-01"));
+        var expected = new java.util.ArrayList<>(List.of("middle-00", "other-00", "tie-00",
+                "tie-01", "other-01", "middle-01"));
+        // Each position admits all independent keys before taking a successor.
+        // Within a position, equal head due/sequence retains member-sequence order.
+        for (int i = 2; i < 16; i++) if (i != 5) expected.add(String.format("tie-%02d", i));
 
         var selected = repository.findDueOrderedBatch(BASE);
 
@@ -488,7 +551,7 @@ class IngestionOutboxClaimPersistenceTest {
         assertEquals(selected.size(), selected.stream().map(com.socp.search.config.domain.IngestionOutboxEvent::getId).distinct().count());
     }
 
-    @Test void selectorAppliesTheGlobalLimitAfterExpandingTheEarliestHeads() {
+    @Test void selectorAdmitsIndependentHeadsBeforeHotKeySuccessorsFillTheGlobalLimit() {
         for (int i = 0; i < 20; i++) {
             selectorRow("first-hot-" + i, "tenant-a", "first-hot", 10 + i, BASE.minusSeconds(1), "PENDING");
         }
@@ -496,8 +559,8 @@ class IngestionOutboxClaimPersistenceTest {
             selectorRow("independent-" + i, "tenant-a", "key-" + i, 1000 + i, BASE, "PENDING");
         }
         var expected = new java.util.ArrayList<String>();
-        for (int i = 0; i < 16; i++) expected.add("first-hot-" + i);
-        for (int i = 0; i < 184; i++) expected.add("independent-" + i);
+        expected.add("first-hot-0");
+        for (int i = 0; i < 199; i++) expected.add("independent-" + i);
 
         assertEquals(expected, repository.findDueOrderedBatch(BASE).stream()
                 .map(com.socp.search.config.domain.IngestionOutboxEvent::getId).toList());

@@ -217,14 +217,14 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                 // Subsequent scans still consume this same admission budget.
                 if (rounds == 0) admissionDeadline = System.nanoTime() + maxDrainDurationNanos;
                 rounds++;
-                if (batchService != null && independentKeys(pending)) {
-                    deliverIndependent(pending, admissionDeadline, blockedKeys);
+                if (batchService != null) {
+                    deliverSelected(pending, admissionDeadline, blockedKeys);
                 } else {
                     deliverOrdered(pending, admissionDeadline, blockedKeys);
                 }
                 // Each selection admits at most 16 rows per key and 200 overall.
-                // Per-row durable claims still fence every predecessor; a failed
-                // head stops the rest of that key's local batch for this drain.
+                // A durable prefix retains one unique key lease; a failed
+                // receipt stops that key's remaining sends for this drain.
                 // Never attempt the same row twice in one drain (lost claims or
                 // retries must yield instead of becoming a database busy loop).
             }
@@ -243,24 +243,30 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         return event.getTenantId() + "\u0000" + event.getRoutingKey();
     }
 
-    private static boolean independentKeys(List<IngestionOutboxEvent> events) {
-        var keys = new java.util.HashSet<String>();
-        return events.stream().allMatch(event -> keys.add(deliveryKey(event)));
+    private void deliverSelected(List<IngestionOutboxEvent> candidates, long deadline,
+                                 java.util.Set<String> blockedKeys) {
+        var published = deliverCohorts(candidates, deadline, blockedKeys);
+        for (var event : candidates) {
+            if (!published.contains(event.getId())) blockedKeys.add(deliveryKey(event));
+        }
     }
 
-    private void deliverOrdered(List<IngestionOutboxEvent> pending, long deadline,
-                                java.util.Set<String> blockedKeys) {
+    private java.util.Set<String> deliverOrdered(List<IngestionOutboxEvent> pending, long deadline,
+                                                 java.util.Set<String> blockedKeys) {
+        var published = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
         executor.deliverKeyed(pending, deadline, IngestionOutboxPublisher::deliveryKey, event -> {
             String key = deliveryKey(event);
-            if (!blockedKeys.contains(key)
-                    && !TenantContext.callWith(event.getTenantId(), () -> deliver(event))) {
-                blockedKeys.add(key);
+            if (!blockedKeys.contains(key)) {
+                if (TenantContext.callWith(event.getTenantId(), () -> deliver(event))) published.add(event.getId());
+                else blockedKeys.add(key);
             }
         });
+        return published;
     }
 
-    private void deliverIndependent(List<IngestionOutboxEvent> candidates, long deadline,
-                                    java.util.Set<String> blockedKeys) {
+    private java.util.Set<String> deliverCohorts(List<IngestionOutboxEvent> candidates, long deadline,
+                                                     java.util.Set<String> blockedKeys) {
+        var published = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
         var tenants = new java.util.LinkedHashMap<String, java.util.List<IngestionOutboxEvent>>();
         for (IngestionOutboxEvent event : candidates) {
             if (!blockedKeys.contains(deliveryKey(event))) {
@@ -269,10 +275,22 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         }
         var cohorts = new java.util.ArrayList<List<IngestionOutboxEvent>>();
         for (var events : tenants.values()) {
-            for (int start = 0; start < events.size(); start += IngestionOutboxBatchService.MAX_BATCH_SIZE) {
-                cohorts.add(List.copyOf(events.subList(start,
-                        Math.min(events.size(), start + IngestionOutboxBatchService.MAX_BATCH_SIZE))));
+            var keys = new java.util.LinkedHashMap<String, List<IngestionOutboxEvent>>();
+            events.forEach(event -> keys.computeIfAbsent(event.getRoutingKey(),
+                    ignored -> new java.util.ArrayList<>()).add(event));
+            var cohort = new java.util.ArrayList<IngestionOutboxEvent>();
+            int keyCount = 0;
+            for (var prefix : keys.values()) {
+                if (keyCount == IngestionOutboxBatchService.MAX_BATCH_SIZE
+                        || cohort.size() + prefix.size() > IngestionOutboxBatchService.MAX_PREFIX_ROWS) {
+                    cohorts.add(List.copyOf(cohort));
+                    cohort.clear();
+                    keyCount = 0;
+                }
+                cohort.addAll(prefix);
+                keyCount++;
             }
+            if (!cohort.isEmpty()) cohorts.add(List.copyOf(cohort));
         }
         // Admit at most two cohorts across all tenants before acquiring any
         // durable claims. The shared submission executor retains its own bound.
@@ -280,12 +298,100 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         // this call returns, including when admission expires or a peer fails.
         cohortExecutor.deliver(cohorts, deadline, cohort -> {
             if (stopping.get() || Thread.currentThread().isInterrupted() || System.nanoTime() >= deadline) return;
-            TenantContext.runWith(cohort.getFirst().getTenantId(), () -> deliverCohort(cohort, deadline, blockedKeys));
+            TenantContext.runWith(cohort.getFirst().getTenantId(), () -> {
+                if (cohort.stream().map(IngestionOutboxEvent::getRoutingKey).distinct().count() < cohort.size()) {
+                    deliverOrderedCohort(cohort, deadline, blockedKeys, published);
+                } else {
+                    deliverCohort(cohort, deadline, blockedKeys, published);
+                }
+            });
         });
+        return published;
+    }
+
+    private void deliverOrderedCohort(List<IngestionOutboxEvent> candidates, long deadline,
+                                      java.util.Set<String> blockedKeys, java.util.Set<String> publishedIds) {
+        String token = java.util.UUID.randomUUID().toString();
+        long claimStarted = System.nanoTime();
+        long deliveryDeadline = claimStarted + deliveryAdmissionBudgetNanos();
+        List<IngestionOutboxEvent> claimed;
+        try {
+            claimed = batchService.claimOrderedPrefixes(candidates, token, maxAttempts, Instant.now());
+            recordBatch("claim", claimed.size(), claimStarted, true);
+        } catch (RuntimeException failedClaim) {
+            recordBatch("claim", 0, claimStarted, false);
+            // An ambiguous prefix claim must be rechecked by the existing CAS
+            // path. Never recursively acquire the enclosing cohort's permits.
+            log.debug("Ordered outbox prefix claim fell back to individual claims: {}", failedClaim.toString());
+            publishedIds.addAll(deliverOrdered(candidates, deadline, blockedKeys));
+            return;
+        }
+        var started = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        var receipts = new java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.CompletableFuture<Boolean>>();
+        var acknowledged = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        try (var keyExecutor = new OutboxDeliveryExecutor("ingestion-outbox-key-", 32)) {
+            // Each admitted cohort retains 32 receipt slots, so one tenant's
+            // blocked keys cannot occupy its sibling cohort's slots. Two cohort
+            // permits retain the 64-receipt bound; submissions still share the
+            // configured executor. Every admitted runner joins before closing.
+            keyExecutor.deliverKeyed(claimed, deliveryDeadline, IngestionOutboxPublisher::deliveryKey,
+                    event -> TenantContext.runWith(event.getTenantId(), () -> {
+                        String key = deliveryKey(event);
+                        if (blockedKeys.contains(key) || stopping.get() || Thread.currentThread().isInterrupted()) return;
+                        try {
+                            executor.deliver(List.of(event), deliveryDeadline, row -> TenantContext.runWith(row.getTenantId(), () -> {
+                                started.add(row.getId());
+                                try {
+                                    receipts.put(row.getId(), java.util.Objects.requireNonNull(producer.sendAsync(
+                                            row.getRoutingKey(), row.getPayload(), row.getTraceparent())));
+                                } catch (RuntimeException failure) {
+                                    receipts.put(row.getId(), java.util.concurrent.CompletableFuture.completedFuture(false));
+                                }
+                            }));
+                            var receipt = receipts.get(event.getId());
+                            long waitStarted = System.nanoTime();
+                            boolean success = false;
+                            try { success = receipt != null && Boolean.TRUE.equals(receipt.join()); }
+                            finally { recordOperation(Operation.RECEIPT_WAIT, waitStarted, success); }
+                            if (success) acknowledged.add(event.getId());
+                            else blockedKeys.add(key);
+                        } catch (RuntimeException failedSubmission) {
+                            blockedKeys.add(key);
+                        }
+                    }));
+        } finally {
+            // All admitted runners/submissions have joined. A stopped key's
+            // unstarted suffix returns its reserved attempts; started failures
+            // remain retryable. Only broker-acknowledged prefixes can complete.
+            java.util.concurrent.CompletableFuture.allOf(receipts.values().toArray(
+                    java.util.concurrent.CompletableFuture[]::new)).handle((ignored, failure) -> null).join();
+            for (var event : claimed) {
+                if (acknowledged.contains(event.getId())) continue;
+                blockedKeys.add(deliveryKey(event));
+                if (!started.contains(event.getId())) releaseUnsentClaim(event, token);
+                else scheduleRetry(event, token, "ordered publication was not acknowledged");
+            }
+            var completed = claimed.stream().filter(event -> acknowledged.contains(event.getId())).toList();
+            if (!completed.isEmpty()) {
+                long finalizeStarted = System.nanoTime();
+                try {
+                    int published = batchService.markOrderedAcknowledged(completed, token, Instant.now());
+                    if (published != completed.size()) throw new IllegalStateException("incomplete ordered completion receipt");
+                    recordBatch("finalize", published, finalizeStarted, true);
+                    completed.forEach(event -> publishedIds.add(event.getId()));
+                } catch (RuntimeException failedFinalization) {
+                    recordBatch("finalize", 0, finalizeStarted, false);
+                    for (var event : completed) {
+                        blockedKeys.add(deliveryKey(event));
+                        scheduleRetry(event, token, "ordered acknowledgement persistence failed: " + failedFinalization.getMessage());
+                    }
+                }
+            }
+        }
     }
 
     private void deliverCohort(List<IngestionOutboxEvent> candidates, long deadline,
-                               java.util.Set<String> blockedKeys) {
+                               java.util.Set<String> blockedKeys, java.util.Set<String> publishedIds) {
         String token = java.util.UUID.randomUUID().toString();
         List<IngestionOutboxEvent> claimed;
         long claimStarted = System.nanoTime();
@@ -298,7 +404,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
             // No batch receipts returned. Re-enter the per-row CAS path so even
             // an ambiguous commit is rechecked before any publication attempt.
             log.debug("Independent outbox claim batch fell back to individual claims: {}", failedClaim.toString());
-            deliverOrdered(candidates, deadline, blockedKeys);
+            publishedIds.addAll(deliverOrdered(candidates, deadline, blockedKeys));
             return;
         }
         var acknowledged = new java.util.ArrayList<IngestionOutboxEvent>();
@@ -363,6 +469,8 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                         completed.forEach(event -> blockedKeys.add(deliveryKey(event)));
                         log.warn("Ingestion outbox ownership changed after batch broker acknowledgement expected={} published={}",
                                 completed.size(), published);
+                    } else {
+                        completed.forEach(event -> publishedIds.add(event.getId()));
                     }
                 } catch (RuntimeException failedFinalization) {
                     recordBatch("finalize", 0, finalizeStarted, false);

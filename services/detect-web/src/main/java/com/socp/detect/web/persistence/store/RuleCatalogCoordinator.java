@@ -33,10 +33,23 @@ public class RuleCatalogCoordinator {
         this.postgres = "PostgreSQL".equals(product);
     }
 
-    public <T> T withCatalog(String tenant, Pack pack, Runnable install, Supplier<T> operation) {
+    /** Read the committed marker without taking the tenant's mutation lock or caching it locally. */
+    public boolean hasCurrentPack(String tenant, Pack pack) {
+        requireTenant(tenant);
+        Objects.requireNonNull(pack, "content pack is required");
+        return Boolean.TRUE.equals(jdbc.queryForObject("select exists (select 1 from t_rule_catalog "
+                        + "where tenant_id = ? and pack_id = ? and pack_version = ? and pack_fingerprint = ?)",
+                Boolean.class, tenant, pack.id(), pack.version(), pack.fingerprint()));
+    }
+
+    private static void requireTenant(String tenant) {
         if (tenant == null || !tenant.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,63}")) {
             throw new IllegalArgumentException("valid catalogue tenant is required");
         }
+    }
+
+    public <T> T withCatalog(String tenant, Pack pack, Runnable install, Supplier<T> operation) {
+        requireTenant(tenant);
         return transactions.execute(status -> {
             ensureNamespace(tenant);
             Pack installed = jdbc.queryForObject("select pack_id, pack_version, pack_fingerprint "

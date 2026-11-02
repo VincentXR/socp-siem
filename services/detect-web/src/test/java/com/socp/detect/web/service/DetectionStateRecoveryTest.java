@@ -53,18 +53,40 @@ class DetectionStateRecoveryTest {
     @Mock DetectionStateOwnership ownership;
     @Mock RuleEngine engine;
 
-    @Test
-    void durableGuardsBatchOnlyTheSameRecoveryAuthority() {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void durableGuardsBatchOnlyTheSameRecoveryAuthority(boolean postCommit) {
         var state = state(ownership);
         when(ownership.acquire(anyString(), anyInt(), anyInt())).thenAnswer(invocation ->
                 new DetectionStateOwnership.Lease(invocation.getArgument(0), invocation.getArgument(1),
                         invocation.getArgument(2), "worker-a", 17L, Instant.MAX));
-        var guards = List.of(2, 0, 1).stream()
-                .map(partition -> (com.socp.rule.engine.OrderedCommitGuard) state.durableGuardFor(partition, 0)).toList();
-        com.socp.rule.engine.OrderedCommitGuard.runAll(guards);
+        var inputs = List.of(2, 0, 1).stream().map(partition -> new RuleEngine.BatchEvent(event("tenant-a", "alice"),
+                new com.socp.rule.engine.DetectionResult.InputPosition("socp-events", partition, 1L),
+                com.socp.rule.engine.RuleExecutionScope.NOOP)).toList();
+        if (postCommit) {
+            state.assign(Set.of(0, 1, 2));
+            state.assertCurrentOwners(inputs);
+        } else {
+            var guards = List.of(2, 0, 1).stream().map(partition -> state.durableGuardFor(partition, 0)).toList();
+            com.socp.rule.engine.OrderedCommitGuard.runAll(guards);
+        }
         verify(ownership).assertCurrentBatch(org.mockito.ArgumentMatchers.argThat(leases ->
                 leases.stream().map(DetectionStateOwnership.Lease::partition).toList().equals(List.of(0, 1, 2))));
         verify(ownership, never()).assertCurrent(any());
+        if (postCommit) {
+            org.mockito.Mockito.doThrow(new DetectionStateOwnership.StaleStateOwnerException("new owner"))
+                    .when(ownership).assertCurrentBatch(any());
+            assertThrows(DetectionStateOwnership.StaleStateOwnerException.class, () -> state.assertCurrentOwners(inputs));
+            org.mockito.Mockito.doNothing().when(ownership).assertCurrentBatch(any());
+            state.assertCurrentOwners(inputs);
+            verify(ownership, times(6)).acquire(anyString(), anyInt(), anyInt());
+            assertThrows(IllegalArgumentException.class, () -> state.assertCurrentOwners(List.of()));
+            assertThrows(IllegalArgumentException.class,
+                    () -> state.assertCurrentOwners(java.util.Collections.nCopies(65, inputs.getFirst())));
+            assertThrows(IllegalArgumentException.class, () -> state.assertCurrentOwners(List.of(inputs.getFirst(),
+                    new RuleEngine.BatchEvent(event("other-tenant", "alice"), inputs.getFirst().position(),
+                            com.socp.rule.engine.RuleExecutionScope.NOOP))));
+        }
     }
 
     @Test
@@ -156,6 +178,10 @@ class DetectionStateRecoveryTest {
         assertThrows(DetectionStateOwnership.StaleStateOwnerException.class, () -> state.durableGuardFor(2, 0));
         assertThrows(DetectionStateOwnership.StaleStateOwnerException.class,
                 () -> state.assertCurrentOwner(event("tenant-a", "alice"), 2));
+        assertThrows(DetectionStateOwnership.StaleStateOwnerException.class, () -> state.assertCurrentOwners(List.of(
+                new RuleEngine.BatchEvent(event("tenant-a", "alice"),
+                        new com.socp.rule.engine.DetectionResult.InputPosition("socp-events", 2, 9L),
+                        com.socp.rule.engine.RuleExecutionScope.NOOP))));
         state.snapshotAfterDurable(engine, event("tenant-a", "alice"), 2, 9L);
         verify(ownership).acquire("socp-events", 2, 0);
         verify(ownership).release(lease);
