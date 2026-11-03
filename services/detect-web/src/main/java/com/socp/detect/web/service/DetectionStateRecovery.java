@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -171,7 +172,7 @@ public class DetectionStateRecovery {
         }
     }
 
-    Runnable durableGuardFor(int partition, int shard) {
+    com.socp.rule.engine.OrderedCommitGuard durableGuardFor(int partition, int shard) {
         DetectionStateOwnership.Lease lease = stateLeaseFor(partition, shard);
         return lease == null ? new com.socp.rule.engine.OrderedCommitGuard("", () -> { })
                 : new com.socp.rule.engine.OrderedCommitGuard(lease.unitKey(), new LeaseGuard(lease));
@@ -474,6 +475,26 @@ public class DetectionStateRecovery {
                     "Kafka partition is no longer assigned: " + partition);
         }
         durableGuardFor(partition, shardFor(event)).run();
+    }
+
+    void assertCurrentOwners(List<RuleEngine.BatchEvent> representatives) {
+        if (representatives == null || representatives.isEmpty() || representatives.size() > 64) {
+            throw new IllegalArgumentException("ownership observation batch limit is 64");
+        }
+        String tenant = representatives.getFirst().event().requireTenantId();
+        var guards = new ArrayList<com.socp.rule.engine.OrderedCommitGuard>();
+        for (var input : representatives) {
+            if (!tenant.equals(input.event().requireTenantId())) {
+                throw new IllegalArgumentException("ownership observations must belong to one tenant");
+            }
+            int partition = input.position().partition();
+            if (revokedPartitions.contains(partition) || !assignedPartitions().contains(partition)) {
+                throw new DetectionStateOwnership.StaleStateOwnerException(
+                        "Kafka partition is no longer assigned: " + partition);
+            }
+            guards.add(durableGuardFor(partition, shardFor(input.event())));
+        }
+        com.socp.rule.engine.OrderedCommitGuard.runAll(guards);
     }
 
     void clearCheckpoints() {

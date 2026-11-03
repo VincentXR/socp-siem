@@ -310,11 +310,15 @@ class IngestPipelineTest {
         IngestPipeline pipeline = new IngestPipeline(normalizer, commit, monitor,
                 mock(DetectClient.class), new SimpleMeterRegistry());
 
-        pipeline.process("same", "collector-1", "request-1");
-        pipeline.process("different", "collector-1", "request-1");
+        com.socp.platform.tenant.context.TenantContext.runWith("tenant-a", () -> {
+            pipeline.process("same", "collector-1", "request-1");
+            pipeline.process("different", "collector-1", "request-1");
+        });
 
         org.mockito.ArgumentCaptor<String> identities = org.mockito.ArgumentCaptor.forClass(String.class);
         verify(normalizer, times(2)).normalize(anyString(), eq("collector-1"), identities.capture(), any());
+        assertEquals("request-1:0:f19dd94571fb016a695cf055017ebe038f76b282e713375bc9b31213fa014d87",
+                identities.getAllValues().getFirst(), "existing transport retry identities must remain stable");
         assertNotEquals(identities.getAllValues().get(0), identities.getAllValues().get(1));
     }
 

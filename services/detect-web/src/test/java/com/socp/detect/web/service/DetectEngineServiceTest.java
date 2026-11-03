@@ -293,8 +293,9 @@ class DetectEngineServiceTest {
         }
     }
 
-    @Test
-    void hotReloadDrainsAcceptedWorkBeforeReadingTheJournal() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void hotReloadDrainsAcceptedWorkBeforeReadingTheJournal(boolean snapshotsEnabled) throws Exception {
         when(store.list("default")).thenReturn(List.of());
         when(stateStore.claim(org.mockito.ArgumentMatchers.any(SecurityEvent.class)))
                 .thenReturn(com.socp.detect.web.persistence.store.DetectionEventClaim.NEW);
@@ -309,25 +310,31 @@ class DetectEngineServiceTest {
                 org.mockito.ArgumentMatchers.any());
 
         DetectEngineService service = new DetectEngineService(
-                store, new RecentAlertSink(10, forwarder, null), stateStore);
+                store, new RecentAlertSink(10, forwarder, null), stateStore,
+                performanceMetrics, snapshotsEnabled ? snapshotStore : null);
+        ReflectionTestUtils.setField(lifecycle(service), "reloadDrainTimeoutMs", 1500L);
         service.start();
         org.mockito.Mockito.clearInvocations(stateStore);
+        CompletableFuture<Void> rebuild = null;
         try {
             assertTrue(service.ingest(new SecurityEvent(
                     Instant.now(), "system", "host-1", "heartbeat",
                     Map.of("tenant_id", "default"), Severity.INFO)));
             assertTrue(sinkEntered.await(2, TimeUnit.SECONDS));
 
-            CompletableFuture<Void> rebuild = CompletableFuture.runAsync(
-                    service::reload);
-            Thread.sleep(100);
+            rebuild = CompletableFuture.runAsync(service::reload);
+            var lock = (java.util.concurrent.locks.ReentrantReadWriteLock)
+                    ReflectionTestUtils.getField(lifecycle(service), "engineLifecycle");
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (!lock.isWriteLocked() && System.nanoTime() < deadline) Thread.sleep(5);
+            assertTrue(lock.isWriteLocked(), "reload must close admission before draining accepted work");
             verify(stateStore, org.mockito.Mockito.never()).replayRecentForTenant(
                     org.mockito.ArgumentMatchers.eq("default"),
                     org.mockito.ArgumentMatchers.any(Duration.class),
                     org.mockito.ArgumentMatchers.any());
 
             releaseSink.countDown();
-            rebuild.get(3, TimeUnit.SECONDS);
+            rebuild.get(1, TimeUnit.SECONDS);
             verify(stateStore).markCompleted(org.mockito.ArgumentMatchers.any(SecurityEvent.class));
             verify(stateStore).replayRecentForTenant(
                     org.mockito.ArgumentMatchers.eq("default"),
@@ -335,6 +342,7 @@ class DetectEngineServiceTest {
                     org.mockito.ArgumentMatchers.any());
         } finally {
             releaseSink.countDown();
+            if (rebuild != null) rebuild.get(3, TimeUnit.SECONDS);
             service.stop();
         }
     }

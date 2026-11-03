@@ -82,6 +82,42 @@ class RuleCatalogCoordinationTest {
         }
     }
 
+    @Test void installedCatalogueReadsDoNotWaitForAnUncommittedRuleMutation() throws Exception {
+        var first = store();
+        var second = store();
+        first.save(spec("metadata", "committed"));
+        var installed = (RuleCatalogCoordinator.Pack) org.springframework.test.util.ReflectionTestUtils
+                .getField(RuleSpecStore.class, "PACK");
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            var writer = executor.submit(() -> TenantContext.runWith("catalog-a", () ->
+                    coordinator().withCatalog("catalog-a", installed, () -> fail("already installed"), () -> {
+                        first.save(spec("metadata", "updated"));
+                        entered.countDown();
+                        await(release);
+                        return null;
+                    })));
+            try {
+                assertTrue(entered.await(5, TimeUnit.SECONDS));
+                var reader = executor.submit(() -> TenantContext.callWith("catalog-a", () -> second.get("metadata")));
+                assertEquals("committed", reader.get(2, TimeUnit.SECONDS).get("name"),
+                        "metadata reads must see committed content without joining the tenant mutation lock");
+            } finally {
+                release.countDown();
+            }
+            writer.get(5, TimeUnit.SECONDS);
+        }
+        assertEquals("updated", second.get("metadata").get("name"));
+        jdbc.update("update t_rule_catalog set pack_version = '9999' where tenant_id = 'catalog-a'");
+        assertThrows(IllegalStateException.class, () -> second.get("metadata"),
+                "the read path must still reject content newer than its runtime");
+        jdbc.update("update t_rule_catalog set pack_version = ?, pack_fingerprint = ? where tenant_id = 'catalog-a'",
+                installed.version(), "0".repeat(64));
+        assertThrows(IllegalStateException.class, () -> second.get("metadata"),
+                "a changed same-version pack must not bypass validation");
+    }
+
     @Test void readersWaitForInstallationCommitAndFailedInstallationLeavesNoMarker() throws Exception {
         var first = coordinator();
         var second = coordinator();
@@ -103,11 +139,13 @@ class RuleCatalogCoordinationTest {
                     return second.withCatalog("install", pack, installations::incrementAndGet, () -> "ready");
                 });
                 assertTrue(readerStarted.await(5, TimeUnit.SECONDS));
+                assertFalse(second.hasCurrentPack("install", pack), "an uncommitted installation is not current");
                 assertThrows(TimeoutException.class, () -> reader.get(200, TimeUnit.MILLISECONDS));
                 assertEquals(0, jdbc.queryForObject("select count(*) from t_rule_catalog where tenant_id = 'install' and pack_fingerprint is not null", Integer.class));
                 release.countDown();
                 assertEquals("ready", writer.get(5, TimeUnit.SECONDS));
                 assertEquals("ready", reader.get(5, TimeUnit.SECONDS));
+                assertTrue(second.hasCurrentPack("install", pack));
                 assertEquals(1, installations.get());
             } finally { release.countDown(); }
         }
@@ -116,6 +154,7 @@ class RuleCatalogCoordinationTest {
             throw new IllegalStateException("broken content");
         }, () -> "unreachable"));
         assertEquals(0, jdbc.queryForObject("select count(*) from t_rule_catalog where tenant_id = 'failed'", Integer.class));
+        assertFalse(second.hasCurrentPack("failed", pack));
         assertEquals("recovered", second.withCatalog("failed", pack, () -> { }, () -> "recovered"));
     }
 

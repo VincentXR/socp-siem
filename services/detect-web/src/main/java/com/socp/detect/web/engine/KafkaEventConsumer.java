@@ -140,8 +140,8 @@ public class KafkaEventConsumer {
     @Value("${socp.detect.backpressure.max-pending-records:4096}")
     private long maxPendingRecords = 4096;
 
-    @Value("${socp.kafka.processing-batch-size:32}")
-    private int processingBatchSize = 32;
+    @Value("${socp.kafka.processing-batch-size:128}")
+    private int processingBatchSize = com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS;
     private static final long ADMISSION_BATCH_MAX_BYTES = 1024L * 1024;
 
     @Value("${socp.detect.state.retention}")
@@ -353,7 +353,7 @@ public class KafkaEventConsumer {
     /** The poller only reserves bounded work; journal I/O runs in the ordered lane. */
     private void dispatchPolledRecords(KafkaConsumer<String, String> consumer,
                                       org.apache.kafka.clients.consumer.ConsumerRecords<String, String> records) {
-        int limit = Math.max(1, Math.min(64, processingBatchSize));
+        int limit = Math.max(1, Math.min(com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS, processingBatchSize));
         long byteLimit = Math.max(1L, Math.min(ADMISSION_BATCH_MAX_BYTES, partitionMaxPendingBytes));
         for (TopicPartition partition : records.partitions()) {
             java.util.List<PolledRecord> batch = new java.util.ArrayList<>();
@@ -400,7 +400,7 @@ public class KafkaEventConsumer {
 
         @Override
         public void run() {
-            int limit = Math.max(1, Math.min(64, processingBatchSize));
+            int limit = Math.max(1, Math.min(com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS, processingBatchSize));
             long byteLimit = Math.max(1L, Math.min(ADMISSION_BATCH_MAX_BYTES, partitionMaxPendingBytes));
             List<PolledRecord> combined = new java.util.ArrayList<>(records);
             List<PendingWork> absorbed = new java.util.ArrayList<>();
@@ -452,7 +452,9 @@ public class KafkaEventConsumer {
             java.util.List<ParsedRecord> group = new java.util.ArrayList<>();
             java.util.Set<String> identities = new java.util.HashSet<>();
             DetectEngineService.BatchKey key = null;
-            for (int next = cursor; next < records.size(); next++) {
+            // Serial preclaims and their ordered-generation admission retain
+            // the existing 64-record bound; independent groups use the atomic API.
+            for (int next = cursor; next < records.size() && group.size() < 64; next++) {
                 PolledRecord row = records.get(next);
                 var record = row.record();
                 DetectionRecordProcessor.NormalizedDetectionRecord normalized;

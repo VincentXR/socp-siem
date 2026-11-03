@@ -311,25 +311,39 @@ public class DetectionEventJournal implements DetectionStateStore {
         }).toList();
         entityManager.flush();
         entityManager.unwrap(org.hibernate.Session.class).doWork(connection -> {
-            // Keep the unique delivery identity as the lookup predicate. A status
-            // predicate can choose a tiny estimated PENDING index and scan a large
-            // newly admitted backlog before statistics catch up.
-            String sql = "update t_detection_event set "
-                    + "completed_at=case when status='PENDING' then ? else completed_at end, "
-                    + "status_reason=case when status='PENDING' then null else status_reason end, "
-                    + "result_json=case when status='PENDING' then ? else result_json end, "
-                    + "status=case when status='PENDING' then 'COMPLETED' else status end "
-                    + "where tenant_id=? and delivery_id=?";
+            // JDBC batching still executes one UPDATE per event on the server.
+            // A bounded VALUES relation lets PostgreSQL/H2 update the whole set
+            // once. Match only the unique tenant/delivery identity: a status
+            // predicate could select a stale, underestimated PENDING index.
+            String values = String.join(",", java.util.Collections.nCopies(results.size(),
+                    "(cast(? as varchar),cast(? as timestamp with time zone),cast(? as text))"));
+            String sql = "merge into t_detection_event e using (values " + values
+                    + ") incoming(delivery_id,completed_at,result_json) "
+                    + "on e.tenant_id=(select cast(? as varchar)) and e.delivery_id=incoming.delivery_id and e.delivery_id in ("
+                    + String.join(",", java.util.Collections.nCopies(results.size(), "?")) + ") "
+                    + "when matched then update set "
+                    + "completed_at=case when e.status='PENDING' then incoming.completed_at else e.completed_at end, "
+                    + "status_reason=case when e.status='PENDING' then null else e.status_reason end, "
+                    + "result_json=case when e.status='PENDING' then incoming.result_json else e.result_json end, "
+                    + "status=case when e.status='PENDING' then 'COMPLETED' else e.status end";
             try (var statement = connection.prepareStatement(sql)) {
+                int parameter = 1;
                 for (int i = 0; i < results.size(); i++) {
-                    statement.setTimestamp(1, java.sql.Timestamp.from(completedAt.plusNanos(i * 1_000L)));
-                    statement.setString(2, summaries.get(i));
-                    statement.setString(3, tenant);
-                    statement.setString(4, DetectionDelivery.deliveryId(results.get(i).event()));
-                    statement.addBatch();
+                    statement.setString(parameter++, DetectionDelivery.deliveryId(results.get(i).event()));
+                    statement.setTimestamp(parameter++, java.sql.Timestamp.from(completedAt.plusNanos(i * 1_000L)));
+                    statement.setString(parameter++, summaries.get(i));
                 }
-                for (int changed : statement.executeBatch()) {
-                    if (changed != 1) throw new IllegalStateException("missing detection journal receipt during completion");
+                statement.setString(parameter++, tenant);
+                // Bound the target side explicitly too. Before ANALYZE knows a
+                // newly active tenant, a hash join can otherwise scan that
+                // tenant's whole retained history to match a tiny VALUES set.
+                // The scalar tenant parameter also prevents a stale rare-tenant
+                // estimate from choosing a tenant-only index plus a row filter.
+                for (var result : results) {
+                    statement.setString(parameter++, DetectionDelivery.deliveryId(result.event()));
+                }
+                if (statement.executeUpdate() != results.size()) {
+                    throw new IllegalStateException("missing detection journal receipt during completion");
                 }
             }
         });

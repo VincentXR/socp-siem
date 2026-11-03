@@ -39,8 +39,14 @@ flight. Delivery remains at least once and requires downstream idempotency.
 
 Ingestion, Alert event, and Alert delivery publishers use
 `OutboxDeliveryExecutor` to acquire capacity before invoking the claim
-callback. Each process permits one drain per publisher, admits at most the
-configured concurrency (1–32), and stops admitting work at the drain deadline.
+callback. Each process permits one drain per publisher. Alert publishers admit
+at most the configured concurrency (1–32). Ingestion admits at most two
+same-tenant cohorts, each with at most 32 keys, 16 rows per key and 200 rows,
+while producer submission retains its configured concurrency bound. Repeated
+keys share a durable prefix lease and await each preceding Kafka receipt before
+sending the next row; completion remains token-fenced. See the
+[ordered ingestion contract](../ingestion-parsing.md#ordered-outbox-batches).
+Publishers stop admitting work at the drain deadline.
 Already admitted work is joined and may finish after that deadline within its
 transport timeout; the deadline is not a hard database/I/O timeout. Rule-change
 delivery is sequential and checks the deadline between rows. These local

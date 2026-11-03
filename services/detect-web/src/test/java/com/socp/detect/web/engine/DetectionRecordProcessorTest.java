@@ -39,7 +39,7 @@ class DetectionRecordProcessorTest {
         given(state.claimBatch(org.mockito.ArgumentMatchers.anyList())).willReturn(java.util.List.of(DetectionEventClaim.NEW,DetectionEventClaim.NEW));
         org.mockito.Mockito.when(engine.ingestBatchFromKafkaAndAwait(org.mockito.ArgumentMatchers.anyList())).thenAnswer(i->{admitted.countDown();return durable;});
         org.mockito.Mockito.doThrow(new org.springframework.transaction.CannotCreateTransactionException("transient"))
-                .doNothing().when(engine).assertCurrentOwner(any(),org.mockito.ArgumentMatchers.eq(0));
+                .doNothing().when(engine).assertCurrentOwners(org.mockito.ArgumentMatchers.anyList());
         var processor=new DetectionRecordProcessor(engine,state,null,20L);
         var result=CompletableFuture.supplyAsync(()->processor.processBatch(records()));
         assertTrue(admitted.await(2,java.util.concurrent.TimeUnit.SECONDS));
@@ -47,7 +47,7 @@ class DetectionRecordProcessorTest {
         assertTrue(result.get(3,java.util.concurrent.TimeUnit.SECONDS));
         verify(engine,times(1)).ingestBatchFromKafkaAndAwait(org.mockito.ArgumentMatchers.anyList());
         verify(state,times(1)).claimBatch(org.mockito.ArgumentMatchers.anyList());
-        verify(engine,times(2)).assertCurrentOwner(any(),org.mockito.ArgumentMatchers.eq(0));
+        verify(engine,times(2)).assertCurrentOwners(org.mockito.ArgumentMatchers.anyList());
         org.mockito.Mockito.verify(state,org.mockito.Mockito.never()).markCompleted(any(SecurityEvent.class));
     }
     @Test void terminalBatchEntriesAreNotEvaluatedAgain() {
@@ -59,6 +59,37 @@ class DetectionRecordProcessorTest {
             return CompletableFuture.completedFuture(null);
         });
         assertTrue(new DetectionRecordProcessor(engine,state,null).processBatch(records()));
+    }
+
+    @Test void terminalUnitsStillReceiveBoundedTenantScopedOwnershipObservations() {
+        var engine = mock(DetectEngineService.class);
+        var state = mock(DetectionStateStore.class);
+        enableBatch(engine);
+        org.mockito.Mockito.when(engine.batchGroups(org.mockito.ArgumentMatchers.anyList())).thenAnswer(call -> {
+            java.util.List<com.socp.rule.engine.RuleEngine.BatchEvent> inputs = call.getArgument(0);
+            return inputs.stream().map(java.util.List::of).toList();
+        });
+        given(state.claimBatch(org.mockito.ArgumentMatchers.anyList())).willAnswer(call ->
+                java.util.Collections.nCopies(((java.util.List<?>) call.getArgument(0)).size(), DetectionEventClaim.COMPLETED));
+        var sizes = new java.util.ArrayList<Integer>();
+        var observed = new java.util.HashSet<Long>();
+        org.mockito.Mockito.doAnswer(call -> {
+            java.util.List<com.socp.rule.engine.RuleEngine.BatchEvent> units = call.getArgument(0);
+            sizes.add(units.size());
+            for (var unit : units) {
+                assertEquals(unit.event().requireTenantId(), com.socp.platform.tenant.context.TenantContext.require());
+                assertTrue(observed.add(unit.position().offset()));
+            }
+            return null;
+        }).when(engine).assertCurrentOwners(org.mockito.ArgumentMatchers.anyList());
+        var inputs = java.util.stream.IntStream.range(0,128).mapToObj(n ->
+                new org.apache.kafka.clients.consumer.ConsumerRecord<>("socp-events",0,(long)n,"key",
+                        "{\"eventId\":\"event-"+n+"\",\"tenantId\":\""+(n<96?"first":"second")+"\",\"source\":\"auth\"}")).toList();
+        assertTrue(new DetectionRecordProcessor(engine,state,null).processBatch(inputs));
+        assertEquals(java.util.List.of(64,32,32), sizes);
+        assertEquals(128, observed.size());
+        org.mockito.Mockito.verify(engine,org.mockito.Mockito.never()).ingestBatchFromKafkaAndAwait(org.mockito.ArgumentMatchers.anyList());
+        assertEquals(null, com.socp.platform.tenant.context.TenantContext.get());
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -93,11 +124,12 @@ class DetectionRecordProcessorTest {
                         () -> result.get(50, java.util.concurrent.TimeUnit.MILLISECONDS),
                         "neither ACK nor fallback may escape while any submitted transaction is in flight");
                 org.mockito.Mockito.verify(engine, org.mockito.Mockito.never())
-                        .assertCurrentOwner(any(), org.mockito.ArgumentMatchers.anyInt());
+                        .assertCurrentOwners(org.mockito.ArgumentMatchers.anyList());
                 slow.complete(null);
                 if (outcome.equals("success")) {
                     assertTrue(result.get(3, java.util.concurrent.TimeUnit.SECONDS));
-                    verify(engine, times(2)).assertCurrentOwner(any(), org.mockito.ArgumentMatchers.eq(0));
+                    verify(engine).assertCurrentOwners(org.mockito.ArgumentMatchers.argThat(units ->
+                            units.stream().map(unit -> unit.event().id()).toList().equals(java.util.List.of("batch-0", "batch-1"))));
                 } else {
                     assertThrows(java.util.concurrent.ExecutionException.class,
                             () -> result.get(3, java.util.concurrent.TimeUnit.SECONDS));

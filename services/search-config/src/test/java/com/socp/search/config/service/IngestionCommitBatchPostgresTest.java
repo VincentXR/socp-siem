@@ -6,6 +6,7 @@ import com.socp.search.config.persistence.repository.SearchEventRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.data.jpa.repository.Query;
@@ -16,6 +17,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 @Testcontainers
+@ActiveProfiles("pg")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @EnabledIfEnvironmentVariable(named = "SOCP_TESTCONTAINERS", matches = "true")
 class IngestionCommitBatchPostgresTest extends IngestionCommitBatchPersistenceTest {
@@ -23,6 +25,7 @@ class IngestionCommitBatchPostgresTest extends IngestionCommitBatchPersistenceTe
     static final GenericContainer<?> POSTGRES = new GenericContainer<>(DockerImageName.parse(MiddlewareImages.postgres()))
             .withEnv("POSTGRES_DB", "ingest_batch").withEnv("POSTGRES_USER", "batch_test")
             .withEnv("POSTGRES_PASSWORD", "batch-test-only").withExposedPorts(5432)
+            .withCommand("postgres", "-c", "shared_preload_libraries=pg_stat_statements")
             .withCreateContainerCmdModifier(command -> command.getHostConfig()
                     .withMemory(512L * 1024 * 1024).withMemorySwap(512L * 1024 * 1024)
                     .withPortBindings(new com.github.dockerjava.api.model.PortBinding(
@@ -38,6 +41,31 @@ class IngestionCommitBatchPostgresTest extends IngestionCommitBatchPersistenceTe
         registry.add("spring.datasource.password", () -> "batch-test-only");
         registry.add("spring.datasource.driver-class-name", () -> "org.postgresql.Driver");
         registry.add("spring.datasource.hikari.connection-init-sql", () -> "SET statement_timeout = '5s'");
+        registry.add("spring.flyway.url", () -> "jdbc:postgresql://" + POSTGRES.getHost() + ":"
+                + POSTGRES.getMappedPort(5432) + "/ingest_batch");
+        registry.add("spring.flyway.user", () -> "batch_test");
+        registry.add("spring.flyway.password", () -> "batch-test-only");
+    }
+
+    @Test void postgresBatchesInsertOnTheServerAndRetainSameKeyEnqueueOrder() {
+        jdbc.execute("create extension if not exists pg_stat_statements");
+        jdbc.execute("select pg_stat_statements_reset()");
+        var events = java.util.stream.IntStream.range(0, 128).mapToObj(index ->
+                new com.socp.search.config.domain.SearchEvent("ordered-batch-" + index,
+                        java.time.Instant.parse("2026-10-29T00:00:00Z"), "test", "shared-host", "INFO",
+                        "event " + index, java.util.Map.of("tenant_id", tenant), java.util.Map.of())).toList();
+        org.junit.jupiter.api.Assertions.assertEquals(128, commits.commit(events).created());
+        for (String table : java.util.List.of("t_search_event", "t_ingestion_outbox")) {
+            org.junit.jupiter.api.Assertions.assertEquals(4L, jdbc.queryForObject(
+                    "select sum(calls)::bigint from pg_stat_statements where query like ?", Long.class,
+                    "insert into " + table + "%"), "32-row JDBC batches must reach PostgreSQL as multi-row inserts");
+        }
+        org.junit.jupiter.api.Assertions.assertEquals(events.stream()
+                        .map(com.socp.search.config.domain.SearchEvent::eventId).toList(),
+                jdbc.queryForList("select event_id from t_ingestion_outbox where tenant_id=? order by sequence_no",
+                        String.class, tenant), "Batch rewriting must retain the input order of a routing key");
+        org.junit.jupiter.api.Assertions.assertEquals(128, commits.commit(events).duplicates());
+        org.junit.jupiter.api.Assertions.assertEquals(128, outbox.findByTenantId(tenant).size());
     }
 
     @Test void identityLookupsKeepBothIndexBoundsForNewTenantsWithStaleStatistics() throws Exception {

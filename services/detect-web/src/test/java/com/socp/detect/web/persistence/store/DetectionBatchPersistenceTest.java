@@ -67,9 +67,10 @@ class DetectionBatchPersistenceTest {
         var input=inputs();var stats=factory.unwrap(SessionFactory.class).getStatistics();stats.clear();
         assertTrue(journal.claimBatch(input).stream().allMatch(c->c==DetectionEventClaim.NEW));
         assertTrue(stats.getPrepareStatementCount()<=4,"claim prepared "+stats.getPrepareStatementCount());
+        journal.markDeadLettered("event-31", "terminal dead-letter evidence");
         stats.clear();forwarder.forwardBatch(results(input),()->{});
         assertTrue(stats.getPrepareStatementCount()<=4,"completion prepared "+stats.getPrepareStatementCount());
-        assertEquals(input.stream().map(i->i.event().id()).toList(),
+        assertEquals(input.subList(0,31).stream().map(i->i.event().id()).toList(),
                 repository.findByTenantIdAndStatusAndCompletedAtAfterOrderByCompletedAt(tenant,"COMPLETED",
                         Instant.now().minusSeconds(60),org.springframework.data.domain.PageRequest.of(0,100))
                         .stream().map(row->row.getDeliveryId()).toList(), "recovery must retain evaluation order");
@@ -77,7 +78,58 @@ class DetectionBatchPersistenceTest {
         assertEquals("COMPLETED",first.getStatus());assertNotEquals("{}",first.getResultJson());
         forwarder.forwardBatch(results(input),()->{});
         assertEquals(first.getCompletedAt(),repository.findByTenantIdAndDeliveryId(tenant,"event-0").orElseThrow().getCompletedAt());
-        assertTrue(journal.claimBatch(input).stream().allMatch(c->c==DetectionEventClaim.COMPLETED));
+        var claims = journal.claimBatch(input);
+        assertTrue(claims.subList(0,31).stream().allMatch(c->c==DetectionEventClaim.COMPLETED));
+        assertEquals(DetectionEventClaim.DEAD_LETTERED, claims.getLast());
+        var dead = repository.findByTenantIdAndDeliveryId(tenant,"event-31").orElseThrow();
+        assertEquals("terminal dead-letter evidence", dead.getStatusReason());
+        assertEquals("{}", dead.getResultJson());
+        assertNull(dead.getCompletedAt());
+    }
+
+    @Test void queuedEngineBatchesKeepEveryOwnershipFenceInsideTheJournalTransaction() throws Exception {
+        var input = inputs().subList(0, 8);
+        journal.claimBatch(input);
+        var fail = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var calls = new AtomicInteger();
+        var positioned = new AtomicInteger();
+        var sink = new com.socp.rule.engine.BatchEventAlertSink() {
+            public boolean supportsAtomicBatch() { return true; }
+            public void publishBatch(List<Entry> entries) { calls.incrementAndGet(); forwarder.forwardBatch(entries); }
+            public void publish(SecurityEvent event, List<Alert> alerts) { fail("unexpected single-event sink"); }
+            public void close() { }
+        };
+        com.socp.rule.engine.RuleExecutionScope scope = event -> {
+            var context = TenantContext.open(event.requireTenantId());
+            return context::close;
+        };
+        var events = input.stream().map(i -> new com.socp.rule.engine.RuleEngine.BatchEvent(i.event(),
+                new DetectionResult.InputPosition(i.topic(), i.partition(), i.offset()), scope)).toList();
+        var firstGuard = new com.socp.rule.engine.OrderedCommitGuard("a", () -> {
+            assertEquals(tenant, TenantContext.require());
+            assertTrue(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+        });
+        var secondGuard = new com.socp.rule.engine.OrderedCommitGuard("b", () -> {
+            assertTrue(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive());
+            if (fail.get()) throw new IllegalStateException("second state unit lost ownership");
+        });
+        try (var engine = new com.socp.rule.engine.RuleEngine(List.of(), List.of(sink))) {
+            var first = engine.ingestBatchAndAwait(events.subList(0, 4), positioned::incrementAndGet, firstGuard);
+            var second = engine.ingestBatchAndAwait(events.subList(4, 8), positioned::incrementAndGet, secondGuard);
+            engine.start();
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> first.get(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.ExecutionException.class,
+                    () -> second.get(5, java.util.concurrent.TimeUnit.SECONDS));
+            assertEquals(1, calls.get(), "queued callers must reach one result transaction");
+            assertEquals(0, positioned.get());
+            assertEquals(8, repository.countByTenantIdAndStatus(tenant, "PENDING"));
+            assertEquals(0, repository.countByTenantIdAndStatus(tenant, "COMPLETED"));
+            fail.set(false);
+            engine.ingestBatchAndAwait(events, positioned::incrementAndGet, secondGuard)
+                    .get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertEquals(8, repository.countByTenantIdAndStatus(tenant, "COMPLETED"));
+        }
     }
     @Test void finalFenceFailureRollsBackEveryCompletionAndRetryCommitsThemTogether() {
         var input=inputs();journal.claimBatch(input);AtomicInteger checks=new AtomicInteger();

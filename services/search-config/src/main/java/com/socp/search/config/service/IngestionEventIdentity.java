@@ -49,9 +49,7 @@ public final class IngestionEventIdentity {
         try {
             byte[] canonical = MAPPER.writeValueAsBytes(content);
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(canonical);
-            StringBuilder hex = new StringBuilder(digest.length * 2);
-            for (byte value : digest) hex.append(String.format("%02x", value & 0xff));
-            return hex.toString();
+            return java.util.HexFormat.of().formatHex(digest);
         } catch (NoSuchAlgorithmException impossible) {
             throw new IllegalStateException("SHA-256 is unavailable", impossible);
         } catch (Exception serializationFailure) {

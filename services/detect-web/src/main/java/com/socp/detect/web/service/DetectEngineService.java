@@ -155,6 +155,16 @@ public class DetectEngineService {
         }
     }
 
+    /** Observe every completed state unit before advancing the partition prefix. */
+    public void assertCurrentOwners(List<RuleEngine.BatchEvent> representatives) {
+        lifecycle.readLock().lock();
+        try {
+            state.assertCurrentOwners(representatives);
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
     /** 事件摄取：队列满回 false（接入端据此回 503 + Retry-After） */
     public boolean ingest(SecurityEvent ev) {
         lifecycle.readLock().lock();
@@ -172,8 +182,9 @@ public class DetectEngineService {
             }
             TenantAdmission.Permit permit = admission.permit();
             RuleEngine.Submission submission;
+            RuleEngine target;
             try {
-                RuleEngine target = lifecycle.engineFor(ev.tenantId(), shard);
+                target = lifecycle.engineFor(ev.tenantId(), shard);
                 // HTTP ingestion has no Kafka position to acknowledge. The
                 // completion handler below owns its checkpoint cadence; adding
                 // a worker callback here would count every event twice.
@@ -192,7 +203,10 @@ public class DetectEngineService {
                 tenantAdmission.release(permit);
                 if (failure == null) {
                     if (!completesJournal(stateStore)) stateStore.markCompleted(ev);
-                    snapshotAfterDurable(ev, null, -1L);
+                    // Reload holds the lifecycle write lock while draining this
+                    // worker. A lookup here would wait for that same lock and
+                    // prevent the drain; checkpoint the engine that did the work.
+                    state.snapshotAfterDurable(target, ev, null, -1L);
                 }
             });
             return true;

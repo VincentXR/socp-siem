@@ -7,6 +7,10 @@ spring:
     driver-class-name: org.postgresql.Driver
     username: ${SOCP_PG_USER:socp}
     password: ${SOCP_PG_PASSWORD:socp}
+    hikari:
+      data-source-properties:
+        # Combine the bounded journal batches into multi-row server INSERTs.
+        reWriteBatchedInserts: true
   jpa:
     hibernate:
       # Flyway 接管 schema，Hibernate 不再自动改表

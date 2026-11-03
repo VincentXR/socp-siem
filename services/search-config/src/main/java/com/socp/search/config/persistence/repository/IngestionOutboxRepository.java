@@ -25,23 +25,24 @@ public interface IngestionOutboxRepository extends TenantScopedRepository<Ingest
 
     @org.springframework.data.jpa.repository.QueryHints(
             @jakarta.persistence.QueryHint(name = "jakarta.persistence.query.timeout", value = "5000"))
-    // Find eligible heads in index order before expanding their first 16
+    // Deduplicate pending keys in the covering index before expanding their first 16
     // sequence positions. Rank only selected keys, then fetch at most 200 payloads.
     // The ID tie-break keeps legacy duplicate sequences within the same limits.
     // Scalar statuses avoid estimated-empty global scans while stats lag.
     // Retain blocker order with OFFSET 0 so EXISTS uses the covering key index
     // instead of repeatedly filtering retained payloads or choosing a heap scan.
     @Query(value = """
-            with heads as (
+            with first_pending as (
+                select distinct on (tenant_id, routing_key)
+                       id, tenant_id, routing_key, next_attempt_at, sequence_no
+                from t_ingestion_outbox
+                where status = 'PENDING'
+                order by tenant_id, routing_key, sequence_no, id
+            ), heads as (
                 select head.id as head_id, head.tenant_id, head.routing_key,
                        head.next_attempt_at as head_due, head.sequence_no as head_sequence
-                from t_ingestion_outbox head
-                where head.status = 'PENDING' and head.next_attempt_at <= :now
-                  and head.id = (
-                      select first_pending.id from t_ingestion_outbox first_pending
-                      where first_pending.tenant_id = head.tenant_id
-                        and first_pending.routing_key = head.routing_key and first_pending.status = (select cast('PENDING' as varchar))
-                      order by first_pending.sequence_no, first_pending.id fetch first 1 row only)
+                from first_pending head
+                where head.next_attempt_at <= :now
                   and not exists (
                       select 1 from t_ingestion_outbox blocker
                       where blocker.tenant_id = head.tenant_id and blocker.routing_key = head.routing_key
@@ -64,12 +65,12 @@ public interface IngestionOutboxRepository extends TenantScopedRepository<Ingest
                      order by cutoff.sequence_no, cutoff.id offset 15 rows fetch first 1 row only
                  ), 9223372036854775807)
             ), due as (
-                select id, head_due, head_sequence, head_id, sequence_no from selected
+                select id, head_due, head_sequence, head_id, sequence_no, key_position from selected
                 where key_position <= 16 and next_attempt_at <= :now
-                order by head_due, head_sequence, sequence_no, head_id, id limit 200
+                order by key_position, head_due, head_sequence, sequence_no, head_id, id limit 200
             )
             select queued.* from due join t_ingestion_outbox queued on queued.id = due.id
-            order by due.head_due, due.head_sequence, due.sequence_no, due.head_id, due.id
+            order by due.key_position, due.head_due, due.head_sequence, due.sequence_no, due.head_id, due.id
             """, nativeQuery = true)
     List<IngestionOutboxEvent> findDueOrderedBatch(@Param("now") Instant now);
 

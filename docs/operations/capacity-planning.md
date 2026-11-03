@@ -25,7 +25,7 @@ Two rules govern any number you publish from this table:
 | Search parse configuration | 512 effective rules/tenant, 32 global rules, 64 KiB serialized rule, 100 rule IDs/source; 2,048 compiled source/binding cache entries/process | `ParseRuleStore`, `LogSourceRequest`, `ParsePipelineResolver` | Measure rule-read/compile latency and heap on the actual rule mix. Cache count is bounded but compiled-rule byte weight and historical over-limit catalogues are not covered by these limits |
 | Search output targets | 128 tenant-owned targets/tenant; request URI 2,048 characters and token 4,096 characters | `SinkTargetStore`, `SinkTargetRequest` | New writes are capped; historical over-limit catalogues can still make full-list reads expensive |
 | Detection watchlists | 500 owned names per tenant; 10,000 members/list; 256 characters/member. Rule cache defaults to 10,000 entries and 64 MiB estimated weight, with 1s refresh; oversized entries bypass cache | `WatchlistLimits`; `socp.detect.watchlists.cache-max-entries`, `cache-max-weight`, `refresh-ms` | Measure cache churn and DB read latency with the target list distribution; limits do not establish a supported EPS. Mutation quotas use database namespace locks across replicas |
-| Outbox drain batch | Ingestion claims at most its available worker capacity (1–32), one head per tenant/routing key; Alert event/delivery acquire capacity before claim (1–32). One local drain runs per publisher; rule-change delivery is sequential. These four contexts recover at most 100 stale rows per 30-second pass and exhaust at most 100 pending rows per scan; admitted I/O can outlast the admission deadline | [ADR 005](../adr/005-outbox-lifecycle.md); per-service outbox publishers | `socp_*_outbox_oldest_pending_age_seconds` — pending age tracks whether drain rate keeps up with commits; a large stale backlog requires multiple recovery passes |
+| Outbox drain batch | Ingestion admits at most 2 cohorts, 32 keys/200 rows per cohort and 16 rows/key, with configured producer submission concurrency (1–32); Alert event/delivery acquire capacity before claim (1–32). One local drain runs per publisher; rule-change delivery is sequential. These four contexts recover at most 100 stale rows per 30-second pass and exhaust at most 100 pending rows per scan; admitted I/O can outlast the admission deadline | [ADR 005](../adr/005-outbox-lifecycle.md); [ordered ingestion](../ingestion-parsing.md#ordered-outbox-batches) | `socp_*_outbox_oldest_pending_age_seconds` — pending age tracks whether drain rate keeps up with commits; a large stale backlog requires multiple recovery passes |
 | OpenSearch indexing | daily template with deployment-owned shard/replica counts, batch write | `socp.opensearch.index-shards` (1–1,024, default 1), `index-replicas` (0–32; development default 0, production default/minimum 1) | Provision enough data nodes for every replica and verify actual allocation; configuration alone is not HA evidence. `socp_opensearch_indexer_records_total{stage=...}` counts attempts, so retries/tails prevent treating equality as a unique-event oracle |
 | Retention delete | bounded rounds, hourly | search retention worker | `socp_search_event_retention_lag_seconds`, `socp.search.event.retention.delete.rate.rows_per_second` |
 | HIPS history retention | default 1,000 rows per transaction, at most 10 batches per pass; 10-second budget for starting batches | `socp.hips.history-retention.*`; [history retention](endpoint-forwarding.md#history-retention) | `socp.hips.history.retention.lag.seconds`, last-success time, duration and last-deleted gauges; every receipt reference protects history, and no fixed disk-size guarantee follows from the batch budget |
@@ -129,24 +129,27 @@ Manual capacity runs retain bounded JFR CPU, socket and lock-wait samples for
 Search, Detection and Alert in `.cache/capacity-profile`. The recording starts
 from an empty event set and excludes environment and system-property events.
 
-Ingestion publication claims and settles up to 32 independent routing-key heads
-in two short database transactions, with acknowledged Kafka delivery between
-them. A processing or delayed head blocks its successors. Claim tokens fence
-late acknowledgements; interrupted claims use stale-claim recovery. The default
-concurrency is 32, with at most 256 rounds and a 2-second budget for admitting
+Ingestion publication claims and settles bounded same-tenant routing-key
+prefixes in two database transactions, with ordered acknowledged Kafka delivery
+between them. A cohort contains at most 32 keys, 16 rows/key and 200 rows.
+A processing or delayed head blocks competing publishers. Each reserved key
+waits for its preceding broker receipt before sending the next event; claim
+tokens fence late completion. Interrupted prefixes use stale-claim recovery. The default
+submission concurrency is 8, with at most 256 rounds and a 2-second budget for admitting
 new rounds (`SOCP_INGEST_OUTBOX_CONCURRENCY`,
 `SOCP_INGEST_OUTBOX_MAX_DRAIN_ROUNDS`,
 `SOCP_INGEST_OUTBOX_MAX_DRAIN_DURATION_MS`). No transaction holds database
-connections while waiting for the broker. The legacy fair-page SQL computes its
-window ranking once, without joining the ranked result back to the outbox table.
-Batch selection aggregates the earliest PENDING sequence per tenant/routing key
-before checking due time and attempts, then excludes keys with PROCESSING rows.
-It avoids comparing each queued row against every earlier row of the same key
-when backlog grows. `FOR UPDATE SKIP LOCKED` locks only eligible heads; a locked,
-delayed or exhausted head never exposes its successor to another publisher.
+connections while waiting for the broker. Selection finds each earliest PENDING
+key head from the covering index before checking due time and processing owners.
+It prioritizes independent heads, prefetches at most 16 rows/key and 200 overall,
+and fetches payloads last. Conditional claims acquire row and unique-key locks;
+a delayed, exhausted or unclaimed predecessor fences its pending successors
+even if selection prefetched their identities. Stale recovery and cleanup use
+their separate bounded `FOR UPDATE SKIP LOCKED` operations.
 These changes introduce no API, database schema or Kafka topic migration.
 
-Search ingestion batches JDBC inserts in groups of 64. New outbox entities use
+Search ingestion batches JDBC inserts in groups of 32. The PostgreSQL profile
+enables driver multi-row insert rewriting. New outbox entities use
 `persist` despite their assigned UUIDs; loaded entities retain update semantics.
 Insert reordering stays disabled because the database enqueue sequence orders
 same-key publication. The enclosing transaction still covers canonical events

@@ -144,10 +144,10 @@ class KafkaEventConsumerTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    @org.junit.jupiter.params.provider.CsvSource({"false,false", "false,true", "true,false", "true,true"})
     @Timeout(20)
     @SuppressWarnings("unchecked")
-    void queuedSmallPollsCoalesceWithoutCrossingBarriersOrLosingByteOwnership(boolean revoke) throws Exception {
+    void queuedSmallPollsCoalesceWithoutCrossingBarriersOrLosingByteOwnership(boolean polled, boolean revoke) throws Exception {
         int limit = com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS;
         int pollSize = limit / 16; // Keep the test inside the bounded lane queue.
         var consumer = new KafkaEventConsumer(engine, stateStore);
@@ -159,6 +159,13 @@ class KafkaEventConsumerTest {
         CompletableFuture<Void> durable = new CompletableFuture<>();
         List<Integer> sizes = new java.util.concurrent.CopyOnWriteArrayList<>();
         AtomicInteger barrier = new AtomicInteger();
+        if (polled) {
+            given(engine.completesJournal(stateStore)).willReturn(true);
+            given(engine.batchKey(any())).willAnswer(call -> {
+                SecurityEvent event = call.getArgument(0);
+                return new DetectEngineService.BatchKey(event.requireTenantId(), event.id().hashCode() & 1);
+            });
+        }
         given(engine.prepareBatchEvent(any(), anyString(), any(Integer.class), any(Long.class)))
                 .willAnswer(call -> new com.socp.rule.engine.RuleEngine.BatchEvent(call.getArgument(0),
                         new com.socp.rule.engine.DetectionResult.InputPosition(call.getArgument(1),
@@ -185,7 +192,12 @@ class KafkaEventConsumerTest {
                 var records = java.util.stream.IntStream.range(first, first + pollSize).mapToObj(n ->
                         new ConsumerRecord<>("socp-events", 0, (long) n, "key",
                                 "{\"eventId\":\"coalesce-" + n + "\",\"tenantId\":\"default\"}")).toList();
-                consumer.dispatchBatch(null, partition, records, java.util.Collections.nCopies(pollSize, 1L), lease);
+                if (polled) {
+                    ReflectionTestUtils.invokeMethod(consumer, "dispatchPolledRecords", null,
+                            new org.apache.kafka.clients.consumer.ConsumerRecords<>(Map.of(partition, records)));
+                } else {
+                    consumer.dispatchBatch(null, partition, records, java.util.Collections.nCopies(pollSize, 1L), lease);
+                }
             }
             var bytes = ((Map<TopicPartition, AtomicLong>) ReflectionTestUtils.getField(consumer, "pendingBytes")).get(partition);
             assertTrue(bytes.get() > 0);
@@ -204,6 +216,44 @@ class KafkaEventConsumerTest {
         } finally {
             holdQueue.countDown(); durable.complete(null); consumer.stop();
         }
+    }
+
+    @Test
+    @Timeout(20)
+    void largerPolledPrefixKeepsSerialJournalAndGenerationAdmissionBounded() throws Exception {
+        var consumer = new KafkaEventConsumer(engine, stateStore);
+        var partition = new TopicPartition("socp-events", 0);
+        List<Integer> claims = new java.util.concurrent.CopyOnWriteArrayList<>();
+        List<Integer> submissions = new java.util.concurrent.CopyOnWriteArrayList<>();
+        given(engine.completesJournal(stateStore)).willReturn(true);
+        given(engine.batchKey(any())).willReturn(new DetectEngineService.BatchKey("default", 0));
+        given(stateStore.supportsBatchClaims()).willReturn(true);
+        given(stateStore.preclaimBatch(any())).willAnswer(call -> {
+            List<?> inputs = call.getArgument(0);
+            if (inputs.size() > 64) throw new IllegalArgumentException("journal batch limit is 64");
+            claims.add(inputs.size());
+            return java.util.Collections.nCopies(inputs.size(), DetectionEventClaim.NEW);
+        });
+        given(engine.ingestOrderedBatchFromKafkaAndAwait(any(), any())).willAnswer(call -> {
+            List<DetectEngineService.KafkaInput> inputs = call.getArgument(0);
+            assertTrue(inputs.size() <= 64, "serial engine generation admission remains bounded");
+            submissions.add(inputs.size());
+            return inputs.stream().map(ignored -> CompletableFuture.<Void>completedFuture(null)).toList();
+        });
+        var records = java.util.stream.IntStream.range(0, 130).mapToObj(n ->
+                new ConsumerRecord<>("socp-events", 0, (long) n, "key",
+                        "{\"eventId\":\"serial-" + n + "\",\"tenantId\":\"default\"}")).toList();
+        try {
+            ReflectionTestUtils.invokeMethod(consumer, "dispatchPolledRecords", null,
+                    new org.apache.kafka.clients.consumer.ConsumerRecords<>(Map.of(partition, records)));
+            ThreadPoolExecutor lane = ReflectionTestUtils.invokeMethod(consumer, "lane", 0);
+            lane.submit(() -> {}).get(3, TimeUnit.SECONDS);
+            assertEquals(List.of(64, 64, 2), claims);
+            assertEquals(claims, submissions);
+            assertEquals(130, completionsOf(consumer).size());
+            assertEquals(0L, ((AtomicLong) ReflectionTestUtils.getField(consumer, "totalPendingBytes")).get());
+            verify(stateStore, never()).claim(any(), anyString(), any(), any(), anyString());
+        } finally { consumer.stop(); }
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -228,10 +278,12 @@ class KafkaEventConsumerTest {
         });
         if ("fenced".equals(outcome)) {
             org.mockito.Mockito.doAnswer(call -> {
-                SecurityEvent event = call.getArgument(0);
-                if (event.id().equals("batch-1")) throw new DetectionStateOwnership.StaleStateOwnerException("fenced batch");
+                List<com.socp.rule.engine.RuleEngine.BatchEvent> units = call.getArgument(0);
+                if (units.stream().anyMatch(unit -> unit.event().id().equals("batch-1"))) {
+                    throw new DetectionStateOwnership.StaleStateOwnerException("fenced batch");
+                }
                 return null;
-            }).when(engine).assertCurrentOwner(any(), eq(0));
+            }).when(engine).assertCurrentOwners(any());
         }
         KafkaEventConsumer consumer = new KafkaEventConsumer(engine, stateStore);
         var partition = new TopicPartition("socp-events", 0);

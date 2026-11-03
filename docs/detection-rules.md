@@ -66,6 +66,15 @@ The lock remains held in an owning service transaction, so rule bodies, user
 revision rows, and rule-change outbox writes still commit or roll back together.
 Revision numbers are allocated while holding this lock, including delete/restore.
 
+Ordinary catalogue reads first check the committed pack ID, version and
+fingerprint without taking mutation locks. A matching marker permits reads of
+committed rule data while another transaction edits a rule; subsequent reads
+observe the committed edit. Missing or mismatched markers enter the coordinated
+installation path, including rejection of newer or modified same-version packs.
+The marker is checked in the database on each read, without a local cache.
+This prevents alert metadata lookups from serializing independent Detection
+shards on the tenant's topology and catalogue locks.
+
 The routing topology lock is acquired before the catalogue lock, matching the
 first-pin path that reads the catalogue. Topology compatibility and revision
 preconditions are checked in the same mutation transaction. A topology rejection

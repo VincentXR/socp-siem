@@ -618,6 +618,10 @@ public class RuleSpecStore {
     }
 
     private void ensureTenantContent(String tenant) {
+        // Ordinary metadata reads must not serialize all Detection shards on
+        // the topology/catalogue mutation locks. Missing or mismatched committed
+        // markers still enter the coordinated installation/upgrade path.
+        if (catalog.hasCurrentPack(tenant, PACK)) return;
         inCatalog(tenant, () -> null);
     }
 
