@@ -14,12 +14,19 @@ import java.util.Optional;
 public interface AlarmDeliveryRepository extends TenantScopedRepository<AlarmDelivery, String> {
     List<AlarmDelivery> findByTenantId(String tenantId);
 
-    List<AlarmDelivery> findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
-            String status, Instant nextAttemptAt);
+    // Select independent deliveries by eligibility time, so delayed old retries
+    // cannot force a scan before newly due work. Load only the bounded payloads.
+    @Query(value = "select delivery.* from (select id, next_attempt_at, created_at from alarm_delivery "
+            + "where status=:status and next_attempt_at<=:nextAttemptAt order by next_attempt_at,created_at,id limit 100) due "
+            + "join alarm_delivery delivery on delivery.id=due.id order by due.next_attempt_at,due.created_at,due.id", nativeQuery = true)
+    List<AlarmDelivery> findDueBatch(
+            @Param("status") String status, @Param("nextAttemptAt") Instant nextAttemptAt);
 
     List<AlarmDelivery> findTop100ByTenantIdAndStatusOrderByUpdatedAtAsc(String tenantId, String status);
 
-    long countByStatus(String status);
+    // ID is NOT NULL; count(*) permits a status-index-only count.
+    @Query("select count(*) from AlarmDelivery d where d.status = :status")
+    long countByStatus(@Param("status") String status);
 
     @Query("select min(d.createdAt) from AlarmDelivery d where d.status = :status")
     Instant findOldestCreatedAtByStatus(@Param("status") String status);
@@ -61,6 +68,34 @@ public interface AlarmDeliveryRepository extends TenantScopedRepository<AlarmDel
             + "where e.id = :id and e.status = 'PROCESSING' and e.claimToken = :token")
     int markDead(@Param("id") String id, @Param("error") String error, @Param("now") Instant now, @Param("token") String token);
 
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update AlarmDelivery e set e.status = 'PROCESSING', e.claimToken = :token, e.updatedAt = :now, e.claimedAt = :now, "
+            + "e.attempts = e.attempts + 1 where e.tenantId = :tenantId and e.id = :id and e.status = 'PENDING' "
+            + "and e.nextAttemptAt <= :now and e.attempts < :maxAttempts and e.attempts = :expectedAttempts")
+    int claimForTenant(@Param("tenantId") String tenantId, @Param("id") String id, @Param("now") Instant now, @Param("maxAttempts") int maxAttempts, @Param("expectedAttempts") int expectedAttempts, @Param("token") String token);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update AlarmDelivery e set e.status = 'DELIVERED', e.claimToken = null, e.claimedAt = null, "
+            + "e.deliveredAt = :now, e.lastError = null, e.updatedAt = :now "
+            + "where e.tenantId = :tenantId and e.id = :id and e.status = 'PROCESSING' and e.claimToken = :token")
+    int markDeliveredForTenant(@Param("tenantId") String tenantId, @Param("id") String id, @Param("now") Instant now, @Param("token") String token);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update AlarmDelivery e set e.status = 'PENDING', e.claimToken = null, e.claimedAt = null, "
+            + "e.nextAttemptAt = :nextAttemptAt, e.lastError = :error, e.updatedAt = :now "
+            + "where e.tenantId = :tenantId and e.id = :id and e.status = 'PROCESSING' and e.claimToken = :token")
+    int scheduleRetryForTenant(@Param("tenantId") String tenantId, @Param("id") String id, @Param("nextAttemptAt") Instant nextAttemptAt, @Param("error") String error, @Param("now") Instant now, @Param("token") String token);
+
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Transactional
+    @Query("update AlarmDelivery e set e.status = 'DEAD', e.claimToken = null, e.claimedAt = null, "
+            + "e.lastError = :error, e.updatedAt = :now "
+            + "where e.tenantId = :tenantId and e.id = :id and e.status = 'PROCESSING' and e.claimToken = :token")
+    int markDeadForTenant(@Param("tenantId") String tenantId, @Param("id") String id, @Param("error") String error, @Param("now") Instant now, @Param("token") String token);
+
     // The locking CTE fixes a bounded candidate set and skips competing owners.
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
@@ -73,10 +108,15 @@ public interface AlarmDeliveryRepository extends TenantScopedRepository<AlarmDel
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Transactional
+    // Filter eligible attempts before ordering: a generic plan must not scan
+    // every PENDING row through the age index. Lock only the bounded outer rows.
     @Query(value = "update alarm_delivery set status = 'DEAD', claim_token = null, claimed_at = null, "
             + "last_error = coalesce(last_error, :reason), updated_at = :now where id in ( "
-            + "with candidates as (select id from alarm_delivery where status = 'PENDING' and attempts >= :maxAttempts "
-            + "order by updated_at, id limit :batchSize for update skip locked) select id from candidates) "
+            + "with candidates as (select queued.id from (select id, updated_at from alarm_delivery "
+            + "where status = 'PENDING' and attempts >= :maxAttempts offset 0) eligible "
+            + "join alarm_delivery queued on queued.id=eligible.id "
+            + "order by eligible.updated_at, eligible.id limit :batchSize for update of queued skip locked) "
+            + "select id from candidates) "
             + "and status = 'PENDING' and attempts >= :maxAttempts", nativeQuery = true)
     int markExhaustedBatch(@Param("maxAttempts") int maxAttempts, @Param("reason") String reason, @Param("now") Instant now, @Param("batchSize") int batchSize);
 

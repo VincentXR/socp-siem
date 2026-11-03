@@ -53,6 +53,49 @@ class StateEvidenceCacheTest {
                 StateSnapshotCodec.fingerprint(Map.of("ab", "c"))));
     }
 
+    @Test
+    void mapKeyReusePreservesMerkleBytesAcrossConcurrentEvictionAndOversizedKeys() {
+        java.util.stream.IntStream.range(0, 2_000).parallel().forEach(i -> {
+            var fields = new java.util.LinkedHashMap<String, Object>();
+            fields.put("escaped\"\n中文😀", "value-" + i);
+            fields.put("key-" + i + "x".repeat(i % 140), java.util.List.of(i, true));
+            fields.put("oversized-" + "x".repeat(1_000), null);
+            fields.put("nested", Map.of("tenant_id", "tenant-" + i, "fields", Map.of("src_ip", "127.0.0.1")));
+            byte[] expected = uncachedFingerprint(fields);
+            assertArrayEquals(expected, StateSnapshotCodec.fingerprint(fields));
+            // Returned scalar hashes must not expose the internal map-key cache.
+            java.util.Arrays.fill(StateSnapshotCodec.fingerprint("tenant_id"), (byte) 0);
+            assertArrayEquals(expected, StateSnapshotCodec.fingerprint(fields));
+        });
+        assertTrue(StateSnapshotCodec.cachedMapKeys() <= 256);
+        assertTrue(StateSnapshotCodec.cachedMapKeyBytes() <= 64L * 1024);
+    }
+
+    /** The uncached Merkle contract, independent of cache contents and eviction order. */
+    private static byte[] uncachedFingerprint(Object value) {
+        try {
+            var digest = java.security.MessageDigest.getInstance("SHA-256");
+            if (value instanceof Map<?, ?> map) {
+                digest.update((byte) 'M');
+                var sorted = new java.util.TreeMap<String, Object>();
+                map.forEach((key, item) -> sorted.put(String.valueOf(key), item));
+                sorted.forEach((key, item) -> {
+                    digest.update(uncachedFingerprint(key));
+                    digest.update(uncachedFingerprint(item));
+                });
+            } else if (value instanceof java.util.Collection<?> items) {
+                digest.update((byte) 'L');
+                items.forEach(item -> digest.update(uncachedFingerprint(item)));
+            } else {
+                digest.update((byte) 'V');
+                digest.update(StateSnapshotCodec.write(value));
+            }
+            return digest.digest();
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible);
+        }
+    }
+
     private SecurityEvent event(String id, String tenant, String raw) {
         return new SecurityEvent(id, Instant.EPOCH, "test", "host", raw, Map.of("tenant_id", tenant), Severity.INFO);
     }

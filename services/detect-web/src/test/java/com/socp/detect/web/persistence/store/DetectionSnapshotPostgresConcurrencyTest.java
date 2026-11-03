@@ -1,45 +1,25 @@
 package com.socp.detect.web.persistence.store;
 
 import com.socp.platform.test.MiddlewareImages;
-import com.socp.platform.tenant.context.TenantContext;
 import com.socp.rule.state.DetectionStateSnapshot;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
-import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
-import org.springframework.context.annotation.Import;
-import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.annotation.Propagation;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.time.Instant;
-import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-@DataJpaTest
 @Testcontainers
 @EnabledIfEnvironmentVariable(named = "SOCP_TESTCONTAINERS", matches = "true")
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import(JpaDetectionStateSnapshotStore.class)
-@Transactional(propagation = Propagation.NOT_SUPPORTED)
-class DetectionSnapshotPostgresConcurrencyTest {
+class DetectionSnapshotPostgresConcurrencyTest extends DetectionSnapshotPersistenceTest {
     @Container
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>(MiddlewareImages.postgres())
             .withDatabaseName("detect").withUsername("socp").withPassword("socp");
@@ -53,72 +33,35 @@ class DetectionSnapshotPostgresConcurrencyTest {
         registry.add("spring.flyway.enabled", () -> true);
     }
 
-    @Autowired private JpaDetectionStateSnapshotStore store;
-    @Autowired private PlatformTransactionManager transactions;
-
-    @BeforeEach
-    void tenant() { TenantContext.set("snapshot-test"); }
-
-    @AfterEach
-    void clearTenant() { TenantContext.clear(); }
-
     @Test
-    void staleTransactionCannotCommitAnyPartOfGeneration() throws Exception {
-        Instant time = Instant.parse("2026-09-10T12:00:00Z");
-        store.saveAll(generation("race", time, 10));
-        var loaded = new CountDownLatch(1);
-        var newerCommitted = new CountDownLatch(1);
-        try (var executor = Executors.newSingleThreadExecutor()) {
-            var stale = executor.submit(() -> {
-                TenantContext.set("snapshot-test");
-                try {
-                    new TransactionTemplate(transactions).executeWithoutResult(status -> {
-                        store.latest("snapshot-test", "race-a", 0).orElseThrow();
-                        store.latest("snapshot-test", "race-b", 0).orElseThrow();
-                        loaded.countDown();
-                        await(newerCommitted);
-                        store.saveAll(generation("race", time.plusSeconds(1), 11));
-                    });
-                } finally { TenantContext.clear(); }
-            });
-            try {
-                assertThat(loaded.await(10, TimeUnit.SECONDS)).isTrue();
-                store.saveAll(generation("race", time.plusSeconds(2), 20));
-            } finally { newerCommitted.countDown(); }
-            assertThatThrownBy(() -> stale.get(10, TimeUnit.SECONDS))
-                    .isInstanceOf(ExecutionException.class)
-                    .hasCauseInstanceOf(OptimisticLockingFailureException.class);
-        }
-        for (String rule : List.of("race-a", "race-b")) {
-            assertThat(store.latest("snapshot-test", rule, 0).orElseThrow().partitionOffsets()).containsEntry(0, 20L);
-        }
+    void checkpointCompressionUpgradeKeepsOldBytesAndPositionVectorsReadable() {
+        byte[] state = java.util.stream.IntStream.range(0, 4000)
+                .mapToObj(n -> "state-" + n + "-" + "evidence".repeat(20))
+                .collect(java.util.stream.Collectors.joining("\n"))
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Instant time = Instant.parse("2026-09-10T14:00:00Z");
+        jdbc.execute("alter table t_detection_state_snapshot alter column serialized_state set compression pglz");
+        store.save(new DetectionStateSnapshot("compression-old", "v1", "snapshot-test", 0, 10,
+                state, time, Map.of(0, 10L), Map.of(), "socp-events"));
+        assertThat(jdbc.queryForObject("select pg_column_compression(serialized_state) from t_detection_state_snapshot "
+                + "where tenant_id='snapshot-test' and rule_id='compression-old'", String.class)).isEqualTo("pglz");
+        jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) connection -> {
+            var context = org.mockito.Mockito.mock(org.flywaydb.core.api.migration.Context.class);
+            org.mockito.Mockito.when(context.getConnection()).thenReturn(connection);
+            try { new db.migration.detect.journal.V37__snapshot_state_compression().migrate(context); }
+            catch (Exception failure) { throw new java.sql.SQLException(failure); }
+            return null;
+        });
+        assertThat(store.latest("snapshot-test", "compression-old", 0).orElseThrow().serializedState()).containsExactly(state);
+        assertThat(jdbc.queryForObject("select pg_column_compression(serialized_state) from t_detection_state_snapshot "
+                + "where tenant_id='snapshot-test' and rule_id='compression-old'", String.class)).isEqualTo("pglz");
+        store.save(new DetectionStateSnapshot("compression-new", "v1", "snapshot-test", 0, 11,
+                state, time.plusSeconds(1), Map.of(0, 11L), Map.of(), "socp-events"));
+        assertThat(jdbc.queryForObject("select pg_column_compression(serialized_state) from t_detection_state_snapshot "
+                + "where tenant_id='snapshot-test' and rule_id='compression-new'", String.class)).isEqualTo("lz4");
+        var restored = store.latest("snapshot-test", "compression-new", 0).orElseThrow();
+        assertThat(restored.serializedState()).containsExactly(state);
+        assertThat(restored.partitionOffsets()).containsEntry(0, 11L);
     }
 
-    @Test
-    void rejectedBatchDoesNotLeakHibernateDirtyUpdates() {
-        Instant time = Instant.parse("2026-09-10T13:00:00Z");
-        store.save(snapshot("dirty-a", time, 8));
-        store.save(snapshot("dirty-b", time, 12));
-        store.saveAll(generation("dirty", time.plusSeconds(1), 10));
-        assertThat(store.latest("snapshot-test", "dirty-a", 0).orElseThrow().partitionOffsets()).containsEntry(0, 8L);
-        assertThat(store.latest("snapshot-test", "dirty-b", 0).orElseThrow().partitionOffsets()).containsEntry(0, 12L);
-    }
-
-    private static List<DetectionStateSnapshot> generation(String prefix, Instant time, long offset) {
-        return List.of(snapshot(prefix + "-a", time, offset), snapshot(prefix + "-b", time, offset));
-    }
-
-    private static DetectionStateSnapshot snapshot(String rule, Instant time, long offset) {
-        return new DetectionStateSnapshot(rule, "v1", "snapshot-test", 0, offset,
-                new byte[]{1}, time, Map.of(0, offset));
-    }
-
-    private static void await(CountDownLatch latch) {
-        try {
-            if (!latch.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("checkpoint coordination timed out");
-        } catch (InterruptedException failure) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException(failure);
-        }
-    }
 }

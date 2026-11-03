@@ -85,6 +85,41 @@ class KafkaEventBatchTest {
     }
 
     @Test
+    void singleStatePrefixKeepsTheAdmissionBatchAcrossBoundedJournalWrites() throws Exception {
+        KafkaEventConsumer consumer = consumer();
+        var submitted = new CountDownLatch(1);
+        var durable = new CompletableFuture<Void>();
+        List<Integer> claimSizes = new java.util.concurrent.CopyOnWriteArrayList<>();
+        List<Long> admitted = new java.util.concurrent.CopyOnWriteArrayList<>();
+        when(store.preclaimBatch(any())).thenAnswer(call -> {
+            List<DetectionStateStore.Input> inputs = call.getArgument(0);
+            claimSizes.add(inputs.size());
+            assertTrue(inputs.size() <= 64, "SQL preclaims retain their existing bound");
+            return java.util.Collections.nCopies(inputs.size(), DetectionEventClaim.NEW);
+        });
+        when(engine.tryIngestPreclaimedBatchFromKafkaAndAwait(anyList(), any())).thenAnswer(call -> {
+            List<DetectEngineService.KafkaInput> inputs = call.getArgument(0);
+            admitted.addAll(inputs.stream().map(DetectEngineService.KafkaInput::offset).toList());
+            submitted.countDown();
+            return durable;
+        });
+        try {
+            dispatch(consumer, java.util.stream.IntStream.range(0, 128)
+                    .mapToObj(n -> record(n, "prefix-" + n)).toList());
+            assertTrue(submitted.await(2, TimeUnit.SECONDS));
+            assertEquals(List.of(64, 64), claimSizes);
+            assertEquals(java.util.stream.LongStream.range(0, 128).boxed().toList(), admitted);
+            assertTrue(completions(consumer).isEmpty());
+            assertEquals(128, aggregate(consumer, "totalPendingRecords"));
+            durable.complete(null);
+            drainLane(consumer);
+            assertEquals(128, completions(consumer).size());
+            assertEquals(0, aggregate(consumer, "totalPendingRecords"));
+            verify(engine, times(1)).tryIngestPreclaimedBatchFromKafkaAndAwait(anyList(), any());
+        } finally { durable.complete(null); consumer.stop(); }
+    }
+
+    @Test
     void mixedStatePollKeepsParallelSiblingsInsideTheGlobalReservation() throws Exception {
         KafkaEventConsumer consumer = consumer();
         doAnswer(call -> {

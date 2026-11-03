@@ -299,7 +299,7 @@ class SplQuerySemanticsTest {
         String containsDsl = compiler.compile(parser.parse("msg contains \"*blocked?\""), "tenant-a").toString();
         assertThat(containsDsl).contains("msg.exact", "case_insensitive", "\\\\*blocked\\\\?");
         assertThat(compiler.compile(parser.parse("*"), "tenant-a").path("sort").toString())
-                .contains("timestamp", "_id").doesNotContain("eventId");
+                .contains("timestamp", "_script", "eventId.keyword").doesNotContain("\"_id\"");
     }
 
     @Test

@@ -29,8 +29,13 @@ Hibernate therefore does not retain every journal entity across the recovery
 window. Callbacks receive
 event values without detaching or clearing unrelated caller writes; checkpoint
 offsets, tenant scope, replay order, and PENDING caps are unchanged. Flyway migration
-`V23__detection_checkpoint_replay_index.sql` supplies the
-`(tenant_id, status, kafka_partition, kafka_offset)` access path. It uses plain
+`V36__journal_delivery_position_indexes.sql` corrects the V23 access path to
+`(tenant_id, status, delivery_topic, delivery_partition, delivery_offset)`.
+Runtime positions moved to `delivery_*` in V21; the migration replaces the
+obsolete replay index and removes two other indexes on the unused `kafka_*`
+columns. Historical columns, evidence, delivery identities and replay order
+remain intact. The replacement index is built before the old indexes are
+dropped. It uses plain
 `CREATE INDEX` because the in-process Flyway runner wraps migrations in a
 transaction. Apply it to a populated database in a maintenance window with a
 bounded migration-role `lock_timeout`.
@@ -75,9 +80,12 @@ A saved rule is compiled before persistence. Engine assembly still isolates
 each document so one undeployable rule is skipped and reported rather than
 stopping the tenant engine.
 
-A hot reload drains and rebuilds only the edited tenant's engine keys. The old
-engines remain live until the replacement has replayed durable state and can be
-swapped under the lifecycle lock. A failed reload keeps the previous engines
+A hot reload drains only the edited tenant's engine keys. If all shards retain
+identical surviving stateful definitions, stateless edits and removals install
+in place without duplicating state or replaying history. Otherwise the old
+engines remain live until replacements have replayed durable state and can be
+swapped under the lifecycle lock. Full definition fingerprints include alert
+metadata, so compatible state bytes alone never retain an outdated rule. A failed reload keeps the previous engines
 serving and leaves the affected keys for scheduled recovery; process-wide
 recovery is reserved for startup and full assignment rebuilds.
 

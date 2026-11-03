@@ -47,9 +47,12 @@ public final class RuleEngine implements AutoCloseable {
     private final RuleProcessingObserver observer;
     private final RuleExecutionScope executionScope;
     private final Runnable durableCommitGuard;
-    private final Map<String, String> stateCompatibilityVersions;
+    private volatile Map<String, String> stateCompatibilityVersions;
+    private volatile Map<String, String> ruleDefinitions;
     private static final int QUEUE_CAPACITY = 100_000;
     public static final int MAX_BATCH_EVENTS = 128;
+    /** Coalesce already admitted work without increasing caller or queue limits. */
+    public static final int MAX_COMMIT_EVENTS = 256;
     private final BlockingQueue<WorkItem> queue = new ArrayBlockingQueue<>(QUEUE_CAPACITY);
     private final java.util.concurrent.Semaphore queuedEvents = new java.util.concurrent.Semaphore(QUEUE_CAPACITY);
     private final Map<String, RuleCircuitState> ruleCircuits = new java.util.concurrent.ConcurrentHashMap<>();
@@ -68,7 +71,7 @@ public final class RuleEngine implements AutoCloseable {
     private final AtomicLong suppressedCount = new AtomicLong();
     private final AtomicLong routingMismatchWindows = new AtomicLong();
     /** Declared grouping dimension per rule; makes partition-locality observable. */
-    private final Map<String, RoutingDimension> routingDimensions;
+    private volatile Map<String, RoutingDimension> routingDimensions;
     private final Map<String, RoutingMismatchState> routingMismatches =
             new java.util.concurrent.ConcurrentHashMap<>();
     /** Serializes rule mutation, durable position callbacks, and snapshots. */
@@ -191,6 +194,15 @@ public final class RuleEngine implements AutoCloseable {
                       RuleProcessingObserver observer, RuleExecutionScope executionScope,
                       Runnable durableCommitGuard, Map<String, String> stateCompatibilityVersions,
                       Map<String, RoutingDimension> routingDimensions) {
+        this(rules, sinks, suppressor, observer, executionScope, durableCommitGuard,
+                stateCompatibilityVersions, routingDimensions, Map.of());
+    }
+
+    /** Definition fingerprints include output metadata, not only state compatibility. */
+    public RuleEngine(List<Rule> rules, List<AlertSink> sinks, Suppressor suppressor,
+                      RuleProcessingObserver observer, RuleExecutionScope executionScope,
+                      Runnable durableCommitGuard, Map<String, String> stateCompatibilityVersions,
+                      Map<String, RoutingDimension> routingDimensions, Map<String, String> ruleDefinitions) {
         this.rulesRef = new AtomicReference<>(List.copyOf(rules));
         this.sinks = List.copyOf(sinks);
         this.suppressor = suppressor;
@@ -200,6 +212,7 @@ public final class RuleEngine implements AutoCloseable {
         this.stateCompatibilityVersions = stateCompatibilityVersions == null
                 ? Map.of() : Map.copyOf(stateCompatibilityVersions);
         this.routingDimensions = routingDimensions == null ? Map.of() : Map.copyOf(routingDimensions);
+        this.ruleDefinitions = ruleDefinitions == null ? Map.of() : Map.copyOf(ruleDefinitions);
     }
 
     public void start() {
@@ -312,6 +325,7 @@ public final class RuleEngine implements AutoCloseable {
         Throwable failure = null;
         boolean committed = false;
         long undoBytes = 0;
+        var sharedEvidence = new com.socp.rule.state.StateUndoBudget();
         stateLock.lock();
         long preparationStarted = System.nanoTime();
         boolean preparationRecorded = false;
@@ -337,7 +351,7 @@ public final class RuleEngine implements AutoCloseable {
                             DetectionDelivery.isRouted(event) ? DetectionDelivery.deliveryId(event) : event.scopedId());
                 }
                 for (StateMutation mutation : currentUndo.values()) {
-                    undoBytes += mutation.retainedBytes();
+                    undoBytes += mutation.retainedBytes(sharedEvidence);
                     mutation.detach();
                 }
                 prepared.add(new Prepared(current, result, currentUndo));
@@ -416,10 +430,14 @@ public final class RuleEngine implements AutoCloseable {
             }
             if (caught instanceof InterruptedException) Thread.currentThread().interrupt();
         } finally {
-            if (currentUndo != null) currentUndo.values().forEach(StateMutation::close);
-            for (Prepared item : prepared) item.undo().values().forEach(StateMutation::close);
-            if (suppression != null) suppression.close();
-            stateLock.unlock();
+            try {
+                if (currentUndo != null) currentUndo.values().forEach(StateMutation::close);
+                for (Prepared item : prepared) item.undo().values().forEach(StateMutation::close);
+                if (suppression != null) suppression.close();
+            } finally {
+                sharedEvidence.close();
+                stateLock.unlock();
+            }
         }
         for (Prepared item : prepared) {
             if (failure == null) item.item().completion().complete(null);
@@ -446,18 +464,26 @@ public final class RuleEngine implements AutoCloseable {
     private void processAtomicBatches(WorkItem first) {
         var batches = new ArrayList<WorkItem>();
         batches.add(first);
-        int events = first.batch().size();
-        if (atomicBatchMergeable(first)) {
+        appendQueuedAtomicBatches(batches);
+        completeAtomicBatches(batches, true);
+    }
+
+    /** Also called between preparations so arrivals can share the pending commit. */
+    private void appendQueuedAtomicBatches(List<WorkItem> batches) {
+        WorkItem first = batches.getFirst();
+        int events = batches.stream().mapToInt(item -> item.batch().size()).sum();
+        if (events < MAX_COMMIT_EVENTS && batches.size() < 64 && atomicBatchMergeable(first)) {
             String tenant = first.event().requireTenantId();
             var identities = new java.util.HashSet<String>();
-            first.batch().forEach(input -> identities.add(DetectionDelivery.deliveryId(input.event())));
+            batches.forEach(item -> item.batch().forEach(input ->
+                    identities.add(DetectionDelivery.deliveryId(input.event()))));
             // Each original batch contributes at most one guard. Keep the same
-            // 64-guard and 128-event bounds as the sink and engine contracts.
-            while (batches.size() < 64 && events < MAX_BATCH_EVENTS) {
+            // 64-guard and 256-event bounds as the durable sink contract.
+            while (batches.size() < 64 && events < MAX_COMMIT_EVENTS) {
                 WorkItem next = queue.peek();
                 if (next == null || !atomicBatchMergeable(next)
                         || !tenant.equals(next.event().requireTenantId())
-                        || events + next.batch().size() > MAX_BATCH_EVENTS
+                        || events + next.batch().size() > MAX_COMMIT_EVENTS
                         || next.batch().stream().anyMatch(input ->
                                 identities.contains(DetectionDelivery.deliveryId(input.event())))) break;
                 if (!queue.remove(next)) break;
@@ -467,7 +493,6 @@ public final class RuleEngine implements AutoCloseable {
                 next.batch().forEach(input -> identities.add(DetectionDelivery.deliveryId(input.event())));
             }
         }
-        completeAtomicBatches(batches);
     }
 
     private boolean atomicBatchMergeable(WorkItem item) {
@@ -475,9 +500,9 @@ public final class RuleEngine implements AutoCloseable {
                 && (commitGuard(item) == null || commitGuard(item) instanceof OrderedCommitGuard);
     }
 
-    private void completeAtomicBatches(List<WorkItem> batches) {
+    private void completeAtomicBatches(List<WorkItem> batches, boolean coalesce) {
         try {
-            processAtomicBatch(batches);
+            processAtomicBatch(batches, coalesce);
             // All durable position callbacks run before the first completion
             // can checkpoint the engine state shared by the combined commit.
             batches.forEach(item -> item.completion().complete(null));
@@ -485,7 +510,7 @@ public final class RuleEngine implements AutoCloseable {
             if (batches.size() > 1 && budget.getSuppressed().length == 0) {
                 // No sink ran and all state was restored. Individually valid
                 // batches must not fail merely because their combined undo grew.
-                batches.forEach(item -> completeAtomicBatches(List.of(item)));
+                batches.forEach(item -> completeAtomicBatches(List.of(item), false));
             } else {
                 failAtomicBatches(batches, budget);
             }
@@ -507,19 +532,21 @@ public final class RuleEngine implements AutoCloseable {
     }
 
     /** Explicit batches retain one atomic boundary, including all suppression decisions. */
-    private void processAtomicBatch(List<WorkItem> batchItems) {
+    private void processAtomicBatch(List<WorkItem> batchItems, boolean coalesce) {
         WorkItem batchItem = batchItems.getFirst();
         List<Prepared> prepared = new ArrayList<>();
         List<Runnable> guards = new ArrayList<>();
         Map<StatefulRule, StateMutation> currentUndo = null;
         boolean committed = false;
         long undoBytes = 0;
+        var sharedEvidence = new com.socp.rule.state.StateUndoBudget();
         stateLock.lock();
         long preparationStarted = System.nanoTime();
         boolean preparationRecorded = false;
         try {
             if (!supportsAtomicBatch()) throw new IllegalStateException("atomic batch sink unavailable");
-            for (WorkItem source : batchItems) {
+            for (int batchIndex = 0; batchIndex < batchItems.size(); batchIndex++) {
+                WorkItem source = batchItems.get(batchIndex);
                 boolean first = true;
                 for (BatchEvent input : source.batch()) {
                     guards.add(first ? commitGuard(source) : null);
@@ -538,13 +565,17 @@ public final class RuleEngine implements AutoCloseable {
                                         ? DetectionDelivery.deliveryId(input.event()) : input.event().scopedId());
                     }
                     for (StateMutation mutation : currentUndo.values()) {
-                        undoBytes += mutation.retainedBytes();
+                        undoBytes += mutation.retainedBytes(sharedEvidence);
                         mutation.detach();
                     }
                     prepared.add(new Prepared(item, result, currentUndo));
                     currentUndo = null;
                     if (undoBytes > COMMIT_BATCH_UNDO_BYTES) throw new AtomicUndoBudgetExceeded();
                 }
+                // Evaluation can outlast journal preclaims on sibling lanes.
+                // Drain their ready work before paying another commit round trip.
+                // Overflow fallback must keep each original group isolated.
+                if (coalesce) appendQueuedAtomicBatches(batchItems);
             }
             // Reserve all touched stripes in a fixed order only after evaluation.
             // A failed durable transaction must not consume a suppression window.
@@ -617,9 +648,13 @@ public final class RuleEngine implements AutoCloseable {
             }
             throw failure;
         } finally {
-            if (currentUndo != null) currentUndo.values().forEach(StateMutation::close);
-            for (Prepared item : prepared) item.undo().values().forEach(StateMutation::close);
-            stateLock.unlock();
+            try {
+                if (currentUndo != null) currentUndo.values().forEach(StateMutation::close);
+                for (Prepared item : prepared) item.undo().values().forEach(StateMutation::close);
+            } finally {
+                sharedEvidence.close();
+                stateLock.unlock();
+            }
         }
     }
 
@@ -1219,6 +1254,66 @@ public final class RuleEngine implements AutoCloseable {
         }
     }
 
+    /**
+     * A drained live engine can retain unchanged state when rules are removed or
+     * only stateless definitions change. New/changed stateful rules still require
+     * durable recovery. The caller owns the tenant/shard admission write lock.
+     */
+    public boolean canReloadWithoutStateRecovery(RuleEngine prepared) {
+        if (prepared == null || prepared == this || !running || !checkpointValid
+                || !prepared.running || prepared.worker != null || !prepared.queue.isEmpty()) return false;
+        Map<String, Rule> live = new java.util.HashMap<>();
+        rulesRef.get().forEach(rule -> live.put(rule.id(), rule));
+        if (live.values().stream().noneMatch(StatefulRule.class::isInstance)) return false;
+        for (Rule rule : prepared.rulesRef.get()) {
+            if (!(rule instanceof StatefulRule)) continue;
+            Rule previous = live.get(rule.id());
+            String definition = ruleDefinitions.get(rule.id());
+            if (!(previous instanceof StatefulRule) || previous.getClass() != rule.getClass()
+                    || definition == null || !definition.equals(prepared.ruleDefinitions.get(rule.id()))
+                    || !stateCompatibilityVersion((StatefulRule) previous)
+                        .equals(prepared.stateCompatibilityVersion((StatefulRule) rule))) return false;
+        }
+        return true;
+    }
+
+    /** Install a precompiled catalogue without copying unchanged mutable state. */
+    public void reloadWithoutStateRecovery(RuleEngine prepared) {
+        stateLock.lock();
+        try {
+            if (!canReloadWithoutStateRecovery(prepared)) {
+                throw new IllegalArgumentException("rule update requires durable state recovery");
+            }
+            List<Rule> previous = rulesRef.get();
+            Map<String, Rule> live = new java.util.HashMap<>();
+            previous.forEach(rule -> live.put(rule.id(), rule));
+            List<Rule> compiled = prepared.rulesRef.get();
+            List<Rule> replacement = compiled.stream()
+                    .map(rule -> rule instanceof StatefulRule ? live.get(rule.id()) : rule).toList();
+            var retained = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<Rule, Boolean>());
+            retained.addAll(replacement);
+            stateCompatibilityVersions = prepared.stateCompatibilityVersions;
+            routingDimensions = prepared.routingDimensions;
+            ruleDefinitions = prepared.ruleDefinitions;
+            rulesRef.set(replacement);
+            // Transfer the compiled stateless rules; this never-started shell has
+            // no worker/resources to close and must not close shared alert sinks.
+            prepared.rulesRef.set(List.of());
+            prepared.running = false;
+            ruleCircuits.clear();
+            routingMismatches.clear();
+            java.util.stream.Stream.concat(previous.stream(), compiled.stream())
+                    .filter(rule -> !retained.contains(rule)).forEach(rule -> {
+                        try { rule.close(); }
+                        catch (RuntimeException failure) {
+                            log.warn("Retired rule cleanup failed ruleId={}: {}", rule.id(), failure.toString());
+                        }
+                    });
+        } finally {
+            stateLock.unlock();
+        }
+    }
+
     public List<Map<String, Object>> ruleStats() {
         return rulesRef.get().stream().map(rule -> {
             Map<String, Object> stats = new java.util.LinkedHashMap<>(rule.stats());
@@ -1382,6 +1477,14 @@ public final class RuleEngine implements AutoCloseable {
         @Override
         public byte[] serializedState() {
             return serializedState.clone();
+        }
+
+        /** The checkpoint copies owned bytes once; no mutable array escapes either envelope. */
+        public com.socp.rule.state.DetectionStateSnapshot checkpoint(String tenantId, int shardId,
+                long lastProcessedOffset, java.time.Instant timestamp, Map<Integer, Long> offsets,
+                Map<Integer, Long> ownerEpochs, String inputTopic) {
+            return new com.socp.rule.state.DetectionStateSnapshot(ruleId, version, tenantId, shardId,
+                    lastProcessedOffset, serializedState, timestamp, offsets, ownerEpochs, inputTopic);
         }
     }
 

@@ -98,6 +98,15 @@ verify its receipt before any operator replay. No schema migration is required.
 
 ## Canonical event contract
 
+OpenSearch search pages reconstruct the stable `tenant|eventId` tie-breaker
+from keyword doc values (`eventId`, or `eventId.keyword` in legacy text
+mappings). They do not sort on `_id`, whose heap fielddata grows with the
+entire shard even for a small tenant query. Existing physical and logical
+cursors retain their ordering and compatibility. No reindex is required for
+these supported mappings. Legacy documents missing a single keyword value
+fail the query explicitly; repair their mapping/data before paging rather
+than enabling `_id` fielddata or accepting incomplete results.
+
 Kafka events use the versioned envelope in `schemas/canonical-event-1.0.json`.
 `schemaVersion` and `tenantId` are explicit envelope fields;
 `fields.tenant_id` remains only as a compatibility bridge for existing
@@ -280,8 +289,8 @@ envelope with the production registry. The separate historical-file container
 case still requires Docker.
 
 The ingestion publisher queries the next ordered head after acknowledgements,
-including when only one routing key is active. The first nonempty head query
-has a five-second database timeout, then starts the configured delivery
+including when only one routing key is active. Each head-discovery SQL statement
+has a five-second database timeout; a nonempty selection starts the configured delivery
 admission budget (two seconds by default). Subsequent queries share that same
 admission deadline and the round limit. This is not a two-second wall-clock
 limit for the whole invocation: database selection and in-flight acknowledged
@@ -304,7 +313,16 @@ stops the remainder of that key's local batch for the drain. Every row still
 needs its durable predecessor/claim check and broker acknowledgement; selection
 does not own or publish successors.
 
-Head discovery reads the first pending identity per tenant/routing key with
+Head discovery first checks at most 400 due-order candidates using the covering
+due index. Indexed predecessor and processing-row probes admit only eligible
+heads. A full 200-head page is the same first fair page as global discovery:
+independent heads precede every same-key successor. If fewer than 200 heads are
+found, discard that partial page and run the complete fallback, so blocked,
+delayed or repeated keys cannot hide eligible work beyond the window. Keep the
+queries separate: the fallback's estimated backlog cost must not trigger JIT
+compilation on the bounded path. Claims and delivery still enforce ownership.
+
+The fallback reads the first pending identity per tenant/routing key with
 `DISTINCT ON` over the covering state/key index. It reads pending key metadata
 once instead of repeating a predecessor and processing-row probe for every
 successor in a deep backlog. Due-time eligibility is checked after choosing
@@ -320,14 +338,15 @@ ties can expand intermediate candidates, but the per-key result remains capped
 at 16.
 `IngestionOutboxClaimPostgresTest` covers retained hot-key history, a 20,000-key
 burst with stale statistics, a 100,000-row pending backlog across 32 keys,
-bounded payload fetches, ordering, and receipt-preserving index upgrades.
+bounded payload fetches, independent-key discovery work, blocked candidate
+windows, ordering, and receipt-preserving index upgrades.
 
 V18 introduced ordered due and state/key indexes. V19 replaces the due index
 with `idx_ingestion_outbox_due_covering` on
 `(status,next_attempt_at,sequence_no,id,tenant_id,routing_key)` for covered
-due-order lookups. Head discovery now uses the state/key index to deduplicate
-keys before applying global due order, avoiding repeated probes of hot-key
-successors. The state/key index remains
+due-order lookups, including the bounded candidate window. Fallback discovery
+uses the state/key index to deduplicate keys before applying global due order,
+avoiding repeated probes of hot-key successors. The state/key index remains
 `idx_ingestion_outbox_state_key_order` on
 `(status,tenant_id,routing_key,sequence_no,id,next_attempt_at)`. V19 preserves
 receipt data and the final index count; it does not change ordering or claims.
@@ -343,6 +362,56 @@ V20 drops one index without rewriting events, sequence values, or leases.
 Schedule its ordinary transactional index drop after draining active database
 transactions; the migration can wait for table locks. No historical rows or
 delivery receipts need to be removed.
+
+V21 replaces PostgreSQL's due and state/key indexes with active-row indexes
+using `coalesce(status,'') <> 'PUBLISHED'`. Published evidence remains in the
+table and retains identity, tenant and retention access paths. Queue queries
+include the same predicate so generic plans can use these indexes; `coalesce`
+also prevents stale all-published statistics from collapsing scoped key probes
+into estimated-empty scans. The unique processing-key index excludes null keys
+without changing lease uniqueness or legacy processing-row fences. H2 retains
+the equivalent full indexes because it does not support partial indexes.
+
+V21 builds replacements before retiring the old indexes in one migration
+transaction. Schedule a maintenance window: ordinary index creation can block
+writes and requires space for the replacements during the build. Deploy the
+matching query changes with the migration; older binaries remain logically
+compatible but cannot use these active-index predicates. No event, retry,
+sequence, acknowledgement or lease is rewritten.
+
+V22–V24 decouple automatic maintenance eligibility from retained history,
+with zero scale factors: vacuum becomes eligible after 200,000 dead tuples,
+while analyze uses 250,000 modifications. V24 increases the earlier
+50,000/100,000 thresholds because every claim and settlement creates a dead
+version, repeatedly triggering scans of retained identity indexes. The separate budgets reduce
+repeated identity-index scans and statistics rebuilds after small input bursts. V23 also removes the redundant event-only and
+tenant/due indexes; the tenant/event unique index, tenant administration,
+retention, claim recovery and active queue access paths remain available.
+Index cleanup remains enabled and the table's vacuum cost limit is 1,000.
+Partial indexes still accumulate dead entries as claims become published;
+they require vacuum even when the live queue is empty. These thresholds do
+not guarantee a cleanup interval: monitor `n_dead_tup`, `last_autovacuum`,
+`pg_stat_progress_vacuum`, worker availability, maintenance I/O and queue query
+buffer reads. The thresholds are operating defaults, not latency guarantees.
+For an existing backlog of dead versions, schedule ordinary
+`VACUUM (ANALYZE, INDEX_CLEANUP ON) t_ingestion_outbox` after migration, outside
+a transaction. It preserves receipts and does not require `VACUUM FULL`.
+Maintenance adds database I/O; deployment-specific tuning should preserve
+regular index cleanup instead of increasing thresholds with history size.
+
+V25 keeps due discovery ordered by `(status, next_attempt_at, sequence_no, id)`
+and stores `tenant_id`/`routing_key` as `INCLUDE` payload. They are not trailing
+seek keys: stale statistics could otherwise make each predecessor/ownership
+probe scan the due index instead of seeking the separate routing-key index.
+Due discovery remains covered, and all ordering, lease and retry predicates
+are unchanged. This index replacement also requires a maintenance window and
+temporary disk headroom; H2 retains its existing portable index definition.
+
+New canonical-event and ingestion-outbox physical IDs use UUIDv7 so concurrent
+inserts touch nearby primary-key pages. Existing IDs are not rewritten.
+The collector's event ID and tenant/event uniqueness remain the replay
+boundary, and database `sequence_no` remains the publication-order authority.
+UUID timestamps are storage locality hints, not a cross-process ordering rule.
 
 For a large PostgreSQL outbox upgrading from V18, prebuild the exact V19 index
 with `CREATE INDEX CONCURRENTLY` outside a transaction, verify that it is valid,
@@ -622,13 +691,14 @@ complete in one transaction; a partial ownership receipt rolls that transaction
 back. A failed receipt stops that key's remaining sends, and an unconfirmed
 claim or completion blocks further selection for that key in the current drain.
 A shared admission limit
-allows at most two cohorts across all tenants to claim and complete concurrently;
+allows 1–4 cohorts across all tenants to claim and complete concurrently
+(`SOCP_INGEST_OUTBOX_COHORT_CONCURRENCY`, default 4);
 capacity is acquired before a cohort claims any rows. Every admitted cohort is
 joined before another selection or completion of the drain. Database batch size
 is independent of configured submission concurrency (8 by default), shared by
-both cohorts. Those slots bound potentially blocking Kafka submission calls.
+all admitted cohorts. Those slots bound potentially blocking Kafka submission calls.
 A submitted record releases its slot while its acknowledgement remains pending,
-with at most 32 outstanding receipts per cohort and 64 across the publisher.
+with at most 32 outstanding receipts per cohort and 128 across the publisher at the maximum four cohorts.
 Ordered prefixes use 32 key runners per admitted cohort waiting for receipts,
 so one cohort's blocked keys cannot occupy its sibling's receipt slots. Their
 actual submission calls retain the same shared configured bound.

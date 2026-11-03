@@ -157,6 +157,53 @@ class OsEventReaderOpenSearchContainerTest {
     }
 
     @Test
+    void mixedMappingsPageWithoutIdFielddataAndKeepPhysicalCursors() throws Exception {
+        request("/_cluster/settings", "PUT",
+                "{\"persistent\":{\"indices.id_field_data.enabled\":false}}", 200);
+        try {
+            String legacyIndex = "legacy-events-" + UUID.randomUUID();
+            request("/" + legacyIndex, "PUT", """
+                    {"mappings":{"properties":{
+                      "eventId":{"type":"text","fields":{"keyword":{"type":"keyword"}}},
+                      "timestamp":{"type":"date"},"source":{"type":"keyword"},
+                      "fields":{"properties":{"tenant_id":{"type":"text",
+                        "fields":{"keyword":{"type":"keyword"}}}}}
+                    }}}
+                    """, 200);
+            SearchEvent legacy = event(TENANT_A, "evt-0|legacy", "2026-08-30T00:00:00Z",
+                    "10.0.0.1", "auth", "LOW", "legacy event", "1");
+            put("/" + legacyIndex + "/_doc/tenant-a%7Cevt-0%7Clegacy?refresh=true",
+                    MAPPER.writeValueAsString(legacy));
+            OpenSearchProperties properties = new OpenSearchProperties();
+            properties.setEnabled(true);
+            properties.setUrl("http://" + OPENSEARCH.getHost() + ":" + OPENSEARCH.getMappedPort(9200));
+            properties.setSearchIndex(index + "," + legacyIndex);
+            OsEventReader mixed = new OsEventReader(properties);
+            java.util.ArrayList<String> ids = new java.util.ArrayList<>();
+            String cursor = null;
+            for (int page = 0; page < 5; page++) {
+                SplEngine.QueryResult result = mixed.search("*", 1, cursor);
+                assertThat(result).isNotNull();
+                assertThat(result.total()).isEqualTo(5);
+                ids.add(result.events().getFirst().eventId());
+                cursor = result.nextCursor();
+            }
+            assertThat(ids).containsExactly("evt-3", "evt-0|legacy", "evt-1", "evt-2", "evt-5");
+            assertThat(cursor).isNull();
+            String physicalCursor = com.socp.search.config.query.QueryCursorCodec.encode(
+                    parser.parse("*"), List.of(Instant.parse("2026-08-30T00:00:00Z").toEpochMilli(),
+                            "tenant-a|evt-1"));
+            assertThat(mixed.search("*", 1, physicalCursor).events())
+                    .extracting(SearchEvent::eventId).containsExactly("evt-2");
+            assertThat(mixed.search("* | sort timestamp desc", 100).events())
+                    .extracting(SearchEvent::eventId).containsExactlyElementsOf(ids);
+        } finally {
+            request("/_cluster/settings", "PUT",
+                    "{\"persistent\":{\"indices.id_field_data.enabled\":null}}", 200);
+        }
+    }
+
+    @Test
     void localAndOpenSearchResultsMatchAcrossTypedFiltersAndAggregations() {
         List<String> queries = List.of(
                 "source=auth",

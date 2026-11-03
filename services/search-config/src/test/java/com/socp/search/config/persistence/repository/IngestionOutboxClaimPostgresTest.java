@@ -143,7 +143,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                 .replace("lastError", "last_error").replace("updatedAt", "updated_at")
                 .replace(":now", "now()").replace(":id", "'active-3000'").replace(":token", "'owner'");
         String plan = String.join("\n", jdbc.queryForList("explain " + query, String.class));
-        assertTrue(plan.contains("pk_t_ingestion_outbox"), plan);
+        assertTrue((plan.contains("pk_t_ingestion_outbox") || plan.contains("uk_ingestion_outbox_id_tenant")), plan);
         assertEquals(0, repository.markPublished("active-3000", BASE, "stale-owner"));
         assertEquals(1, repository.markPublished("active-3000", BASE, "owner"));
         assertEquals(2999, repository.countByStatus("PROCESSING"));
@@ -184,7 +184,10 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                          502, 'active-owner', 'tenant-a:active-key', timestamp '2026-09-01'),
                         ('legacy', 'tenant-a', 'legacy', 'legacy-key', '{"keep":"legacy"}', 'PROCESSING', 2,
                          timestamp '2026-09-01', timestamp '2026-09-01', timestamp '2026-09-01',
-                         503, 'legacy-owner', null, timestamp '2026-09-01')
+                         503, 'legacy-owner', null, timestamp '2026-09-01'),
+                        ('published', 'tenant-a', 'published', 'history-key', '{"keep":"history"}', 'PUBLISHED', 1,
+                         timestamp '2026-09-01', timestamp '2026-09-01', timestamp '2026-09-01',
+                         504, null, null, null)
                     """);
             var before = jdbc.queryForList("select * from selector_upgrade.t_ingestion_outbox order by id");
 
@@ -229,6 +232,58 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                     + "where indexrelid='selector_upgrade.idx_ingestion_outbox_state_key_order'::regclass", Boolean.class));
             assertEquals(priorIndexCount - 1, jdbc.queryForObject("select count(*) from pg_indexes "
                     + "where schemaname='selector_upgrade' and tablename='t_ingestion_outbox'", Integer.class));
+
+            Flyway.configure().dataSource(jdbcUrl(), "socp", "socp-test")
+                    .schemas("selector_upgrade").locations("classpath:db/migration").target("21").load().migrate();
+            assertEquals(before, jdbc.queryForList("select * from selector_upgrade.t_ingestion_outbox order by id"));
+            for (String index : List.of("idx_ingestion_outbox_due_covering",
+                    "idx_ingestion_outbox_state_key_order", "ux_ingestion_outbox_processing_key")) {
+                assertTrue(jdbc.queryForObject("select indisvalid and indisready and indpred is not null from pg_index "
+                        + "where indexrelid=?::regclass", Boolean.class, "selector_upgrade." + index));
+            }
+            assertEquals(priorIndexCount - 1, jdbc.queryForObject("select count(*) from pg_indexes "
+                    + "where schemaname='selector_upgrade' and tablename='t_ingestion_outbox'", Integer.class));
+            Flyway.configure().dataSource(jdbcUrl(), "socp", "socp-test")
+                    .schemas("selector_upgrade").locations("classpath:db/migration").target("22").load().migrate();
+            assertEquals(before, jdbc.queryForList("select * from selector_upgrade.t_ingestion_outbox order by id"));
+            var maintenance = jdbc.queryForList("select unnest(reloptions) from pg_class "
+                    + "where oid='selector_upgrade.t_ingestion_outbox'::regclass", String.class);
+            assertTrue(maintenance.containsAll(List.of("autovacuum_vacuum_scale_factor=0",
+                    "autovacuum_vacuum_threshold=10000", "autovacuum_analyze_scale_factor=0",
+                    "autovacuum_analyze_threshold=10000", "autovacuum_vacuum_cost_limit=1000",
+                    "vacuum_index_cleanup=on")), maintenance.toString());
+            Flyway.configure().dataSource(jdbcUrl(), "socp", "socp-test")
+                    .schemas("selector_upgrade").locations("classpath:db/migration").target("23").load().migrate();
+            assertEquals(before, jdbc.queryForList("select * from selector_upgrade.t_ingestion_outbox order by id"));
+            assertEquals(priorIndexCount - 3, jdbc.queryForObject("select count(*) from pg_indexes "
+                    + "where schemaname='selector_upgrade' and tablename='t_ingestion_outbox'", Integer.class));
+            assertTrue(jdbc.queryForObject("select indisunique and indisvalid from pg_index "
+                    + "where indexrelid='selector_upgrade.uk_ingestion_outbox_tenant_event'::regclass", Boolean.class));
+            maintenance = jdbc.queryForList("select unnest(reloptions) from pg_class "
+                    + "where oid='selector_upgrade.t_ingestion_outbox'::regclass", String.class);
+            assertTrue(maintenance.containsAll(List.of("autovacuum_vacuum_scale_factor=0",
+                    "autovacuum_vacuum_threshold=50000", "autovacuum_analyze_scale_factor=0",
+                    "autovacuum_analyze_threshold=100000", "vacuum_index_cleanup=on")), maintenance.toString());
+
+            Flyway.configure().dataSource(jdbcUrl(), "socp", "socp-test")
+                    .schemas("selector_upgrade").locations("classpath:db/migration").target("24").load().migrate();
+            assertEquals(before, jdbc.queryForList("select * from selector_upgrade.t_ingestion_outbox order by id"));
+            maintenance = jdbc.queryForList("select unnest(reloptions) from pg_class "
+                    + "where oid='selector_upgrade.t_ingestion_outbox'::regclass", String.class);
+            assertTrue(maintenance.containsAll(List.of("autovacuum_vacuum_scale_factor=0",
+                    "autovacuum_vacuum_threshold=200000", "autovacuum_analyze_scale_factor=0",
+                    "autovacuum_analyze_threshold=250000", "autovacuum_vacuum_cost_limit=1000",
+                    "vacuum_index_cleanup=on")), maintenance.toString());
+            assertFalse(maintenance.contains("autovacuum_enabled=false"));
+
+            Flyway.configure().dataSource(jdbcUrl(), "socp", "socp-test")
+                    .schemas("selector_upgrade").locations("classpath:db/migration").target("25").load().migrate();
+            assertEquals(before, jdbc.queryForList("select * from selector_upgrade.t_ingestion_outbox order by id"));
+            String dueIndex = jdbc.queryForObject("select indexdef from pg_indexes "
+                    + "where schemaname='selector_upgrade' and indexname='idx_ingestion_outbox_due_covering'", String.class);
+            assertTrue(dueIndex.contains("(status, next_attempt_at, sequence_no, id) INCLUDE (tenant_id, routing_key)"), dueIndex);
+            assertTrue(jdbc.queryForObject("select indisvalid and indisready from pg_index "
+                    + "where indexrelid='selector_upgrade.idx_ingestion_outbox_due_covering'::regclass", Boolean.class));
         } finally {
             jdbc.execute("drop schema selector_upgrade cascade");
         }
@@ -284,10 +339,10 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
             String batchCompletionSql = repositorySql("markPublishedBatch", String.class,
                     java.util.Collection.class, java.time.Instant.class, String.class)
                     .replace(":tenant_id", "'tenant-new'")
-                    .replace(":ids", "('" + String.join("','", ids) + "')")
+                    .replace("(:ids)", "('" + String.join("','", ids) + "')")
                     .replace(":now", "timestamp '2026-09-01'").replace(":token", "'active-owner'");
             String completionPlan = String.join("\n", jdbc.queryForList("EXPLAIN " + batchCompletionSql, String.class));
-            assertTrue(completionPlan.contains("pk_t_ingestion_outbox"), completionPlan);
+            assertTrue((completionPlan.contains("pk_t_ingestion_outbox") || completionPlan.contains("uk_ingestion_outbox_id_tenant")), completionPlan);
             assertTrue(completionPlan.lines().anyMatch(line -> line.contains("Index Cond:")
                     && line.contains("(id)") && line.contains("ANY")), completionPlan);
 
@@ -305,7 +360,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
     }
 
     private static void assertIdentityAndKeyLookups(String plan) {
-        assertTrue(plan.contains("pk_t_ingestion_outbox"), plan);
+        assertTrue((plan.contains("pk_t_ingestion_outbox") || plan.contains("uk_ingestion_outbox_id_tenant")), plan);
         assertTrue(plan.lines().anyMatch(line -> line.contains("Index Cond:") && line.contains("(id)")), plan);
         assertEquals(2, plan.lines().filter(line -> line.contains("Index Cond:")
                 && line.contains("tenant_id") && line.contains("routing_key")).count(), plan);
@@ -340,7 +395,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
         // visibility information lets PostgreSQL cost the covering index.
         vacuumFixture(true);
         String sql = IngestionOutboxRepository.class
-                .getMethod("findDueOrderedBatch", java.time.Instant.class)
+                .getMethod("findDueOrderedFallback", java.time.Instant.class)
                 .getAnnotation(Query.class).value()
                 .replace(":now", "timestamp '2026-09-01 00:00:00'");
         String plan = String.join("\n", jdbc.query("EXPLAIN (ANALYZE, BUFFERS) " + sql,
@@ -385,7 +440,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                     from generate_series(1, 400) as n order by n
                     """);
             assertEquals(16, repository.findDueOrderedBatch(BASE).size());
-            // Hibernate binds the two occurrences separately, including in a
+            // Hibernate binds each occurrence separately, including in a
             // server-side generic plan. Neither active status is in statistics.
             for (String plan : explainPreparedSelectorPlans()) {
                 var blocker = java.util.regex.Pattern.compile(
@@ -436,7 +491,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
             // rows. This made the old unordered covering index win before LIMIT.
             vacuumFixture(false);
             String sql = IngestionOutboxRepository.class
-                    .getMethod("findDueOrderedBatch", java.time.Instant.class)
+                    .getMethod("findDueOrderedFallback", java.time.Instant.class)
                     .getAnnotation(Query.class).value()
                     .replace(":now", "timestamp '2026-09-01'");
             String plan = String.join("\n", jdbc.query("EXPLAIN (ANALYZE, BUFFERS) " + sql,
@@ -453,7 +508,12 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                 // Head deduplication/sorting reads narrow covering-index entries;
                 // the payload lookup remains behind the 200-row admission bound.
                 assertTrue(preparedPlan.contains("Index Only Scan using idx_ingestion_outbox_state_key_order on t_ingestion_outbox"), preparedPlan);
-                assertFalse(preparedPlan.contains("Seq Scan on t_ingestion_outbox"), preparedPlan);
+                assertFalse(preparedPlan.contains("Seq Scan on t_ingestion_outbox "), preparedPlan);
+                assertFalse(preparedPlan.contains("JIT:"), preparedPlan);
+            }
+            for (String preparedPlan : explainPreparedSelectorPlans("findDueIndependentHeads")) {
+                assertTrue(preparedPlan.contains("Index Only Scan using idx_ingestion_outbox_due_covering"), preparedPlan);
+                assertFalse(preparedPlan.contains("Seq Scan on t_ingestion_outbox "), preparedPlan);
                 assertFalse(preparedPlan.contains("JIT:"), preparedPlan);
             }
             var batch = repository.findDueOrderedBatch(BASE);
@@ -466,22 +526,31 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
     }
 
     private List<String> explainPreparedSelectorPlans() throws Exception {
+        return explainPreparedSelectorPlans("findDueOrderedFallback");
+    }
+
+    private List<String> explainPreparedSelectorPlans(String method) throws Exception {
         String sql = IngestionOutboxRepository.class
-                .getMethod("findDueOrderedBatch", java.time.Instant.class)
-                .getAnnotation(Query.class).value()
-                .replaceFirst(":now", java.util.regex.Matcher.quoteReplacement("$1"))
-                .replaceFirst(":now", java.util.regex.Matcher.quoteReplacement("$2"));
+                .getMethod(method, java.time.Instant.class)
+                .getAnnotation(Query.class).value();
+        var types = new java.util.ArrayList<String>();
+        var values = new java.util.ArrayList<String>();
+        while (sql.contains(":now")) {
+            types.add("timestamptz");
+            values.add("timestamp '2026-09-01'");
+            sql = sql.replaceFirst(":now", java.util.regex.Matcher.quoteReplacement("$" + types.size()));
+        }
         var plans = new java.util.ArrayList<String>();
         try (var connection = dataSource.getConnection()) {
             connection.setAutoCommit(false);
             try (var statement = connection.createStatement()) {
-                statement.execute("PREPARE selector_plan(timestamptz, timestamptz) AS " + sql);
+                statement.execute("PREPARE selector_plan(" + String.join(",", types) + ") AS " + sql);
                 try {
                     for (String mode : List.of("force_custom_plan", "force_generic_plan")) {
                         statement.execute("SET LOCAL plan_cache_mode = " + mode);
                         var plan = new StringBuilder(mode).append('\n');
                         try (var rows = statement.executeQuery("EXPLAIN EXECUTE selector_plan("
-                                + "timestamp '2026-09-01', timestamp '2026-09-01')")) {
+                                + String.join(",", values) + ")")) {
                             while (rows.next()) plan.append(rows.getString(1)).append('\n');
                         }
                         plans.add(plan.toString());
@@ -494,6 +563,98 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
             }
         }
         return plans;
+    }
+
+    @Test void sparseStatisticsDoNotRoutePerKeyChecksThroughTheDueIndex() throws Exception {
+        jdbc.execute("truncate t_ingestion_outbox, t_ingestion_outbox_payload");
+        try {
+            jdbc.update("""
+                    insert into t_ingestion_outbox
+                        (id,tenant_id,event_id,routing_key,payload,status,attempts,next_attempt_at,created_at,updated_at)
+                    select 'history-'||n,'history-'||(n%100),'history-'||n,'key-'||n,'{}','PUBLISHED',0,
+                           timestamp '2026-09-01',timestamp '2026-09-01',timestamp '2026-09-01'
+                    from generate_series(1,20000) n
+                    """);
+            jdbc.execute("analyze t_ingestion_outbox");
+            // Model an aged key index and a newly active tenant missing from
+            // table statistics. Both cases occur after queue drain/restart.
+            jdbc.execute("alter index idx_ingestion_outbox_state_key_order set (fillfactor=10)");
+            jdbc.update("""
+                    insert into t_ingestion_outbox
+                        (id,tenant_id,event_id,routing_key,payload,status,attempts,next_attempt_at,created_at,updated_at)
+                    select 'fresh-'||n,'fresh','fresh-'||n,repeat('prefix-',40)||n,'{}','PENDING',0,
+                           timestamp '2026-09-01',timestamp '2026-09-01',timestamp '2026-09-01'
+                    from generate_series(1,20000) n
+                    """);
+            jdbc.execute("reindex index idx_ingestion_outbox_state_key_order");
+            String sql = IngestionOutboxRepository.class
+                    .getMethod("findDueIndependentHeads", java.time.Instant.class)
+                    .getAnnotation(Query.class).value().replace(":now", "timestamp '2026-09-01'");
+            String plan = jdbc.queryForObject("explain(analyze,buffers,format json) " + sql, String.class);
+            System.out.println("Sparse-tenant head-selection plan:\n" + plan);
+            var tree = new com.fasterxml.jackson.databind.ObjectMapper().readTree(plan).get(0).get("Plan");
+            int blocks = tree.path("Shared Hit Blocks").asInt() + tree.path("Shared Read Blocks").asInt();
+            assertTrue(blocks < 8000, "200 heads repeatedly scanned the due index for individual keys: " + plan);
+            assertEquals(java.util.stream.IntStream.rangeClosed(1, 200).mapToObj(n -> "fresh-" + n).toList(),
+                    repository.findDueOrderedBatch(BASE).stream().map(row -> row.getId()).toList());
+        } finally {
+            jdbc.execute("alter index idx_ingestion_outbox_state_key_order reset (fillfactor)");
+            jdbc.execute("truncate t_ingestion_outbox, t_ingestion_outbox_payload");
+        }
+    }
+
+    @Test void independentKeyBacklogBoundsHeadDiscoveryWork() throws Exception {
+        for (int start = 1; start <= 40000; start += 10000) jdbc.update("""
+                insert into t_ingestion_outbox
+                    (id, tenant_id, event_id, routing_key, payload, status, attempts,
+                     next_attempt_at, created_at, updated_at)
+                select 'independent-' || n, 'tenant-a', 'independent-' || n, 'key-' || n,
+                       repeat(md5(n::text), 32), case when n <= 20000 then 'PUBLISHED' else 'PENDING' end,
+                       0, timestamp '2026-09-01', timestamp '2026-09-01', timestamp '2026-09-01'
+                from generate_series(?, ?) as n order by n
+                """, start, start + 9999);
+        vacuumFixture(true);
+        String sql = IngestionOutboxRepository.class
+                .getMethod("findDueIndependentHeads", java.time.Instant.class)
+                .getAnnotation(Query.class).value().replace(":now", "timestamp '2026-09-01'");
+        String plan = jdbc.queryForObject("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + sql, String.class);
+        System.out.println("Independent-key head-selection plan:\n" + plan);
+        var tree = new com.fasterxml.jackson.databind.ObjectMapper().readTree(plan);
+        assertBoundedPlanRows(tree, 6400);
+        assertFalse(tree.get(0).has("JIT"), "bounded discovery must not trigger JIT compilation: " + plan);
+        assertEquals(java.util.stream.IntStream.rangeClosed(20001, 20200)
+                        .mapToObj(n -> "independent-" + n).toList(),
+                repository.findDueOrderedBatch(BASE).stream().map(row -> row.getId()).toList());
+    }
+
+    @Test void queueIndexesExcludeRetainedHistoryWithoutRemovingReceipts() {
+        // Reset physical index pages left by other rolled-back/deleted fixtures.
+        jdbc.execute("truncate t_ingestion_outbox, t_ingestion_outbox_payload");
+        jdbc.update("""
+                insert into t_ingestion_outbox
+                    (id,tenant_id,event_id,routing_key,payload,status,attempts,next_attempt_at,created_at,updated_at)
+                select 'retained-'||n,'tenant-a','retained-'||n,'key-'||n,'{}',
+                       case when n <= 20000 then 'PUBLISHED' else 'PENDING' end,0,
+                       timestamp '2026-09-01',timestamp '2026-09-01',timestamp '2026-09-01'
+                from generate_series(1,20200) n
+                """);
+        for (String index : List.of("idx_ingestion_outbox_due_covering", "idx_ingestion_outbox_state_key_order")) {
+            String predicate = jdbc.queryForObject("select pg_get_expr(indpred,indrelid) from pg_index "
+                    + "where indexrelid=?::regclass", String.class, index);
+            assertTrue(predicate != null && predicate.contains("PUBLISHED"), predicate);
+            assertTrue(jdbc.queryForObject("select pg_relation_size(?::regclass)", Long.class, index) < 256 * 1024,
+                    "active queue indexes must not retain the 20,000 published identities: " + index);
+        }
+        assertEquals(20000, repository.countByStatus("PUBLISHED"));
+        assertEquals(200, repository.findDueOrderedBatch(BASE).size());
+    }
+
+    private static void assertBoundedPlanRows(com.fasterxml.jackson.databind.JsonNode node, long limit) {
+        if (node.isObject() && node.has("Actual Rows")) {
+            long rows = node.get("Actual Rows").asLong() * node.get("Actual Loops").asLong();
+            assertTrue(rows <= limit, "head discovery must not scan the growing independent-key backlog: " + node);
+        }
+        if (node.isContainerNode()) node.forEach(child -> assertBoundedPlanRows(child, limit));
     }
 
     @Test void deepMultiKeyBacklogKeepsHeadSelectionWithinAdmissionBudget() throws Exception {
@@ -510,7 +671,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                 """, start, start + 9999);
         vacuumFixture(true);
         String sql = IngestionOutboxRepository.class
-                .getMethod("findDueOrderedBatch", java.time.Instant.class)
+                .getMethod("findDueOrderedFallback", java.time.Instant.class)
                 .getAnnotation(Query.class).value()
                 .replace(":now", "timestamp '2026-09-01 00:00:00'");
         System.out.println("Deep outbox estimated plan:\n" + String.join("\n", jdbc.query("EXPLAIN " + sql,
@@ -563,7 +724,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                     "deep-100001", "first-owner", "first-owner", "deep-100033"));
         });
         System.out.println("Deep outbox follower-claim plan:\n" + followerPlan);
-        assertTrue(followerPlan.contains("pk_t_ingestion_outbox"), followerPlan);
+        assertTrue((followerPlan.contains("pk_t_ingestion_outbox") || followerPlan.contains("uk_ingestion_outbox_id_tenant")), followerPlan);
         assertTrue(followerPlan.contains("ux_ingestion_outbox_processing_key"),
                 "the anchor must use its unique lease lookup rather than scanning tenant/status:\n" + followerPlan);
         assertEquals(32, batches.markAcknowledged(first, "first-owner", BASE));
@@ -623,7 +784,7 @@ class IngestionOutboxClaimPostgresTest extends IngestionOutboxClaimPersistenceTe
                         from generate_series(?, ?) n order by n
                         """, start, start + 4999);
             }
-            String selector = IngestionOutboxRepository.class.getMethod("findDueOrderedBatch", java.time.Instant.class)
+            String selector = IngestionOutboxRepository.class.getMethod("findDueOrderedFallback", java.time.Instant.class)
                     .getAnnotation(Query.class).value().replace(":now", "timestamp '2026-09-01'");
             String selectorPlan = String.join("\n", jdbc.queryForList("EXPLAIN " + selector, String.class));
             assertEquals(3, selectorPlan.lines().filter(line -> line.contains("Index Cond:")

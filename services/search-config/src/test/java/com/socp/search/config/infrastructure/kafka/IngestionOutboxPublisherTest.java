@@ -137,14 +137,15 @@ class IngestionOutboxPublisherTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 2})
-    void independentCohortsShareTwoPermitsAcrossTenantsAndJoinBeforeTheNextSelection(int rowsPerKey) throws Exception {
+    @org.junit.jupiter.params.provider.CsvSource({"1,2,2", "1,4,4", "1,99,4", "2,2,2", "2,4,4"})
+    void independentCohortsRespectConfiguredBoundAcrossTenantsAndJoinBeforeTheNextSelection(
+            int rowsPerKey, int configuredCohorts, int maximumCohorts) throws Exception {
         var repository = mock(IngestionOutboxRepository.class);
         var producer = mock(KafkaEventProducer.class);
         var batches = mock(com.socp.search.config.service.IngestionOutboxBatchService.class);
-        var rows = java.util.stream.IntStream.range(0, 96 * rowsPerKey).mapToObj(i -> {
-            var row = pending("parallel-" + i, "key-" + i % 32, "payload-" + i, null);
-            row.setTenantId("tenant-" + i / (32 * rowsPerKey));
+        var rows = java.util.stream.IntStream.range(0, 80 * rowsPerKey).mapToObj(i -> {
+            var row = pending("parallel-" + i, "key-" + i % 16, "payload-" + i, null);
+            row.setTenantId("tenant-" + i / (16 * rowsPerKey));
             return row;
         }).toList();
         when(producer.isEnabled()).thenReturn(true);
@@ -153,22 +154,22 @@ class IngestionOutboxPublisherTest {
         var tokens = new java.util.concurrent.ConcurrentHashMap<String, String>();
         var activeCohorts = new java.util.concurrent.atomic.AtomicInteger();
         var peakCohorts = new java.util.concurrent.atomic.AtomicInteger();
-        var firstTwoClaims = new java.util.concurrent.CountDownLatch(2);
+        var firstWaveClaims = new java.util.concurrent.CountDownLatch(maximumCohorts);
         var releaseClaims = new java.util.concurrent.CountDownLatch(1);
-        var otherCohortsFinalized = new java.util.concurrent.CountDownLatch(2);
+        var otherCohortsFinalized = new java.util.concurrent.CountDownLatch(4);
         var firstReceipt = new java.util.concurrent.CompletableFuture<Boolean>();
-        var blockedKeyReceipts = new java.util.concurrent.CountDownLatch(32);
+        var blockedKeyReceipts = new java.util.concurrent.CountDownLatch(16);
         var published = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
         org.mockito.stubbing.Answer<List<IngestionOutboxEvent>> claim = invocation -> {
             List<IngestionOutboxEvent> cohort = invocation.getArgument(0);
             String tenant = cohort.getFirst().getTenantId();
             assertEquals(tenant, TenantContext.require());
-            assertEquals(32 * rowsPerKey, cohort.size());
+            assertEquals(16 * rowsPerKey, cohort.size());
             claims.add(tenant);
             tokens.put(tenant, invocation.getArgument(1));
             peakCohorts.accumulateAndGet(activeCohorts.incrementAndGet(), Math::max);
-            if (!tenant.equals("tenant-2")) {
-                firstTwoClaims.countDown();
+            if (Integer.parseInt(tenant.substring("tenant-".length())) < maximumCohorts) {
+                firstWaveClaims.countDown();
                 assertTrue(releaseClaims.await(2, java.util.concurrent.TimeUnit.SECONDS));
             }
             if (tenant.equals("tenant-1")) assertTrue(blockedKeyReceipts.await(2, java.util.concurrent.TimeUnit.SECONDS));
@@ -178,9 +179,9 @@ class IngestionOutboxPublisherTest {
         when(batches.claimOrderedPrefixes(any(), anyString(), anyInt(), any())).thenAnswer(claim);
         when(producer.sendAsync(any(), any(), any())).thenAnswer(invocation -> {
             int index = Integer.parseInt(((String) invocation.getArgument(1)).substring("payload-".length()));
-            assertEquals("tenant-" + index / (32 * rowsPerKey), TenantContext.require());
-            if (index < 32) blockedKeyReceipts.countDown();
-            return index < 32 ? firstReceipt : java.util.concurrent.CompletableFuture.completedFuture(true);
+            assertEquals("tenant-" + index / (16 * rowsPerKey), TenantContext.require());
+            if (index < 16) blockedKeyReceipts.countDown();
+            return index < 16 ? firstReceipt : java.util.concurrent.CompletableFuture.completedFuture(true);
         });
         org.mockito.stubbing.Answer<Integer> finalizeClaim = invocation -> {
             List<IngestionOutboxEvent> cohort = invocation.getArgument(0);
@@ -194,13 +195,13 @@ class IngestionOutboxPublisherTest {
         };
         when(batches.markAcknowledged(any(), anyString(), any())).thenAnswer(finalizeClaim);
         when(batches.markOrderedAcknowledged(any(), anyString(), any())).thenAnswer(finalizeClaim);
-        publisher = new IngestionOutboxPublisher(repository, producer, null, 8, 12, 60_000, 100, 1, 2, 5_000);
+        publisher = new IngestionOutboxPublisher(repository, producer, null, 8, 12, 60_000, 100, 1, 2, 5_000, configuredCohorts);
         publisher.configureBatchService(batches);
         try (var runner = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
             var drain = runner.submit(() -> TenantContext.runAsSystem(publisher::publish));
             try {
-                assertTrue(firstTwoClaims.await(2, java.util.concurrent.TimeUnit.SECONDS));
-                assertEquals(2, claims.size());
+                assertTrue(firstWaveClaims.await(2, java.util.concurrent.TimeUnit.SECONDS));
+                assertEquals(maximumCohorts, claims.size());
                 releaseClaims.countDown();
                 assertTrue(otherCohortsFinalized.await(2, java.util.concurrent.TimeUnit.SECONDS));
                 assertEquals(64 * rowsPerKey, published.size());
@@ -214,9 +215,9 @@ class IngestionOutboxPublisherTest {
                 firstReceipt.complete(true);
             }
         }
-        assertEquals(2, peakCohorts.get());
+        assertEquals(maximumCohorts, peakCohorts.get());
         assertEquals(0, activeCohorts.get());
-        assertEquals(96 * rowsPerKey, published.size());
+        assertEquals(80 * rowsPerKey, published.size());
         verify(repository, org.mockito.Mockito.times(2)).findDueOrderedBatch(any());
     }
 
@@ -226,7 +227,7 @@ class IngestionOutboxPublisherTest {
         var repository = mock(IngestionOutboxRepository.class);
         var producer = mock(KafkaEventProducer.class);
         var batches = mock(com.socp.search.config.service.IngestionOutboxBatchService.class);
-        var rows = java.util.stream.IntStream.range(0, 96).mapToObj(i -> {
+        var rows = java.util.stream.IntStream.range(0, 160).mapToObj(i -> {
             var row = pending("waiting-" + i, "key-" + i, "payload-" + i, null);
             row.setAttempts(11);
             return row;
@@ -240,7 +241,7 @@ class IngestionOutboxPublisherTest {
             return cohort;
         });
         var receipt = new java.util.concurrent.CompletableFuture<Boolean>();
-        var submitted = new java.util.concurrent.CountDownLatch(64);
+        var submitted = new java.util.concurrent.CountDownLatch(128);
         when(producer.sendAsync(any(), any(), any())).thenAnswer(invocation -> {
             submitted.countDown();
             return receipt;
@@ -259,14 +260,14 @@ class IngestionOutboxPublisherTest {
                 if (shutdown) publisher.stop();
                 else Thread.sleep(550);
                 assertFalse(drain.isDone());
-                verify(batches, org.mockito.Mockito.times(2)).claimIndependent(any(), anyString(), anyInt(), any());
+                verify(batches, org.mockito.Mockito.times(4)).claimIndependent(any(), anyString(), anyInt(), any());
                 receipt.complete(true);
                 drain.get(2, java.util.concurrent.TimeUnit.SECONDS);
             } finally { receipt.complete(true); }
         }
-        assertEquals(64, tokens.size());
-        assertTrue(rows.subList(64, 96).stream().noneMatch(row -> tokens.containsKey(row.getId())));
-        verify(batches, org.mockito.Mockito.times(2)).markAcknowledged(any(), anyString(), any());
+        assertEquals(128, tokens.size());
+        assertTrue(rows.subList(128, 160).stream().noneMatch(row -> tokens.containsKey(row.getId())));
+        verify(batches, org.mockito.Mockito.times(4)).markAcknowledged(any(), anyString(), any());
         verify(repository, never()).releaseUnsentClaim(any(), any(), any(), any());
         verify(repository, never()).scheduleRetry(any(), any(), any(), any(), any());
         verify(repository, never()).markDead(any(), any(), any(), any());

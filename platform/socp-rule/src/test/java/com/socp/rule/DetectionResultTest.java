@@ -23,6 +23,69 @@ class DetectionResultTest {
     private static final Instant EVENT_TIME = Instant.parse("2026-09-12T00:00:00Z");
 
     @Test
+    void streamingAuditMatchesTheExistingMapContract() throws Exception {
+        var mapper = com.socp.rule.util.Json.mapper();
+        SecurityEvent event = event("escaped-\"\\\n-事件");
+        Alert candidate = alert("suppressed-\"", event);
+        Alert emitted = alert("emitted-\\", event);
+        for (var position : List.of(DetectionResult.InputPosition.unknown(),
+                new DetectionResult.InputPosition("events-\"", 2, Long.MAX_VALUE))) {
+            for (String scope : List.of("full-state-v1", "affected-keys-v1", "affected-keys-merkle-v1")) {
+                var result = new DetectionResult(event, position, Map.of("rule-\"", "v1\n"),
+                        List.of(new DetectionResult.StateChange("rule-\"", null, "digest-\\", true, scope),
+                                new DetectionResult.StateChange("unchanged", "a", "a", false, scope)),
+                        List.of(candidate, emitted), List.of(emitted),
+                        DetectionResult.SuppressionDecision.window(List.of(candidate, emitted), List.of(emitted)),
+                        "key-\"\\\n");
+                assertEquals(mapper.readTree(mapper.writeValueAsString(result.auditSummary())),
+                        mapper.readTree(result.auditJson()));
+            }
+        }
+        var empty = new DetectionResult(event, null, null, null, null, null, null, null);
+        assertEquals(mapper.readTree(mapper.writeValueAsString(empty.auditSummary())), mapper.readTree(empty.auditJson()));
+    }
+
+    @Test
+    void batchAuditPreservesEveryFieldAcrossVersionChangesAndCacheOverflow() throws Exception {
+        var results = new ArrayList<DetectionResult>();
+        var unchanged = new DetectionResult.StateChange("shared-\"\\", "a", "a", false);
+        for (int i = 0; i < 256; i++) {
+            var event = event("batch-" + i);
+            var changes = List.of(unchanged,
+                    new DetectionResult.StateChange("changed", "before-" + i, "after-" + i, true),
+                    new DetectionResult.StateChange("unique-" + i, "same", "same", false, "affected-keys-merkle-v1"));
+            results.add(new DetectionResult(event, new DetectionResult.InputPosition("events-\"", 0, i),
+                    Map.of("rule-\"", "version-" + i / 32 + "\n"), changes,
+                    List.of(alert("candidate-" + i, event)), List.of(), null, null));
+        }
+        var encoded = DetectionResult.auditJsonBatch(results);
+        for (int i = 0; i < results.size(); i++) assertEquals(results.get(i).auditJson(), encoded.get(i));
+        var large = new DetectionResult(event("large"), null,
+                Map.of("large", "\"".repeat(65536)),
+                List.of(new DetectionResult.StateChange("large-" + "\\".repeat(65536), "a", "a", false)),
+                null, null, null, null);
+        assertEquals(List.of(large.auditJson(), large.auditJson()), DetectionResult.auditJsonBatch(List.of(large, large)));
+        var mixedSizes = List.of(results.getFirst(), large, results.get(255), results.get(1));
+        var mixedEncoded = DetectionResult.auditJsonBatch(mixedSizes);
+        for (int i = 0; i < mixedSizes.size(); i++) assertEquals(mixedSizes.get(i).auditJson(), mixedEncoded.get(i));
+        assertEquals(List.of(), DetectionResult.auditJsonBatch(List.of()));
+        assertThrows(IllegalArgumentException.class,
+                () -> DetectionResult.auditJsonBatch(java.util.Collections.nCopies(257, large)));
+    }
+
+    @Test
+    void tenantValidationRetainsItsExactBoundary() {
+        for (String tenant : List.of("a", "A_1-2", "a".repeat(64))) {
+            var event = new SecurityEvent(EVENT_TIME, "auth", "host", "raw", Map.of("tenant_id", tenant), Severity.INFO);
+            assertEquals(tenant, event.requireTenantId());
+        }
+        for (String tenant : List.of("", "-a", "_a", "a".repeat(65), "a\n", "a.b", "租户")) {
+            var event = new SecurityEvent(EVENT_TIME, "auth", "host", "raw", Map.of("tenant_id", tenant), Severity.INFO);
+            assertThrows(IllegalStateException.class, event::requireTenantId);
+        }
+    }
+
+    @Test
     void normalizesDefaultsAndBuildsAnAuditSafeSummary() {
         SecurityEvent event = event("event-1");
         Map<String, String> ruleVersions = new LinkedHashMap<>();

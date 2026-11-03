@@ -42,6 +42,45 @@ class DetectionEngineLifecycleTest {
     @Mock DetectionStateStore journal;
 
     @Test
+    void statelessCatalogueEditRetainsTenantStateAndMetadataEditStillRecovers() {
+        var threshold = Map.<String, Object>of("id", "state", "name", "State", "type", "threshold",
+                "severity", "HIGH", "status", "ACTIVE", "enabled", true,
+                "keyField", "host", "threshold", 5, "window", "60s");
+        var documents = new java.util.concurrent.atomic.AtomicReference<>(List.of(threshold));
+        when(store.tenant()).thenReturn("tenant-a");
+        when(store.list("tenant-a")).thenAnswer(ignored -> documents.get());
+        var state = new DetectionStateRecovery(journal, null, DetectionStateOwnership.noop());
+        var lifecycle = new DetectionEngineLifecycle(store, new RecentAlertSink(10, null, null),
+                RuleProcessingObserver.NOOP, state);
+        try {
+            var live = lifecycle.engineFor("tenant-a", 0);
+            live.restore(java.util.stream.IntStream.range(0, 2000).mapToObj(n -> new SecurityEvent(
+                    Instant.now(), "source", "host-" + n, "event", Map.of("tenant_id", "tenant-a"), Severity.INFO)).toList());
+            assertEquals(2000, ((Number) live.ruleStats().getFirst().get("stateKeys")).intValue());
+            org.mockito.Mockito.clearInvocations(journal);
+            var pattern = Map.<String, Object>of("id", "pattern", "name", "Pattern", "type", "pattern",
+                    "severity", "LOW", "status", "ACTIVE", "enabled", true);
+            documents.set(List.of(threshold, pattern));
+
+            lifecycle.reload();
+
+            assertSame(live, lifecycle.engineFor("tenant-a", 0));
+            assertEquals(2000, ((Number) live.ruleStats().getFirst().get("stateKeys")).intValue());
+            org.mockito.Mockito.verifyNoInteractions(journal);
+            var renamed = new java.util.LinkedHashMap<String, Object>(threshold);
+            renamed.put("name", "Changed output metadata");
+            documents.set(List.of(renamed, pattern));
+            lifecycle.reload();
+            assertNotSame(live, lifecycle.engineFor("tenant-a", 0),
+                    "state compatibility alone must not retain old alert metadata");
+            org.mockito.Mockito.verify(journal).replayRecentForTenant(
+                    org.mockito.ArgumentMatchers.eq("tenant-a"), any(java.time.Duration.class), any());
+        } finally {
+            lifecycle.stop();
+        }
+    }
+
+    @Test
     void slowTenantRebuildOnlyClosesThatTenantsAdmissionScope() throws Exception {
         CountDownLatch compiling = new CountDownLatch(1);
         CountDownLatch releaseCompile = new CountDownLatch(1);

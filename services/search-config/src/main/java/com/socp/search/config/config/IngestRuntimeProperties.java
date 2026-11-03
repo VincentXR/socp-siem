@@ -29,6 +29,7 @@ public class IngestRuntimeProperties {
 
     public static class Outbox {
         private int deliveryConcurrency = 8;
+        private int cohortConcurrency = 4;
         private int maxAttempts = 12;
         private long retentionMs = 2_592_000_000L;
         private int cleanupBatchSize = 1_000;
@@ -38,6 +39,8 @@ public class IngestRuntimeProperties {
 
         public int getDeliveryConcurrency() { return deliveryConcurrency; }
         public void setDeliveryConcurrency(int deliveryConcurrency) { this.deliveryConcurrency = deliveryConcurrency; }
+        public int getCohortConcurrency() { return cohortConcurrency; }
+        public void setCohortConcurrency(int cohortConcurrency) { this.cohortConcurrency = cohortConcurrency; }
         public int getMaxAttempts() { return maxAttempts; }
         public void setMaxAttempts(int maxAttempts) { this.maxAttempts = maxAttempts; }
         public long getRetentionMs() { return retentionMs; }

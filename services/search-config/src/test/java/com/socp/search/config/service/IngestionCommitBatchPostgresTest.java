@@ -47,6 +47,44 @@ class IngestionCommitBatchPostgresTest extends IngestionCommitBatchPersistenceTe
         registry.add("spring.flyway.password", () -> "batch-test-only");
     }
 
+    @Test void separatePayloadIsCoveredByTheDeploymentTenantPolicy() throws Exception {
+        var event = new com.socp.search.config.domain.SearchEvent("rls-payload", java.time.Instant.now(),
+                "test", "host", "INFO", "private evidence", java.util.Map.of("tenant_id", tenant), java.util.Map.of());
+        org.junit.jupiter.api.Assertions.assertEquals(1, commits.commit(java.util.List.of(event)).created());
+        java.nio.file.Path root = java.nio.file.Path.of("").toAbsolutePath();
+        while (root != null && !java.nio.file.Files.exists(root.resolve("infra/postgres/tenant-rls.sql"))) root = root.getParent();
+        org.junit.jupiter.api.Assertions.assertNotNull(root);
+        jdbc.execute(java.nio.file.Files.readString(root.resolve("infra/postgres/tenant-rls.sql")));
+        jdbc.execute("create role payload_reader nosuperuser nobypassrls");
+        jdbc.execute("grant select on t_ingestion_outbox_payload to payload_reader");
+        jdbc.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) connection -> {
+            try (var statement = connection.createStatement()) {
+                statement.execute("set role payload_reader");
+                try {
+                    for (String scope : java.util.List.of(tenant, "other-tenant", "", "*")) {
+                        try (var setting = connection.prepareStatement("select set_config('socp.tenant_id',?,false)")) {
+                            setting.setString(1, scope);
+                            setting.execute();
+                        }
+                        try (var count = connection.prepareStatement(
+                                "select count(*) from t_ingestion_outbox_payload where tenant_id=?")) {
+                            count.setString(1, tenant);
+                            try (var rows = count.executeQuery()) {
+                                rows.next();
+                                org.junit.jupiter.api.Assertions.assertEquals(
+                                        scope.equals(tenant) || scope.equals("*") ? 1 : 0, rows.getInt(1));
+                            }
+                        }
+                    }
+                } finally {
+                    statement.execute("reset role");
+                    statement.execute("reset socp.tenant_id");
+                }
+            }
+            return null;
+        });
+    }
+
     @Test void postgresBatchesInsertOnTheServerAndRetainSameKeyEnqueueOrder() {
         jdbc.execute("create extension if not exists pg_stat_statements");
         jdbc.execute("select pg_stat_statements_reset()");
@@ -55,10 +93,10 @@ class IngestionCommitBatchPostgresTest extends IngestionCommitBatchPersistenceTe
                         java.time.Instant.parse("2026-10-29T00:00:00Z"), "test", "shared-host", "INFO",
                         "event " + index, java.util.Map.of("tenant_id", tenant), java.util.Map.of())).toList();
         org.junit.jupiter.api.Assertions.assertEquals(128, commits.commit(events).created());
-        for (String table : java.util.List.of("t_search_event", "t_ingestion_outbox")) {
+        for (String table : java.util.List.of("t_search_event", "t_ingestion_outbox", "t_ingestion_outbox_payload")) {
             org.junit.jupiter.api.Assertions.assertEquals(4L, jdbc.queryForObject(
                     "select sum(calls)::bigint from pg_stat_statements where query like ?", Long.class,
-                    "insert into " + table + "%"), "32-row JDBC batches must reach PostgreSQL as multi-row inserts");
+                    "insert into " + table + " (%"), "32-row JDBC batches must reach PostgreSQL as multi-row inserts");
         }
         org.junit.jupiter.api.Assertions.assertEquals(events.stream()
                         .map(com.socp.search.config.domain.SearchEvent::eventId).toList(),

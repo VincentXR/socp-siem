@@ -61,31 +61,33 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
         for (DetectionStateSnapshot snapshot : snapshots) validateInputTopic(snapshot);
         assertOwnerFences(snapshots);
         List<DetectionStateSnapshotEntity> rows = new ArrayList<>(snapshots.size());
+        java.util.Set<String> existing = new java.util.HashSet<>();
         for (DetectionStateSnapshot snapshot : snapshots) {
             if (snapshot == null) throw new IllegalArgumentException("snapshot is required");
-            DetectionStateSnapshotEntity row = repository
-                    .findByTenantIdAndRuleIdAndShardIdAndInputTopic(snapshot.tenantId(), snapshot.ruleId(), snapshot.shardId(), inputTopic)
-                    .orElseGet(() -> {
-                        DetectionStateSnapshotEntity created = new DetectionStateSnapshotEntity();
-                        created.setId(UUID.randomUUID().toString());
-                        created.setTenantId(snapshot.tenantId());
-                        created.setRuleId(snapshot.ruleId());
-                        created.setShardId(snapshot.shardId());
-                        return created;
-                    });
-            if (!DetectionCheckpointPolicy.canReplace(row.getSnapshotTimestamp(),
-                    decodeOffsets(row.getPartitionOffsetsJson()), snapshot)) return;
+            var previous = repository.findMetadataByTenantIdAndRuleIdAndShardIdAndInputTopic(
+                    snapshot.tenantId(), snapshot.ruleId(), snapshot.shardId(), inputTopic);
+            if (previous.isPresent() && !DetectionCheckpointPolicy.canReplace(previous.get().snapshotTimestamp(),
+                    decodeOffsets(previous.get().partitionOffsetsJson()), snapshot)) return;
+            DetectionStateSnapshotEntity row = new DetectionStateSnapshotEntity();
+            row.setId(previous.map(com.socp.detect.web.persistence.entity.DetectionCheckpointMetadata::id)
+                    .orElseGet(() -> UUID.randomUUID().toString()));
+            row.setTenantId(snapshot.tenantId());
+            row.setRuleId(snapshot.ruleId());
+            row.setShardId(snapshot.shardId());
+            if (previous.isPresent()) {
+                existing.add(row.getId());
+                row.setRowVersion(previous.get().rowVersion());
+            }
             rows.add(row);
         }
-        // Validate every row before mutating any managed entity: returning
-        // early after a mutation would still let Hibernate dirty checking
-        // flush half a generation at transaction completion.
+        // Validate every progress vector before writing any part of this generation.
+        // The metadata query avoids hydrating and retaining the previous large payload.
         for (int index = 0; index < snapshots.size(); index++) {
             DetectionStateSnapshot snapshot = snapshots.get(index);
             DetectionStateSnapshotEntity row = rows.get(index);
             row.setRuleVersion(snapshot.ruleVersion());
             row.setLastProcessedOffset(snapshot.lastProcessedOffset());
-            row.setSerializedState(Base64.getEncoder().encodeToString(snapshot.serializedState()));
+            row.setSerializedState(snapshot.base64State());
             row.setSnapshotTimestamp(snapshot.snapshotTimestamp());
             row.setInputTopic(snapshot.inputTopic() == null ? inputTopic : snapshot.inputTopic());
             try {
@@ -97,7 +99,14 @@ public class JpaDetectionStateSnapshotStore implements DetectionStateSnapshotSto
                 throw new IllegalStateException("invalid detection checkpoint offsets", failure);
             }
         }
-        if (!rows.isEmpty()) repository.saveAllAndFlush(rows);
+        for (DetectionStateSnapshotEntity row : rows) {
+            if (existing.contains(row.getId()) && repository.replaceByTenantIdAndId(row.getTenantId(), row) != 1) {
+                throw new org.springframework.orm.ObjectOptimisticLockingFailureException(
+                        DetectionStateSnapshotEntity.class, row.getId());
+            }
+        }
+        var inserted = rows.stream().filter(row -> !existing.contains(row.getId())).toList();
+        if (!inserted.isEmpty()) repository.saveAllAndFlush(inserted);
     }
 
     @Override

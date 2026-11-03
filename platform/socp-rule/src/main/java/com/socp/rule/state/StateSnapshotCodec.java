@@ -15,6 +15,10 @@ public final class StateSnapshotCodec {
     private static final long MAX_CACHED_EVENT_BYTES = 8L * 1024 * 1024;
     private static final Map<EventIdentity, EncodedEvent> EVENTS = new LinkedHashMap<>(16, 0.75f, true);
     private static long eventCacheBytes;
+    private static final int MAX_CACHED_MAP_KEYS = 256;
+    private static final long MAX_CACHED_MAP_KEY_BYTES = 64L * 1024;
+    private static final Map<String, byte[]> MAP_KEY_DIGESTS = new LinkedHashMap<>(16, 0.75f, true);
+    private static long mapKeyCacheBytes;
 
     private record EncodedEvent(CachedEvidence json, long bytes) { }
 
@@ -32,6 +36,9 @@ public final class StateSnapshotCodec {
         private final Map<String, Object> fields;
         private final String json;
         private final byte[] fingerprint;
+        // Guarded by EVENTS; JSON and evidence fields remain immutable.
+        private boolean cached;
+        private int pins;
         private CachedEvidence(Map<String, Object> fields, String json) {
             this.fields = java.util.Collections.unmodifiableMap(fields);
             this.json = json;
@@ -98,7 +105,7 @@ public final class StateSnapshotCodec {
             digest.update((byte) 'M');
             var sorted = new java.util.TreeMap<String, Object>();
             map.forEach((key, item) -> sorted.put(String.valueOf(key), item));
-            sorted.forEach((key, item) -> { digest.update(fingerprint(key)); digest.update(fingerprint(item)); });
+            sorted.forEach((key, item) -> { digest.update(mapKeyFingerprint(key)); digest.update(fingerprint(item)); });
         } else if (value instanceof java.util.Collection<?> items) {
             digest.update((byte) 'L');
             items.forEach(item -> digest.update(fingerprint(item)));
@@ -109,13 +116,51 @@ public final class StateSnapshotCodec {
         return digest.digest();
     }
 
+    /** Repeated field names have the same scalar digest across immutable evidence trees. */
+    private static byte[] mapKeyFingerprint(String key) {
+        if (key.length() > 128) return fingerprint(key);
+        synchronized (MAP_KEY_DIGESTS) {
+            byte[] cached = MAP_KEY_DIGESTS.get(key);
+            if (cached != null) return cached;
+        }
+        byte[] encoded = fingerprint(key);
+        // Account conservatively for the key, digest array and map entry. The
+        // cache holds field names only, never event values or mutable state.
+        long bytes = 256L + 4L * key.length();
+        synchronized (MAP_KEY_DIGESTS) {
+            byte[] cached = MAP_KEY_DIGESTS.get(key);
+            if (cached != null) return cached;
+            var oldest = MAP_KEY_DIGESTS.entrySet().iterator();
+            while (MAP_KEY_DIGESTS.size() >= MAX_CACHED_MAP_KEYS
+                    || mapKeyCacheBytes + bytes > MAX_CACHED_MAP_KEY_BYTES) {
+                var candidate = oldest.next();
+                mapKeyCacheBytes -= 256L + 4L * candidate.getKey().length();
+                oldest.remove();
+            }
+            MAP_KEY_DIGESTS.put(key, encoded);
+            mapKeyCacheBytes += bytes;
+        }
+        return encoded;
+    }
+
+    static long cachedMapKeyBytes() { synchronized (MAP_KEY_DIGESTS) { return mapKeyCacheBytes; } }
+    static int cachedMapKeys() { synchronized (MAP_KEY_DIGESTS) { return MAP_KEY_DIGESTS.size(); } }
+
     /** Conservative retained-tree estimate, including shared evidence for the undo budget. */
     static long retainedBytes(Object value) {
+        return retainedBytes(value, null);
+    }
+
+    static long retainedBytes(Object value, StateUndoBudget sharedEvidence) {
+        if (value instanceof CachedEvidence evidence && sharedEvidence != null) {
+            return sharedEvidence.retain(evidence, 1_024L + 4L * evidence.json.length());
+        }
         if (value instanceof CachedEvidence evidence) return 1_024L + 4L * evidence.json.length();
         if (value instanceof Map<?, ?> map) return 128L + map.entrySet().stream()
-                .mapToLong(entry -> 64L + retainedBytes(entry.getKey()) + retainedBytes(entry.getValue())).sum();
+                .mapToLong(entry -> 64L + retainedBytes(entry.getKey(), sharedEvidence)
+                        + retainedBytes(entry.getValue(), sharedEvidence)).sum();
         if (value instanceof java.util.Collection<?> items) return 32L + items.stream()
-                .mapToLong(item -> 8L + retainedBytes(item)).sum();
+                .mapToLong(item -> 8L + retainedBytes(item, sharedEvidence)).sum();
         return value instanceof String text ? 40L + 2L * text.length() : 24L;
     }
 
@@ -156,12 +201,21 @@ public final class StateSnapshotCodec {
             EncodedEvent cached = EVENTS.get(identity);
             if (cached != null) return cached.json();
             if (encoded.bytes() <= MAX_CACHED_EVENT_BYTES) {
-                EVENTS.put(identity, encoded);
-                eventCacheBytes += encoded.bytes();
                 var oldest = EVENTS.entrySet().iterator();
-                while (EVENTS.size() > MAX_CACHED_EVENTS || eventCacheBytes > MAX_CACHED_EVENT_BYTES) {
-                    eventCacheBytes -= oldest.next().getValue().bytes();
+                while ((EVENTS.size() >= MAX_CACHED_EVENTS || eventCacheBytes + encoded.bytes() > MAX_CACHED_EVENT_BYTES)
+                        && oldest.hasNext()) {
+                    var candidate = oldest.next().getValue();
+                    if (candidate.json().pins != 0) continue;
+                    candidate.json().cached = false;
+                    eventCacheBytes -= candidate.bytes();
                     oldest.remove();
+                }
+                // Cache saturation cannot evict undo-owned evidence or expand
+                // either bound. The caller may use an uncached encoding instead.
+                if (EVENTS.size() < MAX_CACHED_EVENTS && eventCacheBytes + encoded.bytes() <= MAX_CACHED_EVENT_BYTES) {
+                    encoded.json().cached = true;
+                    EVENTS.put(identity, encoded);
+                    eventCacheBytes += encoded.bytes();
                 }
             }
         }
@@ -170,6 +224,23 @@ public final class StateSnapshotCodec {
 
     static long cachedEventBytes() { synchronized (EVENTS) { return eventCacheBytes; } }
     static int cachedEvents() { synchronized (EVENTS) { return EVENTS.size(); } }
+
+    static boolean pinEvidence(Object value) {
+        synchronized (EVENTS) {
+            CachedEvidence evidence = (CachedEvidence) value;
+            if (!evidence.cached) return false;
+            evidence.pins++;
+            return true;
+        }
+    }
+
+    static void releaseEvidence(Map<Object, Boolean> retained) {
+        synchronized (EVENTS) {
+            retained.forEach((value, pinned) -> {
+                if (pinned) ((CachedEvidence) value).pins--;
+            });
+        }
+    }
 
     @SuppressWarnings("unchecked")
     public static SecurityEvent event(Object value) {

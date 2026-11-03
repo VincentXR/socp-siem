@@ -412,8 +412,8 @@ public class DetectionEngineLifecycle {
     }
 
     /**
-     * Build this tenant's replacement engines, restore them from durable state,
-     * and only then swap them in.
+     * Compile this tenant's catalogue, retain unchanged state when possible,
+     * otherwise recover replacement engines before swapping them in.
      *
      * <p>Compilation happens outside the lifecycle lock so a slow rule store does
      * not stall ingestion. Restoration happens under the write lock - after all
@@ -442,6 +442,18 @@ public class DetectionEngineLifecycle {
                     if (live == null || live.awaitIdle(reloadDrainTimeoutMs)) continue;
                     throw new IllegalStateException("detection engine did not drain before"
                             + " hot reload key=" + key + " budgetMs=" + reloadDrainTimeoutMs);
+                }
+                // Decide for every shard before changing any engine. Stateless
+                // edits/removals retain the exact live state and checkpoint
+                // boundary, avoiding a second full tenant state in memory.
+                boolean reuse = keys.stream().allMatch(key -> engines.get(key) != null
+                        && engines.get(key).canReloadWithoutStateRecovery(replacements.get(key)));
+                if (reuse) {
+                    for (String key : keys) {
+                        engines.get(key).reloadWithoutStateRecovery(replacements.get(key));
+                        engineLastAccess.put(key, System.currentTimeMillis());
+                    }
+                    return;
                 }
                 for (int shard = 0; shard < keys.size(); shard++) {
                     state.restoreState(resolvedTenant, replacements.get(keys.get(shard)),

@@ -23,7 +23,8 @@ import java.time.Instant;
 @Entity
 @Table(name = "t_detection_alert_outbox", indexes = {
         @Index(name = "idx_detection_alert_outbox_due", columnList = "status,next_attempt_at,created_at"),
-        @Index(name = "idx_detection_alert_outbox_updated", columnList = "updated_at")
+        @Index(name = "idx_detection_alert_outbox_updated", columnList = "status,updated_at"),
+        @Index(name = "idx_detection_alert_outbox_status_created", columnList = "status,created_at")
 })
 public class DetectionAlertOutboxEntity {
 

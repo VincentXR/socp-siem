@@ -236,7 +236,7 @@ class KafkaEventConsumerTest {
         });
         given(engine.ingestOrderedBatchFromKafkaAndAwait(any(), any())).willAnswer(call -> {
             List<DetectEngineService.KafkaInput> inputs = call.getArgument(0);
-            assertTrue(inputs.size() <= 64, "serial engine generation admission remains bounded");
+            assertTrue(inputs.size() <= 128, "serial engine generation admission retains the polled-prefix bound");
             submissions.add(inputs.size());
             return inputs.stream().map(ignored -> CompletableFuture.<Void>completedFuture(null)).toList();
         });
@@ -249,7 +249,7 @@ class KafkaEventConsumerTest {
             ThreadPoolExecutor lane = ReflectionTestUtils.invokeMethod(consumer, "lane", 0);
             lane.submit(() -> {}).get(3, TimeUnit.SECONDS);
             assertEquals(List.of(64, 64, 2), claims);
-            assertEquals(claims, submissions);
+            assertEquals(List.of(128, 2), submissions);
             assertEquals(130, completionsOf(consumer).size());
             assertEquals(0L, ((AtomicLong) ReflectionTestUtils.getField(consumer, "totalPendingBytes")).get());
             verify(stateStore, never()).claim(any(), anyString(), any(), any(), anyString());

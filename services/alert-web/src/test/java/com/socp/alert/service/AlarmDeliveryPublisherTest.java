@@ -20,11 +20,13 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -49,7 +51,7 @@ class AlarmDeliveryPublisherTest {
         try {
             AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
             delivery.setTraceparent(parent);
-            given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+            given(repository.findDueBatch(
                     eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
             given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString()))
                     .willReturn(1);
@@ -76,6 +78,41 @@ class AlarmDeliveryPublisherTest {
     @Mock private SoarClient soarClient;
     private AlarmDeliveryPublisher publisher;
 
+    @Test
+    void deliveryTriggersDoNotRescanBacklogHistory() {
+        var metrics = org.mockito.Mockito.mock(AlertPerformanceMetrics.class);
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient,
+                metrics, 1, 12, 86_400_000L);
+        for (int i = 0; i < 20; i++) publisher.publish();
+        verify(repository, never()).countByStatus(anyString());
+        verify(repository, never()).findOldestCreatedAtByStatus(anyString());
+        verify(repository, never()).findOldestUpdatedAtByStatus(anyString());
+        verify(metrics, org.mockito.Mockito.times(20)).outboxDrain(eq("alarm_delivery"), eq(0),
+                org.mockito.ArgumentMatchers.anyLong());
+    }
+
+    @Test
+    void scheduledBacklogUsesDurableCountsAndRetainsExplicitSystemScope() throws Exception {
+        var metrics = org.mockito.Mockito.mock(AlertPerformanceMetrics.class);
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient,
+                metrics, 1, 12, 86_400_000L);
+        Instant pending = Instant.parse("2026-09-01T00:00:00Z");
+        Instant dead = pending.minusSeconds(10);
+        given(repository.countByStatus("PENDING")).willReturn(17L);
+        given(repository.countByStatus("DEAD")).willReturn(5L);
+        given(repository.findOldestCreatedAtByStatus("PENDING")).willReturn(pending);
+        given(repository.findOldestUpdatedAtByStatus("DEAD")).willReturn(dead);
+        publisher.refreshBacklog();
+        verify(metrics).outboxBacklog("alarm_delivery", 17L, pending, 5L, dead);
+        var job = AlarmDeliveryPublisher.class.getMethod("refreshBacklog");
+        org.junit.jupiter.api.Assertions.assertNotNull(job.getAnnotation(
+                com.socp.platform.tenant.persistence.TenantSystemJob.class));
+        assertEquals(30_000L, job.getAnnotation(org.springframework.scheduling.annotation.Scheduled.class).fixedDelay());
+        given(repository.countByStatus("PENDING")).willThrow(new IllegalStateException("database unavailable"));
+        assertDoesNotThrow(publisher::refreshBacklog);
+        verify(metrics, org.mockito.Mockito.times(1)).outboxBacklog("alarm_delivery", 17L, pending, 5L, dead);
+    }
+
     @AfterEach
     void stop() {
         TenantContext.clear();
@@ -85,7 +122,7 @@ class AlarmDeliveryPublisherTest {
     @Test
     void enrichmentFailureRetainsTheDurableJobForRetry() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.ENRICHMENT);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
         AlarmEnrichmentService enrichment = org.mockito.Mockito.mock(AlarmEnrichmentService.class);
@@ -100,7 +137,7 @@ class AlarmDeliveryPublisherTest {
     @Test
     void acknowledgedDeliveryIsMarkedDeliveredUnderItsTenant() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
         given(notifyClient.notifyAlert(delivery.getPayload())).willAnswer(invocation -> {
@@ -134,7 +171,7 @@ class AlarmDeliveryPublisherTest {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
         AtomicReference<String> stateTenant = new AtomicReference<>();
         AtomicBoolean systemScope = new AtomicBoolean(true);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
         if (acknowledgementFails) {
@@ -173,7 +210,7 @@ class AlarmDeliveryPublisherTest {
         AlarmDelivery notify = delivery(AlarmDeliveryDestination.NOTIFY);
         AlarmDelivery incident = delivery(AlarmDeliveryDestination.INCIDENT);
         incident.setId("delivery-incident");
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(notify, incident));
         given(repository.claim(any(), any(), anyInt(), anyInt(), anyString())).willReturn(1);
         given(notifyClient.notifyAlert(notify.getPayload())).willReturn(new ServiceCall(
@@ -190,7 +227,7 @@ class AlarmDeliveryPublisherTest {
     @Test
     void permanentNotificationFailureIsDeadLetteredWithoutRetry() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
         given(notifyClient.notifyAlert(delivery.getPayload())).willReturn(new ServiceCall(
@@ -208,7 +245,7 @@ class AlarmDeliveryPublisherTest {
     void invalidClickHousePayloadIsDeadLetteredWithoutCallingReporter() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.CLICKHOUSE);
         delivery.setPayload("not-json");
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
         publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient);
@@ -223,7 +260,7 @@ class AlarmDeliveryPublisherTest {
     @Test
     void retryLimitMovesFailedDeliveryToDead() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), eq(1), anyInt(), anyString())).willReturn(1);
         given(notifyClient.notifyAlert(delivery.getPayload())).willReturn(new ServiceCall(
@@ -245,7 +282,7 @@ class AlarmDeliveryPublisherTest {
             maintenanceScope.set(TenantContext.isSystemScope());
             return 0;
         });
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willAnswer(invocation -> {
             systemScope.complete(maintenanceScope.get() && TenantContext.isSystemScope());
             return List.of();
@@ -265,7 +302,7 @@ class AlarmDeliveryPublisherTest {
     void asyncDeliveryBindsEventTenantAndDoesNotDeadlockSingleWorker() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
         AtomicBoolean tenantScope = new AtomicBoolean();
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willAnswer(invocation -> {
             tenantScope.set("tenant-b".equals(TenantContext.get()) && !TenantContext.isSystemScope());
@@ -285,7 +322,7 @@ class AlarmDeliveryPublisherTest {
     @Test
     void clickHouseDeliveryUsesDurableReporterBeforeAcknowledging() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.CLICKHOUSE);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
         given(ckReporter.reportAlarmAndAwait(any(Alarm.class))).willReturn(true);
@@ -301,7 +338,7 @@ class AlarmDeliveryPublisherTest {
     @Test
     void clickHouseRejectionSchedulesARecoverableRetry() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.CLICKHOUSE);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
         given(ckReporter.reportAlarmAndAwait(any(Alarm.class))).willReturn(false);
@@ -317,7 +354,7 @@ class AlarmDeliveryPublisherTest {
     @Test
     void lostClaimDoesNotInvokeAnyDownstreamConnector() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.SOAR);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(0);
         publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient);
@@ -331,7 +368,7 @@ class AlarmDeliveryPublisherTest {
     @Test
     void nullDownstreamResponseIsRetriedWithDestinationContext() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.SOAR);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
         given(soarClient.evaluate(delivery.getPayload())).willReturn(null);
@@ -346,7 +383,7 @@ class AlarmDeliveryPublisherTest {
     @Test
     void stateConflictAfterSuccessfulCallDoesNotScheduleDuplicateRetry() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.INCIDENT);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class))).willReturn(List.of(delivery));
         given(repository.claim(eq(delivery.getId()), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
         given(incidentClient.createFromAlarm(delivery.getPayload())).willReturn(ok());
@@ -376,7 +413,7 @@ class AlarmDeliveryPublisherTest {
     void drainsMoreThanThreeDeliveryBatchesWithinOneWindow() {
         AlarmDelivery delivery = delivery(AlarmDeliveryDestination.NOTIFY);
         List<AlarmDelivery> fullBatch = java.util.Collections.nCopies(100, delivery);
-        given(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+        given(repository.findDueBatch(
                 eq("PENDING"), any(Instant.class)))
                 .willReturn(fullBatch, fullBatch, fullBatch, fullBatch, List.of());
         publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient,
@@ -385,8 +422,77 @@ class AlarmDeliveryPublisherTest {
         publisher.publish();
 
         verify(repository, org.mockito.Mockito.times(5))
-                .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(
+                .findDueBatch(
                         eq("PENDING"), any(Instant.class));
+    }
+
+    @Test
+    void productionCohortsKeepTenantBoundariesAndCommitReceiptsAfterDispatch() {
+        var batchService = org.mockito.Mockito.spy(new AlarmDeliveryBatchService(repository));
+        var properties = new com.socp.alert.config.AlertDeliveryProperties();
+        properties.setConcurrency(2);
+        var first = delivery(AlarmDeliveryDestination.NOTIFY);
+        var second = delivery(AlarmDeliveryDestination.NOTIFY); second.setId("second");
+        var other = delivery(AlarmDeliveryDestination.NOTIFY); other.setId("other"); other.setTenantId("tenant-a");
+        other.setPayload("{\"id\":\"other\",\"tenantId\":\"tenant-a\"}");
+        given(repository.findDueBatch(eq("PENDING"), any(Instant.class))).willReturn(List.of(first, second, other));
+        given(repository.claimForTenant(anyString(), anyString(), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
+        given(repository.markDeliveredForTenant(anyString(), anyString(), any(Instant.class), anyString())).willReturn(1);
+        var tenants = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        given(notifyClient.notifyAlert(anyString())).willAnswer(call -> { tenants.add(TenantContext.require()); return ok(); });
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient,
+                null, properties, batchService);
+        publisher.publish();
+        assertEquals(2, tenants.stream().filter("tenant-b"::equals).count());
+        assertEquals(1, tenants.stream().filter("tenant-a"::equals).count());
+        verify(batchService, org.mockito.Mockito.times(3)).claim(org.mockito.ArgumentMatchers.anyList(), eq(12));
+        verify(batchService, org.mockito.Mockito.times(3)).acknowledge(org.mockito.ArgumentMatchers.anyList(), eq(12));
+        verify(repository, org.mockito.Mockito.times(3)).markDeliveredForTenant(anyString(), anyString(), any(Instant.class), anyString());
+        verify(repository, never()).claim(anyString(), any(Instant.class), anyInt(), anyInt(), anyString());
+    }
+
+    @Test
+    void failedCohortClaimCannotSendAnyDownstreamRequest() {
+        var batchService = org.mockito.Mockito.mock(AlarmDeliveryBatchService.class);
+        given(repository.findDueBatch(eq("PENDING"), any(Instant.class)))
+                .willReturn(List.of(delivery(AlarmDeliveryDestination.NOTIFY)));
+        given(batchService.claim(org.mockito.ArgumentMatchers.anyList(), eq(12))).willThrow(new IllegalStateException("database unavailable"));
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient,
+                null, new com.socp.alert.config.AlertDeliveryProperties(), batchService);
+        publisher.publish();
+        verify(notifyClient, never()).notifyAlert(anyString());
+        verify(batchService, never()).acknowledge(org.mockito.ArgumentMatchers.anyList(), anyInt());
+    }
+
+    @Test
+    void slowCohortDoesNotBlockAnIndependentDeliveryCohort() throws Exception {
+        var batchService = new AlarmDeliveryBatchService(repository);
+        var properties = new com.socp.alert.config.AlertDeliveryProperties(); properties.setConcurrency(4);
+        var slow1 = delivery(AlarmDeliveryDestination.NOTIFY); slow1.setId("slow-1");
+        var slow2 = delivery(AlarmDeliveryDestination.NOTIFY); slow2.setId("slow-2");
+        var fast1 = delivery(AlarmDeliveryDestination.SOAR); fast1.setId("fast-1");
+        var fast2 = delivery(AlarmDeliveryDestination.SOAR); fast2.setId("fast-2");
+        given(repository.findDueBatch(eq("PENDING"), any(Instant.class))).willReturn(List.of(slow1, slow2, fast1, fast2));
+        given(repository.claimForTenant(anyString(), anyString(), any(Instant.class), anyInt(), anyInt(), anyString())).willReturn(1);
+        var slowEntered = new java.util.concurrent.CountDownLatch(2);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var fastAcknowledged = new java.util.concurrent.CountDownLatch(2);
+        given(notifyClient.notifyAlert(anyString())).willAnswer(call -> {
+            slowEntered.countDown(); assertTrue(release.await(5, TimeUnit.SECONDS)); return ok();
+        });
+        given(soarClient.evaluate(anyString())).willReturn(ok());
+        given(repository.markDeliveredForTenant(anyString(), anyString(), any(Instant.class), anyString())).willAnswer(call -> {
+            if (call.<String>getArgument(1).startsWith("fast")) fastAcknowledged.countDown(); return 1;
+        });
+        publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient,
+                null, properties, batchService);
+        var drain = java.util.concurrent.CompletableFuture.runAsync(publisher::publish);
+        try {
+            assertTrue(slowEntered.await(2, TimeUnit.SECONDS));
+            assertTrue(fastAcknowledged.await(2, TimeUnit.SECONDS));
+            assertFalse(drain.isDone());
+        } finally { release.countDown(); }
+        drain.get(5, TimeUnit.SECONDS);
     }
 
     private static AlarmDelivery delivery(AlarmDeliveryDestination destination) {
@@ -415,7 +521,7 @@ class AlarmDeliveryPublisherTest {
         publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient, null, 1, 2, 60000);
         AlarmDelivery row = delivery(AlarmDeliveryDestination.NOTIFY);
         row.setAttempts("dead".equals(outcome) ? 1 : 0);
-        org.mockito.Mockito.when(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any())).thenReturn(List.of(row));
+        org.mockito.Mockito.when(repository.findDueBatch(eq("PENDING"), any())).thenReturn(List.of(row));
         org.mockito.Mockito.when(repository.claim(eq(row.getId()), any(), eq(2), eq(row.getAttempts()), anyString())).thenReturn(1);
         org.mockito.Mockito.when(notifyClient.notifyAlert(any())).thenReturn("success".equals(outcome) ? ok() : null);
         TenantContext.runAsSystem(publisher::publish);
@@ -435,7 +541,7 @@ class AlarmDeliveryPublisherTest {
         publisher = new AlarmDeliveryPublisher(repository, ckReporter, notifyClient, incidentClient, soarClient, null, 1, 2, 60000);
         var entered = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);
-        org.mockito.Mockito.when(repository.findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any())).thenAnswer(invocation -> {
+        org.mockito.Mockito.when(repository.findDueBatch(eq("PENDING"), any())).thenAnswer(invocation -> {
             entered.countDown();
             if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new AssertionError("release timed out");
             return List.of();
@@ -445,7 +551,7 @@ class AlarmDeliveryPublisherTest {
             org.junit.jupiter.api.Assertions.assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
             java.util.concurrent.CompletableFuture.runAsync(() -> TenantContext.runAsSystem(publisher::publish))
                     .get(1, java.util.concurrent.TimeUnit.SECONDS);
-            verify(repository).findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc(eq("PENDING"), any());
+            verify(repository).findDueBatch(eq("PENDING"), any());
         } finally { release.countDown(); }
         first.get(5, java.util.concurrent.TimeUnit.SECONDS);
     }

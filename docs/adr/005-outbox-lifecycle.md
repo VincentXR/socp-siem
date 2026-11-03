@@ -40,12 +40,16 @@ flight. Delivery remains at least once and requires downstream idempotency.
 Ingestion, Alert event, and Alert delivery publishers use
 `OutboxDeliveryExecutor` to acquire capacity before invoking the claim
 callback. Each process permits one drain per publisher. Alert publishers admit
-at most the configured concurrency (1–32). Ingestion admits at most two
-same-tenant cohorts, each with at most 32 keys, 16 rows per key and 200 rows,
+at most the configured concurrency (1–32). Ingestion admits 1–4 same-tenant cohorts (default 4, configured by
+`SOCP_INGEST_OUTBOX_COHORT_CONCURRENCY`), each with at most 32 keys, 16 rows per key and 200 rows,
 while producer submission retains its configured concurrency bound. Repeated
 keys share a durable prefix lease and await each preceding Kafka receipt before
 sending the next row; completion remains token-fenced. See the
 [ordered ingestion contract](../ingestion-parsing.md#ordered-outbox-batches).
+Alarm delivery selects independent jobs by eligibility time, then creation time
+and ID. Retrying an old job into the future must not cause a creation-order
+scan through delayed work before newer eligible jobs. Exhaustion preserves
+oldest-update order while filtering eligible attempt counts before row locking.
 Publishers stop admitting work at the drain deadline.
 Already admitted work is joined and may finish after that deadline within its
 transport timeout; the deadline is not a hard database/I/O timeout. Rule-change
@@ -81,6 +85,26 @@ and starting upgraded writers. Mixed old/new publishers are unsupported:
 old writers do not check tokens. Existing `PROCESSING` rows have null tokens
 and remain eligible for normal stale recovery; migration does not reset their
 attempts, payload, or confirmed delivery history.
+
+Search V26 separates new ingestion payloads into `t_ingestion_outbox_payload`.
+Admission inserts the canonical event, lease row and payload in one transaction.
+Existing payloads stay in their original rows and are read as a fallback, so the
+upgrade does not copy or rewrite retained history. Deleting an eligible terminal
+receipt cascades to its payload; retry, recovery and claim updates leave it intact.
+The payload's tenant is bound by a composite foreign key to its owning receipt
+and is discovered by the existing PostgreSQL tenant-RLS policy script. Reapply
+that script after migration. Building the parent identity index requires disk
+headroom and a migration lock window even though payload history is not rewritten.
+Selection loads payloads only after bounding the selected identities. Native
+single-statement lifecycle updates retain status, attempt and token predicates
+under the row lock; multi-table HQL ID preselection is unsuitable for this CAS.
+
+Stop old Search writers and publishers before enabling V26 writers. Old readers
+cannot read the separate payload of a new receipt. Before an application downgrade,
+stop all Search writers and copy separate payloads back into the matching legacy
+`payload` columns in bounded transactions, then verify equality for every separate
+payload. Preserve both tables until validation succeeds. No automatic destructive
+downgrade or payload cleanup is performed by the migration.
 
 ## Rationale
 
@@ -145,3 +169,19 @@ This retention rule does not apply to Detection routing transport evidence:
 `socp.detect.routing.dead-retention` (default 90 days) in bounded batches.
 Those tables do not expose the requeue/discard APIs listed above. Do not use
 their retention or replay behavior as a substitute for an alert hand-off receipt.
+
+Alarm delivery reserves an entire cohort before claiming it. A cohort contains
+one tenant. At most two cohorts run concurrently, each reserving half the
+configured delivery concurrency (rounded down, minimum one). The default 8 slots
+therefore allow two 4-row cohorts; a slow cohort cannot monopolize all slots.
+Total reservations never exceed the configured maximum of 32. One transaction
+conditionally claims its rows in ID order; broker/HTTP,
+enrichment and reporting work runs after that commit. A second transaction
+records the independent success/retry/dead outcomes with tenant, ID and claim-token
+fences. Lost-token outcomes are counted as stale without overwriting the new owner.
+The executor holds all cohort permits through durable finalization and joins every
+started task on failure. It admits no new cohort after the drain deadline;
+already admitted work finishes within its transport timeout. A failed claim sends
+nothing, and an uncertain or failed finalization leaves PROCESSING rows for the
+existing stale-claim recovery and replay-safe downstream effects. Per-row failure
+reasons remain in storage; retry/dead lifecycle metrics count the committed rows.

@@ -1,14 +1,15 @@
--- PostgreSQL-only, read-only plan check for the bounded ingestion outbox poll.
+-- PostgreSQL-only, read-only plan check for the outbox due-index access path.
+-- This is not the ordered selector or authority to claim/publish these rows.
 -- Run against the search-config database after representative data is loaded:
 --   psql "$SOCP_SEARCH_PG_DSN" -f build/ingestion-outbox-plan.sql
--- The migration V6 index is intentionally aligned with this predicate/order.
+-- Match V21's partial predicate as well as the current due ordering.
 -- Keep ANALYZE enabled so the result includes actual rows and buffer usage.
 EXPLAIN (ANALYZE, BUFFERS, VERBOSE)
 SELECT *
   FROM t_ingestion_outbox
- WHERE status = 'PENDING'
+ WHERE coalesce(status,'') <> 'PUBLISHED' AND status = 'PENDING'
    AND next_attempt_at <= CURRENT_TIMESTAMP
- ORDER BY next_attempt_at ASC, created_at ASC
+ ORDER BY next_attempt_at ASC, sequence_no ASC, id ASC
  LIMIT 200;
 
 -- Confirm the intended index is available to the planner without changing

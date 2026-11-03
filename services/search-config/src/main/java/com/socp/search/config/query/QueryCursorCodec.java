@@ -15,7 +15,7 @@ import java.util.List;
 
 /** Opaque, integrity-checked cursor bound to the fixed sort contract and query fingerprint. */
 public final class QueryCursorCodec {
-    /** Physical OpenSearch sort contract used by cursor pages. */
+    /** Stable cursor value contract; the compiler reconstructs _id from doc values. */
     public static final String DEFAULT_SORT_SPEC = "timestamp:desc,_id:asc";
     /** Cursors issued before mixed-index sorting was hardened. */
     public static final String LEGACY_SORT_SPEC = "timestamp:desc,eventId:asc";

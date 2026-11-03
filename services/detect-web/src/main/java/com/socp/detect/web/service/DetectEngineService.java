@@ -249,6 +249,33 @@ public class DetectEngineService {
         return new BatchKey(event.requireTenantId(), state.shardFor(event));
     }
 
+    /** Keep a NEW journal prefix intact instead of exposing partially queued records to the worker. */
+    public CompletableFuture<Void> tryIngestPreclaimedBatchFromKafkaAndAwait(
+            java.util.List<KafkaInput> inputs, java.util.function.BooleanSupplier assignmentActive) {
+        java.util.Objects.requireNonNull(assignmentActive, "assignmentActive");
+        if (inputs == null || inputs.size() < 2 || inputs.size() > RuleEngine.MAX_BATCH_EVENTS) return null;
+        lifecycle.readLock().lock();
+        try (var ignored = com.socp.platform.tenant.context.TenantContext.open(inputs.getFirst().event().requireTenantId())) {
+            if (Thread.currentThread().isInterrupted() || !assignmentActive.getAsBoolean()) {
+                return CompletableFuture.failedFuture(new RuntimeUnavailableException("Kafka admission assignment is no longer active"));
+            }
+            var prepared = inputs.stream().map(input ->
+                    com.socp.platform.client.kafka.KafkaTrace.callConsumed("detect " + input.topic() + " receive",
+                            input.headers(), () -> prepareBatchEvent(input.event(), input.topic(), input.partition(), input.offset())))
+                    .toList();
+            if (batchTarget(prepared) == null) return null;
+            if (Thread.currentThread().isInterrupted() || !assignmentActive.getAsBoolean()) {
+                return CompletableFuture.failedFuture(new RuntimeUnavailableException("Kafka admission assignment is no longer active"));
+            }
+            // The lifecycle lock pins the generation through admission. One
+            // bounded queue item retains its original durable completion future;
+            // queued prefixes may share the existing atomic sink transaction.
+            return ingestBatchFromKafkaAndAwait(prepared);
+        } finally {
+            lifecycle.readLock().unlock();
+        }
+    }
+
     /**
      * Submit a bounded, ordered partition group while pinning one engine generation.
      * A failed member cancels uncommitted successors; callers must settle the whole
@@ -262,8 +289,8 @@ public class DetectEngineService {
     public java.util.List<CompletableFuture<Void>> ingestOrderedBatchFromKafkaAndAwait(
             java.util.List<KafkaInput> inputs, java.util.function.BooleanSupplier assignmentActive) {
         java.util.Objects.requireNonNull(assignmentActive, "assignmentActive");
-        if (inputs == null || inputs.isEmpty() || inputs.size() > 64) {
-            throw new IllegalArgumentException("Kafka admission batch must contain 1..64 events");
+        if (inputs == null || inputs.isEmpty() || inputs.size() > RuleEngine.MAX_BATCH_EVENTS) {
+            throw new IllegalArgumentException("Kafka admission batch must contain 1..128 events");
         }
         KafkaInput first = inputs.getFirst();
         BatchKey key = batchKey(first.event());

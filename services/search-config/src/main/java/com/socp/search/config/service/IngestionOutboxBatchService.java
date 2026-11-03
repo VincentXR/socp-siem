@@ -35,10 +35,10 @@ public class IngestionOutboxBatchService {
             + "and e.attempts<? and e.next_attempt_at<=? "
             + "and not exists (select 1 from t_ingestion_outbox blocker "
             + "where blocker.tenant_id=e.tenant_id and blocker.routing_key=e.routing_key "
-            + "and blocker.status=(select cast('PROCESSING' as varchar)) offset 0) "
+            + "and coalesce(blocker.status,'') <> 'PUBLISHED' and blocker.status=(select cast('PROCESSING' as varchar)) offset 0) "
             + "and not exists (select 1 from t_ingestion_outbox blocker "
             + "where blocker.tenant_id=e.tenant_id and blocker.routing_key=e.routing_key "
-            + "and blocker.status=(select cast('PENDING' as varchar)) "
+            + "and coalesce(blocker.status,'') <> 'PUBLISHED' and blocker.status=(select cast('PENDING' as varchar)) "
             + "and blocker.sequence_no<=e.sequence_no and (blocker.sequence_no<e.sequence_no or blocker.id<e.id) offset 0)";
     private final IngestionOutboxRepository repository;
     @PersistenceContext private EntityManager entityManager;
@@ -197,11 +197,11 @@ public class IngestionOutboxBatchService {
                 + "and anchor.status='PROCESSING' then anchor.claim_token else null end=? offset 0) "
                 + "and not exists (select 1 from t_ingestion_outbox blocker "
                 + "where blocker.tenant_id=e.tenant_id and blocker.routing_key=e.routing_key "
-                + "and blocker.status=(select cast('PROCESSING' as varchar)) "
+                + "and coalesce(blocker.status,'') <> 'PUBLISHED' and blocker.status=(select cast('PROCESSING' as varchar)) "
                 + "and (blocker.claim_token is null or blocker.claim_token<>?) offset 0) "
                 + "and not exists (select 1 from t_ingestion_outbox blocker "
                 + "where blocker.tenant_id=e.tenant_id and blocker.routing_key=e.routing_key "
-                + "and blocker.status=(select cast('PENDING' as varchar)) "
+                + "and coalesce(blocker.status,'') <> 'PUBLISHED' and blocker.status=(select cast('PENDING' as varchar)) "
                 + "and blocker.sequence_no<=e.sequence_no and (blocker.sequence_no<e.sequence_no or blocker.id<e.id) "
                 + "and blocker.id not in (" + placeholders(followers) + ") offset 0)";
     }

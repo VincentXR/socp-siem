@@ -89,6 +89,11 @@ public record DetectionStateSnapshot(
         return serializedState.clone();
     }
 
+    /** Encode owned immutable bytes without allocating an intermediate public copy. */
+    public String base64State() {
+        return java.util.Base64.getEncoder().encodeToString(serializedState);
+    }
+
     @Override
     public Map<Integer, Long> partitionOffsets() {
         return partitionOffsets;

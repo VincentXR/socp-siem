@@ -46,12 +46,101 @@ public final class SafeRegex {
                     return false;
                 };
             }
-            return input -> pattern.matcher(input == null ? "" : input).find();
+            String[] required = requiredAlternatives(expression);
+            return input -> {
+                String text = input == null ? "" : input;
+                if (required != null && ascii(text)) {
+                    String lower = text.toLowerCase(java.util.Locale.ROOT);
+                    boolean possible = false;
+                    for (String literal : required) {
+                        if (lower.contains(literal)) { possible = true; break; }
+                    }
+                    if (!possible) return false;
+                }
+                return pattern.matcher(text).find();
+            };
         } catch (IllegalArgumentException ex) {
             throw ex;
         } catch (RuntimeException ex) {
             throw new IllegalArgumentException("invalid or unsupported regex", ex);
         }
+    }
+
+    private static boolean ascii(String text) {
+        for (int i = 0; i < text.length(); i++) if (text.charAt(i) > 127) return false;
+        return true;
+    }
+
+    /**
+     * Conservative necessary literals, never a replacement matcher. Each top-level
+     * branch must start with a non-optional literal or a group of literal choices,
+     * optionally after ^ or .*. Unsupported syntax keeps the original RE2 path.
+     */
+    private static String[] requiredAlternatives(String expression) {
+        String text = expression.startsWith("(?i)") ? expression.substring(4) : expression;
+        if (!ascii(text) || text.indexOf('?') >= 0 || text.indexOf('[') >= 0
+                || text.indexOf('{') >= 0 || text.contains("\\Q")) return null;
+        while (text.startsWith("(") && groupEnd(text, 0) == text.length() - 1) {
+            text = text.substring(1, text.length() - 1);
+        }
+        var branches = new java.util.ArrayList<String>();
+        int start = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\\') i++;
+            else if (c == '(') {
+                i = groupEnd(text, i);
+                if (i < 0) return null;
+            } else if (c == '|') {
+                branches.add(text.substring(start, i));
+                start = i + 1;
+            }
+        }
+        branches.add(text.substring(start));
+        var required = new java.util.LinkedHashSet<String>();
+        for (String branch : branches) {
+            int i = branch.startsWith("^") ? 1 : 0;
+            if (branch.startsWith(".*", i)) i += 2;
+            if (i >= branch.length()) return null;
+            String[] choices;
+            if (branch.charAt(i) == '(') {
+                int end = groupEnd(branch, i);
+                if (end < 0) return null;
+                choices = literalAlternatives(branch.substring(i + 1, end));
+                i = end + 1;
+            } else {
+                StringBuilder literal = new StringBuilder();
+                for (; i < branch.length(); i++) {
+                    char c = branch.charAt(i);
+                    if (c == '\\') {
+                        if (i + 1 >= branch.length() || "\\.*+?()[]{}^$|".indexOf(branch.charAt(i + 1)) < 0) break;
+                        literal.append(branch.charAt(++i));
+                    } else {
+                        if (".*+?()[]{}^$|".indexOf(c) >= 0) break;
+                        literal.append(c);
+                    }
+                }
+                choices = literal.isEmpty() ? null
+                        : new String[]{literal.toString().toLowerCase(java.util.Locale.ROOT)};
+            }
+            // A quantifier can make the last literal/group optional. Even + is
+            // left to RE2 so this recognizer never interprets repetition syntax.
+            if (choices == null || (i < branch.length() && "*+?{".indexOf(branch.charAt(i)) >= 0)) return null;
+            java.util.Collections.addAll(required, choices);
+        }
+        return required.toArray(String[]::new);
+    }
+
+    /** Locate a plain group's boundary; character classes/quoted regions are excluded above. */
+    private static int groupEnd(String text, int start) {
+        int depth = 0;
+        for (int i = start; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\\') i++;
+            else if (c == '(') depth++;
+            else if (c == ')' && --depth == 0) return i;
+        }
+        return -1;
     }
 
     /** Recognize only complete ASCII literal alternatives; everything else stays on RE2. */

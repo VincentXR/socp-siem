@@ -44,7 +44,7 @@ public final class OpenSearchQueryCompiler {
         ObjectNode root = MAPPER.createObjectNode();
         root.put("size", size);
         root.put("track_total_hits", true);
-        writeSort(root, ast);
+        writeSort(root, ast, tenantId);
 
         ObjectNode bool = root.putObject("query").putObject("bool");
         ArrayNode filters = bool.putArray("filter");
@@ -83,7 +83,7 @@ public final class OpenSearchQueryCompiler {
         return scope;
     }
 
-    private static void writeSort(ObjectNode root, SearchQueryAst ast) {
+    private static void writeSort(ObjectNode root, SearchQueryAst ast, String tenantId) {
         ArrayNode sort = root.putArray("sort");
         PipelineCommand.Sort explicit = ast.pipeline().stream()
                 .filter(PipelineCommand.Sort.class::isInstance)
@@ -93,17 +93,26 @@ public final class OpenSearchQueryCompiler {
             sort.addObject().putObject("timestamp")
                     .put("order", "desc")
                     .put("unmapped_type", "date");
-            // eventId was mapped as text in early indices and as keyword in
-            // later indices.  Sorting that field across the wildcard index
-            // therefore makes OpenSearch reject an otherwise valid query.
-            // The writer owns a tenant-scoped stable document _id, which is
-            // always sortable and remains deterministic across both schemas.
-            sort.addObject().putObject("_id").put("order", "asc");
         } else {
             ObjectNode field = sort.addObject().putObject(fieldPath(explicit.field(), true));
             field.put("order", explicit.order() == PipelineCommand.SortOrder.DESC ? "desc" : "asc");
-            sort.addObject().putObject("_id").put("order", "asc");
         }
+        // Reconstruct the writer's tenant|eventId tie-breaker from doc values.
+        // Sorting _id loads every shard's identifiers into heap fielddata,
+        // even when the tenant filter matches only a few documents. Legacy
+        // text mappings expose the same value through their keyword subfield.
+        ObjectNode tieBreaker = sort.addObject().putObject("_script");
+        tieBreaker.put("type", "string").put("order", "asc");
+        ObjectNode script = tieBreaker.putObject("script");
+        script.put("lang", "painless");
+        script.put("source", """
+                String field = doc.containsKey('eventId.keyword') ? 'eventId.keyword' : 'eventId';
+                if (!doc.containsKey(field) || doc[field].size() != 1) {
+                    throw new IllegalArgumentException('eventId requires one keyword doc value');
+                }
+                return params.tenant + '|' + doc[field].value;
+                """);
+        script.putObject("params").put("tenant", tenantId);
     }
 
     private static void addAggregations(ObjectNode root, SearchQueryAst ast, boolean includeTimeline) {

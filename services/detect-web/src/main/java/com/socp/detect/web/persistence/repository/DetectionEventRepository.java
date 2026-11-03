@@ -164,6 +164,17 @@ public interface DetectionEventRepository extends TenantScopedRepository<Detecti
 
     long countByTenantIdAndStatusAndDeliveryTopic(String tenantId, String status, String deliveryTopic);
 
+    // Match the small active index without trusting a stale zero-frequency
+    // estimate for PENDING. Count rows, not IDs that require payload-heap reads.
+    @Query(value = "select count(*) from t_detection_event "
+            + "where coalesce(status,'')='PENDING' and delivery_topic=:topic", nativeQuery = true)
+    long countPendingByTopic(@Param("topic") String topic);
+
+    @Query(value = "select count(*) from t_detection_event "
+            + "where coalesce(status,'')='PENDING' "
+            + "and tenant_id=(select cast(:tenant as varchar)) and delivery_topic=:topic", nativeQuery = true)
+    long countByTenantIdAndPendingTopic(@Param("tenant") String tenant, @Param("topic") String topic);
+
     @Query("select e from DetectionEventEntity e where e.tenantId = :tenant and e.status = :status "
             + "and e.deliveryTopic = :topic and e.completedAt > :after "
             + "order by e.completedAt asc, e.deliveryId asc")

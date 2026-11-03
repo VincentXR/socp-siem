@@ -16,6 +16,25 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 class DetectionStateSnapshotStoreTest {
 
     @Test
+    void checkpointAndBase64TransferKeepStateBytesPrivate() {
+        byte[] input = {0, 1, -1, 42};
+        String expected = java.util.Base64.getEncoder().encodeToString(input);
+        var state = new com.socp.rule.engine.RuleEngine.RuleState("rule", "v1", input);
+        input[0] = 99;
+        var snapshot = state.checkpoint("tenant", 2, 17L, Instant.EPOCH,
+                Map.of(0, 17L), Map.of(0, 3L), "events");
+        java.util.Arrays.fill(state.serializedState(), (byte) 99);
+        java.util.Arrays.fill(snapshot.serializedState(), (byte) 99);
+        assertEquals(expected, snapshot.base64State());
+        assertEquals(expected, java.util.Base64.getEncoder().encodeToString(state.serializedState()));
+        assertEquals("rule", snapshot.ruleId());
+        assertEquals("v1", snapshot.ruleVersion());
+        assertEquals(Map.of(0, 17L), snapshot.partitionOffsets());
+        assertEquals(Map.of(0, 3L), snapshot.partitionOwnerEpochs());
+        assertEquals("events", snapshot.inputTopic());
+    }
+
+    @Test
     void defaultBatchMethodKeepsSmallStoreImplementationsSourceCompatible() {
         List<DetectionStateSnapshot> saved = new ArrayList<>();
         DetectionStateSnapshotStore store = new DetectionStateSnapshotStore() {
