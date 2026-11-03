@@ -16,10 +16,51 @@ import java.util.function.Function;
 public final class OutboxDeliveryExecutor implements AutoCloseable {
     private final ExecutorService executor;
     private final Semaphore permits;
+    private final int capacity;
 
     public OutboxDeliveryExecutor(String threadPrefix, int concurrency) {
-        permits = new Semaphore(Math.max(1, Math.min(32, concurrency)));
+        capacity = Math.max(1, Math.min(32, concurrency));
+        permits = new Semaphore(capacity);
         executor = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name(threadPrefix, 0).factory());
+    }
+
+    /**
+     * Reserve a whole bounded cohort before its durable claim. Claim and receipt
+     * callbacks each finish their transaction outside transport I/O. All claimed
+     * work is joined before capacity is released, including on failure or shutdown.
+     */
+    public <T, C, R> boolean deliverClaimedBatch(List<T> candidates, long deadlineNanos,
+            Function<List<T>, List<C>> claim, Function<C, R> delivery, Consumer<List<R>> acknowledge) {
+        if (candidates.isEmpty()) return true;
+        if (candidates.size() > capacity) throw new IllegalArgumentException("cohort exceeds delivery capacity");
+        if (executor.isShutdown()) throw new java.util.concurrent.RejectedExecutionException("delivery executor closed");
+        long remaining = deadlineNanos - System.nanoTime();
+        if (remaining <= 0) return false;
+        try {
+            if (!permits.tryAcquire(candidates.size(), remaining, TimeUnit.NANOSECONDS)) return false;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+        List<CompletableFuture<R>> pending = new ArrayList<>();
+        try {
+            if (Thread.currentThread().isInterrupted() || System.nanoTime() >= deadlineNanos) return false;
+            if (executor.isShutdown()) throw new java.util.concurrent.RejectedExecutionException("delivery executor closed");
+            List<C> claimed = List.copyOf(claim.apply(List.copyOf(candidates)));
+            if (claimed.size() > candidates.size()) throw new IllegalStateException("claim exceeds reserved capacity");
+            if (claimed.isEmpty()) return true;
+            try {
+                for (C item : claimed) pending.add(CompletableFuture.supplyAsync(() -> delivery.apply(item), executor));
+            } finally {
+                // A late admission/transport failure cannot abandon an already
+                // running sibling. Unacknowledged claims retain durable recovery.
+                CompletableFuture.allOf(pending.toArray(CompletableFuture[]::new)).join();
+            }
+            acknowledge.accept(pending.stream().map(CompletableFuture::join).toList());
+            return true;
+        } finally {
+            permits.release(candidates.size());
+        }
     }
 
     /**

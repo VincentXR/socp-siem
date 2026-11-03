@@ -1,6 +1,5 @@
 package com.socp.rule.state;
 
-import java.io.ByteArrayOutputStream;
 import java.util.Comparator;
 import java.util.function.Function;
 import java.util.Map;
@@ -27,6 +26,7 @@ public final class RuleStateMap<V> {
     private static final int CLEANUP_MASK = 1023;
     /** One capacity pass frees this fraction of the bound, then earns credit. */
     private static final int EVICTION_BATCH_DIVISOR = 10;
+    private static final String EMPTY_MUTATION_DIGEST = java.util.HexFormat.of().formatHex(digest().digest());
 
     private final ConcurrentHashMap<String, Entry<V>> entries = new ConcurrentHashMap<>();
     private final Object cacheLock = new Object();
@@ -43,6 +43,7 @@ public final class RuleStateMap<V> {
     private final AtomicLong operations = new AtomicLong();
     private final AtomicLong evictions = new AtomicLong();
     private final AtomicLong capacityPasses = new AtomicLong();
+    private volatile com.socp.rule.engine.DetectionResult.StateChange emptyChange;
 
     public RuleStateMap() {
         this(RuleStateLimits.defaults());
@@ -133,9 +134,11 @@ public final class RuleStateMap<V> {
             });
             return StateSnapshotCodec.write(values);
         }
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        output.write('{');
-        boolean[] first = {true};
+        // Members are immutable, including uncached encodings. Retain their
+        // references briefly so the final buffer has its exact size, without
+        // geometric growth and a second full-size toByteArray copy.
+        var members = new java.util.ArrayList<byte[]>(entries.size());
+        int[] length = {2};
         entries.forEach((key, entry) -> {
             byte[] member;
             synchronized (entry.value) {
@@ -156,12 +159,20 @@ public final class RuleStateMap<V> {
                     }
                 }
             }
-            if (!first[0]) output.write(',');
-            first[0] = false;
-            output.writeBytes(member);
+            length[0] = Math.addExact(length[0], member.length);
+            if (!members.isEmpty()) length[0] = Math.addExact(length[0], 1);
+            members.add(member);
         });
-        output.write('}');
-        return output.toByteArray();
+        byte[] output = new byte[length[0]];
+        output[0] = '{';
+        int offset = 1;
+        for (byte[] member : members) {
+            if (offset > 1) output[offset++] = ',';
+            System.arraycopy(member, 0, output, offset, member.length);
+            offset += member.length;
+        }
+        output[offset] = '}';
+        return output;
     }
 
     private long cachedBytes() { synchronized (cacheLock) { return cacheBytes; } }
@@ -280,6 +291,18 @@ public final class RuleStateMap<V> {
         @Override
         public com.socp.rule.engine.DetectionResult.StateChange change(String ruleId) {
             checkOwner();
+            if (before.isEmpty()) {
+                // Unmatched rules retain the same empty affected-key evidence.
+                // One immutable entry per state map avoids repeated hashing and
+                // hex/string allocation without caching tenant-controlled keys.
+                var unchanged = emptyChange;
+                if (unchanged == null || !unchanged.ruleId().equals(ruleId)) {
+                    unchanged = new com.socp.rule.engine.DetectionResult.StateChange(ruleId,
+                            EMPTY_MUTATION_DIGEST, EMPTY_MUTATION_DIGEST, false, "affected-keys-merkle-v1");
+                    emptyChange = unchanged;
+                }
+                return unchanged;
+            }
             // Sorted keys and length-framed bytes make the scope independent of
             // hash-map order and unambiguous for missing versus present values.
             java.security.MessageDigest original = digest();
@@ -334,6 +357,12 @@ public final class RuleStateMap<V> {
         public long retainedBytes() {
             return before.entrySet().stream().mapToLong(entry -> 128L + 2L * entry.getKey().length()
                     + entry.getValue().retainedBytes).sum();
+        }
+
+        @Override
+        public long retainedBytes(StateUndoBudget sharedEvidence) {
+            return before.entrySet().stream().mapToLong(entry -> 128L + 2L * entry.getKey().length()
+                    + StateSnapshotCodec.retainedBytes(entry.getValue().value, sharedEvidence)).sum();
         }
 
         @Override

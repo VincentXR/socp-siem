@@ -63,6 +63,61 @@ class DetectionBatchPersistenceTest {
         return inputs.stream().map(i->new DetectionResult(i.event(),new DetectionResult.InputPosition(i.topic(),i.partition(),i.offset()),
                 Map.of("rule","v1"),List.of(),List.of(),List.of(),null,i.event().scopedId())).toList();
     }
+
+    @Test void pendingStatisticsRemainExactAcrossCompletionTenantsAndTopics() {
+        var accepted = inputs();
+        journal.claimBatch(accepted);
+        assertEquals(32, repository.countByTenantIdAndPendingTopic(tenant, "events"));
+        assertEquals(0, repository.countByTenantIdAndPendingTopic(tenant, "other-topic"));
+        assertEquals(0, repository.countByTenantIdAndPendingTopic(tenant + "-other", "events"));
+        assertEquals(32, repository.countPendingByTopic("events"));
+        assertThrows(IllegalStateException.class, () -> forwarder.forwardBatch(results(accepted), () -> {
+            throw new IllegalStateException("ownership lost");
+        }));
+        assertEquals(32, repository.countByTenantIdAndPendingTopic(tenant, "events"));
+        forwarder.forwardBatch(results(accepted.subList(0, 16)), () -> { });
+        assertEquals(16, repository.countByTenantIdAndPendingTopic(tenant, "events"));
+        forwarder.forwardBatch(results(accepted.subList(16, 32)), () -> { });
+        assertEquals(0, repository.countByTenantIdAndPendingTopic(tenant, "events"));
+        assertEquals(32, repository.countByTenantIdAndStatus(tenant, "COMPLETED"));
+    }
+    @Test void legacyPhysicalIdentitySurvivesReplayAndCompletionWithTimeLocalKeys() {
+        var input = List.of(input("legacy-key", 0));
+        assertEquals(List.of(DetectionEventClaim.NEW), journal.claimBatch(input));
+        var row = repository.findByTenantIdAndDeliveryId(tenant, "legacy-key").orElseThrow();
+        assertEquals(7, UUID.fromString(row.getStorageId()).version());
+        String legacy = UUID.nameUUIDFromBytes((tenant + "|legacy-key")
+                .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        jdbc.update("update t_detection_event set event_id=? where tenant_id=? and delivery_id=?", legacy, tenant, "legacy-key");
+        assertEquals(List.of(DetectionEventClaim.PENDING), journal.claimBatch(input));
+        forwarder.forwardBatch(results(input), () -> { });
+        assertEquals(List.of(DetectionEventClaim.COMPLETED), journal.claimBatch(input));
+        assertEquals(legacy, repository.findByTenantIdAndDeliveryId(tenant, "legacy-key").orElseThrow().getStorageId());
+        assertEquals(1, repository.countByTenantIdAndStatus(tenant, "COMPLETED"));
+    }
+
+    @Test void distinctPhysicalKeysCannotDuplicateOneTenantDeliveryUnderConcurrentInsert() throws Exception {
+        var first = new com.socp.detect.web.persistence.entity.DetectionEventEntity(tenant, "racing-key", "auth", "host",
+                "raw", "{}", "INFO", Instant.now(), 0, 0L, "route");
+        var second = new com.socp.detect.web.persistence.entity.DetectionEventEntity(tenant, "racing-key", "auth", "host",
+                "raw", "{}", "INFO", Instant.now(), 0, 0L, "route");
+        assertNotEquals(first.getStorageId(), second.getStorageId());
+        var start = new java.util.concurrent.CyclicBarrier(2);
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var futures = List.of(first, second).stream().map(row -> workers.submit(() -> {
+                try (var ignored = TenantContext.open(tenant)) {
+                    start.await(5, java.util.concurrent.TimeUnit.SECONDS);
+                    try { repository.saveAndFlush(row); return true; }
+                    catch (org.springframework.dao.DataIntegrityViolationException duplicate) { return false; }
+                }
+            })).toList();
+            int inserted = 0;
+            for (var future : futures) if (future.get(10, java.util.concurrent.TimeUnit.SECONDS)) inserted++;
+            assertEquals(1, inserted);
+            assertEquals(1, repository.countByTenantIdAndStatus(tenant, "PENDING"));
+        }
+    }
+
     @Test void claimsAndCompletionAreBatchedAndTerminalReceiptIsImmutable() {
         var input=inputs();var stats=factory.unwrap(SessionFactory.class).getStatistics();stats.clear();
         assertTrue(journal.claimBatch(input).stream().allMatch(c->c==DetectionEventClaim.NEW));
@@ -88,8 +143,10 @@ class DetectionBatchPersistenceTest {
     }
 
     @Test void queuedEngineBatchesKeepEveryOwnershipFenceInsideTheJournalTransaction() throws Exception {
-        var input = inputs().subList(0, 8);
-        journal.claimBatch(input);
+        var input = java.util.stream.IntStream.range(0, 256)
+                .mapToObj(n -> input("event-" + n, n)).toList();
+        journal.claimBatch(input.subList(0, 128));
+        journal.claimBatch(input.subList(128, 256));
         var fail = new java.util.concurrent.atomic.AtomicBoolean(true);
         var calls = new AtomicInteger();
         var positioned = new AtomicInteger();
@@ -114,8 +171,8 @@ class DetectionBatchPersistenceTest {
             if (fail.get()) throw new IllegalStateException("second state unit lost ownership");
         });
         try (var engine = new com.socp.rule.engine.RuleEngine(List.of(), List.of(sink))) {
-            var first = engine.ingestBatchAndAwait(events.subList(0, 4), positioned::incrementAndGet, firstGuard);
-            var second = engine.ingestBatchAndAwait(events.subList(4, 8), positioned::incrementAndGet, secondGuard);
+            var first = engine.ingestBatchAndAwait(events.subList(0, 128), positioned::incrementAndGet, firstGuard);
+            var second = engine.ingestBatchAndAwait(events.subList(128, 256), positioned::incrementAndGet, secondGuard);
             engine.start();
             assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> first.get(5, java.util.concurrent.TimeUnit.SECONDS));
@@ -123,12 +180,23 @@ class DetectionBatchPersistenceTest {
                     () -> second.get(5, java.util.concurrent.TimeUnit.SECONDS));
             assertEquals(1, calls.get(), "queued callers must reach one result transaction");
             assertEquals(0, positioned.get());
-            assertEquals(8, repository.countByTenantIdAndStatus(tenant, "PENDING"));
+            assertEquals(256, repository.countByTenantIdAndStatus(tenant, "PENDING"));
             assertEquals(0, repository.countByTenantIdAndStatus(tenant, "COMPLETED"));
             fail.set(false);
-            engine.ingestBatchAndAwait(events, positioned::incrementAndGet, secondGuard)
-                    .get(5, java.util.concurrent.TimeUnit.SECONDS);
-            assertEquals(8, repository.countByTenantIdAndStatus(tenant, "COMPLETED"));
+            forwarder.forwardBatch(results(input).stream().map(result ->
+                    new com.socp.rule.engine.BatchEventAlertSink.Entry(result,
+                            result.event().id().equals("event-0") ? secondGuard : null, scope)).toList());
+            assertEquals(256, repository.countByTenantIdAndStatus(tenant, "COMPLETED"));
+            for (int start = 0; start < 256; start += 128) {
+                engine.ingestBatchAndAwait(events.subList(start, start + 128), positioned::incrementAndGet, secondGuard)
+                        .get(5, java.util.concurrent.TimeUnit.SECONDS);
+            }
+            assertEquals(256, repository.countByTenantIdAndStatus(tenant, "COMPLETED"));
+            var oversized = new ArrayList<>(results(input));
+            oversized.add(results(input).getFirst());
+            assertThrows(IllegalArgumentException.class, () -> journal.markCompletedBatch(oversized));
+            assertThrows(IllegalArgumentException.class, () -> forwarder.forwardBatch(oversized.stream()
+                    .map(result -> new com.socp.rule.engine.BatchEventAlertSink.Entry(result, null, scope)).toList()));
         }
     }
     @Test void finalFenceFailureRollsBackEveryCompletionAndRetryCommitsThemTogether() {

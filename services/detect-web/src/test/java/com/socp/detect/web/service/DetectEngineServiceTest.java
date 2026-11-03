@@ -406,6 +406,10 @@ class DetectEngineServiceTest {
             assertTrue(service.ingest(new SecurityEvent(Instant.now(), "system", "host-1",
                     "heartbeat", Map.of("tenant_id", "default"), Severity.INFO)));
 
+            // Changed stateful definitions must still recover and retry safely.
+            var changed = new LinkedHashMap<String, Object>(thresholdRule());
+            changed.put("threshold", 6);
+            when(store.list("default")).thenReturn(List.of(changed));
             service.reload();
             Map<String, Object> recovery = asMap(service.stats().get("stateRecovery"));
             assertTrue(recovery.containsKey("pendingRebuilds"), "失败的重建必须留在重试队列里");

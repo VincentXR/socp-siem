@@ -44,6 +44,37 @@ class DetectionAlertOutboxPostgresTest extends DetectionAlertOutboxPersistenceTe
     @Autowired private DataSource dataSource;
 
     @Test
+    void emptyDeadAgeGaugeDoesNotWalkPublishedHistoryWithGenericPlans() throws Exception {
+        jdbc.update("""
+                insert into t_detection_alert_outbox
+                    (alert_id,tenant_id,payload,status,attempts,next_attempt_at,created_at,updated_at)
+                select 'age-'||n,?,'{}',case when n=50000 then 'PENDING' else 'PUBLISHED' end,1,
+                       timestamp '2026-09-01',timestamp '2026-09-01',
+                       timestamp '2026-09-01' + n * interval '1 second'
+                from generate_series(1,50000) n
+                """, TENANT);
+        jdbc.execute("vacuum(analyze) t_detection_alert_outbox");
+        assertNull(repository.findOldestUpdatedAtByStatus("DEAD"));
+        try (var connection = dataSource.getConnection(); var statement = connection.createStatement()) {
+            connection.setAutoCommit(false);
+            try {
+                statement.execute("set local plan_cache_mode='force_generic_plan'");
+                statement.execute("prepare age_probe(varchar) as select min(updated_at) from t_detection_alert_outbox where status=$1");
+                try (var rows = statement.executeQuery("explain(analyze,buffers,format json) execute age_probe('DEAD')")) {
+                    assertTrue(rows.next());
+                    var plan = new com.fasterxml.jackson.databind.ObjectMapper().readTree(rows.getString(1)).get(0).get("Plan");
+                    int buffers = plan.path("Shared Hit Blocks").asInt() + plan.path("Shared Read Blocks").asInt();
+                    assertTrue(buffers < 32, "an absent status must not filter 50,000 historical timestamps: " + plan);
+                }
+                statement.execute("deallocate age_probe");
+            } finally {
+                connection.rollback();
+            }
+        }
+        assertEquals(50000, jdbc.queryForObject("select count(*) from t_detection_alert_outbox where tenant_id=?", Integer.class, TENANT));
+    }
+
+    @Test
     void recoverySkipsAnotherTransactionsLockAndPreservesItsCompletion() throws Exception {
         var locked = processing(1, false);
         var available = processing(1, false);

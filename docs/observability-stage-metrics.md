@@ -10,6 +10,17 @@ per event:
   `socp.ingestion.outbox.lifecycle{outcome=...}` covers claim, retry, publish,
   dead-letter and retention cleanup.  The same `pending.count`/`oldest.*`
   naming is used by the alert and detection outboxes.
+  Alarm-delivery backlog gauges read durable rows on a separate thirty-second
+  fixed-delay schedule, plus query time; failed refreshes retain the previous
+  sample and log a warning. Event-triggered drains do not repeat those global
+  aggregates. Delivery, retries and lifecycle counters remain immediate;
+  sampled gauges are not completion receipts or capacity evidence.
+  Alert V28 and Detection V35 index the first timestamp within each status for
+  age gauges. Detection replaces its timestamp-only index, which could scan
+  every published row when a generic plan queried an absent status. The
+  migrations preserve all receipts; schedule index creation with write-lock
+  and temporary disk-space headroom. Exact count gauges retain their existing
+  full-status counting semantics.
 * `socp.ingestion.outbox.batch.duration{operation=claim|finalize,outcome}`
   measures database cohort operations; the matching `batch.items` distribution
   exposes effective cohort size. `socp.ingestion.kafka.duration` uses
@@ -48,6 +59,13 @@ per event:
   time. Summed event intervals overlap within a batch.
 * `socp.detection.operation{stage,outcome}` records each physical invocation
   once: `journal_preclaim`, `batch_preparation`, `batch_commit`, `fencing`, or `checkpoint`.
+  Inside atomic `batch_commit`, `alert_materialization` measures risk projection and
+  alert-outbox preparation, `result_encoding` measures audit serialization, and
+  `journal_update` measures flush, JDBC binding and journal SQL. These nested timers
+  must not be added to their enclosing commit timer. Their remainder includes
+  transaction/framework work and commit acknowledgement; it is not a measured
+  fsync duration. Substage success means that operation returned, not that the
+  enclosing transaction eventually committed.
   `socp.detection.operation.items` records the corresponding item count
   (events for batches, one checkpoint generation for checkpoints). Divide its
   sum by count to inspect actual batch size. Preparation includes rule work,

@@ -67,6 +67,50 @@ class RuleEngineAtomicBatchTest {
         }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void batchesArrivingDuringPreparationJoinTheSameBoundedCommit(boolean failCommit) throws Exception {
+        var preparing = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var positions = new java.util.concurrent.atomic.AtomicInteger();
+        var sizes = new ArrayList<Integer>();
+        var rule = new com.socp.rule.rules.PatternRule("late-merge", "late-merge", event -> {
+            if (event.id().equals("event-0")) {
+                preparing.countDown();
+                try { assertTrue(release.await(5, TimeUnit.SECONDS)); }
+                catch (InterruptedException interrupted) { throw new IllegalStateException(interrupted); }
+            }
+            return false;
+        }, Severity.INFO, "message");
+        Sink sink = new Sink() {
+            @Override public void publishBatch(List<BatchEventAlertSink.Entry> entries) {
+                sizes.add(entries.size());
+                super.publishBatch(entries);
+            }
+        };
+        sink.fail = failCommit;
+        try (var engine = new RuleEngine(List.of(rule, rule()), List.of(sink))) {
+            byte[] before = engine.snapshotStates().get("threshold").serializedState();
+            var first = engine.ingestBatchAndAwait(batch(0, 128), positions::incrementAndGet, null);
+            engine.start();
+            assertTrue(preparing.await(5, TimeUnit.SECONDS));
+            var second = engine.ingestBatchAndAwait(batch(128, 256), positions::incrementAndGet, null);
+            var observed = first.thenApply(ignored -> positions.get());
+            release.countDown();
+            if (failCommit) {
+                assertThrows(ExecutionException.class, () -> first.get(5, TimeUnit.SECONDS));
+                assertThrows(ExecutionException.class, () -> second.get(5, TimeUnit.SECONDS));
+                assertEquals(0, positions.get());
+                assertTrue(sink.committed.isEmpty());
+                assertArrayEquals(before, engine.snapshotStates().get("threshold").serializedState());
+            } else {
+                java.util.concurrent.CompletableFuture.allOf(first, second).get(5, TimeUnit.SECONDS);
+                assertEquals(2, observed.get());
+            }
+            assertEquals(List.of(256), sizes);
+        } finally { release.countDown(); }
+    }
+
     @Test void coalescedFailureRollsBackEveryCallerAndPreservesSuppressionForRetry() throws Exception {
         var calls = new java.util.concurrent.atomic.AtomicInteger();
         Sink sink = new Sink() {
@@ -80,8 +124,8 @@ class RuleEngineAtomicBatchTest {
         try (var suppressor = new Suppressor(Duration.ofMinutes(1));
              var engine = new RuleEngine(List.of(rule()), List.of(sink), suppressor)) {
             byte[] before = engine.snapshotStates().get("threshold").serializedState();
-            var first = engine.ingestBatchAndAwait(batch(0, 3), positions::incrementAndGet, null);
-            var second = engine.ingestBatchAndAwait(batch(3, 6), positions::incrementAndGet, null);
+            var first = engine.ingestBatchAndAwait(batch(0, 128), positions::incrementAndGet, null);
+            var second = engine.ingestBatchAndAwait(batch(128, 256), positions::incrementAndGet, null);
             engine.start();
             assertThrows(ExecutionException.class, () -> first.get(5, TimeUnit.SECONDS));
             assertThrows(ExecutionException.class, () -> second.get(5, TimeUnit.SECONDS));
@@ -99,7 +143,7 @@ class RuleEngineAtomicBatchTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.CsvSource({"32,5,128,32", "1,65,64,1"})
+    @org.junit.jupiter.params.provider.CsvSource({"32,9,256,32", "128,3,256,128", "1,65,64,1"})
     void coalescingRetainsEventAndGuardLimitsWithoutSplittingOriginalBatches(
             int batchSize, int count, int firstSize, int secondSize) throws Exception {
         var sizes = new ArrayList<Integer>();

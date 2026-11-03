@@ -25,7 +25,7 @@ Two rules govern any number you publish from this table:
 | Search parse configuration | 512 effective rules/tenant, 32 global rules, 64 KiB serialized rule, 100 rule IDs/source; 2,048 compiled source/binding cache entries/process | `ParseRuleStore`, `LogSourceRequest`, `ParsePipelineResolver` | Measure rule-read/compile latency and heap on the actual rule mix. Cache count is bounded but compiled-rule byte weight and historical over-limit catalogues are not covered by these limits |
 | Search output targets | 128 tenant-owned targets/tenant; request URI 2,048 characters and token 4,096 characters | `SinkTargetStore`, `SinkTargetRequest` | New writes are capped; historical over-limit catalogues can still make full-list reads expensive |
 | Detection watchlists | 500 owned names per tenant; 10,000 members/list; 256 characters/member. Rule cache defaults to 10,000 entries and 64 MiB estimated weight, with 1s refresh; oversized entries bypass cache | `WatchlistLimits`; `socp.detect.watchlists.cache-max-entries`, `cache-max-weight`, `refresh-ms` | Measure cache churn and DB read latency with the target list distribution; limits do not establish a supported EPS. Mutation quotas use database namespace locks across replicas |
-| Outbox drain batch | Ingestion admits at most 2 cohorts, 32 keys/200 rows per cohort and 16 rows/key, with configured producer submission concurrency (1–32); Alert event/delivery acquire capacity before claim (1–32). One local drain runs per publisher; rule-change delivery is sequential. These four contexts recover at most 100 stale rows per 30-second pass and exhaust at most 100 pending rows per scan; admitted I/O can outlast the admission deadline | [ADR 005](../adr/005-outbox-lifecycle.md); [ordered ingestion](../ingestion-parsing.md#ordered-outbox-batches) | `socp_*_outbox_oldest_pending_age_seconds` — pending age tracks whether drain rate keeps up with commits; a large stale backlog requires multiple recovery passes |
+| Outbox drain batch | Ingestion admits 1–4 cohorts (default 4), 32 keys/200 rows per cohort and 16 rows/key, with configured producer submission concurrency (1–32); Alert event/delivery acquire capacity before claim (1–32). One local drain runs per publisher; rule-change delivery is sequential. These four contexts recover at most 100 stale rows per 30-second pass and exhaust at most 100 pending rows per scan; admitted I/O can outlast the admission deadline | [ADR 005](../adr/005-outbox-lifecycle.md); [ordered ingestion](../ingestion-parsing.md#ordered-outbox-batches) | `socp_*_outbox_oldest_pending_age_seconds` — pending age tracks whether drain rate keeps up with commits; a large stale backlog requires multiple recovery passes |
 | OpenSearch indexing | daily template with deployment-owned shard/replica counts, batch write | `socp.opensearch.index-shards` (1–1,024, default 1), `index-replicas` (0–32; development default 0, production default/minimum 1) | Provision enough data nodes for every replica and verify actual allocation; configuration alone is not HA evidence. `socp_opensearch_indexer_records_total{stage=...}` counts attempts, so retries/tails prevent treating equality as a unique-event oracle |
 | Retention delete | bounded rounds, hourly | search retention worker | `socp_search_event_retention_lag_seconds`, `socp.search.event.retention.delete.rate.rows_per_second` |
 | HIPS history retention | default 1,000 rows per transaction, at most 10 batches per pass; 10-second budget for starting batches | `socp.hips.history-retention.*`; [history retention](endpoint-forwarding.md#history-retention) | `socp.hips.history.retention.lag.seconds`, last-success time, duration and last-deleted gauges; every receipt reference protects history, and no fixed disk-size guarantee follows from the batch budget |
@@ -81,8 +81,9 @@ tenant/state-shard groups. Groups run on their independent engines concurrently;
 events within one group remain sequential. Journal claims use one bounded lookup and
 JDBC insert batch; rule results, risk changes, alert outbox entries and completion
 receipts commit together. Each event keeps its trace context and audit envelope.
-A batch takes one full rule-state undo snapshot; failed persistence restores
-that boundary and discards staged suppression decisions. Checkpoints capture
+Built-in rules retain touched-key undo records; custom rules retain their
+full-state fallback. Failed persistence restores the entire batch boundary
+and discards staged suppression decisions. Checkpoints capture
 the complete batch state and its final offset. Completion timestamps retain
 evaluation order at PostgreSQL microsecond precision for journal replay.
 Timeouts wait on the original completion future; ownership loss prevents offset
@@ -98,6 +99,10 @@ combined work completes. `socp_detection_batch_records_count` and `_sum` expose
 the completed partition-batch count and total events. The
 `socp_detection_batch_state_units_count`, `_sum` and `_max` series describe the
 planned state-unit fan-out; they do not independently prove concurrent execution.
+The engine can combine already admitted groups into one durable commit of at
+most 256 events and 64 ownership guards. Caller admission remains 128 events,
+SQL preclaims remain 64 rows, and the shared undo budget remains 4 MiB. This
+coalescing adds no batching delay and does not increase the queue's event bound.
 
 Deployments enable independent state engines with `SOCP_DETECT_STATE_SHARDS`
 (1–256, compatibility default 1). Use the same count on all Detection replicas;
@@ -135,8 +140,10 @@ between them. A cohort contains at most 32 keys, 16 rows/key and 200 rows.
 A processing or delayed head blocks competing publishers. Each reserved key
 waits for its preceding broker receipt before sending the next event; claim
 tokens fence late completion. Interrupted prefixes use stale-claim recovery. The default
-submission concurrency is 8, with at most 256 rounds and a 2-second budget for admitting
-new rounds (`SOCP_INGEST_OUTBOX_CONCURRENCY`,
+submission concurrency is 8; independently, database cohort concurrency is 4
+(`SOCP_INGEST_OUTBOX_COHORT_CONCURRENCY`, clamped to 1–4). Reduce it when database
+connection contention rises. Each drain admits at most 256 rounds within a
+2-second admission budget (`SOCP_INGEST_OUTBOX_CONCURRENCY`,
 `SOCP_INGEST_OUTBOX_MAX_DRAIN_ROUNDS`,
 `SOCP_INGEST_OUTBOX_MAX_DRAIN_DURATION_MS`). No transaction holds database
 connections while waiting for the broker. Selection finds each earliest PENDING
@@ -146,16 +153,72 @@ and fetches payloads last. Conditional claims acquire row and unique-key locks;
 a delayed, exhausted or unclaimed predecessor fences its pending successors
 even if selection prefetched their identities. Stale recovery and cleanup use
 their separate bounded `FOR UPDATE SKIP LOCKED` operations.
-These changes introduce no API, database schema or Kafka topic migration.
+Batch transactions preserve API and Kafka topic contracts. Queue access-path
+upgrades require Search V21–V25 and Alert V27–V29. Search isolates active indexes
+and decouples vacuum eligibility from retained history. Alert selects at most
+100 due identities by `next_attempt_at, created_at, id` before loading payloads;
+this prioritizes eligibility time rather than creation age among independent
+deliveries. Exhaustion filters by attempt count before ordering and locking its
+bounded candidates, preserving `updated_at, id` order and `SKIP LOCKED`. Status counts
+use `count(*)` so non-null IDs do not force historical payload reads.
+These migrations preserve receipts, per-key ingestion ordering, claim tokens and
+retries. Alert V29 makes delivery-queue vacuum eligible after 10,000 dead versions,
+with zero vacuum scale factor, table cost limit 1,000 and index cleanup enabled.
+It preserves the instance analyze policy. Check worker scheduling and completed
+vacuum times; eligibility does not guarantee immediate cleanup.
+Schedule index creation in a maintenance window with temporary disk headroom.
+
+When throughput falls as history grows, record query buffer reads and I/O time,
+dead tuples, WAL bytes and checkpoint frequency alongside stage timers.
+Frequent WAL-triggered checkpoints can amplify full-page writes; evaluate
+`max_wal_size` and `wal_compression` for the deployment's disk/CPU budget.
+Keep `fsync`, `full_page_writes` and synchronous commits enabled. A faster
+isolated query or quieter checkpoint log does not establish pipeline capacity.
+
+Table vacuum thresholds control eligibility, not when a worker runs. Compare
+`last_autovacuum`, dead tuples and queue-selection latency against the
+instance's `autovacuum_naptime`; a long scheduling interval can still leave a
+rapidly changing active index full of dead versions. Shortening the interval
+affects every database on that PostgreSQL instance, so measure maintenance I/O
+and foreground commits together. A small threshold can make vacuum repeatedly
+scan retained identity indexes; analyze should have its own modification budget.
+Alarm-delivery backlog gauges use a separate
+30-second schedule to keep retained-history aggregation off event triggers.
+
+Repeated short diagnostics can interrupt an automatic vacuum before it finishes.
+Record completed vacuum times and dead-tuple counts before comparing runs; an
+eligible but repeatedly interrupted worker does not maintain the indexes. If
+maintenance has fallen behind, use a separately measured ordinary
+`VACUUM (ANALYZE, INDEX_CLEANUP ON) t_detection_event` on the intended database,
+with a bounded statement timeout and sufficient I/O headroom. This reclaims dead
+row versions without deleting live receipts. Record that maintenance in the next
+run's baseline; do not attribute its benefit to an application-code change.
+
+On Docker Desktop, record guest `MemAvailable`, `SwapFree` and paging activity
+as well as host memory pressure and each container's `memory.events` and
+`memory.swap.current`. Stable host Swap and zero application-container Swap
+do not establish that middleware in the VM is free of paging. Adjust only the
+budget implicated by the measurements and repeat the same workload; neither
+heap limits nor configured container limits are resident-memory measurements.
 
 Search ingestion batches JDBC inserts in groups of 32. The PostgreSQL profile
 enables driver multi-row insert rewriting. New outbox entities use
 `persist` despite their assigned UUIDs; loaded entities retain update semantics.
 Insert reordering stays disabled because the database enqueue sequence orders
 same-key publication. The enclosing transaction still covers canonical events
-and publication intents, and a failed JDBC batch rolls the whole transaction
+and publication intents, including the separate immutable payload table introduced
+by Search V26. Only new intents use the narrow lease row; historical payloads stay
+readable in place. Claim and acknowledgement updates no longer copy those new
+payloads into each row version. Measure the additional insert against saved update
+WAL and buffer traffic; this layout does not guarantee an EPS target. A failed JDBC batch rolls the whole transaction
 back. Detection's repeated completion observation leaves an existing terminal
 receipt and its completion timestamp unchanged; ownership fencing still runs.
+
+Detection V38 adds an active tenant/topic index for exact `pendingEvents` counts.
+The query predicate avoids stale zero-frequency status estimates choosing a
+terminal-history index. It is neither an approximate counter nor the independent
+durable-completion oracle used by capacity acceptance. MVCC dead versions still
+require vacuum; record heap fetches and buffer reads when diagnosing slow counts.
 
 Run these against Prometheus during the load window you want to characterise; they
 are the same series the [alert thresholds](../observability-stage-metrics.md) use, so
@@ -216,3 +279,19 @@ generator and a target cluster the repository does not own. If you need a figure
 procurement or an SLO, execute the queries above on your cluster and record them as
 deployment evidence; this page exists so that recording is possible and bounded, not to
 pre-fill it.
+
+For Detection regex-heavy workloads, `SafeRegex` can reject an ASCII input
+when none of a pattern's conservatively identified necessary literals occurs.
+Possible matches still execute RE2/J. Optional/unsupported syntax and Unicode
+input retain the original matcher, including Unicode case folding. Pattern
+length/program limits still apply at compilation; this optimization does not
+replace rule evaluation or change rule content.
+
+Alarm delivery batches database transactions separately from network concurrency.
+At the default concurrency of 8, two 4-row cohorts can progress independently;
+eight same-tenant deliveries in two full cohorts use four database transactions
+instead of sixteen. Selection stays bounded at 100 due rows; mixed tenants form
+separate cohorts. Claims, transport calls and
+unacknowledged receipts together remain bounded by the configured 1–32 permits.
+This reduces commit overhead during retry bursts without suppressing retries or
+acknowledging a downstream effect before its durable response.

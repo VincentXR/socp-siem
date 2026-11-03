@@ -52,6 +52,10 @@ public class AlarmDeliveryPublisher {
     private final SoarClient soarClient;
     private final AlertPerformanceMetrics performanceMetrics;
     private final OutboxDeliveryExecutor executor;
+    private final int cohortSize;
+    private final java.util.concurrent.Semaphore cohortPermits;
+    private final ExecutorService cohortExecutor;
+    private AlarmDeliveryBatchService batchService;
     private final ExecutorService triggerExecutor;
     private final int maxAttempts;
     private final long retentionMs;
@@ -62,6 +66,15 @@ public class AlarmDeliveryPublisher {
     private volatile Instant nextRecoveryAt = Instant.EPOCH;
 
     @Autowired
+    public AlarmDeliveryPublisher(AlarmDeliveryRepository repository, CkReporter ckReporter,
+                                  NotifyClient notifyClient, IncidentClient incidentClient,
+                                  SoarClient soarClient, AlertPerformanceMetrics performanceMetrics,
+                                  AlertDeliveryProperties properties, AlarmDeliveryBatchService batchService) {
+        this(repository, ckReporter, notifyClient, incidentClient, soarClient, performanceMetrics, properties);
+        this.batchService = java.util.Objects.requireNonNull(batchService);
+    }
+
+    /** Compatibility constructor for callers without the Spring transaction proxy. */
     public AlarmDeliveryPublisher(AlarmDeliveryRepository repository, CkReporter ckReporter,
                                   NotifyClient notifyClient, IncidentClient incidentClient,
                                   SoarClient soarClient, AlertPerformanceMetrics performanceMetrics,
@@ -106,6 +119,11 @@ public class AlarmDeliveryPublisher {
         this.soarClient = soarClient;
         this.performanceMetrics = performanceMetrics;
         int bounded = Math.max(1, Math.min(32, concurrency));
+        int cohorts = Math.min(2, bounded);
+        this.cohortSize = Math.max(1, bounded / cohorts);
+        this.cohortPermits = new java.util.concurrent.Semaphore(cohorts);
+        this.cohortExecutor = Executors.newThreadPerTaskExecutor(
+                Thread.ofVirtual().name("alarm-delivery-cohort-", 0).factory());
         this.executor = new OutboxDeliveryExecutor("alarm-delivery-", bounded);
         this.triggerExecutor = Executors.newSingleThreadExecutor(
                 Thread.ofVirtual().name("alarm-delivery-trigger-", 0).factory());
@@ -160,11 +178,14 @@ public class AlarmDeliveryPublisher {
             while (rounds < maxDrainRounds && System.nanoTime() - started < maxDrainDurationNanos) {
                 now = Instant.now();
                 List<AlarmDelivery> pending = repository
-                        .findTop100ByStatusAndNextAttemptAtLessThanEqualOrderByCreatedAtAsc("PENDING", now);
+                        .findDueBatch("PENDING", now);
                 if (pending.isEmpty()) break;
                 rounds++;
-                executor.deliver(pending, started + maxDrainDurationNanos,
-                        this::deliver);
+                if (batchService == null) {
+                    executor.deliver(pending, started + maxDrainDurationNanos, this::deliver);
+                } else {
+                    deliverCohorts(pending, started + maxDrainDurationNanos);
+                }
                 if (pending.size() < 100) break;
             }
         } catch (RuntimeException failure) {
@@ -173,12 +194,15 @@ public class AlarmDeliveryPublisher {
             activeDrain.set(false);
             if (performanceMetrics != null) {
                 performanceMetrics.outboxDrain("alarm_delivery", rounds, System.nanoTime() - started);
-                refreshBacklog();
             }
         }
     }
 
-    private void refreshBacklog() {
+    /** Aggregate history independently of event-triggered delivery work. */
+    @Scheduled(fixedDelay = 30_000, initialDelay = 5_000)
+    @TenantSystemJob
+    public void refreshBacklog() {
+        if (performanceMetrics == null) return;
         try {
             performanceMetrics.outboxBacklog("alarm_delivery",
                     repository.countByStatus("PENDING"),
@@ -198,6 +222,73 @@ public class AlarmDeliveryPublisher {
             lifecycle("recovered", recovered);
         }
         nextRecoveryAt = now.plus(Duration.ofSeconds(30));
+    }
+
+    private void deliverCohorts(List<AlarmDelivery> pending, long deadline) {
+        var completions = new java.util.ArrayList<java.util.concurrent.CompletableFuture<Void>>();
+        try {
+            for (int start = 0; start < pending.size();) {
+                String tenant = pending.get(start).getTenantId();
+                int end = start + 1;
+                while (end < pending.size() && end - start < cohortSize
+                        && tenant.equals(pending.get(end).getTenantId())) end++;
+                long remaining = deadline - System.nanoTime();
+                if (remaining <= 0) return;
+                try {
+                    if (!cohortPermits.tryAcquire(remaining, java.util.concurrent.TimeUnit.NANOSECONDS)) return;
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                var cohort = List.copyOf(pending.subList(start, end));
+                try {
+                    completions.add(java.util.concurrent.CompletableFuture.runAsync(() -> {
+                        try (var ignored = TenantContext.open(tenant)) {
+                            executor.deliverClaimedBatch(cohort, deadline,
+                                    candidates -> batchService.claim(candidates, maxAttempts), this::dispatchClaimed,
+                                    this::acknowledgeCohort);
+                        } finally { cohortPermits.release(); }
+                    }, cohortExecutor));
+                } catch (RuntimeException rejected) {
+                    cohortPermits.release();
+                    throw rejected;
+                }
+                start = end;
+            }
+        } finally {
+            java.util.concurrent.CompletableFuture.allOf(
+                    completions.toArray(java.util.concurrent.CompletableFuture[]::new)).join();
+        }
+    }
+
+    private void acknowledgeCohort(List<AlarmDeliveryBatchService.Outcome> outcomes) {
+        var receipt = batchService.acknowledge(outcomes, maxAttempts);
+        if (receipt.dead() > 0) {
+            lifecycle("dead", receipt.dead());
+            log.error("Alarm delivery batch exhausted or rejected count={}", receipt.dead());
+        }
+        if (receipt.retry() > 0) {
+            lifecycle("retry", receipt.retry());
+            log.warn("Alarm delivery batch scheduled retries count={}", receipt.retry());
+        }
+        if (receipt.stale() > 0) log.warn("Alarm delivery batch ownership changed count={}", receipt.stale());
+    }
+
+    private AlarmDeliveryBatchService.Outcome dispatchClaimed(AlarmDeliveryBatchService.Claim claim) {
+        var delivery = claim.delivery();
+        String previousTrace = MDC.get("traceId");
+        try (var ignored = TenantContext.open(delivery.getTenantId());
+             var traceScope = TracePropagation.contextFrom(delivery.getTraceparent()).makeCurrent()) {
+            if (delivery.getTraceId() != null) MDC.put("traceId", delivery.getTraceId());
+            DeliveryResult result = dispatch(delivery);
+            return new AlarmDeliveryBatchService.Outcome(claim, result.delivered(), result.retryable(), result.error());
+        } catch (RuntimeException failure) {
+            return new AlarmDeliveryBatchService.Outcome(claim, false, true,
+                    failure.getClass().getSimpleName() + ": " + failure.getMessage());
+        } finally {
+            if (previousTrace == null) MDC.remove("traceId");
+            else MDC.put("traceId", previousTrace);
+        }
     }
 
     private void deliver(AlarmDelivery delivery) {
@@ -343,6 +434,7 @@ public class AlarmDeliveryPublisher {
     @PreDestroy
     void stop() {
         triggerExecutor.shutdownNow();
+        cohortExecutor.shutdownNow();
         executor.close();
     }
 

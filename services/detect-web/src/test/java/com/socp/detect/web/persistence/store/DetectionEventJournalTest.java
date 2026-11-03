@@ -271,8 +271,7 @@ class DetectionEventJournalTest {
                 eq("tenant-a"), eq(DetectionEventStatus.PENDING.name()), eq(INPUT_TOPIC),
                 eq(Set.of(4)), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(pending));
-        when(repository.countByTenantIdAndStatusAndDeliveryTopic(
-                "tenant-a", DetectionEventStatus.PENDING.name(), INPUT_TOPIC))
+        when(repository.countByTenantIdAndPendingTopic("tenant-a", INPUT_TOPIC))
                 .thenReturn(3L, 2L);
 
         List<PendingDetectionEvent> records = journal.pendingRecordsForPartitions(
@@ -330,7 +329,7 @@ class DetectionEventJournalTest {
         when(repository.findByStatusAndTopicAndKafkaPartitionInAfter(
                 anyString(), eq(INPUT_TOPIC), eq(Set.of(4)), any(Instant.class), any(Pageable.class)))
                 .thenReturn(List.of(completed));
-        when(repository.countByStatusAndDeliveryTopic(DetectionEventStatus.PENDING.name(), INPUT_TOPIC))
+        when(repository.countPendingByTopic(INPUT_TOPIC))
                 .thenReturn(4L);
 
         TenantContext.runAsSystem(() -> {
@@ -352,7 +351,7 @@ class DetectionEventJournalTest {
             assertThat(journal.pendingRecordsForPartitions(Set.of(4), Duration.ofMinutes(5)))
                     .singleElement().satisfies(record -> assertThat(record.event().tenantId()).isEqualTo("tenant-b"));
         });
-        verify(repository).countByStatusAndDeliveryTopic(DetectionEventStatus.PENDING.name(), INPUT_TOPIC);
+        verify(repository).countPendingByTopic(INPUT_TOPIC);
     }
 
     @Test

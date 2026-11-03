@@ -22,6 +22,7 @@ import java.time.Instant;
 public class SearchEventEntity extends BaseEntity {
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
+    @org.hibernate.annotations.UuidGenerator(style = org.hibernate.annotations.UuidGenerator.Style.VERSION_7)
     private String id;
     /** Pipeline-stable event identifier used to link detections back to source events. */
     @Column(name = "event_id", length = 255)

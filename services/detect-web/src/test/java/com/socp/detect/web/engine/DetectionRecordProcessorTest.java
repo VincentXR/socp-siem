@@ -21,6 +21,26 @@ import static org.mockito.Mockito.times;
 
 class DetectionRecordProcessorTest {
 
+    @Test
+    void preclaimedRecordsShareTheOriginalAtomicFutureWithoutReadmission() {
+        var engine = mock(DetectEngineService.class);
+        var state = mock(DetectionStateStore.class);
+        given(engine.completesJournal(state)).willReturn(true);
+        var original = new CompletableFuture<Void>();
+        given(engine.tryIngestPreclaimedBatchFromKafkaAndAwait(any(), any())).willReturn(original);
+        var inputs = java.util.stream.IntStream.range(0, 64).mapToObj(index ->
+                new DetectEngineService.KafkaInput(new SecurityEvent("prefix-" + index, java.time.Instant.now(),
+                        "auth", "host", "raw", java.util.Map.of("tenant_id", "default"),
+                        com.socp.rule.model.Severity.INFO), "socp-events", 0, (long) index)).toList();
+        var futures = new DetectionRecordProcessor(engine, state, null).submitPreclaimedBatch(inputs);
+        assertEquals(64, futures.size());
+        assertTrue(futures.stream().allMatch(future -> future == original && !future.isDone()));
+        original.completeExceptionally(new IllegalStateException("transaction rolled back"));
+        assertTrue(futures.stream().allMatch(CompletableFuture::isCompletedExceptionally));
+        org.mockito.Mockito.verify(engine, org.mockito.Mockito.never()).ingestOrderedBatchFromKafkaAndAwait(any(), any());
+        org.mockito.Mockito.verifyNoInteractions(state);
+    }
+
     private static java.util.List<org.apache.kafka.clients.consumer.ConsumerRecord<String,String>> records() {
         return java.util.stream.IntStream.range(0,2).mapToObj(n->new org.apache.kafka.clients.consumer.ConsumerRecord<>(
                 "socp-events",0,(long)n,"key","{\"eventId\":\"batch-"+n+"\",\"tenantId\":\"default\",\"source\":\"auth\"}")).toList();

@@ -59,6 +59,8 @@ public class DetectionEventJournal implements DetectionStateStore {
     private final int cleanupMaxBatches;
     private final String inputTopic;
     private TransactionTemplate replayPageTransaction;
+    @Autowired(required = false)
+    private com.socp.detect.web.metrics.DetectionPerformanceMetrics performanceMetrics;
 
     @Autowired
     void configureReplayPageTransaction(PlatformTransactionManager manager) {
@@ -215,7 +217,7 @@ public class DetectionEventJournal implements DetectionStateStore {
             repository.saveAndFlush(journalRow(event, deliveryTopic, partition, offset, routingKey));
             return DetectionEventClaim.NEW;
         } catch (DataIntegrityViolationException duplicate) {
-            // The primary key is the final arbiter when two consumers race.
+            // The tenant/delivery unique key arbitrates when two consumers race.
             // The caller retries; the next transaction observes the durable row.
             throw duplicate;
         } catch (Exception ex) {
@@ -290,7 +292,7 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Override
     @Transactional
     public void markCompletedBatch(List<DetectionResult> results) {
-        if (results == null || results.isEmpty() || results.size() > com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) {
+        if (results == null || results.isEmpty() || results.size() > com.socp.rule.engine.RuleEngine.MAX_COMMIT_EVENTS) {
             throw new IllegalArgumentException("bounded completion batch required");
         }
         String tenant = results.getFirst().event().requireTenantId();
@@ -303,12 +305,33 @@ public class DetectionEventJournal implements DetectionStateStore {
         }
         // Distinct PostgreSQL microseconds retain evaluation order during journal replay.
         Instant completedAt = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
-        var summaries = results.stream().map(result -> {
-            try { return com.socp.rule.util.Json.mapper().writeValueAsString(result.auditSummary()); }
-            catch (com.fasterxml.jackson.core.JsonProcessingException failure) {
-                throw new IllegalStateException("unable to encode detection result", failure);
-            }
-        }).toList();
+        List<String> summaries;
+        long encodingStarted = System.nanoTime();
+        boolean encoded = false;
+        try {
+            summaries = DetectionResult.auditJsonBatch(results);
+            encoded = true;
+        } catch (java.io.IOException failure) {
+            throw new IllegalStateException("unable to encode detection result", failure);
+        } finally {
+            com.socp.rule.engine.RuleProcessingObserver.notifyOperation(performanceMetrics,
+                    com.socp.rule.engine.RuleProcessingObserver.Operation.RESULT_ENCODING,
+                    results.size(), System.nanoTime() - encodingStarted, encoded);
+        }
+        long updateStarted = System.nanoTime();
+        boolean updated = false;
+        try {
+            completeBatchRows(results, summaries, tenant, completedAt);
+            updated = true;
+        } finally {
+            com.socp.rule.engine.RuleProcessingObserver.notifyOperation(performanceMetrics,
+                    com.socp.rule.engine.RuleProcessingObserver.Operation.JOURNAL_UPDATE,
+                    results.size(), System.nanoTime() - updateStarted, updated);
+        }
+    }
+
+    private void completeBatchRows(List<DetectionResult> results, List<String> summaries,
+                                   String tenant, Instant completedAt) {
         entityManager.flush();
         entityManager.unwrap(org.hibernate.Session.class).doWork(connection -> {
             // JDBC batching still executes one UPDATE per event on the server.
@@ -606,16 +629,14 @@ public class DetectionEventJournal implements DetectionStateStore {
     @Transactional(readOnly = true)
     public long pendingCount() {
         return TenantContext.isSystemScope()
-                ? repository.countByStatusAndDeliveryTopic(DetectionEventStatus.PENDING.name(), inputTopic)
-                : repository.countByTenantIdAndStatusAndDeliveryTopic(
-                        TenantContext.require(), DetectionEventStatus.PENDING.name(), inputTopic);
+                ? repository.countPendingByTopic(inputTopic)
+                : repository.countByTenantIdAndPendingTopic(TenantContext.require(), inputTopic);
     }
 
     @Override
     @Transactional(readOnly = true)
     public long pendingCount(String tenantId) {
-        return repository.countByTenantIdAndStatusAndDeliveryTopic(
-                tenantId, DetectionEventStatus.PENDING.name(), inputTopic);
+        return repository.countByTenantIdAndPendingTopic(tenantId, inputTopic);
     }
 
     @Override

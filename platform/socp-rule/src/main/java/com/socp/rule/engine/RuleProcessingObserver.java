@@ -12,7 +12,10 @@ public interface RuleProcessingObserver {
     };
 
     /** Physical operations, counted once per invocation rather than once per overlapping event. */
-    enum Operation { JOURNAL_PRECLAIM, BATCH_PREPARATION, BATCH_COMMIT, FENCING, CHECKPOINT }
+    enum Operation {
+        JOURNAL_PRECLAIM, BATCH_PREPARATION, BATCH_COMMIT, FENCING, CHECKPOINT,
+        ALERT_MATERIALIZATION, RESULT_ENCODING, JOURNAL_UPDATE
+    }
 
     default void operationCompleted(Operation operation, int items, long nanos, boolean success) {
     }

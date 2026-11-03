@@ -452,9 +452,10 @@ public class KafkaEventConsumer {
             java.util.List<ParsedRecord> group = new java.util.ArrayList<>();
             java.util.Set<String> identities = new java.util.HashSet<>();
             DetectEngineService.BatchKey key = null;
-            // Serial preclaims and their ordered-generation admission retain
-            // the existing 64-record bound; independent groups use the atomic API.
-            for (int next = cursor; next < records.size() && group.size() < 64; next++) {
+            // The admitted partition prefix keeps its existing 128-event/byte
+            // bounds. SQL preclaims below remain separately bounded to 64 rows.
+            for (int next = cursor; next < records.size()
+                    && group.size() < com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS; next++) {
                 PolledRecord row = records.get(next);
                 var record = row.record();
                 DetectionRecordProcessor.NormalizedDetectionRecord normalized;
@@ -479,6 +480,7 @@ public class KafkaEventConsumer {
                 inputs.add(new DetectionStateStore.Input(parsed.normalized().event(), record.topic(),
                         record.partition(), record.offset(), parsed.normalized().routingKey()));
                 positions.add(new RecordPosition(record.partition(), record.offset()));
+                if (inputs.size() == 64) flushClaims(inputs, positions, claims);
             }
             flushClaims(inputs, positions, claims);
             int start = 0;

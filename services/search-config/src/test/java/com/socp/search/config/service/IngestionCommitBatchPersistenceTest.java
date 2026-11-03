@@ -15,6 +15,7 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,6 +35,9 @@ class IngestionCommitBatchPersistenceTest {
     @TestConfiguration
     static class Config {
         @Bean SearchStore searchStore() { return mock(SearchStore.class); }
+        // Keep cache housekeeping from racing the transaction's cache assertions.
+        // Scheduling behavior is outside this persistence fixture's scope.
+        @Bean TaskScheduler taskScheduler() { return mock(TaskScheduler.class); }
     }
 
     @Autowired IngestionCommitService commits;
@@ -61,7 +65,7 @@ class IngestionCommitBatchPersistenceTest {
         List<SearchEvent> events = events();
         statistics.clear();
         assertEquals(128, commits.commit(events).created());
-        // Two bulk identity lookups and two batched INSERT statements. Allow
+        // Two bulk identity lookups and three batched INSERT statements. Allow
         // provider bookkeeping, but reject O(events) merge SELECTs or INSERTs.
         assertTrue(statistics.getPrepareStatementCount() <= 10,
                 "prepared statements: " + statistics.getPrepareStatementCount());
@@ -69,6 +73,9 @@ class IngestionCommitBatchPersistenceTest {
         assertEquals(128, persisted.size());
         assertTrue(persisted.stream().noneMatch(row -> row.isNew()));
         assertTrue(persisted.stream().allMatch(row -> row.getSequenceNo() != null));
+        assertTrue(persisted.stream().allMatch(row -> UUID.fromString(row.getId()).version() == 7));
+        assertTrue(canonical.findByTenantIdAndEventIdIn(tenant, events.stream().map(SearchEvent::eventId).toList())
+                .stream().allMatch(row -> UUID.fromString(row.getId()).version() == 7));
         assertEquals(128, commits.commit(events).duplicates());
         assertEquals(128, outbox.findByTenantId(tenant).size());
         verify(cache, times(1)).rememberBatch(anyList());
@@ -83,6 +90,21 @@ class IngestionCommitBatchPersistenceTest {
             verifyNoInteractions(cache);
         } finally {
             jdbc.execute("alter table t_ingestion_outbox drop constraint reject_batch_fixture");
+        }
+    }
+
+    @Test void payloadInsertionFailureRollsBackTheCompleteAdmissionTransaction() {
+        long before = jdbc.queryForObject("select count(*) from t_ingestion_outbox_payload", Long.class);
+        jdbc.execute("alter table t_ingestion_outbox_payload add constraint reject_payload_fixture "
+                + "check (stored_payload not like '%batch-event-127%')");
+        try {
+            assertThrows(RuntimeException.class, () -> commits.commit(events()));
+            assertEquals(0, jdbc.queryForObject("select count(*) from t_search_event where tenant_id=?", Integer.class, tenant));
+            assertEquals(0, jdbc.queryForObject("select count(*) from t_ingestion_outbox where tenant_id=?", Integer.class, tenant));
+            assertEquals(before, jdbc.queryForObject("select count(*) from t_ingestion_outbox_payload", Long.class));
+            verifyNoInteractions(cache);
+        } finally {
+            jdbc.execute("alter table t_ingestion_outbox_payload drop constraint reject_payload_fixture");
         }
     }
 
@@ -115,7 +137,8 @@ class IngestionCommitBatchPersistenceTest {
                     original.severity(), "conflicting content", original.fields(), original.ecs());
             assertThrows(IngestionIdentityConflictException.class, () -> commits.commit(List.of(conflicting)));
             // Canonical compatibility must not hide a conflicting publication intent.
-            jdbc.update("update t_ingestion_outbox set payload = ? where tenant_id = ? and event_id = ?",
+            jdbc.update("update t_ingestion_outbox_payload set stored_payload = ? where id in "
+                            + "(select id from t_ingestion_outbox where tenant_id = ? and event_id = ?)",
                     "{\"msg\":\"conflicting outbox\"}", tenant, original.eventId());
             assertThrows(IngestionIdentityConflictException.class, () -> commits.commit(List.of(original)));
             assertEquals(128, canonical.countByTenantId(tenant));

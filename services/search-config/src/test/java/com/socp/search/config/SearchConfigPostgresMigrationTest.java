@@ -82,7 +82,7 @@ class SearchConfigPostgresMigrationTest {
                 try (var rows = statement.executeQuery("""
                         EXPLAIN (ANALYZE, BUFFERS)
                         SELECT * FROM t_ingestion_outbox
-                        WHERE status = 'PENDING' AND next_attempt_at <= CURRENT_TIMESTAMP
+                        WHERE coalesce(status,'') <> 'PUBLISHED' AND status = 'PENDING' AND next_attempt_at <= CURRENT_TIMESTAMP
                         ORDER BY next_attempt_at ASC, sequence_no ASC, id ASC
                         LIMIT 200
                         """)) {

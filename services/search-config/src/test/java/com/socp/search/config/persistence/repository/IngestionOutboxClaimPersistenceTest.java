@@ -47,6 +47,33 @@ class IngestionOutboxClaimPersistenceTest {
         TenantContext.clear();
     }
 
+    @Test void separatePayloadPreservesLegacyReadsClaimsAndCascadeCleanup() {
+        var intent = IngestionOutboxEvent.pending("separate", "key-separate", "immutable evidence", null);
+        repository.saveAndFlush(intent);
+        assertEquals("", jdbc.queryForObject("select payload from t_ingestion_outbox where id=?", String.class, intent.getId()));
+        assertEquals("immutable evidence", jdbc.queryForObject(
+                "select stored_payload from t_ingestion_outbox_payload where id=?", String.class, intent.getId()));
+        assertEquals("tenant-a", jdbc.queryForObject(
+                "select tenant_id from t_ingestion_outbox_payload where id=?", String.class, intent.getId()));
+        assertThrows(RuntimeException.class, () -> jdbc.update(
+                "update t_ingestion_outbox_payload set tenant_id='tenant-b' where id=?", intent.getId()));
+        assertEquals("immutable evidence", repository.findByIdAndTenantId(intent.getId(), "tenant-a").orElseThrow().getPayload());
+        assertTrue(repository.findByIdAndTenantId(intent.getId(), "tenant-b").isEmpty());
+        Instant now = Instant.now().plusSeconds(1);
+        var selected = repository.findDueOrderedBatch(now);
+        assertEquals("immutable evidence", selected.getFirst().getPayload());
+        assertEquals(1, batches.claimIndependent(selected, "payload-token", 12, now).size());
+        assertEquals(1, repository.markPublishedBatch("tenant-a", List.of(intent.getId()), now, "payload-token"));
+        assertEquals("immutable evidence", repository.findByIdAndTenantId(intent.getId(), "tenant-a").orElseThrow().getPayload());
+        assertEquals(1, repository.deletePublishedBatchBefore(now.plusSeconds(1), 100));
+        assertEquals(0, jdbc.queryForObject("select count(*) from t_ingestion_outbox_payload where id=?", Integer.class, intent.getId()));
+
+        insert(0, "legacy-key");
+        var legacy = repository.findDueOrderedBatch(BASE).getFirst();
+        assertEquals("{}", legacy.getPayload());
+        assertEquals(0, jdbc.queryForObject("select count(*) from t_ingestion_outbox_payload where id=?", Integer.class, legacy.getId()));
+    }
+
     @Test void orderedPrefixesRetainOneLeasePerKeyAndStaleCompletionRollsBackAsAWhole() {
         for (int i = 0; i < 8; i++) insert(0, "prefix-key");
         var rows = repository.findDueOrderedBatch(BASE);
@@ -564,6 +591,40 @@ class IngestionOutboxClaimPersistenceTest {
 
         assertEquals(expected, repository.findDueOrderedBatch(BASE).stream()
                 .map(com.socp.search.config.domain.IngestionOutboxEvent::getId).toList());
+    }
+
+    @Test void boundedHeadWindowKeepsTenantAndPredecessorFencesBeforeUsingTheFullPage() {
+        for (int n = 0; n < 240; n++) {
+            selectorRow("window-" + n, "tenant-a", "key-" + n, n + 1, BASE, "PENDING");
+        }
+        // A delayed predecessor blocks a due successor, even outside the window.
+        selectorRow("delayed", "tenant-a", "key-0", 0, BASE.plusSeconds(60), "PENDING");
+        // Legacy in-flight rows also fence earlier visible pending sequences.
+        selectorRow("processing", "tenant-a", "key-1", 1000, BASE, "PROCESSING");
+        // The same raw routing key in another tenant must remain independent.
+        selectorRow("other-tenant", "tenant-b", "key-0", 0, BASE, "PENDING");
+        var expected = new java.util.ArrayList<String>();
+        expected.add("other-tenant");
+        for (int n = 2; n <= 200; n++) expected.add("window-" + n);
+        TenantContext.runAsSystem(() -> {
+            assertEquals(expected, repository.findDueIndependentHeads(BASE).stream().map(row -> row.getId()).toList());
+            assertEquals(expected, repository.findDueOrderedBatch(BASE).stream().map(row -> row.getId()).toList());
+        });
+    }
+
+    @Test void blockedCandidateWindowCannotStarveIndependentHeadsBeyondIt() {
+        for (int n = 0; n < 400; n++) {
+            selectorRow("blocked-" + n, "tenant-a", "blocked-key", n + 1, BASE, "PENDING");
+        }
+        selectorRow("delayed", "tenant-a", "blocked-key", 0, BASE.plusSeconds(60), "PENDING");
+        var expected = new java.util.ArrayList<String>();
+        for (int n = 0; n < 200; n++) {
+            String id = "eligible-" + n;
+            selectorRow(id, "tenant-a", id, 1000 + n, BASE, "PENDING");
+            expected.add(id);
+        }
+        assertTrue(repository.findDueIndependentHeads(BASE).isEmpty());
+        assertEquals(expected, repository.findDueOrderedBatch(BASE).stream().map(row -> row.getId()).toList());
     }
 
     @Test void anInFlightKeyFencesAnOlderSequenceThatBecomesVisibleLater() {

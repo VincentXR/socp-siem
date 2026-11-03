@@ -70,7 +70,7 @@ public class AlertForwarder {
     @Transactional
     public void forwardBatch(List<com.socp.rule.engine.BatchEventAlertSink.Entry> entries) {
         if (entries == null || entries.isEmpty()) return;
-        if (entries.size() > com.socp.rule.engine.RuleEngine.MAX_BATCH_EVENTS) {
+        if (entries.size() > com.socp.rule.engine.RuleEngine.MAX_COMMIT_EVENTS) {
             throw new IllegalArgumentException("detection batch exceeds the bounded engine limit");
         }
         String tenant = entries.getFirst().result().event().requireTenantId();
@@ -99,11 +99,24 @@ public class AlertForwarder {
                         stateUnits, System.nanoTime() - fenceStarted, fenced);
             }
             if (stateStore == null) throw new IllegalStateException("batch publication requires a durable journal");
-            for (var entry : entries) {
-                validateAlertTenants(entry.result().alerts(), tenant);
-                try (var eventScope = entry.scope().open(entry.result().event())) {
-                    for (Alert alert : entry.result().alerts()) forwardOne(alert, entry.result(), tenant);
+            long materializationStarted = System.nanoTime();
+            int alerts = 0;
+            boolean materialized = false;
+            try {
+                for (var entry : entries) {
+                    validateAlertTenants(entry.result().alerts(), tenant);
+                    try (var eventScope = entry.scope().open(entry.result().event())) {
+                        for (Alert alert : entry.result().alerts()) {
+                            forwardOne(alert, entry.result(), tenant);
+                            alerts++;
+                        }
+                    }
                 }
+                materialized = true;
+            } finally {
+                com.socp.rule.engine.RuleProcessingObserver.notifyOperation(performanceMetrics,
+                        com.socp.rule.engine.RuleProcessingObserver.Operation.ALERT_MATERIALIZATION,
+                        alerts, System.nanoTime() - materializationStarted, materialized);
             }
             stateStore.markCompletedBatch(entries.stream().map(com.socp.rule.engine.BatchEventAlertSink.Entry::result).toList());
         }

@@ -72,6 +72,118 @@ public record DetectionResult(
         return Map.copyOf(out);
     }
 
+    /** Serialize the same audit contract without constructing per-event map trees. */
+    public String auditJson() throws java.io.IOException {
+        return auditJson(null);
+    }
+
+    /** Reuse only internally encoded fragments within this bounded commit. */
+    public static List<String> auditJsonBatch(List<DetectionResult> results) throws java.io.IOException {
+        if (results == null || results.size() > RuleEngine.MAX_COMMIT_EVENTS) {
+            throw new IllegalArgumentException("bounded audit batch required");
+        }
+        var encoding = new AuditEncoding();
+        var summaries = new ArrayList<String>(results.size());
+        for (var result : results) summaries.add(result.auditJson(encoding));
+        return List.copyOf(summaries);
+    }
+
+    private String auditJson(AuditEncoding encoding) throws java.io.IOException {
+        var text = encoding == null ? new java.io.StringWriter() : encoding.writer();
+        try (var json = com.socp.rule.util.Json.mapper().createGenerator(text)) {
+            json.writeStartObject();
+            json.writeStringField("inputEventId", Objects.requireNonNull(event.id()));
+            json.writeObjectFieldStart("inputPosition");
+            json.writeStringField("topic", inputPosition.topic());
+            json.writeNumberField("partition", inputPosition.partition());
+            json.writeNumberField("offset", inputPosition.offset());
+            json.writeEndObject();
+            if (encoding == null) json.writeObjectField("ruleVersions", ruleVersions);
+            else {
+                json.writeFieldName("ruleVersions");
+                json.writeRawValue(encoding.versions(ruleVersions));
+            }
+            json.writeArrayFieldStart("stateChanges");
+            for (StateChange change : stateChanges) {
+                String cached = encoding == null ? null : encoding.unchanged(change);
+                if (cached == null) writeStateChange(json, change);
+                else json.writeRawValue(cached);
+            }
+            json.writeEndArray();
+            json.writeObjectField("candidateAlertIds", alertIds(candidates));
+            json.writeObjectField("emittedAlertIds", alertIds(alerts));
+            json.writeObjectFieldStart("suppression");
+            json.writeStringField("policy", suppression.policy());
+            json.writeNumberField("candidateCount", suppression.candidateCount());
+            json.writeNumberField("emittedCount", suppression.emittedCount());
+            json.writeObjectField("suppressedAlertIds", suppression.suppressedAlertIds());
+            json.writeEndObject();
+            json.writeStringField("idempotencyKey", idempotencyKey);
+            json.writeEndObject();
+        }
+        return encoding == null ? text.toString() : encoding.finish(text);
+    }
+
+    private static void writeStateChange(com.fasterxml.jackson.core.JsonGenerator json, StateChange change)
+            throws java.io.IOException {
+        json.writeStartObject();
+        json.writeStringField("ruleId", change.ruleId());
+        json.writeStringField("beforeDigest", change.beforeDigest());
+        json.writeStringField("afterDigest", change.afterDigest());
+        json.writeBooleanField("changed", change.changed());
+        if (!"full-state-v1".equals(change.digestScope())) json.writeStringField("digestScope", change.digestScope());
+        json.writeEndObject();
+    }
+
+    private static final class AuditEncoding {
+        private static final int MAX_CHARS = 64 * 1024;
+        private Map<String, String> versions;
+        private String versionsJson;
+        private final Map<StateChange, String> unchanged = new java.util.HashMap<>();
+        private int unchangedChars;
+        private java.io.StringWriter text = new java.io.StringWriter();
+
+        java.io.StringWriter writer() {
+            text.getBuffer().setLength(0);
+            return text;
+        }
+
+        String finish(java.io.StringWriter writer) {
+            String result = writer.toString();
+            // Returned Strings own their bytes. Retain only a bounded scratch
+            // buffer for the next event, never an oversized event's capacity.
+            if (writer.getBuffer().capacity() > MAX_CHARS) text = new java.io.StringWriter();
+            return result;
+        }
+
+        String versions(Map<String, String> current) throws java.io.IOException {
+            if (current.equals(versions)) return versionsJson;
+            String encoded = com.socp.rule.util.Json.mapper().writeValueAsString(current);
+            // One version map and at most 64 unchanged fragments survive only
+            // this call. Oversized fragments use normal encoding without caching.
+            versions = encoded.length() <= MAX_CHARS ? current : null;
+            versionsJson = versions == null ? null : encoded;
+            return encoded;
+        }
+
+        String unchanged(StateChange change) throws java.io.IOException {
+            if (change.changed()) return null;
+            String cached = unchanged.get(change);
+            if (cached != null) return cached;
+            if (unchanged.size() >= 64 || unchangedChars >= MAX_CHARS) return null;
+            var text = new java.io.StringWriter();
+            try (var json = com.socp.rule.util.Json.mapper().createGenerator(text)) {
+                writeStateChange(json, change);
+            }
+            String encoded = text.toString();
+            if (encoded.length() <= MAX_CHARS - unchangedChars) {
+                unchanged.put(change, encoded);
+                unchangedChars += encoded.length();
+            }
+            return encoded;
+        }
+    }
+
     private static List<String> alertIds(List<Alert> source) {
         if (source == null || source.isEmpty()) return List.of();
         return source.stream().filter(Objects::nonNull).map(Alert::id)

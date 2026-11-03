@@ -41,7 +41,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
     private static final long DEFAULT_MAX_DRAIN_DURATION_MS = 2_000L;
     private static final Duration DISCARDED_RETENTION = Duration.ofDays(30);
     private static final int MAX_ERROR_LENGTH = 1024;
-    private static final int INDEPENDENT_COHORT_CONCURRENCY = 2;
+    private static final int MAX_COHORT_CONCURRENCY = 4;
 
     private enum Operation {
         SELECTION("selection"), EXHAUSTED("exhausted"), STALE("stale"),
@@ -85,7 +85,8 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                 properties.getOutbox().getCleanupBatchSize(),
                 properties.getOutbox().getCleanupMaxBatches(),
                 properties.getOutbox().getMaxDrainRounds(),
-                properties.getOutbox().getMaxDrainDurationMs());
+                properties.getOutbox().getMaxDrainDurationMs(),
+                properties.getOutbox().getCohortConcurrency());
     }
 
     public IngestionOutboxPublisher(IngestionOutboxRepository repository,
@@ -104,12 +105,23 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
                                     int concurrency, int maxAttempts, long retentionMs,
                                     int cleanupBatchSize, int cleanupMaxBatches,
                                     int maxDrainRounds, long maxDrainDurationMs) {
+        this(repository, producer, meterRegistry, concurrency, maxAttempts, retentionMs,
+                cleanupBatchSize, cleanupMaxBatches, maxDrainRounds, maxDrainDurationMs,
+                MAX_COHORT_CONCURRENCY);
+    }
+
+    IngestionOutboxPublisher(IngestionOutboxRepository repository,
+                             KafkaEventProducer producer, MeterRegistry meterRegistry,
+                             int concurrency, int maxAttempts, long retentionMs,
+                             int cleanupBatchSize, int cleanupMaxBatches,
+                             int maxDrainRounds, long maxDrainDurationMs, int cohortConcurrency) {
         this.repository = repository;
         this.producer = producer;
         this.meterRegistry = meterRegistry;
         int bounded = Math.max(1, Math.min(32, concurrency));
         this.executor = new OutboxDeliveryExecutor("ingestion-outbox-", bounded);
-        this.cohortExecutor = new OutboxDeliveryExecutor("ingestion-outbox-cohort-", INDEPENDENT_COHORT_CONCURRENCY);
+        this.cohortExecutor = new OutboxDeliveryExecutor("ingestion-outbox-cohort-",
+                Math.max(1, Math.min(MAX_COHORT_CONCURRENCY, cohortConcurrency)));
         this.triggerExecutor = Executors.newSingleThreadExecutor(
                 Thread.ofVirtual().name("ingestion-outbox-trigger-", 0).factory());
         this.maxAttempts = Math.max(1, maxAttempts);
@@ -292,7 +304,7 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
             }
             if (!cohort.isEmpty()) cohorts.add(List.copyOf(cohort));
         }
-        // Admit at most two cohorts across all tenants before acquiring any
+        // Admit the configured (at most four) cohorts across all tenants before acquiring any
         // durable claims. The shared submission executor retains its own bound.
         // Every admitted cohort joins its receipts and settles claims before
         // this call returns, including when admission expires or a peer fails.
@@ -331,8 +343,8 @@ public class IngestionOutboxPublisher implements IngestionPublicationTrigger {
         var acknowledged = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
         try (var keyExecutor = new OutboxDeliveryExecutor("ingestion-outbox-key-", 32)) {
             // Each admitted cohort retains 32 receipt slots, so one tenant's
-            // blocked keys cannot occupy its sibling cohort's slots. Two cohort
-            // permits retain the 64-receipt bound; submissions still share the
+            // blocked keys cannot occupy its sibling cohort's slots. Four cohort
+            // permits retain the 128-receipt bound; submissions still share the
             // configured executor. Every admitted runner joins before closing.
             keyExecutor.deliverKeyed(claimed, deliveryDeadline, IngestionOutboxPublisher::deliveryKey,
                     event -> TenantContext.runWith(event.getTenantId(), () -> {

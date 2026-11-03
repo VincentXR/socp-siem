@@ -39,7 +39,7 @@ class JpaDetectionStateSnapshotStoreTest {
         DetectionStateSnapshot snapshot = new DetectionStateSnapshot(
                 "rule-1", "v3", "tenant-a", 2, 14L, new byte[]{1, 2, 3},
                 Instant.parse("2026-09-10T12:00:00Z"), Map.of(0, 8L, 2, 14L));
-        when(repository.findByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "rule-1", 2, "socp-events"))
+        when(repository.findMetadataByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "rule-1", 2, "socp-events"))
                 .thenReturn(Optional.empty());
 
         JpaDetectionStateSnapshotStore store = new JpaDetectionStateSnapshotStore(repository);
@@ -73,7 +73,7 @@ class JpaDetectionStateSnapshotStoreTest {
         DetectionStateSnapshot snapshot = new DetectionStateSnapshot(
                 "rule-topic", "v1", "tenant-a", 0, 9L, new byte[]{4},
                 Instant.parse("2026-09-10T12:00:00Z"), Map.of(1, 9L), Map.of(), "events-v2");
-        when(repository.findByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "rule-topic", 0, "events-v2"))
+        when(repository.findMetadataByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "rule-topic", 0, "events-v2"))
                 .thenReturn(Optional.empty());
 
         JpaDetectionStateSnapshotStore store = new JpaDetectionStateSnapshotStore(
@@ -107,14 +107,15 @@ class JpaDetectionStateSnapshotStoreTest {
     void doesNotOverwriteNewerCheckpoint() {
         DetectionStateSnapshotEntity persisted = new DetectionStateSnapshotEntity();
         persisted.setSnapshotTimestamp(Instant.parse("2026-09-10T12:00:01Z"));
-        when(repository.findByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "rule-1", 0, "socp-events"))
-                .thenReturn(Optional.of(persisted));
+        when(repository.findMetadataByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "rule-1", 0, "socp-events"))
+                .thenReturn(Optional.of(metadata(persisted)));
 
         new JpaDetectionStateSnapshotStore(repository).save(new DetectionStateSnapshot(
                 "rule-1", "v3", "tenant-a", 0, 10L, new byte[]{1},
                 Instant.parse("2026-09-10T12:00:00Z"), Map.of(0, 10L)));
 
         org.mockito.Mockito.verify(repository, org.mockito.Mockito.never()).saveAllAndFlush(any());
+        verify(repository, org.mockito.Mockito.never()).replaceByTenantIdAndId(anyString(), any());
     }
 
     @Test
@@ -122,8 +123,8 @@ class JpaDetectionStateSnapshotStoreTest {
         Instant checkpoint = Instant.parse("2026-09-10T12:00:00Z");
         DetectionStateSnapshotEntity first = row(checkpoint.minusSeconds(1), "{\"0\":8}");
         DetectionStateSnapshotEntity second = row(checkpoint.plusSeconds(1), "{\"0\":12}");
-        when(repository.findByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "first", 0, "socp-events")).thenReturn(Optional.of(first));
-        when(repository.findByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "second", 0, "socp-events")).thenReturn(Optional.of(second));
+        when(repository.findMetadataByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "first", 0, "socp-events")).thenReturn(Optional.of(metadata(first)));
+        when(repository.findMetadataByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "second", 0, "socp-events")).thenReturn(Optional.of(metadata(second)));
 
         new JpaDetectionStateSnapshotStore(repository).saveAll(List.of(
                 snapshot("first", checkpoint, Map.of(0, 10L)), snapshot("second", checkpoint, Map.of(0, 10L))));
@@ -131,28 +132,33 @@ class JpaDetectionStateSnapshotStoreTest {
         assertEquals(checkpoint.minusSeconds(1), first.getSnapshotTimestamp());
         assertEquals("{\"0\":8}", first.getPartitionOffsetsJson());
         org.mockito.Mockito.verify(repository, org.mockito.Mockito.never()).saveAllAndFlush(any());
+        verify(repository, org.mockito.Mockito.never()).replaceByTenantIdAndId(anyString(), any());
     }
 
     @Test
     void laterClockCannotOverwriteRegressingOrMissingPartition() {
         Instant checkpoint = Instant.parse("2026-09-10T12:00:00Z");
         DetectionStateSnapshotEntity row = row(checkpoint, "{\"0\":10,\"1\":20}");
-        when(repository.findByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "first", 0, "socp-events")).thenReturn(Optional.of(row));
+        when(repository.findMetadataByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "first", 0, "socp-events")).thenReturn(Optional.of(metadata(row)));
         var store = new JpaDetectionStateSnapshotStore(repository);
         store.save(snapshot("first", checkpoint.plusSeconds(1), Map.of(0, 11L, 1, 19L)));
         store.save(snapshot("first", checkpoint.plusSeconds(2), Map.of(0, 12L)));
         assertEquals(checkpoint, row.getSnapshotTimestamp());
         org.mockito.Mockito.verify(repository, org.mockito.Mockito.never()).saveAllAndFlush(any());
+        verify(repository, org.mockito.Mockito.never()).replaceByTenantIdAndId(anyString(), any());
     }
 
     @Test
     void advancedOffsetsSurviveClockSkew() {
         Instant checkpoint = Instant.parse("2026-09-10T12:00:00Z");
         DetectionStateSnapshotEntity row = row(checkpoint, "{\"0\":10}");
-        when(repository.findByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "first", 0, "socp-events")).thenReturn(Optional.of(row));
+        when(repository.findMetadataByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "first", 0, "socp-events")).thenReturn(Optional.of(metadata(row)));
+        when(repository.replaceByTenantIdAndId(anyString(), any())).thenReturn(1);
         new JpaDetectionStateSnapshotStore(repository).save(snapshot("first", checkpoint.minusSeconds(1), Map.of(0, 11L)));
-        verify(repository).saveAllAndFlush(any());
-        assertEquals("{\"0\":11}", row.getPartitionOffsetsJson());
+        var replacement = ArgumentCaptor.forClass(DetectionStateSnapshotEntity.class);
+        verify(repository).replaceByTenantIdAndId(org.mockito.ArgumentMatchers.eq("tenant-a"), replacement.capture());
+        assertEquals("{\"0\":11}", replacement.getValue().getPartitionOffsetsJson());
+        assertEquals("{\"0\":10}", row.getPartitionOffsetsJson());
     }
 
     @Test
@@ -173,7 +179,7 @@ class JpaDetectionStateSnapshotStoreTest {
                 ownerKey, "socp-events", 0, 2, "node-a", 7L,
                 Instant.now().plusSeconds(30), Instant.now());
         when(ownerRepository.findByOwnerKeyForUpdate(anyString())).thenReturn(Optional.of(owner));
-        when(repository.findByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "rule-1", 2, "socp-events"))
+        when(repository.findMetadataByTenantIdAndRuleIdAndShardIdAndInputTopic("tenant-a", "rule-1", 2, "socp-events"))
                 .thenReturn(Optional.empty());
         DetectionStateSnapshot snapshot = new DetectionStateSnapshot(
                 "rule-1", "v3", "tenant-a", 2, 14L, new byte[]{1, 2, 3},
@@ -229,8 +235,14 @@ class JpaDetectionStateSnapshotStoreTest {
         verify(repository, org.mockito.Mockito.never()).saveAllAndFlush(any());
     }
 
+    private static com.socp.detect.web.persistence.entity.DetectionCheckpointMetadata metadata(DetectionStateSnapshotEntity row) {
+        return new com.socp.detect.web.persistence.entity.DetectionCheckpointMetadata(
+                row.getId(), row.getSnapshotTimestamp(), row.getPartitionOffsetsJson(), row.getRowVersion());
+    }
+
     private static DetectionStateSnapshotEntity row(Instant time, String offsets) {
         var row = new DetectionStateSnapshotEntity();
+        row.setId(java.util.UUID.randomUUID().toString());
         row.setSnapshotTimestamp(time);
         row.setPartitionOffsetsJson(offsets);
         return row;

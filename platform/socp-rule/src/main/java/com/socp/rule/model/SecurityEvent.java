@@ -19,6 +19,9 @@ public record SecurityEvent(
         Map<String, String> fields,    // 结构化字段
         Severity severity              // 解析出的严重级别（缺省 INFO）
 ) {
+    private static final java.util.regex.Pattern TENANT_ID =
+            java.util.regex.Pattern.compile("[A-Za-z0-9][A-Za-z0-9_-]{0,63}");
+
     public SecurityEvent {
         // Copy caller-owned fields before evidence can be queued or serialized.
         fields = fields == null ? Map.of() : java.util.Collections.unmodifiableMap(new java.util.LinkedHashMap<>(fields));
@@ -51,7 +54,7 @@ public record SecurityEvent(
     public String requireTenantId() {
         String tenant = fields == null ? null : fields.get("tenant_id");
         if (tenant == null || tenant.isBlank()) tenant = fields == null ? null : fields.get("tenantId");
-        if (tenant == null || !tenant.matches("[A-Za-z0-9][A-Za-z0-9_-]{0,63}")) {
+        if (tenant == null || !TENANT_ID.matcher(tenant).matches()) {
             throw new IllegalStateException("event tenant is required");
         }
         return tenant;

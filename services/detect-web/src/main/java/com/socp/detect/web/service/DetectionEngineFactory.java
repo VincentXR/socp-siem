@@ -48,12 +48,14 @@ final class DetectionEngineFactory {
         List<Rule> rules = new java.util.ArrayList<>(documents.size());
         Map<String, String> stateCompatibilityVersions = new LinkedHashMap<>();
         Map<String, RuleEngine.RoutingDimension> routingDimensions = new LinkedHashMap<>();
+        Map<String, String> definitions = new LinkedHashMap<>();
         int isolated = 0;
         for (Map<String, Object> document : documents) {
             String documentId = String.valueOf(document.get("id"));
             try {
                 RuleSpec spec = new RuleSpec(document);
                 Rule rule = spec.toRule();
+                definitions.put(spec.id, definitionFingerprint(document));
                 rules.add(rule);
                 if (rule instanceof StatefulRule stateful) {
                     stateCompatibilityVersions.put(spec.id,
@@ -79,7 +81,7 @@ final class DetectionEngineFactory {
 
         RuleEngine engine = new RuleEngine(
                 rules, List.of(sink), suppressor, processingObserver,
-                new DetectionExecutionScope(), durableCommitGuard, stateCompatibilityVersions, routingDimensions);
+                new DetectionExecutionScope(), durableCommitGuard, stateCompatibilityVersions, routingDimensions, definitions);
         try {
             engine.restore(history);
         } catch (RuntimeException failure) {
@@ -95,6 +97,17 @@ final class DetectionEngineFactory {
                 .filter(entry -> entry.getKey().startsWith(keyPrefix))
                 .mapToInt(Map.Entry::getValue)
                 .sum();
+    }
+
+    private static String definitionFingerprint(Map<String, Object> document) {
+        try {
+            byte[] canonical = com.socp.rule.util.Json.mapper().writer()
+                    .with(com.fasterxml.jackson.databind.SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
+                    .writeValueAsBytes(document);
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(canonical));
+        } catch (Exception failure) {
+            throw new IllegalStateException("unable to fingerprint complete rule definition", failure);
+        }
     }
 
     static String stateVersion(String ruleVersion, int shards) {

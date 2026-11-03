@@ -11,11 +11,12 @@ import jakarta.persistence.PostPersist;
 import org.springframework.data.domain.Persistable;
 
 import java.time.Instant;
-import java.util.UUID;
 
 /** Durable Kafka publication intent created with the local search event. */
 @Entity
 @Table(name = "t_ingestion_outbox")
+@jakarta.persistence.SecondaryTable(name = "t_ingestion_outbox_payload",
+        pkJoinColumns = @jakarta.persistence.PrimaryKeyJoinColumn(name = "id"))
 public class IngestionOutboxEvent extends BaseEntity implements Persistable<String> {
 
     // Assigned UUIDs do not mean that a publication already exists. Use persist
@@ -44,8 +45,22 @@ public class IngestionOutboxEvent extends BaseEntity implements Persistable<Stri
     @Column(name = "routing_key", nullable = false, length = 512)
     private String routingKey;
 
-    @Column(nullable = false, columnDefinition = "TEXT")
-    private String payload;
+    // Existing receipts keep their original payload without a table rewrite.
+    // New intents store evidence separately from the frequently updated lease.
+    @Column(name = "payload", insertable = false, updatable = false, columnDefinition = "TEXT")
+    private String legacyPayload;
+
+    @Column(name = "stored_payload", table = "t_ingestion_outbox_payload", columnDefinition = "TEXT")
+    private String storedPayload;
+
+    @Column(name = "tenant_id", table = "t_ingestion_outbox_payload")
+    private String payloadTenantId;
+
+    @jakarta.persistence.PrePersist
+    void bindPayloadTenant() {
+        // BaseEntity establishes the authenticated scope before this callback.
+        payloadTenantId = getTenantId();
+    }
 
     @Column(name = "traceparent", length = 255)
     private String traceparent;
@@ -86,10 +101,10 @@ public class IngestionOutboxEvent extends BaseEntity implements Persistable<Stri
     public static IngestionOutboxEvent pending(String eventId, String routingKey, String payload,
                                         String traceparent) {
         IngestionOutboxEvent event = new IngestionOutboxEvent();
-        event.id = UUID.randomUUID().toString();
+        event.id = com.socp.platform.data.domain.StorageIds.next();
         event.eventId = eventId;
         event.routingKey = routingKey;
-        event.payload = payload;
+        event.storedPayload = java.util.Objects.requireNonNull(payload, "publication payload");
         event.traceparent = traceparent;
         event.status = "PENDING";
         event.attempts = 0;
@@ -114,7 +129,11 @@ public class IngestionOutboxEvent extends BaseEntity implements Persistable<Stri
     }
 
     public String getPayload() {
-        return payload;
+        String value = storedPayload == null ? legacyPayload : storedPayload;
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException("publication payload is missing");
+        }
+        return value;
     }
 
     public String getTraceparent() {

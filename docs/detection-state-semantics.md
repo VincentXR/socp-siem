@@ -5,6 +5,14 @@ routed worker state, and the Detection-to-Alert Web hand-off. It describes
 at-least-once transport with logically idempotent business effects; it does
 not claim distributed exactly-once processing.
 
+New journal rows use UUIDv7 physical storage IDs to keep primary-key inserts
+near each other. The existing unique `(tenant_id, delivery_id)` constraint
+remains the durable replay/concurrency boundary. Reads, completion and replay
+resolve that logical identity, including rows with older name-based IDs;
+upgrades do not rewrite IDs or receipts. Mixed-version writers still arbitrate
+through the same unique constraint. Storage timestamps do not replace Kafka
+positions, state ownership epochs or contiguous offset commits.
+
 ## Runtime roles
 
 `SOCP_DETECT_RUNTIME_ROLE` selects one of three roles from the same
@@ -416,6 +424,26 @@ encoding work and preserves the existing checkpoint bytes. Cache lookup uses
 immutable event instance identity, avoiding repeated field-map hashing. Equal
 events reconstructed during replay may occupy separate entries within the same
 bound; durable delivery identities and checkpoint content are unchanged.
+Checkpoint assembly retains immutable member references until it can allocate
+one exact-size output buffer. Transfers between the rule and checkpoint
+envelopes, and base64 encoding for persistence, avoid intermediate public-array
+copies while public byte accessors remain defensive. PostgreSQL V37 selects LZ4
+for new snapshot values; existing PGLZ values remain readable without a rewrite.
+The JSON/base64 format, checkpoint cadence, position vectors, ownership fences
+and optimistic generation checks are unchanged. Faster compression can require
+more stored bytes and WAL, so measure both CPU and write volume.
+Map-key scalar fingerprints reuse a separate process-wide cache capped at 256
+field names and 64 KiB estimated retained weight. Keys longer than 128 characters
+are not cached; event values are never stored there. Eviction changes only
+encoding cost, preserving the same Merkle bytes and audit scope.
+Untouched mutations reuse the same immutable empty digest. Batched journal
+completion writes the existing audit JSON fields directly without constructing
+intermediate map trees; escaping, nullable positions, digest scopes and alert
+identities retain the same contract. A commit can reuse internally encoded
+rule-version and unchanged-state fragments. The cache ends with that commit,
+holds at most one version map and 64 unchanged fragments, and limits each
+encoded cache to 64 Ki characters. Larger fragments and changed state retain
+normal encoding; every journal row still contains its complete audit JSON.
 
 The ordered worker path commits queued results in event order, in adaptive
 batches of up to 32 events (`-Dsocp.rule.commit-batch-size`, hard maximum 64). Collection waits at
@@ -451,16 +479,24 @@ polls under the same assignment, within those limits. It adds no collection
 delay, stops at replay/task barriers, and retains every combined task's byte
 reservation until processing finishes or the assignment is revoked.
 Mixed state-unit batches use the existing 128-event atomic API. Single-unit
-serial admission retains 64-event journal transactions and generation-pinned
-submission groups, even when the polled prefix contains more records.
+admission also preserves that 128-event prefix across separately bounded
+64-event journal transactions. Generation-pinned submission does not wait
+for one half to commit before admitting the other. Global queue/byte bounds
+and the 64-row SQL preclaim limit remain unchanged.
 Only consecutive NEW receipts with one tenant, engine shard and partition,
-and distinct delivery IDs, share an ordered submission group. The service pins
-one engine generation and preserves each event's tenant and Kafka trace.
-After acquiring the generation lock and before each submission, admission
+and distinct delivery IDs, share an ordered submission group. When the sink
+supports atomic completion, the entire preclaimed group enters the engine as
+one queue item and shares one durable future. This prevents a partially queued
+prefix from becoming many small transactions. Already queued groups can merge
+within 256-event/64-guard commit bounds; each original group remains atomic.
+The service pins one engine generation and preserves each event's tenant and
+Kafka trace. After acquiring the generation lock and before submission, admission
 rechecks the caller's exact assignment and interruption status. A revoked lane
 waiting for replacement cannot enter the replacement engine with old receipts.
 
-The worker still evaluates state in order. A failed atomic sub-batch cancels
+The worker still evaluates state in order. An atomic group failure rolls back
+the whole group before record-level retry. The compatibility path retains
+per-event submission and adaptive commits: a failed sub-batch cancels
 unevaluated successors in its submission group before completing futures;
 an already committed prefix remains durable. The lane waits for every original
 future to settle before retrying failed entries through fresh journal checks.
@@ -485,6 +521,14 @@ The explicit atomic-batch API accepts at most 128 events and commits them in
 one sink transaction. Its per-event undo records are retained until that commit;
 exceeding the 4 MiB estimated undo budget rejects and rolls back the whole batch
 before the sink is called. Unlike adaptive batches, it does not commit a prefix.
+Immutable evidence shared by multiple undo records is charged once by object
+identity within that transaction. Evidence already charged to the bounded 8 MiB /
+4,096-entry process cache is pinned there until all undo owners release it;
+each separate undo container, reference and accounting entry still consumes
+the 4 MiB transaction budget. Cache pressure evicts only unpinned entries and
+uses uncached encodings when pinned entries leave insufficient room. Uncached
+payloads are charged in full to undo, so neither budget expands or depends on
+the same object being counted twice. Success, failure and rollback release pins.
 Atomic batches evaluate their events in order and capture each event's audit
 diff before evaluating the next. Once all candidates are known, suppression
 reserves only their affected lock stripes in a fixed order. The reservation
@@ -492,6 +536,12 @@ lasts through the result transaction and is committed only after its durable
 acknowledgement. A failed transaction discards staged suppression decisions;
 an alert-free batch takes no suppression locks. Unrelated tenants or shards
 therefore do not wait behind a process-wide suppression lock during database I/O.
+
+Detection V34 selects LZ4 compression only for PostgreSQL `result_json` writes.
+It changes storage metadata without rewriting existing receipts; old PGLZ and
+new LZ4 values remain readable together. PostgreSQL builds must include LZ4
+support; H2 skips this physical storage policy. Budget the brief table lock
+for migration and measure CPU, WAL and storage with the deployed payload mix.
 
 Journal completion uses one bounded SQL `MERGE` over the batch's delivery IDs,
 timestamps and result summaries on both PostgreSQL and H2. The tenant/delivery
@@ -503,7 +553,11 @@ inside a JDBC batch; the transaction still includes alert outbox writes and all
 ownership fences.
 
 Already queued atomic batches for the same tenant and engine can share one
-transaction, with at most 128 events and 64 original ownership guards. The
+transaction, with at most 256 events and 64 original ownership guards. Caller
+admission remains capped at 128 events; the 4 MiB undo budget and queue limits
+remain unchanged. The worker checks for compatible arrivals between preparation
+groups, before committing. It does not wait for new input. Undo-budget fallback
+retries original groups separately without collecting more work. The
 worker preserves queue order and every original atomic boundary; different
 tenants, repeated delivery identities, non-ordered guards and queue barriers
 stop collection. Every original guard remains attached to its batch's first
@@ -621,8 +675,14 @@ withheld record would turn one outage into a full rebuild per record per lane.
 
 A rule hot reload is narrower than a rebuild and is scoped to the tenant that
 edited content. Only that tenant's engine keys enter `RECOVERING`, their live
-engines are drained without being closed, the replacement reads the journal,
-and the swap then happens under the lifecycle write lock. A reload that fails at
+engines are drained without being closed, and installation happens under the
+lifecycle write lock. When every surviving stateful rule has an identical full
+definition and state compatibility version, the live engine retains those rule
+instances and their checkpoint boundary. Stateless edits and rule removals then
+require neither serialized copies nor journal replay. All shards are checked
+before installation; alert output metadata is part of the definition fingerprint.
+New or changed stateful definitions still restore replacement engines from
+durable state before swapping. A reload that fails at
 any of those steps keeps the previous engines serving and leaves the affected
 keys for the recovery schedule to retry, so one tenant's rule edit neither stops
 the tenant's detection nor opens a rejection window for the other tenants in the
@@ -849,3 +909,17 @@ journal replay. An assignment cannot restore a snapshot containing a revoked
 partition. Checkpoint tails filter tenant, topic, status, partition and offset in
 SQL, so already checkpointed payloads are not decoded again. Checkpoint JSON
 versions and durable event identities remain unchanged.
+
+Checkpoint replacement reads only the previous row ID, timestamp, partition
+vector and optimistic version. It does not load the previous serialized state.
+After validating every rule's progress and owner fence, the store compares each
+row version while replacing the payload. A lost version race aborts the entire
+generation, including earlier sibling updates; new-row uniqueness conflicts
+also roll back the generation. Recovery still reads the unchanged base64 state
+format, and existing PGLZ/LZ4 rows remain compatible. This bounds transient
+checkpoint allocation without changing checkpoint frequency or replay coverage.
+
+Audit serialization reuses a scratch text buffer within one bounded commit,
+retaining at most 64 Ki characters of capacity. Larger results discard that
+buffer before the next event. Returned audit Strings remain independent and
+preserve the existing JSON fields and escaping; no result evidence is omitted.

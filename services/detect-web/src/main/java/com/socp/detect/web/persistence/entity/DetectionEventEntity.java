@@ -12,11 +12,14 @@ import java.time.Instant;
 
 /** Accepted detection-delivery journal; source evidence identity is retained separately. */
 @Entity
-@Table(name = "t_detection_event", indexes = {
+@Table(name = "t_detection_event", uniqueConstraints = @jakarta.persistence.UniqueConstraint(
+        name = "uk_detection_event_tenant_delivery", columnNames = {"tenant_id", "delivery_id"}), indexes = {
         @Index(name = "idx_detection_event_occurred", columnList = "occurred_at"),
         @Index(name = "idx_detection_event_source", columnList = "tenant_id,source_event_id"),
         @Index(name = "idx_detection_event_delivery_position",
-                columnList = "delivery_topic,delivery_partition,delivery_offset")
+                columnList = "delivery_topic,delivery_partition,delivery_offset"),
+        @Index(name = "idx_detection_event_checkpoint_replay",
+                columnList = "tenant_id,status,delivery_topic,delivery_partition,delivery_offset")
 })
 public class DetectionEventEntity implements org.springframework.data.domain.Persistable<String> {
 
@@ -136,8 +139,9 @@ public class DetectionEventEntity implements org.springframework.data.domain.Per
         this.sourceEventId = sourceEventId;
         this.routingVersion = routingVersion == null || routingVersion.isBlank()
                 ? "legacy-v1" : routingVersion;
-        this.storageId = java.util.UUID.nameUUIDFromBytes((tenantId + "|" + deliveryId)
-                .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        // The existing tenant/delivery unique constraint arbitrates replay and
+        // concurrent inserts. The physical key only locates the durable row.
+        this.storageId = com.socp.platform.data.domain.StorageIds.next();
         this.source = source;
         this.host = host;
         this.raw = raw;

@@ -435,8 +435,7 @@ public class DetectionStateRecovery {
                 Map<Integer, Long> ownerEpochs = ownerEpochsFor(checkpoint.keySet(), shard);
                 long processedOffset = offset == null ? -1L : offset;
                 return states.entrySet().stream()
-                        .map(entry -> new DetectionStateSnapshot(entry.getKey(), entry.getValue().version(),
-                                tenant, shard, processedOffset, entry.getValue().serializedState(), timestamp,
+                        .map(entry -> entry.getValue().checkpoint(tenant, shard, processedOffset, timestamp,
                                 checkpoint, ownerEpochs, inputTopic))
                         .toList();
             });

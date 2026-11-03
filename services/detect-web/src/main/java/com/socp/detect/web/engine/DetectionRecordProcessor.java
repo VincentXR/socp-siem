@@ -297,6 +297,8 @@ final class DetectionRecordProcessor {
                 performanceMetrics.journalCommitted(input.event());
             }
         }
+        CompletableFuture<Void> atomic = engine.tryIngestPreclaimedBatchFromKafkaAndAwait(inputs, assignmentActive);
+        if (atomic != null) return java.util.Collections.nCopies(inputs.size(), atomic);
         return engine.ingestOrderedBatchFromKafkaAndAwait(inputs, assignmentActive);
     }
 

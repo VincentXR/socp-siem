@@ -36,7 +36,59 @@ import static org.mockito.Mockito.*;
 /** Service admission and real sink wiring; database atomicity is verified in the PostgreSQL suite. */
 class DetectEngineBatchTest {
     @ParameterizedTest
-    @ValueSource(strings = {"assignment", "batch-interrupt", "single-interrupt"})
+    @ValueSource(ints = {64, 128})
+    @SuppressWarnings("unchecked")
+    void packagedCatalogueSupportsAtomicPrefixesWithRealAlarmCandidates(int batchSize) throws Exception {
+        var documents = new ArrayList<Map<String, Object>>();
+        for (Object raw : (List<?>) com.socp.detect.web.persistence.store.DetectionContentCatalog.manifest().get("rules")) {
+            Map<String, Object> entry = (Map<String, Object>) raw;
+            documents.add((Map<String, Object>) entry.get("spec"));
+        }
+        documents.add(Map.of("id", "atomic-pattern", "name", "atomic pattern", "type", "pattern",
+                "severity", "LOW", "groupBy", "host", "match", List.of(Map.of("field", "msg", "op", "contains", "value", "atomic-trigger"))));
+        var rules = documents.stream().map(document -> new com.socp.rule.config.RuleSpec(document).toRule()).toList();
+        var results = new ArrayList<com.socp.rule.engine.DetectionResult>();
+        var sink = new BatchEventAlertSink() {
+            public boolean supportsAtomicBatch() { return true; }
+            public void close() { }
+            public void publish(com.socp.rule.model.Alert alert) { fail("atomic sink required"); }
+            public void publish(SecurityEvent event, List<com.socp.rule.model.Alert> alerts) { fail("atomic sink required"); }
+            public void publishBatch(List<BatchEventAlertSink.Entry> entries) {
+                results.addAll(entries.stream().map(BatchEventAlertSink.Entry::result).toList());
+            }
+        };
+        try (var suppression = new com.socp.rule.engine.Suppressor(java.time.Duration.ofMinutes(1));
+             var engine = new com.socp.rule.engine.RuleEngine(rules, List.of(sink), suppression)) {
+            engine.start();
+            for (int first = 0; first < 1024; first += batchSize) {
+                var batch = java.util.stream.IntStream.range(first, first + batchSize).mapToObj(index -> {
+                    String message = (index % 100 == 0 ? "atomic-trigger" : "normal load sample") + "x".repeat(180);
+                    var fields = new java.util.LinkedHashMap<String, String>();
+                    fields.putAll(Map.of("tenant_id", "batch-tenant", "src_ip", "198.18." + (index / 256) + "." + (index % 256),
+                            "msg", message, "user", "user-" + (index % 16), "event.message", message,
+                            "collector", "acceptance-collector", "eventId", "catalogue-event-" + index,
+                            "ingested_at", "2026-10-29T00:00:00.000000Z", "timestamp", "1793232000000"));
+                    fields.putAll(Map.of("host", "load-host-" + (index % 16), "host.name", "load-host-" + (index % 16),
+                            "source", "loadtest", "severity", "INFO", "event.severity", "INFO",
+                            "source.ip", fields.get("src_ip"), "user.name", fields.get("user"),
+                            "user_payload.detection_routing_field", "src_ip",
+                            "user_payload.detection_routing_value", fields.get("src_ip")));
+                    var event = new SecurityEvent("catalogue-" + index, Instant.parse("2026-10-29T00:00:00Z"), "loadtest", "host-" + index,
+                            message, fields, Severity.INFO);
+                    return new com.socp.rule.engine.RuleEngine.BatchEvent(event,
+                            new com.socp.rule.engine.DetectionResult.InputPosition("events", 0, index),
+                            com.socp.rule.engine.RuleExecutionScope.NOOP);
+                }).toList();
+                engine.ingestBatchAndAwait(batch, null, null).get(5, TimeUnit.SECONDS);
+            }
+            assertEquals(1024, results.size());
+            assertEquals(11, results.stream().flatMap(result -> result.alerts().stream())
+                    .filter(alert -> "atomic-pattern".equals(alert.ruleId())).count());
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"assignment", "batch-interrupt", "single-interrupt", "atomic-assignment", "atomic-interrupt"})
     void cancelledAdmissionWaitingForReplacementCannotEnterAnEngine(String cancellation) throws Exception {
         var rules = emptyRules();
         var journal = new InMemoryDetectionStateStore();
@@ -63,7 +115,10 @@ class DetectEngineBatchTest {
             submitter = Thread.ofVirtual().start(() -> {
                 try {
                     List<CompletableFuture<Void>> completions;
-                    if (cancellation.equals("assignment")) {
+                    if (cancellation.startsWith("atomic-")) {
+                        completions = java.util.Collections.nCopies(input.size(),
+                                service.tryIngestPreclaimedBatchFromKafkaAndAwait(input, active::get));
+                    } else if (cancellation.equals("assignment")) {
                         completions = service.ingestOrderedBatchFromKafkaAndAwait(input, active::get);
                     } else if (cancellation.equals("batch-interrupt")) {
                         completions = service.ingestOrderedBatchFromKafkaAndAwait(input);
@@ -78,7 +133,7 @@ class DetectEngineBatchTest {
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (!lock.hasQueuedThread(submitter) && System.nanoTime() < deadline) Thread.sleep(1);
             assertTrue(lock.hasQueuedThread(submitter), "admission must wait for the generation lock");
-            if (cancellation.equals("assignment")) active.set(false);
+            if (cancellation.endsWith("assignment")) active.set(false);
             else submitter.interrupt();
             lock.writeLock().unlock();
 
@@ -86,7 +141,7 @@ class DetectEngineBatchTest {
             assertEquals(input.size(), completions.size());
             for (var completion : completions) assertThrows(java.util.concurrent.ExecutionException.class,
                     () -> completion.get(2, TimeUnit.SECONDS));
-            assertEquals(!cancellation.equals("assignment"), interruptedOnReturn.get());
+            assertEquals(!cancellation.endsWith("assignment"), interruptedOnReturn.get());
             assertEquals(input.size(), journal.pendingCount());
             assertEquals(0, publications.get());
             verify(rules, never()).list("batch-tenant");
@@ -96,6 +151,66 @@ class DetectEngineBatchTest {
                 submitter.interrupt();
                 submitter.join(2_000);
             }
+            service.stop();
+            TenantContext.clear();
+        }
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"false,64", "true,64", "false,128", "true,128"})
+    void preclaimedPrefixRemainsOneTransactionWithTraceAndReplayPreserved(boolean rejectFirst, int batchSize) throws Exception {
+        var rules = emptyRules();
+        var journal = new InMemoryDetectionStateStore();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var fail = new AtomicBoolean(rejectFirst);
+        List<Integer> sizes = new java.util.concurrent.CopyOnWriteArrayList<>();
+        var traces = new ConcurrentHashMap<String, String>();
+        var forwarder = new AlertForwarder(rules, mock(EntityRiskStore.class), mock(DetectionAlertOutboxService.class), journal) {
+            @Override public void forwardBatch(List<BatchEventAlertSink.Entry> entries) {
+                sizes.add(entries.size());
+                entered.countDown();
+                await(release);
+                if (fail.get()) throw new IllegalStateException("transaction rejected");
+                super.forwardBatch(entries);
+            }
+        };
+        var observer = new RuleProcessingObserver() {
+            @Override public void evaluationCompleted(SecurityEvent event, int alerts) {
+                assertEquals(event.requireTenantId(), TenantContext.require());
+                traces.put(event.id(), org.slf4j.MDC.get("traceId"));
+            }
+        };
+        var service = new DetectEngineService(rules, new RecentAlertSink(10, forwarder, null), journal, observer, null);
+        var inputs = inputs(batchSize);
+        try {
+            service.start();
+            inputs.forEach(input -> journal.claim(input.event(), input.partition(), input.offset(), "host"));
+            CompletableFuture<Void> completion;
+            try (var caller = TenantContext.open("caller")) {
+                completion = service.tryIngestPreclaimedBatchFromKafkaAndAwait(inputs, () -> true);
+                assertEquals("caller", TenantContext.require());
+            }
+            assertNotNull(completion);
+            assertTrue(entered.await(5, TimeUnit.SECONDS));
+            assertEquals(List.of(batchSize), sizes, "a preclaimed prefix must not become racing single-record queue items");
+            assertFalse(completion.isDone());
+            assertEquals(batchSize, journal.pendingCount());
+            release.countDown();
+            if (rejectFirst) {
+                assertThrows(java.util.concurrent.ExecutionException.class, () -> completion.get(5, TimeUnit.SECONDS));
+                assertEquals(batchSize, journal.pendingCount(), "no offset may escape a failed transaction");
+                fail.set(false);
+                service.tryIngestPreclaimedBatchFromKafkaAndAwait(inputs, () -> true).get(5, TimeUnit.SECONDS);
+                assertEquals(List.of(batchSize, batchSize), sizes);
+            } else completion.get(5, TimeUnit.SECONDS);
+            assertEquals(0, journal.pendingCount());
+            for (int index = 0; index < inputs.size(); index++) {
+                assertEquals(traceId(index), traces.get(inputs.get(index).event().id()));
+                assertEquals(DetectionEventClaim.COMPLETED, journal.claim(inputs.get(index).event()));
+            }
+        } finally {
+            release.countDown();
             service.stop();
             TenantContext.clear();
         }
@@ -250,7 +365,7 @@ class DetectEngineBatchTest {
                 List.of(first, new DetectEngineService.KafkaInput(next.event(), "other-topic", first.partition(), next.offset())),
                 List.of(next, first),
                 List.of(first, new DetectEngineService.KafkaInput(first.event(), first.topic(), first.partition(), next.offset())),
-                inputs(65));
+                inputs(129));
         try (var caller = TenantContext.open("caller")) {
             for (var batch : invalid) {
                 assertThrows(IllegalArgumentException.class, () -> service.ingestOrderedBatchFromKafkaAndAwait(batch));
